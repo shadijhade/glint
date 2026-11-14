@@ -361,10 +361,83 @@ pub async fn run_ripgrep_batched(
         let child = command
             .spawn()
             .map_err(|e| format!("Failed to start ripgrep: {e}"))?;
-        stream_search(window, search_id, child, max_results, search, ticket, |line: String| (!line.is_empty()).then_some(line))?;
+        stream_search(window, search_id, child, max_results, search, ticket, rg_line_shown)?;
         Ok(folder)
     })
     .await
+}
+
+/// The longest match line sent as ripgrep wrote it. Its JSON printer ignores --max-columns, so a hit in a
+/// minified file or a one-line log carried the whole line, megabytes of it, through the event and the window.
+const LONGEST_MATCH_LINE: usize = 4096;
+/// A cut line keeps this much before its first hit, and this much after where the hit starts.
+const CUT_BEFORE: usize = 200;
+const CUT_AFTER: usize = 1000;
+
+/// What the window gets of one line of ripgrep's JSON: its matches (a long one cut around its first hit) and its
+/// summary; the begin, end and context lines aren't read there.
+fn rg_line_shown(line: String) -> Option<String> {
+    if line.starts_with(r#"{"type":"match""#) {
+        Some(if line.len() > LONGEST_MATCH_LINE { cut_match_line(&line).unwrap_or(line) } else { line })
+    } else if is_rg_summary(&line) {
+        Some(line)
+    } else {
+        None
+    }
+}
+
+/// ripgrep 15 writes the summary's fields in another order than the rest (`{"data":…,"type":"summary"}`).
+pub fn is_rg_summary(line: &str) -> bool {
+    line.starts_with(r#"{"type":"summary""#) || line.ends_with(r#""type":"summary"}"#)
+}
+
+/// A match line whose text is cut to a window around its first hit ("…" marks each cut end), with the hits'
+/// byte offsets moved to match and those outside dropped. A line ripgrep gave as bytes (not UTF-8) loses them.
+fn cut_match_line(line: &str) -> Option<String> {
+    let mut parsed: serde_json::Value = serde_json::from_str(line).ok()?;
+    let data = parsed.get_mut("data")?.as_object_mut()?;
+    let text = data.get("lines").and_then(|l| l.get("text")).and_then(|t| t.as_str()).map(str::to_string);
+    let Some(text) = text else {
+        data.insert("lines".into(), serde_json::Value::Null);
+        return Some(format!(r#"{{"type":"match","data":{}}}"#, serde_json::to_string(data).ok()?));
+    };
+    let first = data
+        .get("submatches")
+        .and_then(|s| s.get(0))
+        .and_then(|m| m.get("start"))
+        .and_then(|s| s.as_u64())
+        .and_then(|s| usize::try_from(s).ok())
+        .unwrap_or(0)
+        .min(text.len());
+    let boundary_at_or_before = |mut at: usize| {
+        while at > 0 && !text.is_char_boundary(at) {
+            at -= 1;
+        }
+        at
+    };
+    let from = boundary_at_or_before(first.saturating_sub(CUT_BEFORE));
+    let to = boundary_at_or_before(first.saturating_add(CUT_AFTER).min(text.len()));
+    let head = if from > 0 { "…" } else { "" };
+    let tail = if to < text.len() { "…" } else { "" };
+    let shown = format!("{head}{}{tail}", &text[from..to]);
+    data.insert("lines".into(), serde_json::json!({ "text": shown }));
+    if let Some(serde_json::Value::Array(hits)) = data.get_mut("submatches") {
+        hits.retain_mut(|hit| {
+            let (Some(start), Some(end)) = (
+                hit.get("start").and_then(|s| s.as_u64()).and_then(|s| usize::try_from(s).ok()),
+                hit.get("end").and_then(|e| e.as_u64()).and_then(|e| usize::try_from(e).ok()),
+            ) else {
+                return false;
+            };
+            if start < from || end > to {
+                return false;
+            }
+            hit["start"] = (start - from + head.len()).into();
+            hit["end"] = (end - from + head.len()).into();
+            true
+        });
+    }
+    Some(format!(r#"{{"type":"match","data":{}}}"#, serde_json::to_string(data).ok()?))
 }
 
 /// A Documents search (Text's documents toggle): PDFs', Office's, OpenDocument's and EPUBs' text, read
@@ -556,4 +629,43 @@ pub fn store_copy() -> bool {
 /// starts, or the installer's tool installs. Its exit code once it has answered; `None` for the app.
 pub fn worker() -> Option<i32> {
     jq::worker().or_else(bench::cli).or_else(doctext::worker).or_else(remote::askpass).or_else(mcp::server).or_else(tools::cli)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn match_line(text: &str, hits: &[(usize, usize)]) -> String {
+        let submatches: Vec<serde_json::Value> = hits.iter().map(|(s, e)| serde_json::json!({"match": {"text": &text[*s..*e]}, "start": s, "end": e})).collect();
+        format!(r#"{{"type":"match","data":{}}}"#, serde_json::json!({"path": {"text": "C:\\a.min.js"}, "lines": {"text": text}, "line_number": 1, "submatches": submatches}))
+    }
+
+    #[test]
+    fn only_matches_and_the_summary_reach_the_window() {
+        assert_eq!(rg_line_shown(r#"{"type":"begin","data":{}}"#.into()), None);
+        assert_eq!(rg_line_shown(r#"{"type":"end","data":{}}"#.into()), None);
+        assert_eq!(rg_line_shown(String::new()), None);
+        let short = match_line("the needle", &[(4, 10)]);
+        assert_eq!(rg_line_shown(short.clone()), Some(short), "a short match goes as it is");
+        for summary in [r#"{"type":"summary","data":{}}"#, r#"{"data":{"elapsed_total":{"secs":0}},"type":"summary"}"#] {
+            assert_eq!(rg_line_shown(summary.into()).as_deref(), Some(summary));
+        }
+    }
+
+    #[test]
+    fn a_long_match_line_is_cut_around_its_first_hit() {
+        let text = format!("{}needle{}é{}", "x".repeat(5000), "y".repeat(500), "z".repeat(5000));
+        let at = 5000;
+        let far = text.len() - 10;
+        let line = rg_line_shown(match_line(&text, &[(at, at + 6), (far, far + 4)])).unwrap();
+        assert!(line.starts_with(r#"{"type":"match""#) && line.len() < LONGEST_MATCH_LINE);
+        let parsed: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let shown = parsed["data"]["lines"]["text"].as_str().unwrap();
+        assert!(shown.starts_with('…') && shown.ends_with('…'));
+        let hits = parsed["data"]["submatches"].as_array().unwrap();
+        assert_eq!(hits.len(), 1, "a hit outside what's kept is dropped");
+        let (start, end) = (hits[0]["start"].as_u64().unwrap() as usize, hits[0]["end"].as_u64().unwrap() as usize);
+        assert_eq!(&shown[start..end], "needle");
+        assert_eq!(parsed["data"]["line_number"], 1);
+    }
 }
