@@ -4,12 +4,10 @@
 //! the little of Tauri it used. This module makes the one handle at start, keeps it in the [`Core`] global,
 //! and connects its three hooks to GPUI:
 //!
-//! - **Events** (`app.emit("dir-changed", payload)` from any thread) go into an `async_channel`; a
+//! - **Events** (`app.emit(Event::DirChanged(path))` from any thread) go into an `async_channel`; a
 //!   foreground task drains it in batches into the [`CoreEvents`] entity, which emits each as a GPUI
-//!   [`CoreEvent`]. A view subscribes with
-//!   `cx.subscribe(&cx.global::<Core>().events, |this, _, event: &CoreEvent, cx| ...)` and matches
-//!   `event.name` (the names the web UI listened for: "copy-queue", "dir-changed"…). Events arrive far
-//!   faster than frames, so a handler only records what it needs and calls `cx.notify()`; GPUI coalesces
+//!   event. A view subscribes with [`subscribe`] and matches the [`CoreEvent`] it cares about. Events arrive
+//!   far faster than frames, so a handler only records what it needs and calls `cx.notify()`; GPUI coalesces
 //!   the redraw to one per frame.
 //! - **Main-thread jobs** (`app.run_on_main_thread(job)`) do *not* run inside GPUI's executor, because some
 //!   of them open modal Win32 loops (the shell menu, drag-out) and a modal loop inside a GPUI callback
@@ -32,7 +30,7 @@
 //! Long jobs that report progress take a `host::ipc::Channel`; make one with [`stream`] and read the other
 //! end in a GPUI task, updating the view at most once per frame.
 
-use glint_core::host::{self, AppHandle, Emitter as _, Manager as _};
+use glint_core::host::{self, AppHandle, Manager as _};
 use gpui_kit::{App, AppContext as _, AsyncApp, Context, Entity, EventEmitter, Global, Window};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::cell::RefCell;
@@ -80,16 +78,8 @@ pub struct Core {
 
 impl Global for Core {}
 
-/// One event core emitted (`name`, optional target window, JSON `payload`).
-#[derive(Clone, Debug)]
-pub struct CoreEvent(pub host::Event);
-
-impl std::ops::Deref for CoreEvent {
-    type Target = host::Event;
-    fn deref(&self) -> &host::Event {
-        &self.0
-    }
-}
+/// One event core emitted.
+pub type CoreEvent = host::Event;
 
 /// The entity core's events are emitted from. It holds nothing: it exists to be subscribed to.
 pub struct CoreEvents;
@@ -137,7 +127,7 @@ pub(crate) fn init_with(cx: &mut App, housekeeping: bool) {
             }
             sink.update(cx, |_, cx| {
                 for event in batch {
-                    cx.emit(CoreEvent(event));
+                    cx.emit(event);
                 }
             });
         }
@@ -361,9 +351,9 @@ pub fn file_entry(
 }
 
 /// Lets a view emit a core event to itself in tests and tools: same path as core's own `emit`.
-pub fn emit(cx: &App, name: &str, payload: serde_json::Value) {
+pub fn emit(cx: &App, event: CoreEvent) {
     if let Some(core) = cx.try_global::<Core>() {
-        let _ = core.app.emit(name, payload);
+        core.app.emit(event);
     }
 }
 
@@ -476,14 +466,18 @@ mod tests {
             let events = cx.global::<Core>().events.clone();
             let seen = seen.clone();
             cx.subscribe(&events, move |_, event: &CoreEvent, _| {
-                seen.borrow_mut().push(event.name.clone())
+                seen.borrow_mut().push(match event {
+                    CoreEvent::DirChanged(path) => path.clone(),
+                    CoreEvent::CopyQueue(jobs) => format!("{} jobs", jobs.len()),
+                    _ => "something else".into(),
+                })
             })
             .detach();
             // From another thread, as core's watchers emit.
             let app = cx.global::<Core>().app.clone();
             std::thread::spawn(move || {
-                let _ = app.emit("dir-changed", serde_json::json!({ "path": "C:\\" }));
-                let _ = app.emit("copy-queue", serde_json::json!({}));
+                app.emit(CoreEvent::DirChanged("C:\\".into()));
+                app.emit(CoreEvent::CopyQueue(Vec::new()));
             })
             .join()
             .ok();
@@ -495,9 +489,6 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        assert_eq!(
-            *seen.borrow(),
-            vec!["dir-changed".to_string(), "copy-queue".to_string()]
-        );
+        assert_eq!(*seen.borrow(), vec!["C:\\".to_string(), "0 jobs".to_string()]);
     }
 }

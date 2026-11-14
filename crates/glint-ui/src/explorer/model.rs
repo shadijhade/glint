@@ -806,22 +806,14 @@ impl Explorer {
 
     // ---- Core's events ----------------------------------------------------------------------------------
 
-    /// A folder on screen changed on disk ("dir-changed", with the folder's path), or the Gallery's dates were
-    /// read ("gallery-dated").
+    /// A folder on screen changed on disk, the Gallery's dates were read, a search inside files found more, or the
+    /// copy queue moved on.
     fn on_core_event(&mut self, event: &CoreEvent, cx: &mut Context<Self>) {
-        match event.name.as_str() {
+        match event {
             // What a search inside files found (`inside.rs`).
-            "search-event" => {
-                if let Ok(raw) = serde_json::from_value::<super::inside::RawEvent>(event.payload.clone()) {
-                    self.inside_heard(raw, cx);
-                }
-            }
-            "dir-changed" => {
-                if let Some(folder) = event.payload.as_str() {
-                    self.reload_folder(folder, cx);
-                }
-            }
-            "gallery-dated" => {
+            CoreEvent::Search(search) => self.inside_heard(search, cx),
+            CoreEvent::DirChanged(folder) => self.reload_folder(folder, cx),
+            CoreEvent::GalleryDated => {
                 let galleries: Vec<TabId> = self
                     .tabs
                     .values()
@@ -832,7 +824,7 @@ impl Explorer {
                     self.reload(Some(id), cx).detach();
                 }
             }
-            "copy-queue" => self.on_queue_event(&event.payload, cx),
+            CoreEvent::CopyQueue(jobs) => self.on_queue_event(jobs, cx),
             _ => {}
         }
     }

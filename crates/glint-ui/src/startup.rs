@@ -528,8 +528,8 @@ fn hear_core_notices(cx: &mut App) {
         return;
     };
     cx.subscribe(&events, |_, event: &core_bridge::CoreEvent, cx| {
-        if event.name == "backup-finished" {
-            crate::dialogs::backup::tell_finished(&event.payload, |note| notify(cx, note));
+        if let core_bridge::CoreEvent::BackupFinished(finished) = event {
+            crate::dialogs::backup::tell_finished(finished, |note| notify(cx, note));
         }
     })
     .detach();

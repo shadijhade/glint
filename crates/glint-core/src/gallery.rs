@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex, MutexGuard};
 use std::time::Instant;
-use crate::host::{AppHandle, Emitter};
+use crate::host::{AppHandle, Event};
 
 /// Gallery's path in Glint.
 pub const PLACE: &str = "shell:Gallery";
@@ -189,7 +189,7 @@ fn date(unread: Vec<(String, String, u64, i64)>) {
     };
     DATING.store(false, Ordering::SeqCst);
     if let Some(app) = app {
-        let _ = app.emit("gallery-dated", unread.len());
+        app.emit(Event::GalleryDated);
     }
 }
 

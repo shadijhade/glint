@@ -453,11 +453,11 @@ fn asking_again_while_status_runs_asks_once_more_after_it(cx: &mut TestAppContex
     env.settle_until("the view arrives", |env| env.view().is_some());
     // A change in the repository on screen (core's event) makes its tabs look again.
     env.visual
-        .update(|_, cx| crate::core_bridge::emit(cx, "git-changed", serde_json::json!("C:\\repo")));
+        .update(|_, cx| crate::core_bridge::emit(cx, crate::core_bridge::CoreEvent::GitChanged("C:\\repo".into())));
     env.settle_until("the event's run", |_| fake.asked().len() == 3);
     // Another repository's change does nothing.
     env.visual
-        .update(|_, cx| crate::core_bridge::emit(cx, "git-changed", serde_json::json!("C:\\other")));
+        .update(|_, cx| crate::core_bridge::emit(cx, crate::core_bridge::CoreEvent::GitChanged("C:\\other".into())));
     env.settle();
     assert_eq!(fake.asked().len(), 3);
 }
