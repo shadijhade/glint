@@ -1289,16 +1289,19 @@ struct Pictures {
 }
 
 impl ThumbSource for Rc<Pictures> {
-    fn thumbnail(&self, ask: Ask) -> Fut<Result<Vec<u8>, String>> {
+    fn thumbnail(&self, ask: Ask) -> Fut<Result<glint_core::thumbs::Thumbnail, String>> {
         self.asked.borrow_mut().push(ask);
         let pixels = glint_core::thumbs::Pixels {
             width: 4,
             height: 2,
             bgra: [0, 0, 255, 255].iter().copied().cycle().take(4 * 2 * 4).collect(),
         };
-        let mut answer = vec![0, 1, 1, 0];
-        answer.extend(1.5f32.to_le_bytes());
-        answer.extend(glint_core::thumbs::encode_bmp(&pixels));
+        let answer = glint_core::thumbs::Thumbnail {
+            pixels: Some(std::sync::Arc::new(pixels)),
+            lasting: true,
+            from: glint_core::thumbs::ThumbFrom::Cache,
+            ms: 1.5,
+        };
         Box::pin(async move { Ok(answer) })
     }
 

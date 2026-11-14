@@ -61,12 +61,19 @@ pub(crate) fn bmp(width: u32, height: u32, rgb: [u8; 3]) -> Vec<u8> {
     out
 }
 
-/// Core's thumbnail answer: the 8-byte header, then a BMP.
-pub(crate) fn thumbnail_answer(width: u32, height: u32, rgb: [u8; 3]) -> Vec<u8> {
-    let mut out = vec![0, 1, 0, 0];
-    out.extend(1.5f32.to_le_bytes());
-    out.extend(bmp(width, height, rgb));
-    out
+/// Core's thumbnail answer: a picture of one colour.
+pub(crate) fn thumbnail_answer(width: u32, height: u32, rgb: [u8; 3]) -> glint_core::thumbs::Thumbnail {
+    let [r, g, b] = rgb;
+    glint_core::thumbs::Thumbnail {
+        pixels: Some(std::sync::Arc::new(glint_core::thumbs::Pixels {
+            width,
+            height,
+            bgra: [b, g, r, 255].repeat((width * height) as usize),
+        })),
+        lasting: false,
+        from: glint_core::thumbs::ThumbFrom::Cache,
+        ms: 1.5,
+    }
 }
 
 /// What the fake sources answer, and what they were asked.
@@ -76,7 +83,7 @@ pub(crate) struct Fake {
     pub counts: RefCell<Option<Result<Counts, String>>>,
     pub archive: RefCell<Option<Result<ArchiveFacts, String>>>,
     pub media: RefCell<Option<Media>>,
-    pub thumbnail: RefCell<Option<Vec<u8>>>,
+    pub thumbnail: RefCell<Option<glint_core::thumbs::Thumbnail>>,
     pub lines: RefCell<Vec<String>>,
     pub extracted: RefCell<HashMap<String, String>>,
     /// Everything the pane asked of the sources, in order: "rotate <path>", "show 1 <path>"…

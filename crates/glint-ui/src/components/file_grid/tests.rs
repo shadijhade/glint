@@ -3,6 +3,7 @@
 //! interface mirroring.
 
 use super::thumbnail::tests::{answer, Fake};
+use super::thumbnail::Origin;
 use super::thumbnail::{self, ThumbSource, Thumbnails};
 use super::*;
 use crate::explorer::fake::{file, folder, FakeDisk};
@@ -433,9 +434,10 @@ fn thumbnails_are_asked_for_the_visible_rows_once_not_again_every_frame(cx: &mut
 fn thumbnails_are_asked_for_files_only_at_the_tile_size_and_drawn_when_they_arrive(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let fake = plain();
-    fake.answers
-        .borrow_mut()
-        .insert("C:\\x\\a.jpg".into(), answer(64, 48, [7, 7, 7, 255], true, 1));
+    fake.answers.borrow_mut().insert(
+        "C:\\x\\a.jpg".into(),
+        answer(64, 48, [7, 7, 7, 255], true, Origin::Cache),
+    );
     let mut env = env(cx, &disk(0), fake.clone());
     // The test window has its own scale (device pixels to one): sizes are asked for in device pixels.
     let scale = env.visual.update(|window, _| window.scale_factor());

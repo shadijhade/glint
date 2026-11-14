@@ -38,13 +38,8 @@
 //! that timed out, an online-only file) is asked again only when it leaves the set and comes back, as the
 //! TypeScript did when the tile remounted.
 //!
-//! **Pictures.** The answer is an 8-byte header and a 32-bit top-down BMP (`Thumb::encode`, `encode_bmp`).
-//! The BMP is decoded on a background thread straight to the BGRA pixels GPUI draws (no PNG anywhere), and the
-//! `RenderImage` is shared by every tile that shows it.
-//!
-//! NOTE(coordinator): `RenderImage::new` takes `image::Frame`s, and `image` is not a dependency of glint-ui,
-//! so the BMP goes through `gpui::Image::to_image_data` (GPUI's own BMP decoder: one pass over the pixels).
-//! With `image = "0.25"` in Cargo.toml the pixels could be wrapped in a `Frame` directly; see `decode_bmp`.
+//! **Pictures.** The answer is the picture's straight-alpha BGRA pixels, what GPUI draws: they become a
+//! `RenderImage` as they are (nothing to decode), shared by every tile that shows it.
 
 use crate::explorer::{self, ExplorerEvent};
 use crate::kit::prelude::*;
@@ -100,9 +95,9 @@ pub struct Ask {
 
 /// Where thumbnails come from: glint-core in the app, a fake in tests.
 pub trait ThumbSource {
-    /// One item's thumbnail as core answers it (the 8-byte header, then a BMP), or the reason it failed.
-    /// `Err("cancelled")` once [`ThumbSource::cancel`] dropped it.
-    fn thumbnail(&self, ask: Ask) -> Fut<Result<Vec<u8>, String>>;
+    /// One item's thumbnail as core answers it, or the reason it failed. `Err("cancelled")` once
+    /// [`ThumbSource::cancel`] dropped it.
+    fn thumbnail(&self, ask: Ask) -> Fut<Result<Thumbnail, String>>;
 
     /// Drops `lane`'s requests up to number `up_to`, for `paths` or (None) all of them
     /// (`cancelThumbnails`). Never waits.
@@ -121,7 +116,7 @@ impl CoreThumbs {
 }
 
 impl ThumbSource for CoreThumbs {
-    fn thumbnail(&self, ask: Ask) -> Fut<Result<Vec<u8>, String>> {
+    fn thumbnail(&self, ask: Ask) -> Fut<Result<Thumbnail, String>> {
         use glint_core::host::Manager as _;
         let app = self.app.clone();
         let running = crate::core_bridge::run(async move {
@@ -137,7 +132,6 @@ impl ThumbSource for CoreThumbs {
                 ask.seq,
             )
             .await
-            .map(glint_core::host::ipc::Response::into_bytes)
         });
         // Two layers: the core task may panic (outer Err), the thumbnail may not come (inner Err).
         Box::pin(async move { running.await.and_then(|answer| answer) })
@@ -159,7 +153,7 @@ impl ThumbSource for CoreThumbs {
 pub struct NoThumbs;
 
 impl ThumbSource for NoThumbs {
-    fn thumbnail(&self, _ask: Ask) -> Fut<Result<Vec<u8>, String>> {
+    fn thumbnail(&self, _ask: Ask) -> Fut<Result<Thumbnail, String>> {
         Box::pin(async { Err("no thumbnails here".to_string()) })
     }
 
@@ -168,19 +162,11 @@ impl ThumbSource for NoThumbs {
 
 // ---- The answer ---------------------------------------------------------------------------------------
 
-/// Where a thumbnail came from (the answer's second byte): core's memory, Windows' cache, or made from the file.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Origin {
-    Memory,
-    Cache,
-    Made,
-}
+pub use glint_core::thumbs::{ThumbFrom as Origin, Thumbnail};
 
-/// The 8-byte header of an answer (`decodeThumb`, `Thumb::encode`).
+/// What an answer says besides its picture.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Header {
-    /// A BMP follows.
-    pub found: bool,
     /// For none: that the file has none for good, rather than none yet.
     pub lasting: bool,
     pub from: Origin,
@@ -188,24 +174,21 @@ pub struct Header {
     pub ms: f32,
 }
 
-/// Reads an answer's header. `None` for fewer than 8 bytes (nothing core sends).
-pub fn parse_header(answer: &[u8]) -> Option<Header> {
-    let head = answer.get(..8)?;
-    Some(Header {
-        found: head[0] == 0 && answer.len() > 8,
-        lasting: head[2] == 1,
-        from: match head[1] {
-            0 => Origin::Memory,
-            2 => Origin::Made,
-            _ => Origin::Cache,
-        },
-        ms: f32::from_le_bytes([head[4], head[5], head[6], head[7]]),
-    })
+impl Header {
+    fn of(thumb: &Thumbnail) -> Header {
+        Header {
+            lasting: thumb.lasting,
+            from: thumb.from,
+            ms: thumb.ms,
+        }
+    }
 }
 
-/// Decodes the answer's BMP (the bytes after the header) into a picture GPUI draws. `None` when it isn't one.
-fn decode_bmp(bmp: Vec<u8>, renderer: SvgRenderer) -> Option<Arc<RenderImage>> {
-    Image::from_bytes(ImageFormat::Bmp, bmp).to_image_data(renderer).ok()
+/// A thumbnail's pixels as a picture GPUI draws (the same straight-alpha BGRA). `None` when they don't make
+/// the picture they say.
+pub(crate) fn picture(pixels: &glint_core::thumbs::Pixels) -> Option<Arc<RenderImage>> {
+    image::RgbaImage::from_raw(pixels.width, pixels.height, pixels.bgra.clone())
+        .map(|buffer| Arc::new(RenderImage::new(vec![image::Frame::new(buffer)])))
 }
 
 /// A decoded picture's size in pixels.
@@ -747,23 +730,15 @@ impl Thumbnails {
             lane: lane.to_string(),
             seq,
         });
-        let renderer = cx.svg_renderer();
         let css_box = want.css_box;
         cx.spawn(async move |this, cx| {
             let answer = running.await;
-            // The BMP is decoded off the UI thread.
+            // The pixels are copied into the picture off the UI thread.
             let decoded = cx
                 .background_executor()
                 .spawn(async move {
-                    let bytes = answer?;
-                    let header =
-                        parse_header(&bytes).ok_or_else(|| "a thumbnail answer too short to read".to_string())?;
-                    let image = if header.found {
-                        decode_bmp(bytes.get(8..).map(<[u8]>::to_vec).unwrap_or_default(), renderer)
-                    } else {
-                        None
-                    };
-                    Ok::<_, String>((header, image))
+                    let thumb = answer?;
+                    Ok::<_, String>((Header::of(&thumb), thumb.pixels.as_deref().and_then(picture)))
                 })
                 .await;
             this.update(cx, |this, cx| this.answered(key, seq, css_box, decoded, cx))
@@ -1123,12 +1098,11 @@ pub(super) mod tests {
     use super::*;
     use crate::explorer::fake::file;
     use crate::testing;
-    use glint_core::thumbs::{encode_bmp, Pixels};
     use std::cell::RefCell;
 
-    /// The answer core sends: the 8-byte header, then the BMP.
-    pub(crate) fn answer(width: u32, height: u32, bgra: [u8; 4], lasting: bool, from: u8) -> Vec<u8> {
-        let pixels = Pixels {
+    /// The answer core sends: a picture of `width` x `height` pixels of one colour.
+    pub(crate) fn answer(width: u32, height: u32, bgra: [u8; 4], lasting: bool, from: Origin) -> Thumbnail {
+        let pixels = glint_core::thumbs::Pixels {
             width,
             height,
             bgra: bgra
@@ -1138,17 +1112,22 @@ pub(super) mod tests {
                 .take((width * height * 4) as usize)
                 .collect(),
         };
-        let mut out = vec![0, from, lasting as u8, 0];
-        out.extend(1.5f32.to_le_bytes());
-        out.extend(encode_bmp(&pixels));
-        out
+        Thumbnail {
+            pixels: Some(Arc::new(pixels)),
+            lasting,
+            from,
+            ms: 1.5,
+        }
     }
 
     /// An answer saying the file has no thumbnail.
-    pub(crate) fn none(lasting: bool) -> Vec<u8> {
-        let mut out = vec![1, 1, lasting as u8, 0];
-        out.extend(0f32.to_le_bytes());
-        out
+    pub(crate) fn none(lasting: bool) -> Thumbnail {
+        Thumbnail {
+            pixels: None,
+            lasting,
+            from: Origin::Cache,
+            ms: 0.0,
+        }
     }
 
     /// A cancel as the source saw it: the lane, the paths (None for all), the request number.
@@ -1157,7 +1136,7 @@ pub(super) mod tests {
     /// A source answering from a table, counting asks and cancels, and holding answers back on request.
     #[derive(Default)]
     pub(crate) struct Fake {
-        pub answers: RefCell<HashMap<String, Vec<u8>>>,
+        pub answers: RefCell<HashMap<String, Thumbnail>>,
         pub asked: RefCell<Vec<Ask>>,
         pub cancelled: RefCell<Vec<Cancel>>,
         pub held_back: RefCell<HashSet<String>>,
@@ -1166,7 +1145,7 @@ pub(super) mod tests {
     }
 
     impl ThumbSource for Rc<Fake> {
-        fn thumbnail(&self, ask: Ask) -> Fut<Result<Vec<u8>, String>> {
+        fn thumbnail(&self, ask: Ask) -> Fut<Result<Thumbnail, String>> {
             self.asked.borrow_mut().push(ask.clone());
             let answer = self.answers.borrow().get(&ask.path).cloned();
             let held = self.held_back.borrow().contains(&ask.path);
@@ -1228,34 +1207,9 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn the_header_is_read_as_core_writes_it() {
-        let mut bytes = answer(2, 2, [1, 2, 3, 255], true, 2);
-        let header = parse_header(&bytes);
-        assert_eq!(
-            header,
-            Some(Header {
-                found: true,
-                lasting: true,
-                from: Origin::Made,
-                ms: 1.5
-            })
-        );
-        // A header alone is "none".
-        bytes.truncate(8);
-        assert_eq!(parse_header(&bytes).map(|h| h.found), Some(false));
-        assert_eq!(
-            parse_header(&none(false)).map(|h| (h.found, h.lasting)),
-            Some((false, false))
-        );
-        assert_eq!(parse_header(&[0, 1, 2]), None, "fewer than 8 bytes are no answer");
-        assert_eq!(parse_header(&none(true)).map(|h| h.lasting), Some(true));
-    }
-
-    #[gpui_kit::test]
-    fn a_bmp_from_core_decodes_to_bgra_pixels_the_size_it_was_made(cx: &mut TestAppContext) {
-        let bytes = answer(3, 2, [10, 20, 30, 255], true, 1);
-        let renderer = cx.update(|cx| cx.svg_renderer());
-        let image = decode_bmp(bytes[8..].to_vec(), renderer).expect("the BMP decodes");
+    fn the_pixels_become_the_picture_gpui_draws_as_they_are() {
+        let thumb = answer(3, 2, [10, 20, 30, 255], true, Origin::Made);
+        let image = picture(thumb.pixels.as_deref().unwrap()).expect("a picture");
         assert_eq!(pixels_of(&image), (3, 2));
         let pixels = image.as_bytes(0).expect("one frame");
         // BGRA in, BGRA out: a 3 x 2 picture is 6 pixels of the same colour, opaque.
@@ -1263,14 +1217,25 @@ pub(super) mod tests {
         for pixel in pixels.as_chunks::<4>().0 {
             assert_eq!(*pixel, [10, 20, 30, 255]);
         }
-    }
-
-    #[gpui_kit::test]
-    fn straight_alpha_in_the_bmp_stays_straight(cx: &mut TestAppContext) {
-        let bytes = answer(1, 1, [10, 20, 30, 128], true, 1);
-        let renderer = cx.update(|cx| cx.svg_renderer());
-        let image = decode_bmp(bytes[8..].to_vec(), renderer).expect("the BMP decodes");
+        // Straight alpha stays straight.
+        let half = answer(1, 1, [10, 20, 30, 128], true, Origin::Cache);
+        let image = picture(half.pixels.as_deref().unwrap()).expect("a picture");
         assert_eq!(image.as_bytes(0), Some(&[10u8, 20, 30, 128][..]));
+        // Pixels that don't fill the size they say make no picture.
+        let short = glint_core::thumbs::Pixels {
+            width: 2,
+            height: 2,
+            bgra: vec![0; 4],
+        };
+        assert!(picture(&short).is_none());
+        assert_eq!(
+            Header::of(&thumb),
+            Header {
+                lasting: true,
+                from: Origin::Made,
+                ms: 1.5
+            }
+        );
     }
 
     #[test]
@@ -1315,9 +1280,10 @@ pub(super) mod tests {
     fn asked_once_answered_decoded_and_drawn_instead_of_the_icon(cx: &mut TestAppContext) {
         let _guard = testing::lock();
         let fake = Rc::new(Fake::default());
-        fake.answers
-            .borrow_mut()
-            .insert("C:\\x\\a.jpg".into(), answer(48, 32, [9, 9, 9, 255], true, 1));
+        fake.answers.borrow_mut().insert(
+            "C:\\x\\a.jpg".into(),
+            answer(48, 32, [9, 9, 9, 255], true, Origin::Cache),
+        );
         let (mut visual, service) = service(cx, &fake);
         let entry = file("C:\\x", "a.jpg", 2, 1);
         let viewer = service.entity_id();
@@ -1447,9 +1413,10 @@ pub(super) mod tests {
     fn another_sizes_picture_stands_in_while_a_zoom_comes_and_is_dropped_when_far_smaller(cx: &mut TestAppContext) {
         let _guard = testing::lock();
         let fake = Rc::new(Fake::default());
-        fake.answers
-            .borrow_mut()
-            .insert("C:\\x\\a.jpg".into(), answer(96, 64, [1, 2, 3, 255], true, 1));
+        fake.answers.borrow_mut().insert(
+            "C:\\x\\a.jpg".into(),
+            answer(96, 64, [1, 2, 3, 255], true, Origin::Cache),
+        );
         let (mut visual, service) = service(cx, &fake);
         let entry = file("C:\\x", "a.jpg", 2, 1);
         let viewer = EntityId::from(5u64);
@@ -1474,9 +1441,10 @@ pub(super) mod tests {
         let _guard = testing::lock();
         let fake = Rc::new(Fake::default());
         for name in ["a", "b", "c"] {
-            fake.answers
-                .borrow_mut()
-                .insert(format!("C:\\x\\{name}.jpg"), answer(16, 16, [1, 2, 3, 255], true, 1));
+            fake.answers.borrow_mut().insert(
+                format!("C:\\x\\{name}.jpg"),
+                answer(16, 16, [1, 2, 3, 255], true, Origin::Cache),
+            );
         }
         let (mut visual, service) = service(cx, &fake);
         // Room for two 16 x 16 pictures (1,024 bytes each).
@@ -1506,7 +1474,7 @@ pub(super) mod tests {
         let fake = Rc::new(Fake::default());
         fake.answers
             .borrow_mut()
-            .insert("C:\\x\\a.jpg".into(), answer(8, 8, [1, 2, 3, 255], true, 2));
+            .insert("C:\\x\\a.jpg".into(), answer(8, 8, [1, 2, 3, 255], true, Origin::Made));
         let (mut visual, service) = service(cx, &fake);
         service.update(&mut visual, |t, cx| t.time("tab1", "dir:C:\\x:grid", cx));
         let viewer = EntityId::from(11u64);
