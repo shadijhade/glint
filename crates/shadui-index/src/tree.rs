@@ -11,6 +11,8 @@ use std::hash::BuildHasherDefault;
 
 /// No record or link.
 pub const NONE: u32 = u32::MAX;
+/// How many folders' `reachable` answers a search chunk keeps before it starts over.
+const REACHED_KEPT: usize = 4096;
 /// The root folder's MFT record.
 pub const ROOT: u32 = 5;
 /// Records below this are NTFS's own metadata ($MFT, $LogFile, $Extend…), except the root.
@@ -885,6 +887,10 @@ impl Tree {
                 let mut path_buf = Vec::with_capacity(if has_paths { 256 } else { 0 });
                 let mut last_parent = NONE;
                 let mut last_dir_len = 0;
+                // Whether each folder matches were found in is reachable (`reachable`: a walk up to the scope,
+                // checking every folder on the way against hidden and the exclusions): siblings ask once.
+                let (mut reach_parent, mut reach_known) = (NONE, false);
+                let mut reached: HashMap<u32, bool> = HashMap::new();
                 for (i, link) in links.iter().enumerate() {
                     if link.flags & LINK_USED == 0 || link.rec < FIRST_USER_RECORD {
                         continue;
@@ -905,7 +911,24 @@ impl Tree {
                     if !search.hidden && is_hidden(self.recs[link.rec as usize].attrs(), name) {
                         continue;
                     }
-                    if search.excludes.name(name, folded) || !self.reachable(link.parent, search) {
+                    if search.excludes.name(name, folded) {
+                        continue;
+                    }
+                    if link.parent != reach_parent {
+                        reach_known = match reached.get(&link.parent) {
+                            Some(&known) => known,
+                            None => {
+                                let known = self.reachable(link.parent, search);
+                                if reached.len() >= REACHED_KEPT {
+                                    reached.clear();
+                                }
+                                reached.insert(link.parent, known);
+                                known
+                            }
+                        };
+                        reach_parent = link.parent;
+                    }
+                    if !reach_known {
                         continue;
                     }
                     if has_paths {
@@ -1868,6 +1891,76 @@ mod tests {
         assert!(find(&tree, "size:>1kb", ROOT, true, &[]).is_empty());
         assert!(find(&tree, "late dm:7d", ROOT, true, &[]).is_empty());
         assert_eq!(find(&tree, "folder:", ROOT, true, &[]), ["Folder"]);
+    }
+
+    /// 1.8 million files in 22,200 folders three deep, searched for common words with forty name exclusions, as
+    /// Quick Search asks: what each match's walk up to the scope, checking every folder on the way, costs. Run
+    /// with --ignored --nocapture, in release.
+    #[test]
+    #[ignore]
+    fn common_words_under_many_exclusions_cost_little() {
+        const WORDS: &[&str] = &["report", "invoice", "budget", "photo", "download", "setup", "backup", "notes", "draft", "final", "project", "meeting", "summary", "scan", "image", "video", "music", "readme", "config", "data", "cache", "temp", "log", "build"];
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = |n: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % n) as usize
+        };
+        let mut builder = Builder::new(1_900_000);
+        builder.record(ROOT, 5, true, 0, 0);
+        let mut n = 20u32;
+        let mut leaves = Vec::new();
+        for top in 0..200 {
+            let t = n;
+            n += 1;
+            builder.record(t, 1, true, 0x10, 0);
+            builder.name(t, make_ref(ROOT, 5), &format!("{} {top}", WORDS[next(24)]));
+            for mid in 0..10 {
+                let m = n;
+                n += 1;
+                builder.record(m, 1, true, 0x10, 0);
+                builder.name(m, make_ref(t, 1), &format!("{}{mid}", WORDS[next(24)]));
+                for low in 0..10 {
+                    let l = n;
+                    n += 1;
+                    builder.record(l, 1, true, 0x10, 0);
+                    builder.name(l, make_ref(m, 1), &format!("{} {low}", WORDS[next(24)]));
+                    leaves.push(l);
+                }
+            }
+        }
+        for leaf in leaves {
+            for _ in 0..90 {
+                let f = n;
+                n += 1;
+                builder.record(f, 1, false, 0x20, 0);
+                let name = format!("{}_{} {}.{}", WORDS[next(24)], WORDS[next(24)], next(10_000), ["txt", "pdf", "jpg", "dll"][next(4)]);
+                builder.name(f, make_ref(leaf, 1), &name);
+            }
+        }
+        let tree = builder.finish();
+        let globs: Vec<String> = [
+            "node_modules", ".git", ".svn", ".hg", "target", "obj", "bin", ".vs", ".idea", ".vscode", "__pycache__", "*.pyc",
+            ".cache", ".gradle", ".m2", ".nuget", "packages", "vendor", "dist", "out", "*.tmp", "~$*", "*.bak", "*.swp",
+            "*.log", "Thumbs.db", "desktop.ini", "$RECYCLE.BIN", "System Volume Information", "Windows", "WinSxS",
+            "Program Files", "ProgramData", "AppData", "Temp", "*.etl", "*.dmp", "pagefile.sys", "hiberfil.sys", "*.cab",
+        ]
+        .map(String::from)
+        .into();
+        let excludes = Excludes::new(&globs);
+        for query in ["report", "photo 12", "notes.txt", "zzzz"] {
+            let matcher = NameMatcher::from_terms(crate::query::terms(query));
+            let search = Search { matcher: &matcher, filters: &Default::default(), now: 0, scope: ROOT, hidden: false, excludes: &excludes };
+            let mut best = f64::MAX;
+            let mut found = 0;
+            for _ in 0..5 {
+                let started = std::time::Instant::now();
+                found = tree.search(&search).len();
+                best = best.min(started.elapsed().as_secs_f64() * 1000.0);
+            }
+            println!("{query:>10}: {found} found in {best:.1} ms (best of 5)");
+        }
     }
 
     /// A drive's worth of names (3 million, made of real-looking words), searched as typed and then
