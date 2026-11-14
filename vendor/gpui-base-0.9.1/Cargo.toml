@@ -262,7 +262,7 @@ features = [
 version = "0.6.2"
 
 [target.'cfg(target_os = "windows")'.dependencies.windows]
-version = "0.58.0"
+version = "0.62"
 features = [
     "Wdk",
     "Wdk_System",
