@@ -145,9 +145,40 @@ pub enum Origin {
 /// Where a program runs from (`rg`, or an optional tool such as `difft`). The copy that came with the
 /// app wins; only when it's missing (a security tool quarantined it, a portable copy) does one Glint
 /// downloaded or one installed on the PC run.
+///
+/// Where each program was found is kept: finding one looks in thirty folders or so, and availability checks
+/// ask often. A copy found is looked at (one check) before it's given again; a program that wasn't found is
+/// looked for again after [`NOT_FOUND_FOR`] (one installed outside Glint turns up), and at once after Glint
+/// installs or removes a tool ([`forget_locations`]).
 pub fn locate(name: &str) -> Option<(PathBuf, Origin)> {
+    let key = name.to_ascii_lowercase();
+    let kept = located().get(&key).cloned();
+    if let Some((found, at)) = kept {
+        match &found {
+            Some((path, _)) if path.is_file() => return found,
+            None if at.elapsed() < NOT_FOUND_FOR => return None,
+            _ => {}
+        }
+    }
     let tool = crate::tools::by_exe(name);
-    find(name, tool.map_or(name, |t| t.package), tool.and_then(|t| crate::tools::folder_of(t.id)).as_deref())
+    let found = find(name, tool.map_or(name, |t| t.package), tool.and_then(|t| crate::tools::folder_of(t.id)).as_deref());
+    located().insert(key, (found.clone(), std::time::Instant::now()));
+    found
+}
+
+/// How long a program not found stays not found before it's looked for again.
+const NOT_FOUND_FOR: std::time::Duration = std::time::Duration::from_secs(30);
+
+type Located = HashMap<String, (Option<(PathBuf, Origin)>, std::time::Instant)>;
+
+fn located() -> MutexGuard<'static, Located> {
+    static LOCATED: std::sync::LazyLock<Mutex<Located>> = std::sync::LazyLock::new(Mutex::default);
+    LOCATED.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Forgets where programs were found: a tool was just installed or removed.
+pub fn forget_locations() {
+    located().clear();
 }
 
 fn find(name: &str, package: &str, downloaded: Option<&std::path::Path>) -> Option<(PathBuf, Origin)> {
@@ -265,6 +296,20 @@ pub(crate) fn no_window(command: &mut Command) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn where_a_program_is_kept_and_checked_and_forgotten_after_an_install() {
+        let missing = "glint-no-such-program-anywhere";
+        assert_eq!(locate(missing), None);
+        assert!(located().get(missing).is_some_and(|(found, _)| found.is_none()), "kept as not found");
+        assert_eq!(locate(missing), None);
+        forget_locations();
+        assert!(located().get(missing).is_none());
+        // A copy kept but gone since is looked for again.
+        let gone = std::env::temp_dir().join("glint-gone-program.exe");
+        located().insert("glint-gone-program".into(), (Some((gone, Origin::Installed)), std::time::Instant::now()));
+        assert_eq!(locate("glint-gone-program"), None);
+    }
 
     #[test]
     fn finds_what_winget_installed_without_path() {
