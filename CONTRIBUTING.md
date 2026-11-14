@@ -22,7 +22,7 @@ The first build compiles GPUI and all the other dependencies and takes several m
 
 ## Where things are
 
-Five crates make a workspace (`Cargo.toml`): `crates/glint` is `Glint.exe` (a thin `main.rs`, its resources, the bundled tools and the installer), `crates/glint-ui` is everything on screen, `crates/glint-core` is the engine (files, search, archives, media, devices… with no window), `crates/glint-model` is pure logic with nothing to link against (sorting, formatting, paths, settings, text), and `crates/shadui-index` is the instant search service. The rules for UI code are in [docs/gpui/STANDARDS.md](docs/gpui/STANDARDS.md), and `crates/glint-ui/src/lib.rs` says in what order to read it.
+Five crates make a workspace (`Cargo.toml`): `crates/glint` is `Glint.exe` (a thin `main.rs`, its resources, the bundled tools and the installer), `crates/glint-ui` is everything on screen, `crates/glint-core` is the engine (files, search, archives, media, clouds… with no window), `crates/glint-model` is pure logic with nothing to link against (sorting, formatting, paths, settings, text), and `crates/shadui-index` is the instant search service. The rules for UI code are in [docs/gpui/STANDARDS.md](docs/gpui/STANDARDS.md), and `crates/glint-ui/src/lib.rs` says in what order to read it.
 
 | Path | What it is |
 | :--- | :--- |

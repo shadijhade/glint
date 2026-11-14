@@ -158,8 +158,9 @@ aloud.
 
 **B5. ast-grep leftovers (V).** The Text screen went in 0.11 (README line 331) but its engine stayed: delete
 `run_ast_grep`, `ast_grep_search`, `ast_grep_apply`, `read_file_content`, `read_file_chunk`, `doc_lines` in
-`crates/glint-core/src/lib.rs`, the whole `codesearch.rs`, the `ast-grep` entry in `tools.rs` (line 243), and its
-mentions in README line 560 and `docs/tools.md`.
+`crates/glint-core/src/lib.rs`. *Corrected while building:* the MCP server's code search still runs ast-grep, so
+`codesearch.rs` keeps the one function that words its command line (`args`) and the `ast-grep` tool stays, worded
+as the MCP server's (tools.rs, docs/tools.md, the installer's row).
 
 **B6. What stays on users' PCs, and old state (V: needed; the design is yours).** Before deleting B3 and B4, list from
 their code every file and folder they wrote under Glint's data folders (`tools::data_dir()`: the CLIP model and ONNX

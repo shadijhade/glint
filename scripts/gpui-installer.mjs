@@ -1,6 +1,6 @@
 // Builds the GPUI Glint's setup program: crates/glint/installer/installer.nsi packed by makensis, written to
 // <target>/release/bundle/Glint-setup.exe (target/ui/release/bundle/Glint-setup.exe with the usual
-// CARGO_TARGET_DIR). It replaces Tauri's bundler for the GPUI build; docs/gpui/migration-plan.md, phase 6.
+// CARGO_TARGET_DIR). It took the place of Tauri's bundler in 0.10.
 //
 // It builds Glint.exe (cargo build --release -p glint), gathers what the installer carries into one folder
 // (Glint.exe, rg.exe, fd.exe and pdu.exe beside it, the license and the notices, and the instant search

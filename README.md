@@ -77,6 +77,21 @@ Each time runs from pressing Enter until everything is on screen, as the app's s
 
 <img src="screenshots/folder-sizes.png" alt="C:\Windows sorted by size, with the size of every folder" width="100%">
 
+### New in 0.12.0
+
+This one adds nothing: it takes out what wasn't worth its weight, makes what stays cheaper, and brings back what the move to a native window dropped.
+
+-   **Smaller.** Glint.exe is 93 MB, down from 174 MB, and builds 240 fewer crates.
+-   **Back again.** Four things 0.10 stopped starting run again a moment after the window is up: **Search inside files instantly** catches up with what changed while Glint was closed, daily and weekly **backups** run on time, **remotes shown in File Explorer** answer it again, and `Ctrl+Alt+G` takes the file dialog in front to the folder shown.
+-   **Less work for each key.** An arrow key no longer rebuilds the sidebar, re-applies the theme, rescans the list for a README or copies every selected path; a grouped list no longer copies its rows; a search inside files with many hits no longer slows as it goes; the copy queue's progress no longer grows with the copy; folder rules wake nothing when none is on.
+-   **Instant search** (once its service is updated): a common word searched with many exclusions is about 30% quicker.
+-   **Fixed**: a search inside files says how long ripgrep took again (ripgrep 15 writes its summary differently).
+-   **Removed**:
+    -   Mermaid diagrams: a `mermaid` block in Markdown shows as code, and a `.mmd` file as text. Graphviz and math are drawn as before.
+    -   The built-in Typst: `.typ` previews and **Export as PDF**. **Convert document** still makes PDFs with the pandoc and Typst tools.
+    -   Paired devices: **Settings → Devices**, **Send to my PC** and paired PCs in the sidebar. **Send to another PC** (sendme), **Nearby** (LocalSend) and the other remotes stay.
+    -   Photo search (`shows:`), speech search (`says:`) and search **By meaning**. Their downloads (OpenAI's CLIP and ONNX Runtime, about 240 MB; Model2Vec's models, 30 and 128 MB) and what they learned are deleted from the PC at the first start. Whisper's model stays for **Make subtitles**.
+
 ### New in 0.11.0
 
 -   **A window of its own.** 0.10 made Glint a native app and kept File Explorer's layout; this one lets it go. **One bar** holds Back, Forward, Up and a single field, with where you are at its start and the search at its end. **Your tabs are a list in the side rail**, every name whole, one list for each pane. The files are on **one sheet**, and the commands are an island in the **dock** at its foot: Cut, Copy, Rename and Delete are there while something is selected and not otherwise, so nothing greyed out stands in it. Glint's mark opens Settings, the palette, the shortcut sheet, Drive health and New window.
@@ -334,7 +349,7 @@ Up to version 0.10, searching inside files was a mode of its own (Text), with it
 | Folder sizes | In Properties or a tooltip | In the list, for every folder |
 | What fills a drive | Not shown (Storage settings has categories) | A treemap of any folder, like WizTree's |
 | Find a file by name | Windows Search where it indexes, otherwise a walk through every folder | An index of every NTFS drive (opt-in), otherwise fd |
-| Search inside files | Indexed places and file types | ripgrep in any folder, with regex and replace; code by its structure; PDFs' and Office documents' text too |
+| Search inside files | Indexed places and file types | ripgrep in any folder, with regex; PDFs' and Office documents' text too |
 | Preview | Preview pane | Preview pane with the same previewers, and its own: Markdown as it reads, JSON and YAML as trees with jq, tables with SQL, databases, programs, every file's bytes; Quick Look on `Space` |
 | Git | Not shown | Each file's and folder's status, the branch in the address bar, and what changed in a file |
 | Compare two folders | Not available | Side by side, down through subfolders and by contents, with Sync |
