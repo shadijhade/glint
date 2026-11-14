@@ -512,7 +512,7 @@ impl Explorer {
                 cx.emit(ExplorerEvent::MemoryChanged);
             }
             // A folder on disk (not one in an archive) for zoxide too, when history is shared with it.
-            if is_folder_path(&path) && has_listing && !archived && super::model::Prefs::read(cx).zoxide {
+            if is_folder_path(&path) && has_listing && !archived && super::model::Prefs::one(cx, |s| s.zoxide) {
                 self.source.effect(Effect::ZoxideAdd(path.clone()));
             }
             if path == THIS_PC {
@@ -555,7 +555,7 @@ impl Explorer {
 
     /// A folder whose own view is a grid or a list opens as it (`Explorer.tsx`'s effect on `[path, tabId]`).
     fn apply_wanted_view(&mut self, id: TabId, kind: FolderKind, cx: &mut gpui_kit::Context<Self>) {
-        let per_folder = super::model::Prefs::read(cx).per_folder_views;
+        let per_folder = super::model::Prefs::one(cx, |s| s.per_folder_views);
         let Some(tab) = self.tabs.get(&id) else {
             return;
         };
