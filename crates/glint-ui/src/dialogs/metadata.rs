@@ -364,6 +364,7 @@ impl MetadataDialog {
     }
 
     /// Where the run stands.
+    #[cfg(test)]
     pub fn run_state(&self) -> &Run {
         &self.run
     }
@@ -374,6 +375,7 @@ impl MetadataDialog {
     }
 
     /// The boxes: the date and time to set, the hours and the minutes to move by.
+    #[cfg(test)]
     pub fn date_inputs(&self) -> (&Entity<InputState>, &Entity<InputState>, &Entity<InputState>) {
         (&self.when, &self.hours, &self.minutes)
     }

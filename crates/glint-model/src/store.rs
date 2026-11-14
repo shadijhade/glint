@@ -954,6 +954,7 @@ impl AppState {
     }
 
     /// Forgets one search.
+    #[cfg(test)]
     pub fn remove_from_history(&mut self, query: &str, path: &str) {
         self.history.retain(|h| h.query != query || h.path != path);
     }

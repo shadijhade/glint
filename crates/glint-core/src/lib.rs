@@ -41,7 +41,6 @@ pub mod jq;
 // (window/app module, rewritten for GPUI) mod jumplist;
 // (window/app module, rewritten for GPUI) mod launch;
 pub mod locks;
-pub mod markdown;
 pub mod mcp;
 pub mod meaning;
 pub mod metadata;

@@ -434,6 +434,7 @@ pub fn type_label(entry: &FileEntry) -> String {
 }
 
 /// What the preview pane can show for a file.
+#[cfg(test)]
 pub fn preview_kind(entry: &FileEntry) -> Option<PreviewKind> {
     kind_of(entry).preview
 }

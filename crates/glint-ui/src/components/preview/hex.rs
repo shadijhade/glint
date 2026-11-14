@@ -859,11 +859,13 @@ pub fn core_pe_source() -> PeSource {
 }
 
 /// The extensions of programs and libraries that have a PE header (`PE_EXTS`).
+#[cfg(test)]
 const PE_EXTS: [&str; 11] = [
     "exe", "dll", "sys", "ocx", "drv", "cpl", "scr", "efi", "pyd", "node", "mui",
 ];
 
 /// Whether the file is one the program preview shows (`isPeCandidate`): a program or library, by its extension.
+#[cfg(test)]
 pub fn is_pe_candidate(path: &str) -> bool {
     PE_EXTS.contains(&super::text::ext_of(path).as_str())
 }

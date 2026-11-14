@@ -245,17 +245,13 @@ impl TerminalPane {
         self.open
     }
 
-    /// Whether any terminal exists (shown or not).
-    pub fn has_tabs(&self) -> bool {
-        !self.tabs.is_empty()
-    }
-
     /// Whether the pane draws anything: it is open and has a tab.
     pub fn visible(&self) -> bool {
         self.open && !self.tabs.is_empty()
     }
 
     /// How many terminals there are.
+    #[cfg(test)]
     pub fn tab_count(&self) -> usize {
         self.tabs.len()
     }

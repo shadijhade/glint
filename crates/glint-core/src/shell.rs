@@ -168,11 +168,6 @@ pub async fn clipboard_get_files(window: Window) -> Result<Option<ClipboardFiles
     on_main(&window, move || imp::clipboard_files(owner)).await
 }
 
-/// The text on the clipboard, if it holds any (the terminal pastes it).
-pub async fn clipboard_text(window: Window) -> Result<Option<String>, String> {
-    let owner = owner(&window);
-    on_main(&window, move || imp::clipboard_text(owner)).await
-}
 
 /// What can be pasted as a file when the clipboard holds no files.
 pub enum Clip {
@@ -761,17 +756,6 @@ mod imp {
     const CF_DIB: u32 = 8;
     const CF_DIBV5: u32 = 17;
 
-    pub fn clipboard_text(owner: isize) -> Result<Option<String>, String> {
-        unsafe {
-            if IsClipboardFormatAvailable(CF_UNICODETEXT).is_err() {
-                return Ok(None);
-            }
-            open_clipboard(owner)?;
-            let text = unicode_text();
-            let _ = CloseClipboard();
-            Ok(text)
-        }
-    }
 
     /// The clipboard's text (it's open), up to its NUL and never past its memory block, whatever it holds.
     unsafe fn unicode_text() -> Option<String> {
@@ -1527,9 +1511,6 @@ mod imp {
         Ok(None)
     }
 
-    pub fn clipboard_text(_: isize) -> Result<Option<String>, String> {
-        Ok(None)
-    }
 
     pub fn clipboard_content(_: isize) -> Result<Option<Clip>, String> {
         Ok(None)

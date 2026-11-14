@@ -99,6 +99,7 @@ impl Explorer {
     }
 
     /// Escape in the rename box: closes it, renaming nothing. The active tab's.
+    #[cfg(test)]
     pub fn cancel_rename(&mut self, cx: &mut Context<Self>) {
         let id = self.active_tab_id();
         self.cancel_rename_in(id, cx);
@@ -116,6 +117,7 @@ impl Explorer {
     /// Enter in the rename box: renames the item being renamed to `name` (`renameEntry`) and selects it under its
     /// new name. The active tab's. Resolves whether the item was renamed.
     #[must_use = "dropping the task stops waiting for it; `.detach()` it to let it run"]
+    #[cfg(test)]
     pub fn commit_rename(&mut self, name: &str, cx: &mut Context<Self>) -> Task<bool> {
         let id = self.active_tab_id();
         self.commit_rename_in(id, name, cx)

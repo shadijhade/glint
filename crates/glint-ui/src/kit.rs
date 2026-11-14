@@ -296,15 +296,6 @@ pub trait Logical: Styled + Sized {
         }
     }
 
-    /// Children of a column sit at the end edge.
-    fn align_end(self) -> Self {
-        if i18n::is_rtl() {
-            self.items_start()
-        } else {
-            self.items_end()
-        }
-    }
-
     /// Text starts at the start edge.
     fn text_start(self) -> Self {
         if i18n::is_rtl() {

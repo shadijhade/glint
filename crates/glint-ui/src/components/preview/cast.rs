@@ -235,6 +235,7 @@ impl CastView {
     }
 
     /// Whether it is playing.
+    #[cfg(test)]
     pub fn is_playing(&self) -> bool {
         self.playing
     }
@@ -245,6 +246,7 @@ impl CastView {
     }
 
     /// Whether everything asked of the background task has been done (tests wait for this).
+    #[cfg(test)]
     pub fn settled(&self) -> bool {
         self.pending == 0
     }

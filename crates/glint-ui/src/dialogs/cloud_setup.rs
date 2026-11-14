@@ -457,6 +457,7 @@ impl Setup {
     }
 
     /// Whether the connection was handed over.
+    #[cfg(test)]
     pub fn is_done(&self) -> bool {
         self.done
     }

@@ -489,6 +489,7 @@ impl SettingsView {
     }
 
     /// The section marked on the left, by its id.
+    #[cfg(test)]
     pub fn current_section_name(&self) -> &'static str {
         NAV[self.current_section().min(NAV.len() - 1)]
     }

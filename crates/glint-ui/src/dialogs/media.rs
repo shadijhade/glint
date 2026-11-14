@@ -494,18 +494,15 @@ impl MediaDialog {
     }
 
     /// Where the run stands.
+    #[cfg(test)]
     pub fn run_state(&self) -> &Run {
         &self.run
     }
 
     /// The "Part" boxes of a GIF: from and to.
+    #[cfg(test)]
     pub fn range_inputs(&self) -> (&Entity<InputState>, &Entity<InputState>) {
         (&self.from, &self.to)
-    }
-
-    /// The megabytes box of "Fit under a size".
-    pub fn megabytes_input(&self) -> &Entity<InputState> {
-        &self.mb
     }
 
     /// The chooser of where results go.

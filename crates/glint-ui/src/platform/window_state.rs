@@ -248,16 +248,6 @@ static MAXIMIZE: AtomicBool = AtomicBool::new(false);
 
 // ---- Placement: the window ---------------------------------------------------------------------------
 
-/// Puts the main window back where it was, or fits it to the screen the first time. Call it right after the
-/// window opens, and before it is shown if it can start hidden (the tray). `data` is Glint's local data folder
-/// (see [`data_dir`]). Safe to call on a window that is already visible: it is then placed and maximized at
-/// once instead of at [`show_window`].
-pub fn restore_window(window: &gpui_kit::Window, data: &Path) {
-    if let Some(hwnd) = crate::core_bridge::hwnd_of(window) {
-        restore_hwnd(hwnd, data);
-    }
-}
-
 /// [`restore_window`] for a bare handle.
 pub fn restore_hwnd(hwnd: windows::Win32::Foundation::HWND, data: &Path) {
     // A secondary window isn't put where the main window was.
@@ -275,24 +265,9 @@ pub fn place_secondary(hwnd: windows::Win32::Foundation::HWND, size: Option<(i32
     imp::place_secondary(hwnd, size, at);
 }
 
-/// Shows the main window: maximized the first time, if it was when it was put away.
-pub fn show_window(window: &gpui_kit::Window) {
-    if let Some(hwnd) = crate::core_bridge::hwnd_of(window) {
-        show_hwnd(hwnd);
-    }
-}
-
 /// [`show_window`] for a bare handle.
 pub fn show_hwnd(hwnd: windows::Win32::Foundation::HWND) {
     imp::show(hwnd, MAXIMIZE.swap(false, Ordering::SeqCst));
-}
-
-/// Keeps the window's place (as it closes, or goes to the tray, or the app quits). A hidden window's was kept as
-/// it hid, so one that isn't visible is left alone. Does nothing before [`restore_window`] named the folder.
-pub fn save_window(window: &gpui_kit::Window) {
-    if let Some(hwnd) = crate::core_bridge::hwnd_of(window) {
-        save_hwnd(hwnd);
-    }
 }
 
 /// [`save_window`] for a bare handle (the quit path may only have the handle).
@@ -538,31 +513,12 @@ pub fn taskbar_progress(window: &gpui_kit::Window, state: ProgressState, complet
     }
 }
 
-/// Back, Forward and Up under the taskbar button's preview, for the folder shown: each greyed out where it
-/// can't go. Call on the UI thread whenever the folder or its history changes; clicks arrive on
-/// [`thumb_button_events`].
-pub fn set_thumb_buttons(window: &gpui_kit::Window, back: bool, forward: bool, up: bool) {
-    if crate::platform::secondary::is_secondary() {
-        return;
-    }
-    if let Some(hwnd) = crate::core_bridge::hwnd_of(window) {
-        imp::thumb_buttons(hwnd, [back, forward, up]);
-    }
-}
-
 /// [`set_thumb_buttons`] for a bare handle (the start-up glue posts it, outside GPUI's callbacks).
 pub fn set_thumb_buttons_hwnd(hwnd: windows::Win32::Foundation::HWND, back: bool, forward: bool, up: bool) {
     if crate::platform::secondary::is_secondary() {
         return;
     }
     imp::thumb_buttons(hwnd, [back, forward, up]);
-}
-
-/// Takes the preview's buttons' message handling off the window (when it closes).
-pub fn remove_thumb_buttons(window: &gpui_kit::Window) {
-    if let Some(hwnd) = crate::core_bridge::hwnd_of(window) {
-        imp::remove_thumb_buttons(hwnd);
-    }
 }
 
 mod imp {
@@ -1021,14 +977,6 @@ mod imp {
             }
         }
         show_thumbs(hwnd);
-    }
-
-    pub fn remove_thumb_buttons(hwnd: HWND) {
-        // SAFETY: removing the subclass this module set (a missing one is a harmless failure).
-        unsafe {
-            let _ = RemoveWindowSubclass(hwnd, Some(thumb_messages), SUBCLASS);
-        }
-        forget_thumbs();
     }
 
     fn forget_thumbs() {

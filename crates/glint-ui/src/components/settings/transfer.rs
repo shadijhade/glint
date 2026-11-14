@@ -109,6 +109,7 @@ impl Transfer {
     }
 
     /// The parts ticked in the file offered, in order.
+    #[cfg(test)]
     pub fn ticked(&self) -> Vec<Part> {
         match &self.incoming {
             Some(incoming) => ALL_PARTS.into_iter().filter(|p| incoming.parts.contains(p)).collect(),
@@ -117,6 +118,7 @@ impl Transfer {
     }
 
     /// Whether a file is on offer.
+    #[cfg(test)]
     pub fn offering(&self) -> bool {
         self.incoming.is_some()
     }

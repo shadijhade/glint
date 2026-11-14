@@ -321,6 +321,7 @@ impl ConvertDialog {
     }
 
     /// Where the run stands.
+    #[cfg(test)]
     pub fn run_state(&self, cx: &App) -> Run {
         self.run.read(cx).state().clone()
     }
@@ -331,6 +332,7 @@ impl ConvertDialog {
     }
 
     /// The quality box.
+    #[cfg(test)]
     pub fn quality_field(&self) -> &Entity<NumberField> {
         &self.quality
     }

@@ -431,6 +431,7 @@ impl Sharing {
     }
 
     /// Where Receive puts what comes (empty before it was opened).
+    #[cfg(test)]
     pub fn into_folder(&self) -> &str {
         &self.into
     }
@@ -930,6 +931,7 @@ pub fn shared(cx: &mut App) -> Entity<Sharing> {
 }
 
 /// Installs `model` as the shared one (tests use a model with a fake backend).
+#[cfg(test)]
 pub fn set_shared(model: Entity<Sharing>, cx: &mut App) {
     install(&model, cx);
     cx.set_global(SharedSharing(model));
@@ -1056,6 +1058,7 @@ impl ShareDialog {
     }
 
     /// The box the ticket is pasted into.
+    #[cfg(test)]
     pub fn ticket_input(&self) -> &Entity<TextareaState> {
         &self.ticket
     }

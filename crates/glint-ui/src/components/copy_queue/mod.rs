@@ -275,6 +275,7 @@ impl CopyQueue {
 
     /// Queues a copy or a move of `sources` into `dest` and shows the panel (`queueFiles`). If core refuses
     /// ("can't go into itself", not a folder) the answer is [`CopyQueueEvent::NotQueued`].
+    #[cfg(test)]
     pub fn queue_files(
         &mut self,
         kind: JobKind,

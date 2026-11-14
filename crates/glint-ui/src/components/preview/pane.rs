@@ -270,6 +270,7 @@ impl PreviewPane {
     }
 
     /// The item's preview, when one item is shown.
+    #[cfg(test)]
     pub fn entry_view(&self) -> Option<&Entity<EntryView>> {
         self.view.as_ref()
     }

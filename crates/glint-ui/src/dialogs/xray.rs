@@ -524,11 +524,6 @@ impl XRayDialog {
         }
     }
 
-    /// The pasted checksum.
-    pub fn expected_text(&self, cx: &App) -> String {
-        self.expected.read(cx).value().to_string()
-    }
-
     fn card() -> Div {
         col().gap(space(2.5))
     }

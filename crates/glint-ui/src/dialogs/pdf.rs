@@ -462,6 +462,7 @@ impl PdfDialog {
     }
 
     /// Where the run stands.
+    #[cfg(test)]
     pub fn run_state(&self, cx: &App) -> Run {
         self.run.read(cx).state().clone()
     }
@@ -477,11 +478,13 @@ impl PdfDialog {
     }
 
     /// The pages box.
+    #[cfg(test)]
     pub fn pages_input(&self) -> &Entity<InputState> {
         &self.pages
     }
 
     /// The merged PDF's name box.
+    #[cfg(test)]
     pub fn name_input(&self) -> &Entity<InputState> {
         &self.name
     }
@@ -492,13 +495,9 @@ impl PdfDialog {
     }
 
     /// The second password box.
+    #[cfg(test)]
     pub fn again_input(&self) -> &Entity<InputState> {
         &self.again
-    }
-
-    /// The stamp's text box.
-    pub fn text_input(&self) -> &Entity<InputState> {
-        &self.text
     }
 
     /// The task for what is chosen (`task`).

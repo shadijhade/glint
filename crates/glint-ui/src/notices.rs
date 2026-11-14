@@ -351,6 +351,7 @@ struct ServiceChecked;
 impl Global for ServiceChecked {}
 
 /// Makes the service update read from `source` instead of glint-core (tests).
+#[cfg(test)]
 pub fn init_service_with(cx: &mut App, source: ServiceSource) {
     cx.set_global(SharedService(source));
 }

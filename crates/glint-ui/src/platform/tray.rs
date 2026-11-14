@@ -30,9 +30,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use windows::core::{w, HSTRING, PCWSTR};
 use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::System::Registry::{
-    RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ,
-};
+use windows::Win32::System::Registry::{RegDeleteKeyValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ};
+#[cfg(test)]
+use windows::Win32::System::Registry::{RegGetValueW, RRF_RT_REG_SZ};
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS, MOD_NOREPEAT};
 use windows::Win32::UI::Shell::{
@@ -467,6 +467,7 @@ pub fn set_hotkey(shortcut: Option<&str>) -> Result<(), String> {
 /// What `quick_configure` did: Settings → Quick search. Keeps running in the tray as `tray_icon` says, and the
 /// shortcut (`None`: off). The tray goes first, as before; an error from the shortcut still leaves the tray set.
 /// UI thread.
+#[cfg(test)]
 pub fn configure(shortcut: Option<&str>, tray_icon: bool) -> Result<(), String> {
     if crate::platform::secondary::is_secondary() {
         return Ok(());
@@ -508,11 +509,6 @@ pub fn set_start_with_windows(enabled: bool) -> Result<(), String> {
     } else {
         delete_run(RUN_KEY, RUN_NAME)
     }
-}
-
-/// Whether the Run key starts Glint at sign-in (not the Store copy's task, which only Windows can tell).
-pub fn run_key_enabled() -> bool {
-    read_run(RUN_KEY, RUN_NAME).is_some()
 }
 
 /// The Run value: the exe, quoted, and `--tray` so it starts hidden.
@@ -587,6 +583,7 @@ fn delete_run(key: &str, name: &str) -> Result<(), String> {
 }
 
 /// A string value, if there is one.
+#[cfg(test)]
 fn read_run(key: &str, name: &str) -> Option<String> {
     let (key, name) = (HSTRING::from(key), HSTRING::from(name));
     let mut size = 0u32;
