@@ -1,5 +1,5 @@
-//! Glint's engine, moved from src-tauri (see docs/gpui/STANDARDS.md section 6): everything that isn't a
-//! window. Tauri is gone; `host` stands in for the little of it the modules used.
+//! Glint's engine: everything that isn't a window. Until 0.10 this was the Tauri app's src-tauri; `host` stands in
+//! for the little of Tauri the modules used.
 
 pub mod host;
 pub mod access;
