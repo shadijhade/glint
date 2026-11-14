@@ -1380,7 +1380,7 @@ impl Workspace {
 
     /// "Properties" on an item: Windows' own dialog, which runs beside the window.
     fn show_properties(path: String, cx: &mut App) {
-        let Some(main) = cx.global::<core_bridge::Core>().app.get_webview_window(MAIN) else {
+        let Some(main) = cx.global::<core_bridge::Core>().app.window(MAIN) else {
             return;
         };
         let shown = core_bridge::run(glint_core::shell::show_properties(main, path));

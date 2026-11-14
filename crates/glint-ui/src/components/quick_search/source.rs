@@ -195,7 +195,7 @@ impl Source for CoreSource {
     }
 
     fn open(&self, path: String) -> Fut<Result<Option<String>, String>> {
-        let Some(window) = self.app.get_webview_window(super::window::LABEL) else {
+        let Some(window) = self.app.window(super::window::LABEL) else {
             return Box::pin(async { Err("Quick Search has no window to open it from".to_string()) });
         };
         let running = core_bridge::run(glint_core::shell::open_item(window, path));

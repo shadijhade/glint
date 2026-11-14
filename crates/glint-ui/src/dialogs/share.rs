@@ -122,8 +122,8 @@ impl Backend for CoreBackend {
     }
     fn windows_share(&self, paths: Vec<String>) -> Fut<()> {
         let window = self.app.as_ref().and_then(|app| {
-            app.get_webview_window(crate::workspace::MAIN)
-                .or_else(|| app.webview_windows().into_values().next())
+            app.window(crate::workspace::MAIN)
+                .or_else(|| app.windows().into_values().next())
         });
         match window {
             // glint-core runs the flyout on the UI thread's message pump (`on_main`), not in a GPUI callback.

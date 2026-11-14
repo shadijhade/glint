@@ -562,7 +562,7 @@ pub fn drag_out(
     use glint_core::host::Manager as _;
     let window = cx
         .try_global::<core_bridge::Core>()
-        .and_then(|core| core.app.get_webview_window(label));
+        .and_then(|core| core.app.window(label));
     async move {
         let window = window.ok_or_else(|| "this window isn't registered with core".to_string())?;
         core_bridge::run(glint_core::shell::start_drag(window, paths, Some(copy_only))).await?

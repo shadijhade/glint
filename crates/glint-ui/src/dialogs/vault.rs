@@ -68,7 +68,7 @@ impl Backend for CoreBackend {
         output: Output,
         progress: glint_core::host::ipc::Channel<Progress>,
     ) -> Fut<Report> {
-        let Some(window) = self.app.get_webview_window(crate::workspace::MAIN) else {
+        let Some(window) = self.app.window(crate::workspace::MAIN) else {
             return Box::pin(async { Err(t!("Glint's window isn't open").to_string()) });
         };
         let joined = core_bridge::run(glint_core::vault::vault_run(window, files, task, output, progress));

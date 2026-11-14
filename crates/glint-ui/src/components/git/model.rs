@@ -166,7 +166,7 @@ impl Source for CoreGit {
         let app = self.app.clone();
         glint_core::host::async_runtime::spawn(async move {
             let (Some(window), Some(state)) = (
-                app.get_webview_window(crate::workspace::MAIN),
+                app.window(crate::workspace::MAIN),
                 app.try_state::<glint_core::git::RepoWatcher>(),
             ) else {
                 return;

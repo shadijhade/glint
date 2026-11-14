@@ -234,8 +234,8 @@ impl CoreSource {
     /// The window shell dialogs and watchers belong to: the main window, else any.
     fn window(&self) -> Option<Window> {
         self.app
-            .get_webview_window(crate::workspace::MAIN)
-            .or_else(|| self.app.webview_windows().into_values().next())
+            .window(crate::workspace::MAIN)
+            .or_else(|| self.app.windows().into_values().next())
     }
 }
 
