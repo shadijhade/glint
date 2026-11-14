@@ -35,6 +35,28 @@ static SYNTAXES: LazyLock<SyntaxSet> = LazyLock::new(two_face::syntax::extra_new
 const SYNC_PARSE_MAX_BYTES: usize = 64 * 1024;
 const PARSE_DEBOUNCE: Duration = Duration::from_millis(150);
 
+/// Glint: a highlighter's first text (a file just opened) is parsed at once only
+/// up to this size, about 4 ms of Rust. A larger one has its first lines parsed
+/// at once and the whole in the background straight away: parsing runs at about
+/// 57 µs a line, so a 61 KB file held the frame that showed it for 82-120 ms.
+const FIRST_SYNC_MAX_BYTES: usize = 4 * 1024;
+
+/// Glint: the syntaxes parsed before in this process. A syntax's regexes compile
+/// on its first parse (about 35 ms more, measured), so a language's first file
+/// is parsed wholly in the background.
+static WARM: LazyLock<std::sync::Mutex<std::collections::HashSet<usize>>> =
+    LazyLock::new(Default::default);
+
+fn key_of(syntax: &SyntaxReference) -> usize {
+    syntax as *const SyntaxReference as usize
+}
+
+fn is_warm(syntax: &SyntaxReference) -> bool {
+    WARM.lock()
+        .map(|warm| warm.contains(&key_of(syntax)))
+        .unwrap_or(false)
+}
+
 /// Highlight names, ordered and non-overlapping.
 type Highlights = Vec<(Range<usize>, &'static str)>;
 
@@ -139,6 +161,9 @@ fn parse(syntax: &SyntaxReference, text: &str) -> Highlights {
             );
         }
         offset += line.len();
+    }
+    if let Ok(mut warm) = WARM.lock() {
+        warm.insert(key_of(syntax));
     }
     highlights
 }
@@ -320,12 +345,29 @@ fn shift(highlights: &mut Highlights, edit: &InputEdit) {
     });
 }
 
+/// Glint: the start of `text` up to `max` bytes, cut after a line's end (or at
+/// `max` when the first line is longer), for the part of a new document parsed
+/// at once.
+fn head_of(text: &str, max: usize) -> &str {
+    if text.len() <= max {
+        return text;
+    }
+    let mut end = max;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let end = text[..end].rfind('\n').map_or(end, |at| at + 1);
+    &text[..end]
+}
+
 struct SyntectInputHighlighter {
     language: SharedString,
     syntax: &'static SyntaxReference,
     highlights: Rc<RefCell<Highlights>>,
     folds: Rc<RefCell<Vec<FoldRange>>>,
     parse_task: Option<Task<()>>,
+    /// Glint: whether a text was given before (see `FIRST_SYNC_MAX_BYTES`).
+    parsed: bool,
 }
 
 impl SyntectInputHighlighter {
@@ -336,7 +378,46 @@ impl SyntectInputHighlighter {
             highlights: Rc::default(),
             folds: Rc::default(),
             parse_task: None,
+            parsed: false,
         }
+    }
+
+    /// Parses `text` on a background thread after `debounce`, then shows it.
+    /// Replacing the task drops the previous one, which cancels a parse still
+    /// waiting out its debounce.
+    fn parse_in_background(
+        &mut self,
+        text: Rope,
+        folding: bool,
+        debounce: Duration,
+        window: &mut gpui::Window,
+        cx: &mut gpui::Context<EditorState>,
+    ) {
+        let syntax = self.syntax;
+        let highlights = self.highlights.clone();
+        let folds = self.folds.clone();
+        self.parse_task = Some(cx.spawn_in(window, async move |entity, cx| {
+            if !debounce.is_zero() {
+                cx.background_executor().timer(debounce).await;
+            }
+            let (parsed, folded) = cx
+                .background_executor()
+                .spawn(async move {
+                    let text = text.to_string();
+                    let folded = if folding {
+                        brace_fold_ranges(&text)
+                    } else {
+                        Vec::new()
+                    };
+                    (parse(syntax, &text), folded)
+                })
+                .await;
+            *highlights.borrow_mut() = parsed;
+            *folds.borrow_mut() = folded.clone();
+            let _ = entity.update(cx, |state, cx| {
+                state.apply_highlighter_fold_candidates(folded, cx);
+            });
+        }));
     }
 }
 
@@ -357,6 +438,23 @@ impl InputHighlighter for SyntectInputHighlighter {
             shift(&mut self.highlights.borrow_mut(), &edit);
         }
 
+        let first = !std::mem::replace(&mut self.parsed, true);
+        if first {
+            let warm = is_warm(self.syntax);
+            if !warm || text.len() > FIRST_SYNC_MAX_BYTES {
+                // Glint: a file just opened shows its first lines in color at
+                // once (a language's first file: none) and the rest when the
+                // background parse lands.
+                if warm {
+                    let whole = text.to_string();
+                    *self.highlights.borrow_mut() =
+                        parse(self.syntax, head_of(&whole, FIRST_SYNC_MAX_BYTES));
+                }
+                self.parse_in_background(text.clone(), folding, Duration::ZERO, window, cx);
+                return;
+            }
+        }
+
         if text.len() <= SYNC_PARSE_MAX_BYTES {
             // Syntect has no incremental mode: a small document is reparsed
             // whole, which is quicker than any bookkeeping to avoid it.
@@ -371,32 +469,7 @@ impl InputHighlighter for SyntectInputHighlighter {
             return;
         }
 
-        let syntax = self.syntax;
-        let highlights = self.highlights.clone();
-        let folds = self.folds.clone();
-        let text = text.clone();
-        // Replacing the task drops the previous one, which cancels a parse
-        // still waiting out its debounce.
-        self.parse_task = Some(cx.spawn_in(window, async move |entity, cx| {
-            cx.background_executor().timer(PARSE_DEBOUNCE).await;
-            let (parsed, folded) = cx
-                .background_executor()
-                .spawn(async move {
-                    let text = text.to_string();
-                    let folded = if folding {
-                        brace_fold_ranges(&text)
-                    } else {
-                        Vec::new()
-                    };
-                    (parse(syntax, &text), folded)
-                })
-                .await;
-            *highlights.borrow_mut() = parsed;
-            *folds.borrow_mut() = folded.clone();
-            let _ = entity.update(cx, |state, cx| {
-                state.apply_highlighter_fold_candidates(folded, cx);
-            });
-        }));
+        self.parse_in_background(text.clone(), folding, PARSE_DEBOUNCE, window, cx);
     }
 
     fn styles(
@@ -571,6 +644,16 @@ mod tests {
             },
         );
         assert_eq!(highlights, vec![(0..2, "keyword"), (11..13, "number")]);
+    }
+
+    #[test]
+    fn a_new_documents_head_ends_after_a_line() {
+        assert_eq!(head_of("short\n", 4096), "short\n");
+        assert_eq!(head_of("one\ntwo\nthree\n", 9), "one\ntwo\n");
+        // A first line longer than the head is cut where the head ends, on a
+        // character's boundary.
+        assert_eq!(head_of("abcdef", 4), "abcd");
+        assert_eq!(head_of("ab\u{e9}cd", 3), "ab");
     }
 
     #[test]
