@@ -68,6 +68,8 @@ enum Answer {
 
 struct Job {
     view: Mutex<JobView>,
+    /// Its `made` has been told: the first event that says it finished carries it, and only that one.
+    made_told: AtomicBool,
     paused: AtomicBool,
     cancelled: AtomicBool,
     /// The answer for every name taken from now on, once one's said "for the rest too".
@@ -133,10 +135,43 @@ fn tell(now: bool) {
     }
     let (app, views) = {
         let q = queue();
-        (q.app.clone(), q.jobs.iter().map(|j| j.view().clone()).collect::<Vec<_>>())
+        (q.app.clone(), q.jobs.iter().map(|j| told(j)).collect::<Vec<_>>())
     };
     if let Some(app) = app {
         let _ = app.emit("copy-queue", views);
+    }
+}
+
+/// A job as an event tells it. What it made (an entry for every item copied or moved so far) is what the app
+/// offers Undo for once the job has finished: it goes in the first event that says so and in no other, where it
+/// made every event of a big copy longer than the one before.
+fn told(job: &Job) -> JobView {
+    let view = job.view();
+    let finished = matches!(view.state.as_str(), "done" | "cancelled" | "failed");
+    let made = if finished && !job.made_told.swap(true, Ordering::SeqCst) {
+        view.made.clone()
+    } else {
+        Vec::new()
+    };
+    JobView {
+        id: view.id,
+        kind: view.kind.clone(),
+        sources: view.sources.clone(),
+        dest: view.dest.clone(),
+        verify: view.verify,
+        state: view.state.clone(),
+        files: view.files,
+        files_done: view.files_done,
+        bytes: view.bytes,
+        bytes_done: view.bytes_done,
+        verified: view.verified,
+        current: view.current.clone(),
+        speed: view.speed,
+        started: view.started,
+        finished: view.finished,
+        errors: view.errors.clone(),
+        conflict: view.conflict.clone(),
+        made,
     }
 }
 
@@ -171,6 +206,7 @@ fn add(app: AppHandle, kind: String, sources: Vec<String>, dest: String, verify:
         let view = JobView { id, kind, sources, dest, verify, state: "waiting".into(), ..Default::default() };
         q.jobs.push(Arc::new(Job {
             view: Mutex::new(view),
+            made_told: AtomicBool::new(false),
             paused: AtomicBool::new(false),
             cancelled: AtomicBool::new(false),
             always: Mutex::new(None),
@@ -806,6 +842,7 @@ mod tests {
     fn quiet() -> Job {
         Job {
             view: Mutex::new(JobView::default()),
+            made_told: AtomicBool::new(false),
             paused: AtomicBool::new(false),
             cancelled: AtomicBool::new(false),
             always: Mutex::new(None),
@@ -813,6 +850,20 @@ mod tests {
             wake: Condvar::new(),
             woken: Mutex::new(()),
         }
+    }
+
+    #[test]
+    fn what_a_job_made_is_told_once_when_it_has_finished() {
+        let job = quiet();
+        job.set(|view| {
+            view.state = "copying".into();
+            view.made = vec![Made { from: "C:\\a".into(), to: "D:\\a".into() }];
+        });
+        assert!(told(&job).made.is_empty(), "not while it copies");
+        job.set(|view| view.state = "done".into());
+        assert_eq!(told(&job).made.len(), 1, "the first word that it's done");
+        assert!(told(&job).made.is_empty(), "and never again");
+        assert_eq!(told(&job).state, "done");
     }
 
     #[test]
