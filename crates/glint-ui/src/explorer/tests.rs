@@ -883,6 +883,26 @@ fn the_sort_in_settings_orders_the_rows_and_follows_changes(cx: &mut TestAppCont
 }
 
 #[gpui_kit::test]
+fn opening_a_folder_tells_of_the_memory_once(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let h = harness(cx);
+    standard_disk(&h.disk);
+    assert!(h.go(cx, "C:\\a"));
+    h.events.borrow_mut().clear();
+    assert!(h.go(cx, "C:\\b"));
+    let told = h
+        .events
+        .borrow()
+        .iter()
+        .filter(|e| **e == ExplorerEvent::MemoryChanged)
+        .count();
+    assert_eq!(told, 1, "the last folder and the visit in one event");
+    h.read(cx, |e| {
+        assert_eq!(e.memory().app().last_folder.as_deref(), Some("C:\\b"))
+    });
+}
+
+#[gpui_kit::test]
 fn a_folders_own_view_beats_its_kinds_which_beats_settings(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let h = harness(cx);

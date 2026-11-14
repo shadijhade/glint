@@ -492,13 +492,19 @@ impl Explorer {
             self.flash_paths(selected.clone(), cx);
         }
         if !same {
+            // The last folder and the visit are told together: each MemoryChanged copies the explorer's part of the
+            // saved state into the app's and wakes everything that shows it.
+            let mut remembered = false;
             if id == self.active_tab_id() {
                 self.editing_address = false;
-                self.remember_last_folder(&path, cx);
+                remembered = self.memory.set_last_folder(&path);
             }
             self.sync_watches();
             if is_folder_path(&path) {
                 self.memory.record_visit(&path, super::model::now_ms());
+                remembered = true;
+            }
+            if remembered {
                 cx.emit(ExplorerEvent::MemoryChanged);
             }
             // A folder on disk (not one in an archive) for zoxide too, when history is shared with it.

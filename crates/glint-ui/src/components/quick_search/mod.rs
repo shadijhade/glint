@@ -197,8 +197,13 @@ impl QuickSearch {
         // A click elsewhere (the window loses the foreground) puts it away; gaining it gives the box the keyboard.
         subscriptions
             .push(cx.observe_window_activation(window, |this, window, cx| this.activation_changed(window, cx)));
-        // A folder opened in the main window shows in the list at once.
-        subscriptions.push(cx.observe_global::<persistence::Persistence>(|this, cx| this.refresh_recent(cx)));
+        // A folder opened in the main window shows in the list at once. While the window is hidden nothing is
+        // worked out: `shown` works the list out as the window comes up.
+        subscriptions.push(cx.observe_global::<persistence::Persistence>(|this, cx| {
+            if is_shown() {
+                this.refresh_recent(cx);
+            }
+        }));
         let mut view = Self {
             source,
             input,
