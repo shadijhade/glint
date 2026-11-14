@@ -19,6 +19,8 @@ static WARM: LazyLock<Mutex<HashMap<String, Warm>>> = LazyLock::new(Default::def
 type Warm = (Vec<u8>, f64);
 /// The most folders read ahead at start.
 const MOST: usize = 4;
+/// How long a listing read ahead waits to be taken: one no tab took by then never will be.
+const KEPT_FOR: std::time::Duration = std::time::Duration::from_secs(60);
 
 fn hint_file() -> Option<PathBuf> {
     crate::tools::local_data_dir().map(|d| d.join("startup.json"))
@@ -36,6 +38,9 @@ pub fn begin() {
                 WARM.lock().unwrap_or_else(|e| e.into_inner()).insert(path.to_lowercase(), warm);
             }
         }
+        // A listing of a tab that was never opened isn't kept for the rest of the run.
+        std::thread::sleep(KEPT_FOR);
+        WARM.lock().unwrap_or_else(|e| e.into_inner()).clear();
     });
 }
 
