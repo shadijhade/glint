@@ -912,11 +912,11 @@ fn a_searchs_results_with_lines_found_inside_files_and_the_disk_map_have_every_c
         .map(|(_, request)| request.id.clone())
         .expect("the files' contents are searched too");
     let inside = files.join("src\\main.rs");
-    for (kind, lines) in [
-        ("data", vec![inside_match(&inside, "// notes for later\n", 3, 3, 8)]),
-        ("finished", Vec::new()),
+    for said in [
+        glint_core::TextSaid::Matches(vec![inside_match(&inside, "// notes for later\n", 3, 3, 8)]),
+        glint_core::TextSaid::Finished,
     ] {
-        let event = inside_event(&id, kind, lines);
+        let event = inside_event(&id, said);
         visual.update(|_, cx| explorer::explorer(cx).update(cx, |e, cx| e.inside_heard(&event, cx)));
         settle(&mut visual);
     }
