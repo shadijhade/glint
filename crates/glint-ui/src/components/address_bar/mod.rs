@@ -132,6 +132,28 @@ fn place_name(name: &str) -> String {
 }
 
 impl Seen {
+    /// Whether [`Seen::of`] would give what this is, worked out without making it (no crumbs, no names): the
+    /// explorer changes on every key press, and the bar is told each time. A remote's crumbs take its connection's
+    /// name, which can change under the same path, so a remote is always made again.
+    fn still(&self, explorer: &Explorer) -> bool {
+        let tab = explorer.active_tab();
+        let path = tab.map_or(THIS_PC, |t| t.path.as_str());
+        self.tab == explorer.active_tab_id()
+            && self.path == path
+            && !is_remote_path(path)
+            && self.back == tab.is_some_and(|t| !t.back.is_empty())
+            && self.forward == tab.is_some_and(|t| !t.forward.is_empty())
+            && self.loading == tab.is_some_and(|t| t.loading)
+            && self.filter == tab.map_or("", |t| t.filter.as_str())
+            && self.has_find == tab.is_some_and(|t| t.find.is_some())
+            && self.editing == explorer.editing_address
+            && self.dual == explorer.is_dual()
+            && self.pane == explorer.active_pane()
+            && Arc::ptr_eq(&self.drives, explorer.drives())
+            && Arc::ptr_eq(&self.known, explorer.known_folders())
+            && self.rtl == i18n::is_rtl()
+    }
+
     fn of(explorer: &Explorer) -> Seen {
         let tab = explorer.active_tab();
         let path = tab.map_or(THIS_PC.to_string(), |t| t.path.clone());
@@ -385,11 +407,15 @@ impl AddressBar {
     /// The explorer changed: take what the bar draws, notice a path being asked for, keep the search box in
     /// step with the tab's filter.
     fn sync(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let seen = Seen::of(self.explorer.read(cx));
-        let tab_changed = seen.tab != self.seen.tab;
-        let changed = seen != *self.seen;
-        if changed {
-            self.seen = Rc::new(seen);
+        let mut tab_changed = false;
+        let mut changed = false;
+        if !self.seen.still(self.explorer.read(cx)) {
+            let seen = Seen::of(self.explorer.read(cx));
+            tab_changed = seen.tab != self.seen.tab;
+            changed = seen != *self.seen;
+            if changed {
+                self.seen = Rc::new(seen);
+            }
         }
         if tab_changed {
             // Another tab has its own filter, and a menu or pending search belongs to the one before.
