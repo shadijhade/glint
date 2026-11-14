@@ -9,21 +9,32 @@
 //!
 //! Both run on worker threads of their own (each a COM apartment), never on the UI thread or the async
 //! runtime. Requests wait in their tab's lane and are dropped when that tab scrolls them out of view or
-//! moves on, and every thumbnail goes back to the webview as one binary buffer, kept in memory here too.
+//! moves on, and every thumbnail goes back as its pixels, kept in memory here too (shared, not copied).
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Once};
 use crate::host::async_runtime::{channel, Sender};
-use crate::host::ipc::Response;
 use crate::host::State;
 
-/// What an answer holds (its first byte).
-const FOUND: u8 = 0;
-const NONE: u8 = 1;
-/// Where a thumbnail came from (its second byte).
-const FROM_MEMORY: u8 = 0;
-const FROM_CACHE: u8 = 1;
-const MADE: u8 = 2;
+/// Where a thumbnail came from: Glint's memory of it, Windows' cache, or made from the file just now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ThumbFrom {
+    Memory,
+    Cache,
+    Made,
+}
+
+/// A thumbnail as asked for: its pixels, or that the file has none.
+#[derive(Clone, Debug)]
+pub struct Thumbnail {
+    /// The picture; None when the file has none.
+    pub pixels: Option<Arc<Pixels>>,
+    /// For none: the file has none for good, rather than none yet (an online-only file, a handler that timed out).
+    pub lasting: bool,
+    pub from: ThumbFrom,
+    /// Milliseconds the shell spent on it.
+    pub ms: f32,
+}
 
 /// Thumbnails kept here once made: about 800 tiles' worth at the grid's medium size and 100 at its
 /// biggest, some ten screenfuls either way (bigger tiles, fewer on screen). The UI keeps the latest ones
@@ -51,32 +62,30 @@ struct Key {
     bytes: u64,
 }
 
-/// An answer: a BMP, or that the file has none.
+/// An answer: the pixels, or that the file has none.
 #[derive(Debug)]
 struct Thumb {
-    found: bool,
+    pixels: Option<Arc<Pixels>>,
     /// For none: that the file has none for good, rather than none yet (an online-only file Windows
     /// has no thumbnail of, or a handler that timed out): only those are remembered.
     lasting: bool,
-    source: u8,
+    source: ThumbFrom,
     /// Milliseconds the shell spent on it.
     ms: f32,
-    bmp: Vec<u8>,
 }
 
 impl Thumb {
     fn none(lasting: bool) -> Arc<Thumb> {
-        Arc::new(Thumb { found: false, lasting, source: FROM_CACHE, ms: 0.0, bmp: Vec::new() })
+        Arc::new(Thumb { pixels: None, lasting, source: ThumbFrom::Cache, ms: 0.0 })
     }
 
-    /// The answer as the UI reads it: an 8-byte header (u8 FOUND or NONE, u8 where it came from, u8 1
-    /// when it's for good, u8 0, f32 milliseconds the shell took), then the BMP.
-    fn encode(&self, source: u8) -> Vec<u8> {
-        let mut out = Vec::with_capacity(8 + self.bmp.len());
-        out.extend([if self.found { FOUND } else { NONE }, source, self.lasting as u8, 0]);
-        out.extend(self.ms.to_le_bytes());
-        out.extend(&self.bmp);
-        out
+    fn found(pixels: Pixels, source: ThumbFrom, ms: f32) -> Thumb {
+        Thumb { pixels: Some(Arc::new(pixels)), lasting: true, source, ms }
+    }
+
+    /// The answer, saying where it came from this time.
+    fn answer(&self, from: ThumbFrom) -> Thumbnail {
+        Thumbnail { pixels: self.pixels.clone(), lasting: self.lasting, from, ms: self.ms }
     }
 }
 
@@ -111,11 +120,11 @@ struct Job<R> {
 /// What a worker found.
 #[derive(Debug)]
 enum Outcome {
-    Found { bmp: Vec<u8>, ms: f32 },
+    Found { pixels: Pixels, ms: f32 },
     /// Windows doesn't have it cached (only from a lookup).
     NotCached,
     /// Windows has it cached only at a smaller size (only from a lookup; see `from_smaller_size`).
-    Smaller { bmp: Vec<u8>, ms: f32 },
+    Smaller { pixels: Pixels, ms: f32 },
     /// No thumbnail; `lasting` unless it may work next time (a timeout, a busy surrogate).
     Nothing { lasting: bool },
 }
@@ -144,7 +153,7 @@ impl Memory {
     }
 
     fn cost(thumb: &Thumb) -> usize {
-        thumb.bmp.len() + 128
+        thumb.pixels.as_ref().map_or(0, |pixels| pixels.bgra.len()) + 128
     }
 
     fn get(&mut self, key: &Key) -> Option<Arc<Thumb>> {
@@ -221,23 +230,23 @@ impl<R> Queue<R> {
         let job = self.jobs.get_mut(key)?;
         job.running = false;
         if matches!(outcome, Outcome::NotCached | Outcome::Smaller { .. }) && !job.cached_only && !job.waiters.is_empty() {
-            if let Outcome::Smaller { bmp, ms } = outcome {
-                job.smaller = Some(Thumb { found: true, lasting: true, source: FROM_CACHE, ms, bmp });
+            if let Outcome::Smaller { pixels, ms } = outcome {
+                job.smaller = Some(Thumb::found(pixels, ThumbFrom::Cache, ms));
             }
             job.phase = Phase::Make;
             self.makes.push_back(key.clone());
             return None;
         }
         let thumb = match outcome {
-            Outcome::Found { bmp, ms } => {
-                let source = if job.phase == Phase::Lookup { FROM_CACHE } else { MADE };
-                let thumb = Arc::new(Thumb { found: true, lasting: true, source, ms, bmp });
+            Outcome::Found { pixels, ms } => {
+                let source = if job.phase == Phase::Lookup { ThumbFrom::Cache } else { ThumbFrom::Made };
+                let thumb = Arc::new(Thumb::found(pixels, source, ms));
                 self.memory.put(key.clone(), thumb.clone());
                 thumb
             }
             // Online-only files stay as they are until Windows has a thumbnail of them (making one would
             // download the file), at whatever size it has; that's not kept for once they're downloaded.
-            Outcome::Smaller { bmp, ms } => Arc::new(Thumb { found: true, lasting: true, source: FROM_CACHE, ms, bmp }),
+            Outcome::Smaller { pixels, ms } => Arc::new(Thumb::found(pixels, ThumbFrom::Cache, ms)),
             Outcome::NotCached => Thumb::none(false),
             // Making a bigger one failed: the smaller one Windows has will do (kept unless it may work later).
             Outcome::Nothing { lasting } => match job.smaller.take() {
@@ -372,15 +381,15 @@ fn work(shared: &Shared, makes: bool) {
     }
 }
 
-/// One item's thumbnail at `size` device pixels (the UI asks for a few steps, so sizes are shared),
-/// as binary: see `Thumb::encode`. `modified` and `bytes` are the file's, from its listing, so a file
+/// One item's thumbnail at `size` device pixels (the UI asks for a few steps, so sizes are shared).
+/// `modified` and `bytes` are the file's, from its listing, so a file
 /// that changed isn't answered from memory. Waits in `lane` (the tab asking) as request `seq`, until
 /// it's answered or dropped ("cancelled").
 #[allow(clippy::too_many_arguments)]
-pub async fn thumbnail(state: State<'_, Thumbs>, path: String, size: u32, modified: f64, bytes: f64, cached_only: bool, lane: String, seq: u32) -> Result<Response, String> {
+pub async fn thumbnail(state: State<'_, Thumbs>, path: String, size: u32, modified: f64, bytes: f64, cached_only: bool, lane: String, seq: u32) -> Result<Thumbnail, String> {
     let key = Key { path: path.to_lowercase(), size: size.clamp(16, 1024), modified: modified as i64, bytes: bytes as u64 };
     if !cfg!(windows) {
-        return Ok(Response::new(Thumb::none(true).encode(FROM_CACHE)));
+        return Ok(Thumb::none(true).answer(ThumbFrom::Cache));
     }
     // A file in an archive: the thumbnail is made of a temp copy of it (extracted once, within a
     // budget); one that can't be extracted has none.
@@ -388,11 +397,11 @@ pub async fn thumbnail(state: State<'_, Thumbs>, path: String, size: u32, modifi
     // again next time); nothing else there has one.
     if crate::remote::is_remote(&path) {
         if !crate::remote::thumbnails_allowed(&path) {
-            return Ok(Response::new(Thumb::none(false).encode(FROM_CACHE)));
+            return Ok(Thumb::none(false).answer(ThumbFrom::Cache));
         }
         return match crate::remote::thumbnail_source(&path, bytes as u64).await {
             Some(copy) => Box::pin(thumbnail(state, copy, size, modified, bytes, cached_only, lane, seq)).await,
-            None => Ok(Response::new(Thumb::none(true).encode(FROM_CACHE))),
+            None => Ok(Thumb::none(true).answer(ThumbFrom::Cache)),
         };
     }
     // A file in an archive is drawn from a copy of it; the check looks at the disk, so it's made on a blocking thread,
@@ -402,7 +411,7 @@ pub async fn thumbnail(state: State<'_, Thumbs>, path: String, size: u32, modifi
         match crate::fsx::blocking(move || Ok(crate::archive::thumbnail_source(&asked))).await? {
             None => path,
             Some(Ok(copy)) => copy,
-            Some(Err(_)) => return Ok(Response::new(Thumb::none(true).encode(FROM_CACHE))),
+            Some(Err(_)) => return Ok(Thumb::none(true).answer(ThumbFrom::Cache)),
         }
     } else {
         path
@@ -411,7 +420,7 @@ pub async fn thumbnail(state: State<'_, Thumbs>, path: String, size: u32, modifi
     let mut answer = {
         let mut queue = shared.lock();
         if let Some(thumb) = queue.memory.get(&key) {
-            return Ok(Response::new(thumb.encode(FROM_MEMORY)));
+            return Ok(thumb.answer(ThumbFrom::Memory));
         }
         let (reply, answer) = channel(1);
         queue.want(key, path, cached_only, Waiter { lane, seq, reply });
@@ -421,7 +430,7 @@ pub async fn thumbnail(state: State<'_, Thumbs>, path: String, size: u32, modifi
     start(shared);
     shared.work.notify_one();
     match answer.recv().await {
-        Some(thumb) => Ok(Response::new(thumb.encode(thumb.source))),
+        Some(thumb) => Ok(thumb.answer(thumb.source)),
         None => Err("cancelled".into()),
     }
 }
@@ -436,44 +445,21 @@ pub async fn cancel_thumbnails(state: State<'_, Thumbs>, lane: String, paths: Op
     Ok(())
 }
 
-/// A thumbnail's pixels: top-down rows of straight-alpha BGRA.
+/// A thumbnail's pixels: top-down rows of straight-alpha BGRA, as the window draws them.
+#[derive(Clone, PartialEq)]
 pub struct Pixels {
     pub width: u32,
     pub height: u32,
     pub bgra: Vec<u8>,
 }
 
-/// A 32-bit BMP of `pixels` (BITMAPV4HEADER with an alpha mask, top-down), which the webview shows as
-/// it is: no compression to spend time on, and nothing to decode but a header.
-pub fn encode_bmp(pixels: &Pixels) -> Vec<u8> {
-    const HEADERS: u32 = 14 + 108;
-    let image = pixels.width * pixels.height * 4;
-    let mut out = Vec::with_capacity((HEADERS + image) as usize);
-    out.extend(b"BM");
-    out.extend((HEADERS + image).to_le_bytes());
-    out.extend([0u8; 4]);
-    out.extend(HEADERS.to_le_bytes());
-    out.extend(108u32.to_le_bytes());
-    out.extend((pixels.width as i32).to_le_bytes());
-    // Negative: rows run top to bottom.
-    out.extend((-(pixels.height as i32)).to_le_bytes());
-    out.extend(1u16.to_le_bytes());
-    out.extend(32u16.to_le_bytes());
-    // BI_BITFIELDS, so the masks below (alpha included) are what counts.
-    out.extend(3u32.to_le_bytes());
-    out.extend(image.to_le_bytes());
-    out.extend(2835i32.to_le_bytes());
-    out.extend(2835i32.to_le_bytes());
-    out.extend([0u8; 8]);
-    for mask in [0x00FF_0000u32, 0x0000_FF00, 0x0000_00FF, 0xFF00_0000] {
-        out.extend(mask.to_le_bytes());
+impl std::fmt::Debug for Pixels {
+    /// The size, not every byte.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Pixels({} x {}, {} bytes)", self.width, self.height, self.bgra.len())
     }
-    // LCS_sRGB, then endpoints and gamma, unused for it.
-    out.extend(0x7352_4742u32.to_le_bytes());
-    out.extend([0u8; 48]);
-    out.extend(&pixels.bgra);
-    out
 }
+
 
 /// The shell hands out premultiplied alpha (what AlphaBlend wants), and some thumbnails, JPEGs' among
 /// them, with alpha 0 everywhere. Turns either into what a browser shows: straight alpha, opaque when
@@ -500,7 +486,7 @@ pub fn straighten_alpha(bgra: &mut [u8]) {
 
 #[cfg(windows)]
 mod win {
-    use super::{encode_bmp, from_smaller_size, straighten_alpha, Outcome, Pixels};
+    use super::{from_smaller_size, straighten_alpha, Outcome, Pixels};
     use std::collections::HashMap;
     use std::path::Path;
     use std::sync::{Mutex, OnceLock};
@@ -567,7 +553,7 @@ mod win {
                 return Outcome::NotCached;
             }
             return match pdf_page(path, size) {
-                Ok(bmp) => Outcome::Found { bmp, ms: (started.elapsed().as_secs_f64() * 1000.0) as f32 },
+                Ok(pixels) => Outcome::Found { pixels, ms: (started.elapsed().as_secs_f64() * 1000.0) as f32 },
                 Err(_) => Outcome::Nothing { lasting: true },
             };
         }
@@ -580,8 +566,8 @@ mod win {
         };
         let ms = || (started.elapsed().as_secs_f64() * 1000.0) as f32;
         match made {
-            Ok(pixels) if lookup && from_smaller_size(pixels.width, pixels.height, size) => Outcome::Smaller { bmp: encode_bmp(&pixels), ms: ms() },
-            Ok(pixels) => Outcome::Found { bmp: encode_bmp(&pixels), ms: ms() },
+            Ok(pixels) if lookup && from_smaller_size(pixels.width, pixels.height, size) => Outcome::Smaller { pixels, ms: ms() },
+            Ok(pixels) => Outcome::Found { pixels, ms: ms() },
             Err(e) if lookup && NOT_CACHED.contains(&e.code()) => Outcome::NotCached,
             Err(e) => Outcome::Nothing { lasting: !TRANSIENT.contains(&e.code()) },
         }
@@ -667,19 +653,19 @@ mod win {
         own
     }
 
-    /// A PDF's first page, `size` pixels on its long side, as a BMP: drawn by Windows' own PDF renderer
-    /// (Windows.Data.Pdf, Edge's), on a thread of the multithreaded apartment, where its async calls are
-    /// waited for. A PDF that needs a password to open has none.
-    pub fn pdf_page(path: &str, size: u32) -> windows::core::Result<Vec<u8>> {
+    /// A PDF's first page, `size` pixels on its long side: drawn by Windows' own PDF renderer (Windows.Data.Pdf,
+    /// Edge's) and read back to pixels by its own decoder, on a thread of the multithreaded apartment, where their
+    /// async calls are waited for. A PDF that needs a password to open has none.
+    pub fn pdf_page(path: &str, size: u32) -> windows::core::Result<Pixels> {
         use windows::Data::Pdf::{PdfDocument, PdfPageRenderOptions};
-        use windows::Graphics::Imaging::BitmapEncoder;
+        use windows::Graphics::Imaging::{BitmapAlphaMode, BitmapDecoder, BitmapEncoder, BitmapPixelFormat};
         use windows::Storage::StorageFile;
-        use windows::Storage::Streams::{DataReader, InMemoryRandomAccessStream};
+        use windows::Storage::Streams::{Buffer, DataReader, InMemoryRandomAccessStream};
         use windows::Win32::System::Com::COINIT_MULTITHREADED;
         let path = HSTRING::from(path);
         std::thread::scope(|scope| {
             scope
-                .spawn(|| -> windows::core::Result<Vec<u8>> {
+                .spawn(|| -> windows::core::Result<Pixels> {
                     unsafe {
                         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
                     }
@@ -694,12 +680,14 @@ mod win {
                     options.SetBitmapEncoderId(BitmapEncoder::BmpEncoderId()?)?;
                     let stream = InMemoryRandomAccessStream::new()?;
                     page.RenderWithOptionsToStreamAsync(&stream, &options)?.join()?;
-                    let length = stream.Size()? as u32;
-                    let reader = DataReader::CreateDataReader(&stream.GetInputStreamAt(0)?)?;
-                    reader.LoadAsync(length)?.join()?;
-                    let mut bmp = vec![0u8; length as usize];
-                    reader.ReadBytes(&mut bmp)?;
-                    Ok(bmp)
+                    stream.Seek(0)?;
+                    let bitmap = BitmapDecoder::CreateAsync(&stream)?.join()?.GetSoftwareBitmapConvertedAsync(BitmapPixelFormat::Bgra8, BitmapAlphaMode::Straight)?.join()?;
+                    let (width, height) = (bitmap.PixelWidth()? as u32, bitmap.PixelHeight()? as u32);
+                    let buffer = Buffer::Create(width * height * 4)?;
+                    bitmap.CopyToBuffer(&buffer)?;
+                    let mut bgra = vec![0u8; buffer.Length()? as usize];
+                    DataReader::FromBuffer(&buffer)?.ReadBytes(&mut bgra)?;
+                    Ok(Pixels { width, height, bgra })
                 })
                 .join()
                 .unwrap_or_else(|_| Err(E_FAIL.into()))
@@ -779,8 +767,17 @@ mod tests {
         Waiter { lane: lane.into(), seq, reply }
     }
 
+    /// A picture of one "pixel" of these bytes.
+    fn px(bgra: &[u8]) -> Pixels {
+        Pixels { width: 1, height: 1, bgra: bgra.to_vec() }
+    }
+
+    fn bgra(thumb: &Thumb) -> &[u8] {
+        thumb.pixels.as_deref().map_or(&[][..], |p| p.bgra.as_slice())
+    }
+
     fn found() -> Outcome {
-        Outcome::Found { bmp: vec![1, 2, 3], ms: 1.5 }
+        Outcome::Found { pixels: px(&[1, 2, 3]), ms: 1.5 }
     }
 
     #[test]
@@ -798,11 +795,11 @@ mod tests {
         let make = q.next(true).unwrap();
         assert_eq!((make.path.as_str(), make.phase), ("A", Phase::Make));
         let (thumb, replies) = q.finish(&make.key, found()).unwrap();
-        assert_eq!((thumb.found, thumb.source, replies), (true, MADE, vec![10]));
+        assert_eq!((thumb.pixels.is_some(), thumb.source, replies), (true, ThumbFrom::Made, vec![10]));
         // Kept in memory for the next request.
-        assert_eq!(q.memory.get(&key("a")).unwrap().bmp, [1, 2, 3]);
+        assert_eq!(bgra(&q.memory.get(&key("a")).unwrap()), [1, 2, 3]);
         let (thumb, replies) = q.finish(&b.key, found()).unwrap();
-        assert_eq!((thumb.source, replies), (FROM_CACHE, vec![20]));
+        assert_eq!((thumb.source, replies), (ThumbFrom::Cache, vec![20]));
         assert!(q.jobs.is_empty());
     }
 
@@ -856,30 +853,30 @@ mod tests {
         q.want(key("a"), "A".into(), false, waiter("tab1", 1, 1));
         let task = q.next(false).unwrap();
         // Windows has the list's little one: a tile's is made at its own size.
-        assert!(q.finish(&task.key, Outcome::Smaller { bmp: vec![9], ms: 1.0 }).is_none(), "on to be made");
+        assert!(q.finish(&task.key, Outcome::Smaller { pixels: px(&[9]), ms: 1.0 }).is_none(), "on to be made");
         let make = q.next(true).unwrap();
         assert_eq!((make.path.as_str(), make.phase), ("A", Phase::Make));
         let (thumb, replies) = q.finish(&make.key, found()).unwrap();
-        assert_eq!((thumb.source, thumb.bmp.as_slice(), replies), (MADE, &[1, 2, 3][..], vec![1]));
+        assert_eq!((thumb.source, bgra(&thumb), replies), (ThumbFrom::Made, &[1, 2, 3][..], vec![1]));
         // Making it fails: the smaller one will do.
         q.want(key("b"), "B".into(), false, waiter("tab1", 2, 2));
         let task = q.next(false).unwrap();
-        q.finish(&task.key, Outcome::Smaller { bmp: vec![9], ms: 1.0 });
+        q.finish(&task.key, Outcome::Smaller { pixels: px(&[9]), ms: 1.0 });
         let make = q.next(true).unwrap();
         let (thumb, _) = q.finish(&make.key, Outcome::Nothing { lasting: true }).unwrap();
-        assert_eq!((thumb.found, thumb.source, thumb.bmp.as_slice()), (true, FROM_CACHE, &[9][..]));
-        assert!(q.memory.get(&key("b")).is_some_and(|t| t.found));
+        assert_eq!((thumb.pixels.is_some(), thumb.source, bgra(&thumb)), (true, ThumbFrom::Cache, &[9][..]));
+        assert!(q.memory.get(&key("b")).is_some_and(|t| t.pixels.is_some()));
         // Online-only files aren't made (that would download them), and nothing's kept for later.
         q.want(key("c"), "C".into(), true, waiter("tab1", 3, 3));
         let task = q.next(false).unwrap();
-        let (thumb, replies) = q.finish(&task.key, Outcome::Smaller { bmp: vec![9], ms: 1.0 }).unwrap();
-        assert_eq!((thumb.found, thumb.source, replies), (true, FROM_CACHE, vec![3]));
+        let (thumb, replies) = q.finish(&task.key, Outcome::Smaller { pixels: px(&[9]), ms: 1.0 }).unwrap();
+        assert_eq!((thumb.pixels.is_some(), thumb.source, replies), (true, ThumbFrom::Cache, vec![3]));
         assert!(q.memory.get(&key("c")).is_none());
         // Nobody waits any more: not kept either, so the next tile to ask has it made.
         q.want(key("d"), "D".into(), false, waiter("tab1", 4, 4));
         let task = q.next(false).unwrap();
         q.cancel("tab1", None, 4);
-        assert_eq!(q.finish(&task.key, Outcome::Smaller { bmp: vec![9], ms: 1.0 }).map(|(_, r)| r), Some(vec![]));
+        assert_eq!(q.finish(&task.key, Outcome::Smaller { pixels: px(&[9]), ms: 1.0 }).map(|(_, r)| r), Some(vec![]));
         assert!(q.memory.get(&key("d")).is_none());
     }
 
@@ -897,7 +894,7 @@ mod tests {
         q.want(key("a"), "A".into(), true, waiter("tab1", 1, 1));
         let task = q.next(true).unwrap();
         let (thumb, replies) = q.finish(&task.key, Outcome::NotCached).unwrap();
-        assert_eq!((thumb.found, thumb.lasting, replies), (false, false, vec![1]));
+        assert_eq!((thumb.pixels.is_some(), thumb.lasting, replies), (false, false, vec![1]));
         // Not remembered: once the file is downloaded (or Windows has its thumbnail), it's asked again.
         assert!(q.memory.get(&key("a")).is_none());
         // Someone who may download it (the same file, not online-only any more) gets it made.
@@ -913,7 +910,7 @@ mod tests {
         q.want(key("a"), "A".into(), false, waiter("tab1", 1, 1));
         let task = q.next(true).unwrap();
         let (none, _) = q.finish(&task.key, Outcome::Nothing { lasting: true }).unwrap();
-        assert!(none.lasting && !q.memory.get(&key("a")).unwrap().found);
+        assert!(none.lasting && q.memory.get(&key("a")).unwrap().pixels.is_none());
         q.want(key("b"), "B".into(), false, waiter("tab1", 2, 2));
         let task = q.next(true).unwrap();
         let (none, _) = q.finish(&task.key, Outcome::Nothing { lasting: false }).unwrap();
@@ -922,7 +919,7 @@ mod tests {
 
     #[test]
     fn memory_drops_the_least_recently_used() {
-        let thumb = |n: usize| Arc::new(Thumb { found: true, lasting: true, source: MADE, ms: 0.0, bmp: vec![0; n] });
+        let thumb = |n: usize| Arc::new(Thumb::found(px(&vec![0; n]), ThumbFrom::Made, 0.0));
         let mut memory = Memory::new(3 * (100 + 128));
         memory.put(key("a"), thumb(100));
         memory.put(key("b"), thumb(100));
@@ -938,27 +935,14 @@ mod tests {
     }
 
     #[test]
-    fn encodes_answers() {
-        let thumb = Thumb { found: true, lasting: true, source: MADE, ms: 2.5, bmp: vec![b'B', b'M'] };
-        let bytes = thumb.encode(FROM_MEMORY);
-        assert_eq!(&bytes[..4], [FOUND, FROM_MEMORY, 1, 0]);
-        assert_eq!(f32::from_le_bytes(bytes[4..8].try_into().unwrap()), 2.5);
-        assert_eq!(&bytes[8..], b"BM");
-        assert_eq!(Thumb::none(true).encode(FROM_CACHE), [NONE, FROM_CACHE, 1, 0, 0, 0, 0, 0]);
-        // None yet: the UI asks again next time.
-        assert_eq!(Thumb::none(false).encode(FROM_CACHE)[2], 0);
-    }
-
-    #[test]
-    fn encodes_bmps_the_webview_reads() {
-        let bmp = encode_bmp(&Pixels { width: 2, height: 1, bgra: vec![1, 2, 3, 255, 4, 5, 6, 128] });
-        let u32_at = |at: usize| u32::from_le_bytes(bmp[at..at + 4].try_into().unwrap());
-        let i32_at = |at: usize| i32::from_le_bytes(bmp[at..at + 4].try_into().unwrap());
-        assert_eq!(&bmp[..2], b"BM");
-        assert_eq!((u32_at(2) as usize, u32_at(10), u32_at(14)), (bmp.len(), 122, 108));
-        assert_eq!((i32_at(18), i32_at(22), u32_at(30)), (2, -1, 3));
-        assert_eq!((u32_at(54), u32_at(66)), (0x00FF_0000, 0xFF00_0000));
-        assert_eq!(&bmp[122..], [1, 2, 3, 255, 4, 5, 6, 128]);
+    fn answers_share_the_pixels_and_say_where_they_came_from() {
+        let thumb = Thumb::found(px(&[1, 2, 3, 255]), ThumbFrom::Made, 2.5);
+        let answer = thumb.answer(ThumbFrom::Memory);
+        assert_eq!((answer.from, answer.ms, answer.lasting), (ThumbFrom::Memory, 2.5, true));
+        assert!(Arc::ptr_eq(answer.pixels.as_ref().unwrap(), thumb.pixels.as_ref().unwrap()), "shared, not copied");
+        // None yet: the window asks again next time.
+        let none = Thumb::none(false).answer(ThumbFrom::Cache);
+        assert!(none.pixels.is_none() && !none.lasting);
     }
 
     #[test]
@@ -986,9 +970,10 @@ mod tests {
         let wallpaper = r"C:\Windows\Web\Wallpaper\Windows\img0.jpg";
         if std::path::Path::new(wallpaper).exists() {
             let made = win::outcome(wallpaper, 96, false);
-            let Outcome::Found { bmp, .. } = made else { panic!("no thumbnail of {wallpaper}: {made:?}") };
-            let (width, height) = (i32::from_le_bytes(bmp[18..22].try_into().unwrap()), -i32::from_le_bytes(bmp[22..26].try_into().unwrap()));
+            let Outcome::Found { pixels, .. } = made else { panic!("no thumbnail of {wallpaper}: {made:?}") };
+            let (width, height) = (pixels.width, pixels.height);
             assert!(width == 96 && (40..=96).contains(&height), "{width}x{height}");
+            assert_eq!(pixels.bgra.len(), (width * height * 4) as usize);
             assert!(matches!(win::outcome(wallpaper, 96, true), Outcome::Found { .. }), "cached now");
         }
         assert!(matches!(win::outcome(r"C:\Windows\win.ini", 96, false), Outcome::Nothing { lasting: true }));
@@ -1024,14 +1009,17 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("page.pdf");
         std::fs::write(&path, pdf).unwrap();
-        let bmp = win::pdf_page(path.to_str().unwrap(), 96);
+        let page = win::pdf_page(path.to_str().unwrap(), 96);
         let missing = win::pdf_page(dir.join("nope.pdf").to_str().unwrap(), 96);
         let _ = std::fs::remove_dir_all(&dir);
-        let bmp = bmp.unwrap();
-        assert_eq!(&bmp[..2], b"BM");
-        let width = i32::from_le_bytes(bmp[18..22].try_into().unwrap());
-        let height = i32::from_le_bytes(bmp[22..26].try_into().unwrap()).abs();
-        assert_eq!((width, height), (96, 48), "the long side at the size asked, the shape kept");
+        let page = page.unwrap();
+        assert_eq!((page.width, page.height), (96, 48), "the long side at the size asked, the shape kept");
+        assert_eq!(page.bgra.len(), 96 * 48 * 4);
+        let pixel = |x: usize, y: usize| &page.bgra[(y * 96 + x) * 4..][..4];
+        // The page is white, the rectangle on it blue (BGRA, opaque).
+        assert_eq!(pixel(2, 2), [255, 255, 255, 255]);
+        let middle = pixel(48, 24);
+        assert!(middle[0] > 200 && middle[1] < 60 && middle[2] < 60 && middle[3] == 255, "{middle:?}");
         assert!(missing.is_err());
     }
 }

@@ -4114,7 +4114,7 @@ mod tests {
     }
 
     impl thumbnail::ThumbSource for Recorder {
-        fn thumbnail(&self, ask: thumbnail::Ask) -> thumbnail::Fut<Result<Vec<u8>, String>> {
+        fn thumbnail(&self, ask: thumbnail::Ask) -> thumbnail::Fut<Result<thumbnail::Thumbnail, String>> {
             self.asked.borrow_mut().push(ask);
             Box::pin(async { Err("no picture".to_string()) })
         }

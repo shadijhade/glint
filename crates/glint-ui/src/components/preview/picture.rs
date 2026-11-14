@@ -12,7 +12,7 @@
 
 use super::sources::{sources, Sources};
 use super::states::{big_icon, Waiting};
-use crate::components::file_grid::thumbnail::parse_header;
+use crate::components::file_grid::thumbnail::{picture as thumbnail_picture, Thumbnail};
 use crate::explorer;
 use crate::kit::prelude::*;
 use crate::{t, theme};
@@ -248,7 +248,7 @@ impl PictureView {
                     let answer = (sources.thumbnail)(&path, entry.modified, entry.size).await;
                     let from_thumbnail = cx
                         .background_executor()
-                        .spawn(async move { answer.ok().and_then(|bytes| decode_thumbnail(&bytes, renderer)) })
+                        .spawn(async move { answer.ok().and_then(|thumb| decode_thumbnail(&thumb)) })
                         .await;
                     from_thumbnail.ok_or(reason)
                 }
@@ -554,13 +554,8 @@ fn decode_file(path: &str, ext: &str, renderer: gpui_kit::SvgRenderer) -> Result
 }
 
 /// Windows' thumbnail as core answers it (an 8-byte header, then a BMP), decoded.
-fn decode_thumbnail(answer: &[u8], renderer: gpui_kit::SvgRenderer) -> Option<Arc<RenderImage>> {
-    let header = parse_header(answer)?;
-    if !header.found {
-        return None;
-    }
-    let bmp = answer.get(8..)?.to_vec();
-    Image::from_bytes(ImageFormat::Bmp, bmp).to_image_data(renderer).ok()
+fn decode_thumbnail(answer: &Thumbnail) -> Option<Arc<RenderImage>> {
+    answer.pixels.as_deref().and_then(thumbnail_picture)
 }
 
 /// The size a picture of `natural` pixels is drawn at in `area`: its own size, or smaller to fit (`max-h-full

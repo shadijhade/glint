@@ -437,23 +437,22 @@ fn a_breakdown_segment_takes_the_keyboard_and_enter_filters_to_its_kind(cx: &mut
     assert_eq!(names_shown(&setup), ["sub"]);
 }
 
-/// A 1 x 1 picture: a top-down, 32-bit BMP, as core's answer carries it after its 8-byte header.
-const ONE_PIXEL: [u8; 58] = [
-    b'B', b'M', 58, 0, 0, 0, 0, 0, 0, 0, 54, 0, 0, 0, // file header: size 58, pixels at 54
-    40, 0, 0, 0, 1, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF, 1, 0, 32, 0, // info: 1 x -1, one plane, 32 bits
-    0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, // no compression, 4 bytes, no resolution or colours
-    0, 0, 255, 255, // the pixel: blue, opaque
-];
-
 /// Answers every thumbnail with a picture from core's memory, as core does for a file it has just made.
 struct Pictures;
 
 impl ThumbSource for Pictures {
-    fn thumbnail(&self, _ask: Ask) -> Fut<Result<Vec<u8>, String>> {
-        // Found (byte 0 is 0), from memory (byte 1 is 0), not lasting, and no time spent by the shell.
-        let mut answer = vec![0, 0, 0, 0, 0, 0, 0, 0];
-        answer.extend_from_slice(&ONE_PIXEL);
+    fn thumbnail(&self, _ask: Ask) -> Fut<Result<glint_core::thumbs::Thumbnail, String>> {
+        // Found, from memory, not lasting, and no time spent by the shell.
+        let answer = glint_core::thumbs::Thumbnail {
+            pixels: Some(std::sync::Arc::new(glint_core::thumbs::Pixels {
+                width: 1,
+                height: 1,
+                bgra: vec![0, 0, 255, 255],
+            })),
+            lasting: false,
+            from: glint_core::thumbs::ThumbFrom::Memory,
+            ms: 0.0,
+        };
         Box::pin(async move { Ok(answer) })
     }
 
