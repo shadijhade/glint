@@ -294,7 +294,8 @@ fn line_number(n: usize) -> i32 {
 
 /// `rows` (sorted) grouped `by`: group order first, the sort within each.
 ///
-/// NOTE(port): the TypeScript's `rows` hold the caller's own entry objects; here they are copies.
+/// NOTE(port): the TypeScript's `rows` hold the caller's own entry objects; here they are copies. The list itself
+/// uses [`group_order`], which copies nothing.
 pub fn group_rows(
     rows: &[FileEntry],
     by: GroupBy,
@@ -302,6 +303,39 @@ pub fn group_rows(
     size_of: Option<&SizeOf>,
     git: Option<&GitMarks>,
 ) -> Grouped {
+    let GroupedOrder {
+        order,
+        headers,
+        lines,
+        line_of,
+    } = group_order(rows, by, now, size_of, git);
+    Grouped {
+        rows: order.iter().filter_map(|&at| rows.get(at).cloned()).collect(),
+        headers,
+        lines,
+        line_of,
+    }
+}
+
+/// [`group_rows`] as an order: `order` holds indexes into `rows`, so a list of thousands is grouped without copying
+/// an entry.
+pub struct GroupedOrder {
+    pub order: Vec<usize>,
+    pub headers: Vec<GroupHeader>,
+    /// Each list line: a row's place in `order`, or (as -1 - i) header i.
+    pub lines: Vec<i32>,
+    /// Each row's line, by its place in `order`.
+    pub line_of: Vec<i32>,
+}
+
+/// `rows` (sorted, entries or references to them) grouped `by`, as an order ([`GroupedOrder`]).
+pub fn group_order<E: std::borrow::Borrow<FileEntry>>(
+    rows: &[E],
+    by: GroupBy,
+    now: i64,
+    size_of: Option<&SizeOf>,
+    git: Option<&GitMarks>,
+) -> GroupedOrder {
     let bounds = if by == GroupBy::Date {
         DateBounds::new(now)
     } else {
@@ -310,7 +344,7 @@ pub fn group_rows(
     let mut keyed: Vec<(usize, Group)> = rows
         .iter()
         .enumerate()
-        .map(|(i, entry)| (i, group_in(entry, by, bounds.as_ref(), size_of, git)))
+        .map(|(i, entry)| (i, group_in(entry.borrow(), by, bounds.as_ref(), size_of, git)))
         .collect();
     keyed.sort_by(|(i, a), (j, b)| {
         a.rank
@@ -318,20 +352,22 @@ pub fn group_rows(
             .then_with(|| js_label_order(&a.label, &b.label))
             .then_with(|| i.cmp(j))
     });
-    let mut ordered: Vec<FileEntry> = Vec::with_capacity(rows.len());
+    let mut order: Vec<usize> = Vec::with_capacity(rows.len());
     let mut headers: Vec<GroupHeader> = Vec::new();
     let mut lines: Vec<i32> = Vec::with_capacity(rows.len());
     let mut line_of: Vec<i32> = vec![0; rows.len()];
     let mut current: Option<&str> = None;
     for (i, group) in &keyed {
-        let Some(entry) = rows.get(*i) else { continue };
+        let Some(entry) = rows.get(*i).map(|entry| entry.borrow()) else {
+            continue;
+        };
         if current != Some(group.label.as_ref()) {
             current = Some(group.label.as_ref());
             headers.push(GroupHeader {
                 label: group.label.to_string(),
                 count: 0,
                 size: 0,
-                first: ordered.len(),
+                first: order.len(),
             });
             lines.push(-line_number(headers.len()));
         }
@@ -344,14 +380,14 @@ pub fn group_rows(
                 entry.size
             };
         }
-        if let Some(slot) = line_of.get_mut(ordered.len()) {
+        if let Some(slot) = line_of.get_mut(order.len()) {
             *slot = line_number(lines.len());
         }
-        lines.push(line_number(ordered.len()));
-        ordered.push(entry.clone());
+        lines.push(line_number(order.len()));
+        order.push(*i);
     }
-    Grouped {
-        rows: ordered,
+    GroupedOrder {
+        order,
         headers,
         lines,
         line_of,
@@ -401,6 +437,31 @@ mod tests {
 
     fn label(e: &FileEntry, by: GroupBy) -> String {
         group_of(e, by, now(), None, None).label.into_owned()
+    }
+
+    #[test]
+    fn the_order_over_references_is_the_grouping_of_the_entries() {
+        let now = now();
+        let rows = vec![
+            entry("old.txt", now - 400 * DAY),
+            entry("today.png", now - HOUR),
+            entry("docs/", now - DAY),
+            entry("b.png", now - 2 * HOUR),
+        ];
+        let refs: Vec<&FileEntry> = rows.iter().collect();
+        for by in [GroupBy::Date, GroupBy::Kind, GroupBy::Type, GroupBy::None] {
+            let copied = group_rows(&rows, by, now, None, None);
+            let ordered = group_order(&refs, by, now, None, None);
+            let names: Vec<&str> = ordered.order.iter().map(|&at| rows[at].name.as_str()).collect();
+            let copied_names: Vec<&str> = copied.rows.iter().map(|r| r.name.as_str()).collect();
+            assert_eq!(names, copied_names, "{by:?}");
+            assert_eq!(
+                (ordered.lines, ordered.line_of),
+                (copied.lines, copied.line_of),
+                "{by:?}"
+            );
+            assert_eq!(ordered.headers.len(), copied.headers.len(), "{by:?}");
+        }
     }
 
     #[test]

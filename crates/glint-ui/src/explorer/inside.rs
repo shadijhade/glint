@@ -483,8 +483,10 @@ impl Explorer {
         self.searching.inside_waiting == 0
     }
 
-    /// The pump, made at the first content search: one event at a time, parsed off the UI thread, its new files
-    /// read through the source, then applied.
+    /// The pump, made at the first content search: the events waiting, parsed off the UI thread, their new files
+    /// read through the source, then applied. Every event that is waiting is taken with the first: each application
+    /// copies the run's lines and rows, so taking them one at a time while they came faster than they were applied
+    /// made a big search's cost grow with the square of what it found.
     fn ensure_inside_pump(&mut self, cx: &mut Context<Self>) {
         if self.searching.inside_events.is_some() {
             return;
@@ -493,29 +495,50 @@ impl Explorer {
         self.searching.inside_events = Some(events);
         let source = self.source.clone();
         cx.spawn(async move |this, cx| {
-            while let Ok(event) = heard.recv().await {
-                let read = cx
+            while let Ok(first) = heard.recv().await {
+                let mut waiting = vec![first];
+                while let Ok(more) = heard.try_recv() {
+                    waiting.push(more);
+                }
+                // One read per run of events of the same search, in order, with how many events it holds.
+                let reads: Vec<(Heard, usize)> = cx
                     .background_spawn(async move {
-                        Heard {
-                            said: parse(&event),
-                            id: event.id,
+                        let mut reads: Vec<(Heard, usize)> = Vec::new();
+                        for event in &waiting {
+                            let said = parse(event);
+                            match reads.last_mut() {
+                                Some((read, count)) if read.id == event.id => {
+                                    read.said.extend(said);
+                                    *count += 1;
+                                }
+                                _ => reads.push((
+                                    Heard {
+                                        said,
+                                        id: event.id.clone(),
+                                    },
+                                    1,
+                                )),
+                            }
                         }
+                        reads
                     })
                     .await;
-                // The files of this batch that have no row yet.
-                let unread = this.update(cx, |this, _| this.inside_unread(&read));
-                let Ok(unread) = unread else { return };
-                let entries = if unread.is_empty() {
-                    Vec::new()
-                } else {
-                    source.entries_of(unread).await
-                };
-                let applied = this.update(cx, |this, cx| {
-                    this.searching.inside_waiting = this.searching.inside_waiting.saturating_sub(1);
-                    this.inside_apply(read, entries, cx);
-                });
-                if applied.is_err() {
-                    return;
+                for (read, count) in reads {
+                    // The files of this batch that have no row yet.
+                    let unread = this.update(cx, |this, _| this.inside_unread(&read));
+                    let Ok(unread) = unread else { return };
+                    let entries = if unread.is_empty() {
+                        Vec::new()
+                    } else {
+                        source.entries_of(unread).await
+                    };
+                    let applied = this.update(cx, |this, cx| {
+                        this.searching.inside_waiting = this.searching.inside_waiting.saturating_sub(count);
+                        this.inside_apply(read, entries, cx);
+                    });
+                    if applied.is_err() {
+                        return;
+                    }
                 }
             }
         })
