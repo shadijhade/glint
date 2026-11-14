@@ -1,6 +1,6 @@
 [package]
 name = "glint-core"
-description = "Glint's engine: file system, search, archives, media, devices... (until 0.10 this was the Tauri app's src-tauri; the window is crates/glint-ui now)"
+description = "Glint's engine: file system, search, archives, media, clouds, tools (the window is crates/glint-ui)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -13,23 +13,23 @@ name = "glint_core"
 
 serde = { version = "1.0", features = ["derive"] }
 # JSON objects keep their keys' order (a package.json's scripts as written, ExifTool's tags as it lists them), as
-# in the app: GPUI turns this on in Glint.exe, and the Tauri build had it too, so tests see what ships.
+# in the app: GPUI turns this on in Glint.exe, so tests see what ships.
 serde_json = { version = "1.0", features = ["preserve_order"] }
 notify = "8"
 shadui-index = { path = "../shadui-index" }
 # The File X-Ray's checksums: RustCrypto's SHA-256 (with the CPU's SHA instructions where it has them)
-# and crc32fast, both already in the build through Tauri and flate2, and BLAKE3, which the duplicate
+# and crc32fast, both already in the build (flate2 brings the latter), and BLAKE3, which the duplicate
 # finder hashes content with too (several times SHA-256's speed, with SIMD).
 sha2 = "0.10"
 rayon = "1.12"
 # Remote connections' URLs (remote/), as reqwest already has them.
 percent-encoding = "2"
 url = "2"
-# SFTP's runs waited on off the async threads (remote/sftp.rs), as Tauri's tokio already has it.
+# The engine's async runtime (host.rs), and SFTP's runs waited on off its threads (remote/sftp.rs).
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "sync", "fs", "io-util", "net"] }
 crc32fast = "1.5"
 blake3 = "1.8"
-# Paste as file: a picture on the clipboard as a PNG (already in the build through Tauri).
+# Paste as file: a picture on the clipboard as a PNG (already in the build through GPUI).
 png = "0.18"
 # Find duplicates' Clone on ReFS and Dev Drives: block clones (FSCTL_DUPLICATE_EXTENTS_TO_FILE), over the
 # windows crate already in the build.
@@ -124,9 +124,6 @@ tar = { version = "0.4", default-features = false }
 lzma-rust2 = { version = "0.22", default-features = false, features = ["std", "xz", "encoder"] }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
-# Without the default `zip` feature: it only unpacks Tauri v1-style .zip updates, and updates here
-# are the NSIS setup.exe itself.
-
 # Downloading the optional tools winget doesn't have (tools.rs): the HTTP client and TLS the updater
 # already brings (rustls with ring), so they add next to nothing.
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "system-proxy", "stream", "json"] }
@@ -134,7 +131,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring"] }
 
 [target.'cfg(windows)'.dependencies]
 
-# Which Windows 11 materials the window can have (appearance.rs); in the build already through Tauri.
+# Which Windows 11 materials the window can have (appearance.rs).
 windows-version = "0.1"
 # What windows' #[implement] expands to (the file engine's progress sink, for Undo); already in the build.
 windows-core = "0.62"
@@ -192,7 +189,7 @@ windows = { version = "0.62", features = [
     "Win32_System_Memory",
     "Win32_System_Ole",
     "Win32_System_Registry",
-    # Tauri switched this on for us (remote/sftp.rs).
+    # The local time (remote/sftp.rs).
     "Win32_System_SystemInformation",
     # Files dragged onto the window: which keys are held (dragdrop.rs).
     "Win32_System_SystemServices",

@@ -1,4 +1,4 @@
-# Glint on GPUI (local branch gpui-migration; never pushed until the migration is done).
+# Glint: a file explorer for Windows, in Rust on GPUI.
 [workspace]
 resolver = "2"
 members = ["crates/glint-model", "crates/glint-core", "crates/glint-ui", "crates/glint", "crates/shadui-index"]
