@@ -419,8 +419,11 @@ pub mod ipc {
 
 /// Tauri's async runtime: one tokio runtime for the core's async work, made on first use.
 pub mod async_runtime {
+    use std::fmt;
     use std::future::Future;
+    use std::pin::Pin;
     use std::sync::LazyLock;
+    use std::task::{Context, Poll};
 
     static RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
         tokio::runtime::Builder::new_multi_thread()
@@ -431,16 +434,74 @@ pub mod async_runtime {
             .expect("the core's async runtime can't start")
     });
 
-    pub type JoinHandle<T> = tokio::task::JoinHandle<T>;
     /// Tauri re-exported tokio's channels here.
     pub use tokio::sync::mpsc::{channel, Receiver, Sender};
+
+    /// Every task runs on tokio as one of two types, a boxed future or a boxed closure, and hands its answer
+    /// back through a one-shot channel: tokio's task code is then compiled twice, not once for each of the
+    /// ~400 call sites' future and closure types (4.7 MB of Glint 0.11's exe was those copies).
+    type Job = Pin<Box<dyn Future<Output = ()> + Send>>;
+    type BlockingJob = Box<dyn FnOnce() + Send>;
+
+    /// A task's answer, awaited as tokio's `JoinHandle` is. Dropping it lets the task run on unwatched.
+    pub struct JoinHandle<T> {
+        /// `None` once it has said the task ended without an answer (a one-shot is never polled again).
+        answer: Option<tokio::sync::oneshot::Receiver<T>>,
+        task: tokio::task::JoinHandle<()>,
+    }
+
+    /// Why a task gave no answer: it panicked (tokio's words, with what the panic said) or was stopped.
+    #[derive(Debug)]
+    pub struct JoinError(String);
+
+    impl fmt::Display for JoinError {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str(&self.0)
+        }
+    }
+
+    impl std::error::Error for JoinError {}
+
+    impl<T> JoinHandle<T> {
+        pub fn is_finished(&self) -> bool {
+            self.task.is_finished()
+        }
+    }
+
+    impl<T> Future for JoinHandle<T> {
+        type Output = Result<T, JoinError>;
+
+        fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            let this = self.get_mut();
+            if let Some(answer) = &mut this.answer {
+                match Pin::new(answer).poll(cx) {
+                    Poll::Ready(Ok(value)) => return Poll::Ready(Ok(value)),
+                    Poll::Pending => return Poll::Pending,
+                    Poll::Ready(Err(_)) => this.answer = None,
+                }
+            }
+            // The answer's sender went unused: the task panicked or was stopped, and its own handle says which.
+            match Pin::new(&mut this.task).poll(cx) {
+                Poll::Ready(Err(error)) => Poll::Ready(Err(JoinError(error.to_string()))),
+                Poll::Ready(Ok(())) => Poll::Ready(Err(JoinError("the task ended without an answer".into()))),
+                Poll::Pending => Poll::Pending,
+            }
+        }
+    }
 
     pub fn spawn<F>(future: F) -> JoinHandle<F::Output>
     where
         F: Future + Send + 'static,
         F::Output: Send + 'static,
     {
-        RUNTIME.spawn(future)
+        let (sender, answer) = tokio::sync::oneshot::channel();
+        let job: Job = Box::pin(async move {
+            let _ = sender.send(future.await);
+        });
+        JoinHandle {
+            answer: Some(answer),
+            task: RUNTIME.spawn(job),
+        }
     }
 
     pub fn spawn_blocking<F, R>(run: F) -> JoinHandle<R>
@@ -448,12 +509,45 @@ pub mod async_runtime {
         F: FnOnce() -> R + Send + 'static,
         R: Send + 'static,
     {
-        RUNTIME.spawn_blocking(run)
+        let (sender, answer) = tokio::sync::oneshot::channel();
+        let job: BlockingJob = Box::new(move || {
+            let _ = sender.send(run());
+        });
+        JoinHandle {
+            answer: Some(answer),
+            task: RUNTIME.spawn_blocking(job),
+        }
     }
 
     /// Runs a future to its end on the calling thread (never call it from inside the runtime).
     pub fn block_on<F: Future>(future: F) -> F::Output {
         RUNTIME.block_on(future)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn tasks_answer_and_a_panic_comes_back_as_an_error() {
+            assert_eq!(block_on(spawn(async { 6 * 7 })).ok(), Some(42));
+            assert_eq!(block_on(spawn_blocking(|| "done")).ok(), Some("done"));
+            let failed = block_on(spawn(async { panic!("boom") as u8 })).unwrap_err().to_string();
+            assert!(failed.contains("panicked"), "{failed}");
+            let failed = block_on(spawn_blocking(|| -> u8 { panic!("boom") }))
+                .unwrap_err()
+                .to_string();
+            assert!(failed.contains("panicked"), "{failed}");
+        }
+
+        #[test]
+        fn a_handle_knows_when_its_task_has_finished() {
+            let (go, wait) = std::sync::mpsc::channel::<()>();
+            let handle = spawn_blocking(move || wait.recv().is_ok());
+            assert!(!handle.is_finished());
+            go.send(()).unwrap();
+            assert_eq!(block_on(handle).ok(), Some(true));
+        }
     }
 
 }

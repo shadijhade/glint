@@ -376,7 +376,7 @@ async fn sftp_fetch(server: &sftp::Server, raw: &str, dest: &Path, size: u64, ti
     let done = Arc::new(AtomicU64::new(0));
     let stop = Arc::new(AtomicBool::new(false));
     let (now, halt) = (done.clone(), stop.clone());
-    let handle = tokio::task::spawn_blocking(move || {
+    let handle = crate::host::async_runtime::spawn_blocking(move || {
         server.download(&files, &|n| {
             now.store(n, Ordering::Relaxed);
             !halt.load(Ordering::Relaxed)
@@ -460,7 +460,7 @@ async fn sftp_prefix(server: &sftp::Server, raw: &str, limit: usize) -> Result<(
     let dest = folder.join("start");
     let want = (limit as u64 + 1).min(item.size);
     let (server, files) = (server.settings(), vec![(raw.to_string(), dest.clone(), item.size)]);
-    let ran = tokio::task::spawn_blocking(move || server.download(&files, &|n| n < want)).await.map_err(|e| e.to_string())?;
+    let ran = crate::host::async_runtime::spawn_blocking(move || server.download(&files, &|n| n < want)).await.map_err(|e| e.to_string())?;
     let mut bytes = Vec::new();
     let read = std::fs::File::open(&dest).and_then(|f| f.take(limit as u64 + 1).read_to_end(&mut bytes));
     extract::remove_tree(&folder);
