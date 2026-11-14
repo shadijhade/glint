@@ -1763,16 +1763,7 @@ impl Workspace {
             .w(self.sidebar_width)
             .pb(SHEET_GAP)
             .child(div().flex_none().px(space(2.)).child(self.tabs.clone()))
-            // The places are drawn again only when they change (the sidebar notifies itself then): every key press
-            // in the files redrew all their rows with the rest of the window. It reads nothing else it isn't told
-            // of; the theme and the keyboard's moves redraw the whole window anyway.
-            .child(
-                div().flex_1().min_h_0().child(
-                    self.sidebar
-                        .clone()
-                        .cached(gpui_kit::StyleRefinement::default().size_full()),
-                ),
-            );
+            .child(div().flex_1().min_h_0().child(self.sidebar.clone()));
         // The dock at the foot of the sheet: the status bar's words at its two ends, and the commands' island
         // over its middle. Each end is told the room it has beside the island (as last drawn), so it says what
         // fits there and nothing of it runs under the island.
