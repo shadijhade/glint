@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Glint: the aware menu and dock (design mock)</title>
+<script src="https://unpkg.com/lucide@0.460.0/dist/umd/lucide.min.js"></script>
+<style>
+  /* The app's own tokens (crates/glint-ui/src/theme.rs), so the mock is judged in the real colors. */
+  :root {
+    --bg: #f4f4f6; --sheet: rgba(255,255,255,.74); --popover: #ffffff; --fg: hsl(240 10% 10%);
+    --muted: hsl(240 4% 40%); --accent: hsla(240,10%,10%,.055); --pressed: hsla(240,10%,10%,.10);
+    --stroke: hsla(240,10%,10%,.09); --border: hsl(240 6% 90%); --primary: #db2777;
+    --glint-from: #f472b6; --glint-to: #c026d3; --danger: hsl(0 72% 51%); --warn: #b45309; --good: #15803d;
+    --shadow: 0 12px 32px rgba(15,15,25,.16), 0 2px 6px rgba(15,15,25,.08);
+    --raised: 0 4px 14px rgba(15,15,25,.10), 0 1px 3px rgba(15,15,25,.08);
+  }
+  :root[data-theme="dark"] {
+    --bg: hsl(240 6% 9%); --sheet: hsla(240,9%,10.5%,.70); --popover: hsl(240 6% 15%); --fg: hsl(240 9% 95.5%);
+    --muted: hsl(240 5% 64.5%); --accent: hsla(240,20%,100%,.07); --pressed: hsla(240,20%,100%,.11);
+    --stroke: hsla(240,20%,100%,.08); --border: hsl(240 5% 18%); --primary: #f472b6;
+    --glint-from: #ff8fd0; --glint-to: #d946ef; --danger: hsl(0 72% 60%); --warn: #fbbf24; --good: #4ade80;
+    --shadow: 0 14px 36px rgba(0,0,0,.5), 0 2px 6px rgba(0,0,0,.35);
+    --raised: 0 4px 14px rgba(0,0,0,.4), 0 1px 3px rgba(0,0,0,.3);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 24px 16px 48px; background: var(--bg); color: var(--fg);
+         font: 14px/1.35 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; }
+  h1 { font-size: 20px; margin: 0 0 4px; } h2 { font-size: 13px; font-weight: 600; color: var(--muted); margin: 28px 0 10px; }
+  p.note { color: var(--muted); font-size: 12px; margin: 0 0 6px; max-width: 78ch; }
+  button.theme { float: right; font: inherit; font-size: 12px; padding: 4px 10px; border-radius: 6px;
+                 border: 1px solid var(--stroke); background: var(--popover); color: var(--fg); cursor: pointer; }
+  .row { display: flex; gap: 20px; flex-wrap: wrap; align-items: flex-start; }
+  i[data-lucide], svg.lucide { width: 16px; height: 16px; flex: none; stroke-width: 2; }
+
+  /* ---- The menu ---- */
+  .menu { width: 304px; padding: 4px; border-radius: 14px; border: 1px solid var(--stroke); background: var(--popover);
+          box-shadow: var(--shadow); }
+  .head { display: grid; grid-template-columns: 40px 1fr; gap: 10px; padding: 8px 8px 9px; align-items: center;
+          border-bottom: 1px solid var(--border); margin-bottom: 4px; }
+  .pic { width: 40px; height: 48px; border-radius: 6px 12px 6px 6px; display: grid; place-items: center; color: #fff; }
+  .pic svg { width: 18px; height: 18px; }
+  .pic.program { background: linear-gradient(160deg, hsl(188 60% 48%), hsl(188 60% 36%)); }
+  .pic.archive { background: linear-gradient(160deg, hsl(36 86% 52%), hsl(36 86% 40%)); }
+  .pic.code { background: linear-gradient(160deg, hsl(150 50% 44%), hsl(150 50% 32%)); }
+  .head .name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .head .facts { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .head .third { display: flex; gap: 4px; align-items: center; height: 20px; margin-top: 3px; overflow: hidden;
+                 font-size: 11px; color: var(--muted); white-space: nowrap; }
+  .badge { display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 7px; border-radius: 999px;
+           font-size: 11px; font-weight: 500; background: var(--accent); color: var(--fg); flex: none; }
+  .badge svg { width: 11px; height: 11px; }
+  .badge.warn { color: var(--warn); background: color-mix(in srgb, var(--warn) 13%, transparent); }
+  .badge.good { color: var(--good); background: color-mix(in srgb, var(--good) 13%, transparent); }
+  .strip { display: flex; gap: 2px; padding: 2px 2px 6px; margin-bottom: 4px; border-bottom: 1px solid var(--border); }
+  .strip span { flex: 1; display: grid; place-items: center; padding: 6px; border-radius: 6px; color: var(--fg); opacity: .85; }
+  .strip span:hover { background: var(--accent); } .strip span.danger { color: var(--danger); opacity: 1; }
+  .heading { display: flex; justify-content: space-between; align-items: center; padding: 6px 8px 4px; font-size: 12px;
+             font-weight: 500; color: var(--muted); }
+  .heading svg { width: 12px; height: 12px; color: var(--primary); }
+  .item { display: flex; gap: 8px; align-items: center; padding: 6px 8px; border-radius: 6px; }
+  .item:hover, .item.on { background: var(--accent); }
+  .item svg { color: var(--muted); } .item .label { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .item .hint { font-size: 12px; color: var(--muted); margin-left: 6px; }
+  .item.smart svg { color: var(--primary); }
+  .item.smart .why { display: block; font-size: 11px; color: var(--muted); margin-top: 1px; }
+  .item.two { align-items: flex-start; } .item.two svg { margin-top: 2px; }
+  .sep { height: 1px; margin: 4px 0; background: var(--border); opacity: .7; }
+  .filter { display: flex; gap: 8px; align-items: center; padding: 7px 8px; margin-bottom: 4px;
+            border-bottom: 1px solid var(--border); }
+  .filter .typed { font-weight: 500; } .filter .caret { width: 1.5px; height: 15px; background: var(--primary); margin-left: -6px; }
+  .filter .esc { margin-left: auto; font-size: 11px; color: var(--muted); }
+  .item .path { color: var(--muted); }
+  mark { background: none; color: var(--primary); font-weight: 600; }
+
+  /* ---- The dock ---- */
+  .dock { position: relative; height: 52px; border-radius: 0 0 14px 14px; border: 1px solid var(--stroke);
+          background: var(--sheet); display: flex; align-items: center; justify-content: space-between; padding: 0 16px;
+          font-size: 12px; color: var(--muted); margin-bottom: 18px; min-width: 1240px; }
+  .dock .words { display: flex; gap: 6px; align-items: center; white-space: nowrap; }
+  .dock b { color: var(--fg); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .island { position: absolute; left: 50%; top: 6px; transform: translateX(-50%); height: 40px; display: flex;
+            align-items: center; gap: 2px; padding: 0 6px; border-radius: 14px; border: 1px solid var(--stroke);
+            background: var(--popover); box-shadow: var(--raised); color: var(--fg); }
+  .tool { display: inline-flex; gap: 6px; align-items: center; height: 28px; padding: 0 7px; border-radius: 6px; font-size: 12px; white-space: nowrap; }
+  .tool:hover { background: var(--accent); } .tool.red svg { color: var(--danger); }
+  .div { width: 1px; height: 18px; background: var(--border); margin: 0 4px; }
+  .slot { position: relative; color: var(--fg); font-weight: 500; }
+  .slot svg { color: var(--primary); }
+  .slot::before { content: ""; position: absolute; inset: 0; border-radius: 7px; padding: 1.5px;
+                  background: conic-gradient(from var(--turn, 0deg), transparent 0 62%, var(--glint-from), var(--glint-to), transparent 96%);
+                  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor;
+                  mask-composite: exclude; animation: turn 1.4s linear infinite; }
+  @property --turn { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
+  @keyframes turn { to { --turn: 360deg; } }
+  .chip { display: inline-flex; gap: 5px; align-items: center; height: 22px; padding: 0 8px; border-radius: 999px;
+          background: var(--accent); color: var(--fg); font-weight: 500; }
+  .chip svg { width: 12px; height: 12px; } .chip.warn { color: var(--warn); background: color-mix(in srgb, var(--warn) 13%, transparent); }
+  .chip svg.spark { width: 44px; height: 16px; } .spark path { fill: none; stroke: var(--primary); stroke-width: 1.5; }
+  .legend { font-size: 12px; color: var(--muted); margin: 0 0 6px; }
+  .scroll { overflow-x: auto; padding-bottom: 4px; }
+</style>
+</head>
+<body>
+<button class="theme" onclick="const r=document.documentElement;r.dataset.theme=r.dataset.theme==='dark'?'light':'dark'">Light / dark</button>
+<h1>The aware menu and dock</h1>
+<p class="note">A design mock for the Aware wave (docs/gpui/aware/PLAN.md). The real thing is drawn by GPUI with the theme's tokens; sizes and colors here are the theme's. Nothing here is the app.</p>
+
+<h2>1 · The right-click menu knows what it is pointing at</h2>
+<div class="row">
+  <div>
+    <p class="note">A downloaded program: where it came from and that nobody signed it are said in its head, and what to do about that comes first. The rows under the line are where they always were.</p>
+    <div class="menu">
+      <div class="head">
+        <div class="pic program"><i data-lucide="app-window"></i></div>
+        <div style="min-width:0">
+          <div class="name">setup-2.4.1.exe</div>
+          <div class="facts">Program · 84.6 MB</div>
+          <div class="third"><span class="badge warn"><i data-lucide="globe"></i>From github.com</span><span class="badge warn"><i data-lucide="shield-alert"></i>Not signed</span></div>
+        </div>
+      </div>
+      <div class="strip"><span><i data-lucide="scissors"></i></span><span><i data-lucide="copy"></i></span><span><i data-lucide="pen-line"></i></span><span><i data-lucide="clipboard-copy"></i></span><span class="danger"><i data-lucide="trash"></i></span></div>
+      <div class="heading">Suggested<i data-lucide="sparkles"></i></div>
+      <div class="item smart two on"><i data-lucide="shield-check"></i><span class="label">Scan with Microsoft Defender<span class="why">It came from github.com</span></span></div>
+      <div class="item smart two"><i data-lucide="box"></i><span class="label">Run in Windows Sandbox<span class="why">It isn't signed</span></span></div>
+      <div class="sep"></div>
+      <div class="item"><i data-lucide="external-link"></i><span class="label">Open</span><span class="hint">Enter</span></div>
+      <div class="item"><i data-lucide="eye"></i><span class="label">Quick Look</span><span class="hint">Space</span></div>
+      <div class="item"><i data-lucide="app-window"></i><span class="label">Open with…</span></div>
+      <div class="item"><i data-lucide="shield-check"></i><span class="label">Run as administrator</span></div>
+      <div class="item"><i data-lucide="scroll-text"></i><span class="label">Scripts</span><i data-lucide="chevron-right"></i></div>
+      <div class="sep"></div>
+      <div class="item"><i data-lucide="scan-search"></i><span class="label">Inspect &amp; check</span><i data-lucide="chevron-right"></i></div>
+      <div class="item"><i data-lucide="info"></i><span class="label">Properties</span><span class="hint">Alt+Enter</span></div>
+    </div>
+  </div>
+  <div>
+    <p class="note">An archive like ones moved before: Glint has seen where they go. The third line of the head says when it changed until there is something more worth saying.</p>
+    <div class="menu">
+      <div class="head">
+        <div class="pic archive"><i data-lucide="file-archive"></i></div>
+        <div style="min-width:0">
+          <div class="name">invoices-2026-10.zip</div>
+          <div class="facts">ZIP archive · 12.4 MB · 38 files inside</div>
+          <div class="third"><span class="badge"><i data-lucide="files"></i>2 identical copies</span>Changed yesterday</div>
+        </div>
+      </div>
+      <div class="strip"><span><i data-lucide="scissors"></i></span><span><i data-lucide="copy"></i></span><span><i data-lucide="pen-line"></i></span><span><i data-lucide="clipboard-copy"></i></span><span class="danger"><i data-lucide="trash"></i></span></div>
+      <div class="heading">Suggested<i data-lucide="sparkles"></i></div>
+      <div class="item smart on"><i data-lucide="archive-restore"></i><span class="label">Extract here</span></div>
+      <div class="item smart two"><i data-lucide="folder-output"></i><span class="label">Move to “Invoices”<span class="why">Where you usually put zip files</span></span></div>
+      <div class="sep"></div>
+      <div class="item"><i data-lucide="file-archive"></i><span class="label">Open</span><span class="hint">Enter</span></div>
+      <div class="item"><i data-lucide="square-plus"></i><span class="label">Open in new tab</span><span class="hint">Ctrl+Enter</span></div>
+      <div class="item"><i data-lucide="eye"></i><span class="label">Quick Look</span><span class="hint">Space</span></div>
+      <div class="item"><i data-lucide="folder-output"></i><span class="label">Move or copy to</span><i data-lucide="chevron-right"></i></div>
+      <div class="sep"></div>
+      <div class="item"><i data-lucide="file-archive"></i><span class="label">Compress to</span><i data-lucide="chevron-right"></i></div>
+      <div class="item"><i data-lucide="info"></i><span class="label">Properties</span><span class="hint">Alt+Enter</span></div>
+    </div>
+  </div>
+  <div>
+    <p class="note">Typing in an open menu finds any row, in its submenus too. Enter runs the first; Escape takes the typing back, then closes.</p>
+    <div class="menu">
+      <div class="filter"><i data-lucide="search"></i><span class="typed">pass</span><span class="caret"></span><span class="esc">Esc</span></div>
+      <div class="item on"><i data-lucide="key-round"></i><span class="label"><span class="path">Compress to › </span>With a <mark>pass</mark>word…</span></div>
+      <div class="item"><i data-lucide="key-round"></i><span class="label"><span class="path">PDF tools › </span>Add a <mark>pass</mark>word…</span></div>
+      <div class="item"><i data-lucide="lock-open"></i><span class="label"><span class="path">PDF tools › </span>Take the <mark>pass</mark>word off…</span></div>
+    </div>
+  </div>
+</div>
+
+<h2>2 · The dock says what it sees, and offers the next step</h2>
+<div class="scroll">
+<p class="legend">Nothing selected, three files on the clipboard: Paste says what it would paste.</p>
+<div class="dock">
+  <div class="words"><b>25</b> items</div>
+  <div class="island">
+    <span class="tool"><i data-lucide="folder-plus"></i>New folder</span><span class="tool"><i data-lucide="chevron-up"></i></span><span class="div"></span>
+    <span class="tool slot"><i data-lucide="clipboard-paste"></i>Paste 3 files</span><span class="div"></span>
+    <span class="tool"><i data-lucide="wrench"></i>Tools</span><span class="tool"><i data-lucide="play"></i>Run</span><span class="div"></span>
+    <span class="tool"><i data-lucide="list"></i></span><span class="tool"><i data-lucide="layout-grid"></i></span><span class="tool"><i data-lucide="columns-3"></i></span>
+    <span class="tool"><i data-lucide="layout-dashboard"></i>Disk usage</span><span class="tool"><i data-lucide="command"></i></span>
+  </div>
+  <div class="words">fd · read in 3 ms</div>
+</div>
+<p class="legend">A folder selected: its real size and what is inside count up as they are read (from the index at once, else on every core), and the step that fits it is in the island.</p>
+<div class="dock">
+  <div class="words"><b>25</b> items · <b>1</b> selected · <b>3.2 GB</b> · <b>1,204</b> files inside</div>
+  <div class="island">
+    <span class="tool"><i data-lucide="folder-plus"></i></span><span class="div"></span>
+    <span class="tool"><i data-lucide="scissors"></i></span><span class="tool"><i data-lucide="copy"></i></span><span class="tool"><i data-lucide="clipboard-paste"></i></span><span class="tool"><i data-lucide="pen-line"></i></span><span class="tool red"><i data-lucide="trash"></i></span><span class="div"></span>
+    <span class="tool slot"><i data-lucide="paintbrush"></i>Clean up…</span><span class="div"></span>
+    <span class="tool"><i data-lucide="wrench"></i>Tools</span><span class="div"></span>
+    <span class="tool"><i data-lucide="list"></i></span><span class="tool"><i data-lucide="layout-grid"></i></span><span class="tool"><i data-lucide="layout-dashboard"></i></span><span class="tool"><i data-lucide="command"></i></span>
+  </div>
+  <div class="words"><span class="chip warn"><i data-lucide="hard-drive"></i>C: is nearly full</span></div>
+</div>
+<p class="legend">Two source files selected while a build writes into the folder: the lines are counted, Compare is offered, and the dock shows the folder changing.</p>
+<div class="dock">
+  <div class="words"><b>25</b> items · <b>2</b> selected · <b>48 KB</b> · <b>1,230</b> lines</div>
+  <div class="island">
+    <span class="tool"><i data-lucide="folder-plus"></i></span><span class="div"></span>
+    <span class="tool"><i data-lucide="scissors"></i></span><span class="tool"><i data-lucide="copy"></i></span><span class="tool"><i data-lucide="clipboard-paste"></i></span><span class="tool"><i data-lucide="pen-line"></i></span><span class="tool red"><i data-lucide="trash"></i></span><span class="div"></span>
+    <span class="tool slot"><i data-lucide="git-compare-arrows"></i>Compare</span><span class="div"></span>
+    <span class="tool"><i data-lucide="wrench"></i>Tools</span><span class="tool"><i data-lucide="play"></i>Run</span><span class="div"></span>
+    <span class="tool"><i data-lucide="list"></i></span><span class="tool"><i data-lucide="layout-grid"></i></span><span class="tool"><i data-lucide="layout-dashboard"></i></span><span class="tool"><i data-lucide="command"></i></span>
+  </div>
+  <div class="words"><span class="chip"><svg class="spark" viewBox="0 0 44 16"><path d="M1 13 L6 12 L11 13 L16 8 L21 10 L26 4 L31 9 L36 3 L43 6"/></svg>Changing now</span></div>
+</div>
+</div>
+<p class="note">In the app the ring around a suggestion turns once when the suggestion arrives and then rests (it turns forever here only so it can be seen in a still page).</p>
+<script>lucide.createIcons();</script>
+</body>
+</html>

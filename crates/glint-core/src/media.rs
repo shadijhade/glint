@@ -155,6 +155,12 @@ fn jpeg_details(bytes: Vec<u8>) -> Option<MediaDetails> {
     Some(found)
 }
 
+/// [`media_details`] on the calling thread, without a song's cover: for the aware probes, which run on threads
+/// of their own.
+pub fn details_now(path: &str) -> Option<MediaDetails> {
+    details(path, false)
+}
+
 fn details(path: &str, cover: bool) -> Option<MediaDetails> {
     let kind = kind_of(path)?;
     let mut found = match kind {
