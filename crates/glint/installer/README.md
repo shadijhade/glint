@@ -28,7 +28,7 @@ Per user, with no administrator rights, into `%LOCALAPPDATA%\Glint` (or the fold
 | File | Where it comes from |
 | :--- | :--- |
 | `Glint.exe` | `cargo build --release -p glint` |
-| `rg.exe`, `fd.exe`, `pdu.exe` | next to the built `Glint.exe` (`crates/glint/build.rs` puts them there from `crates/glint/binaries`), else `crates/glint/binaries` |
+| `rg.exe`, `fd.exe` | next to the built `Glint.exe` (`crates/glint/build.rs` puts them there from `crates/glint/binaries`), else `crates/glint/binaries` |
 | `LICENSE.txt`, `THIRD_PARTY_LICENSES.md`, `THIRD_PARTY_CRATES.md` | the repository root |
 | `shadui-index.exe`, `shadui-index.exe.sig` | the instant search service (`cargo build --release -p shadui-index`) and its update signature, **when found** |
 | `uninstall.exe` | made by the installer |
@@ -94,7 +94,7 @@ before), and no language chooser (English only, as before).
 
 The script never signs. Set `GLINT_SIGN_COMMAND` to a command line with `%1` for a file's path (for example
 `signtool sign /fd SHA256 /a "%1"`, or the release pipeline's Artifact Signing command): the script then runs
-it on `Glint.exe`, `rg.exe`, `fd.exe`, `pdu.exe` and the service before packing, on the uninstaller
+it on `Glint.exe`, `rg.exe`, `fd.exe` and the service before packing, on the uninstaller
 (`!uninstfinalize`) and on the finished setup. The updater's signature (`Glint-setup.exe.sig`, `latest.json`)
 and the service's (`shadui-index.exe.sig`) are made by the release pipeline with the maintainer's key
 (`scripts/release.mjs`, `scripts/sign-service.mjs`); signing the service after its signature was made

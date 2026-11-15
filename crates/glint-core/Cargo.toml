@@ -22,6 +22,10 @@ shadui-index = { path = "../shadui-index" }
 # finder hashes content with too (several times SHA-256's speed, with SIMD).
 sha2 = "0.10"
 rayon = "1.12"
+# Folder sizes and the disk-usage map when the index can't answer: pdu's own engine, as a library, in a
+# worker copy of Glint (sizes.rs), so a run no longer wanted ends with its process. Without its command
+# line (clap). It replaced the bundled pdu.exe at its author's suggestion (KSXGitHub/parallel-disk-usage#461).
+parallel-disk-usage = { version = "0.24.0", default-features = false }
 # Remote connections' URLs (remote/), as reqwest already has them.
 percent-encoding = "2"
 url = "2"

@@ -100,7 +100,7 @@ use std::time::{Duration, Instant};
 use crate::host::{State, Window};
 
 /// The work in flight: the ripgrep text search, and each tab's file search (fd and the index) and
-/// pdu measuring folder sizes or a disk-usage map.
+/// sizing worker (pdu's engine, sizes.rs) measuring folder sizes or a disk-usage map.
 #[derive(Default)]
 pub struct AppState {
     pub search: Slot,
@@ -294,7 +294,8 @@ pub fn cancel_search(state: State<AppState>) {
 }
 
 /// Stops every sidecar that runs (the text search, and each tab's file search, folder sizes and
-/// disk-usage map) and waits until they've ended, so an update's installer can replace rg, fd and pdu.
+/// disk-usage map) and waits until they've ended, so an update's installer can replace rg, fd and Glint.exe
+/// (the sizing workers are copies of it).
 pub async fn stop_tools(state: State<'_, AppState>) -> Result<(), String> {
     TEXT_SEARCH.fetch_add(1, Ordering::SeqCst);
     state.search.kill();
@@ -640,11 +641,12 @@ pub fn store_copy() -> bool {
     packaged()
 }
 
-/// Glint started by itself as a helper: reading a JSON, YAML or TOML file for its tree (jq), the benchmark
-/// CLI, the document reader for Documents search, SFTP's password prompt, the MCP server an AI agent
-/// starts, or the installer's tool installs. Its exit code once it has answered; `None` for the app.
+/// Glint started by itself as a helper: reading a JSON, YAML or TOML file for its tree (jq), measuring folder
+/// sizes (pdu's engine), the benchmark CLI, the document reader for Documents search, SFTP's password prompt,
+/// the MCP server an AI agent starts, or the installer's tool installs. Its exit code once it has answered;
+/// `None` for the app.
 pub fn worker() -> Option<i32> {
-    jq::worker().or_else(bench::cli).or_else(doctext::worker).or_else(remote::askpass).or_else(mcp::server).or_else(tools::cli)
+    jq::worker().or_else(sizes::worker).or_else(bench::cli).or_else(doctext::worker).or_else(remote::askpass).or_else(mcp::server).or_else(tools::cli)
 }
 
 #[cfg(test)]

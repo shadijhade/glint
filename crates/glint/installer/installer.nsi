@@ -16,7 +16,7 @@
 ; either, Glint adds File Explorer's "Open in Glint" entries itself from its settings.
 ;
 ; Defines given by scripts/gpui-installer.mjs (/D on makensis's command line):
-;   STAGE      the folder holding Glint.exe, rg.exe, fd.exe, pdu.exe and the notices, as they install
+;   STAGE      the folder holding Glint.exe, rg.exe, fd.exe and the notices, as they install
 ;   OUTFILE    the setup program to write
 ;   VERSION    "0.10.0";  VERSIONWITHBUILD  "0.10.0.0"
 ;   HAVE_SERVICE / HAVE_SERVICE_SIG   set when STAGE has shadui-index.exe (and its update signature)
@@ -458,7 +458,6 @@ Section Install
   ; Copy external binaries: the search tools Glint runs, beside it
   File /a "${STAGE}\rg.exe"
   File /a "${STAGE}\fd.exe"
-  File /a "${STAGE}\pdu.exe"
 
   ; Copy resources: the license and the notices
   File /a "${STAGE}\LICENSE.txt"
@@ -579,6 +578,7 @@ Section Uninstall
   ; Delete external binaries
   Delete "$INSTDIR\rg.exe"
   Delete "$INSTDIR\fd.exe"
+  ; pdu.exe: a Glint from before pdu's engine was built in (0.12 and earlier) left it here
   Delete "$INSTDIR\pdu.exe"
 
   ; Delete the instant search service's copy and its signature (the service Windows runs is

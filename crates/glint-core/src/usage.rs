@@ -9,7 +9,6 @@ pub use shadui_index::proto::{GrowthSummary, UsageNode, NEW, NO_PARENT, WRITTEN}
 use std::collections::VecDeque;
 use std::io::Read;
 use std::path::Path;
-use std::process::Stdio;
 use std::time::Instant;
 use crate::host::State;
 
@@ -92,18 +91,12 @@ pub async fn disk_usage(state: State<'_, AppState>, path: String, depth: u32, ma
         Indexed::TooOld => true,
         Indexed::No => false,
     };
-    let mut command = crate::proc::tool("pdu")?;
     // Files and folders, `depth` levels below, apparent sizes in bytes; what's under a fifth of
-    // `max_items`' share of the whole is left out by pdu, the rest cut to the biggest `max_items` here.
-    let ratio = format!("{:.12}", 1.0 / (f64::from(max_items) * 5.0));
-    command
-        .args(["--json-output", "--quantity", "apparent-size", "--max-depth", &(depth + 1).to_string(), "--min-ratio", &ratio, "--silent-errors", "--"])
-        .arg(&path)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    let mut child = command.spawn().map_err(|e| format!("Failed to start pdu: {e}"))?;
-    let mut stdout = child.stdout.take().ok_or("Failed to open pdu's output")?;
+    // `max_items`' share of the whole is left out by the worker, the rest cut to the biggest `max_items` here.
+    let ratio = if max_items == 0 { 0.0 } else { 1.0 / (max_items as f32 * 5.0) };
+    let mut command = sizes::worker_command(depth + 1, ratio, &[&path])?;
+    let mut child = command.spawn().map_err(|e| format!("Couldn't start measuring: {e}"))?;
+    let mut stdout = child.stdout.take().ok_or("Couldn't read the sizes")?;
     let pid = slot.replace(child);
     blocking(move || {
         let mut json = String::new();

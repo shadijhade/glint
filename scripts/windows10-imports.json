@@ -1,5 +1,5 @@
 {
-    "about": "Every DLL and function Glint.exe, the instant search service and the bundled rg, fd and pdu import that someone has checked Windows 10 1809 (10.0.17763, the oldest Glint supports) has, in every edition. scripts/check-imports.mjs fails on an import that isn't here (issue #6: Windows refuses to start a program whose import it lacks); add one with `npm run check-imports -- --update` once you've checked it (its Microsoft Learn page, Requirements, Minimum supported client).",
+    "about": "Every DLL and function Glint.exe, the instant search service and the bundled rg and fd import that someone has checked Windows 10 1809 (10.0.17763, the oldest Glint supports) has, in every edition. scripts/check-imports.mjs fails on an import that isn't here (issue #6: Windows refuses to start a program whose import it lacks); add one with `npm run check-imports -- --update` once you've checked it (its Microsoft Learn page, Requirements, Minimum supported client).",
     "imports": {
         "advapi32.dll": [
             "AccessCheck",

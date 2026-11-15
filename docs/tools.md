@@ -8,9 +8,9 @@ Glint gets much of its speed and reach from command-line tools, most of them fro
 | :--- | :--- |
 | [ripgrep](https://github.com/BurntSushi/ripgrep) (`rg.exe`) | Searching inside files (the search box, on Enter) |
 | [fd](https://github.com/sharkdp/fd) (`fd.exe`) | Finding files by name where instant search doesn't |
-| [pdu](https://github.com/KSXGitHub/parallel-disk-usage) (`pdu.exe`) | Folder sizes and disk-usage maps where instant search doesn't |
+| [pdu](https://github.com/KSXGitHub/parallel-disk-usage) (built in) | Folder sizes and disk-usage maps where instant search doesn't |
 
-They're the official Windows x64 releases, unmodified, installed next to `Glint.exe`. If one is missing (a security tool quarantined it, a portable copy), Glint uses one installed on the PC instead, and **Install** puts it back: its official release first, the very build Glint ships, else winget. The installer checks for them once it has copied them, and puts back one that's gone.
+ripgrep and fd are the official Windows x64 releases, unmodified, installed next to `Glint.exe`. pdu's engine (the parallel-disk-usage crate) is built into `Glint.exe`, which runs it in a copy of itself so a measurement no longer wanted stops at once. If one is missing (a security tool quarantined it, a portable copy), Glint uses one installed on the PC instead, and **Install** puts it back: its official release first, the very build Glint ships, else winget. The installer checks for them once it has copied them, and puts back one that's gone.
 
 ## Installed when a feature needs them
 

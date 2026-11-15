@@ -3,7 +3,7 @@
 //! The version numbers come from the workspace version (CARGO_PKG_VERSION), written to glint-version.h in
 //! OUT_DIR for the resource compiler. Only Windows builds get resources; other targets skip this.
 //!
-//! It also puts rg.exe, fd.exe and pdu.exe next to the built Glint.exe, as tauri-build did for every dev build
+//! It also puts rg.exe and fd.exe next to the built Glint.exe, as tauri-build did for every dev build
 //! and the installer does: glint-core runs the copy beside the app first (proc::locate), so a dev build never
 //! falls back to whatever the PATH holds.
 
@@ -53,14 +53,14 @@ fn write_version_header(out_dir: &Path, version: &str) -> std::io::Result<()> {
     fs::write(out_dir.join("glint-version.h"), header)
 }
 
-/// Copies the bundled search tools (the official, unsigned rg, fd and pdu in crates/glint/binaries) next to the exe
+/// Copies the bundled search tools (the official, unsigned rg and fd in crates/glint/binaries) next to the exe
 /// being built (OUT_DIR is <target>/<profile>/build/<pkg>/out).
 fn bundle_tools(manifest_dir: &Path, out_dir: &Path) {
     let binaries = manifest_dir.join("binaries");
     let Some(profile_dir) = out_dir.ancestors().nth(3) else {
         return;
     };
-    for tool in ["rg", "fd", "pdu"] {
+    for tool in ["rg", "fd"] {
         let source = binaries.join(format!("{tool}-x86_64-pc-windows-msvc.exe"));
         println!("cargo:rerun-if-changed={}", source.display());
         let target = profile_dir.join(format!("{tool}.exe"));

@@ -401,14 +401,14 @@ fn fd_paths(flags: &[&str], pattern: Option<&str>, roots: &[String], skip: &[&st
     Ok(found)
 }
 
-/// Sizes of `paths` (full paths) with pdu: a run per hundred, so the command line stays short.
+/// Sizes of `paths` (full paths) with pdu's engine in the sizing worker (sizes.rs): a run per hundred, so
+/// the command line stays short.
 fn sizes(paths: &[String], run: &Run) -> Result<HashMap<String, u64>, String> {
     let mut sizes = HashMap::new();
     for chunk in paths.chunks(100) {
-        let mut command = crate::proc::tool("pdu")?;
-        command.args(["--json-output", "--quantity", "apparent-size", "--max-depth", "2", "--min-ratio", "0", "--silent-errors", "--"]).args(chunk).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
-        let mut child = command.spawn().map_err(|e| format!("Failed to start pdu: {e}"))?;
-        let mut stdout = child.stdout.take().ok_or("Failed to open pdu's output")?;
+        let mut command = crate::sizes::worker_command(2, 0.0, chunk)?;
+        let mut child = command.spawn().map_err(|e| format!("Couldn't start measuring: {e}"))?;
+        let mut stdout = child.stdout.take().ok_or("Couldn't read the sizes")?;
         let pid = run.child.replace(child);
         let mut json = String::new();
         let _ = stdout.read_to_string(&mut json);
