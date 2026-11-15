@@ -33,6 +33,9 @@ use std::ops::Range;
 pub const FOLDERS_WHEN_EMPTY: usize = 6;
 /// How many matches a query lists at most.
 pub const MOST_MATCHES: usize = 40;
+/// The most a habit adds to a command's weight.
+const MOST_HABIT_WEIGHT: f64 = 8.0;
+
 /// How many of the folders used most are offered (`usedFolders(visits, 60)`).
 const USED_FOLDERS: usize = 60;
 
@@ -316,6 +319,9 @@ pub struct Inputs {
     pub sending: bool,
     /// Something is shared on this network.
     pub serving: bool,
+    /// What the person has done before: a menu row's key (`do:compress:zip`) and its weight over every kind of
+    /// thing, today. Empty when learning or suggesting is off.
+    pub used: std::collections::HashMap<String, f64>,
 }
 
 /// The archive file a tab is at the top of.
@@ -1013,6 +1019,17 @@ pub fn actions(inputs: &Inputs) -> Vec<Command> {
             }),
         ),
     );
+    // A command that is a menu row's twin has the row's habit weight (at most `MOST_HABIT_WEIGHT`).
+    if !inputs.used.is_empty() {
+        for command in &mut out {
+            if let Run::Menu(event) = &command.run {
+                let key = crate::components::menus::Run::Ask(event.clone()).key();
+                command.weight = key
+                    .and_then(|key| inputs.used.get(&key).copied())
+                    .map_or(0., |weight| weight.clamp(0., MOST_HABIT_WEIGHT));
+            }
+        }
+    }
     out
 }
 
@@ -1694,16 +1711,25 @@ pub fn rank(commands: &[Command], query: &str) -> Vec<Command> {
     if q.is_empty() {
         let mut folders: Vec<&Command> = commands.iter().filter(|c| c.kind == Kind::Folder).collect();
         folders.sort_by(|a, b| b.weight.total_cmp(&a.weight));
+        // The actions the person uses come first, heaviest first (a stable sort keeps the declared order among
+        // equals); then the rest in the order they were declared.
+        let mut by_habit: Vec<Command> = commands
+            .iter()
+            .filter(|c| c.kind == Kind::Action && !c.search_only)
+            .cloned()
+            .collect();
+        by_habit.sort_by(|a, b| (b.weight > 0.).cmp(&(a.weight > 0.)).then_with(|| {
+            if a.weight > 0. && b.weight > 0. {
+                b.weight.total_cmp(&a.weight)
+            } else {
+                std::cmp::Ordering::Equal
+            }
+        }));
         return folders
             .into_iter()
             .take(FOLDERS_WHEN_EMPTY)
             .cloned()
-            .chain(
-                commands
-                    .iter()
-                    .filter(|c| c.kind == Kind::Action && !c.search_only)
-                    .cloned(),
-            )
+            .chain(by_habit)
             .collect();
     }
     let mut scored: Vec<(f64, &Command)> = commands

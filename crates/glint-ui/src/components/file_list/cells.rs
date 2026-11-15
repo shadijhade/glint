@@ -632,19 +632,20 @@ impl FileList {
                 MouseButton::Middle,
                 cx.listener(move |this, event: &MouseDownEvent, window, cx| this.row_down(i, event, window, cx)),
             );
-        let line = match folder {
-            // The pointer resting on a folder reads it ahead; leaving it stops that (`hoverFolder`).
-            Some(path) => line.on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+        // The pointer resting on a row finds out what isn't known about its item (docs/gpui/aware); on a folder it
+        // also reads the folder ahead, and leaving it stops that (`hoverFolder`).
+        let line = line.on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+            this.rest_on_row(i, *hovered, cx);
+            if let Some(path) = &folder {
                 this.explorer.update(cx, |explorer, cx| {
                     if *hovered {
-                        explorer.hover_folder(&path, cx);
+                        explorer.hover_folder(path, cx);
                     } else {
                         explorer.leave_folder();
                     }
                 });
-            })),
-            None => line,
-        };
+            }
+        }));
         line.test_support().into_any_element()
     }
 }

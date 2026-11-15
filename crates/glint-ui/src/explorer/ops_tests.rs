@@ -700,6 +700,43 @@ fn dropping_files_on_the_open_folder_copies_or_moves_and_selects_them(cx: &mut T
 }
 
 #[gpui_kit::test]
+fn a_copy_and_a_move_count_where_their_kind_of_thing_went(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let h = harness(cx);
+    // The saved state, in a file of the test's own.
+    let dir = std::env::temp_dir().join(format!("glint-ops-places-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::remove_file(dir.join("state.json"));
+    cx.update(|cx| crate::persistence::init_at(cx, dir.join("state.json")));
+    let places = |cx: &mut TestAppContext, ext: &str| cx.update(|cx| crate::aware::places_for(cx, ext));
+    assert!(h.go(cx, "C:\\a"));
+
+    h.task(cx, |e, cx| {
+        e.drop_files(vec!["C:\\a\\one.txt".into()], "C:\\b", false, cx)
+    });
+    h.task(cx, |e, cx| {
+        e.drop_files(vec!["C:\\a\\تقرير.pdf".into()], "C:\\b", true, cx)
+    });
+    let txt = places(cx, "txt");
+    assert_eq!(txt.len(), 1, "a copy counts where its kind went");
+    assert_eq!((txt[0].folder.as_str(), txt[0].uses), ("C:\\b", 1));
+    assert_eq!(
+        places(cx, "pdf").first().map(|p| p.folder.clone()),
+        Some("C:\\b".to_string()),
+        "and so does a move"
+    );
+
+    // With learning off nothing is counted.
+    cx.update(|cx| crate::state::update(cx, |s| s.learn = false));
+    h.task(cx, |e, cx| {
+        e.drop_files(vec!["C:\\a\\two.txt".into()], "C:\\b", false, cx)
+    });
+    cx.update(|cx| crate::state::update(cx, |s| s.learn = true));
+    assert_eq!(places(cx, "txt").first().map(|p| p.uses), Some(1));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[gpui_kit::test]
 fn a_drop_that_would_do_nothing_does_nothing(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let h = harness(cx);

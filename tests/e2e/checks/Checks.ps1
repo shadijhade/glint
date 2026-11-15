@@ -179,6 +179,37 @@ Add-Check 'rename-enter' 'Enter in the rename box commits the name and does noth
     Assert-Equal (Get-TabTitle) $script:ArenaLeaf 'the tab is still on the arena (Enter must not also open the item)'
 }
 
+# ------------------------------------------------------------------------------------------------ the aware menu
+
+Add-Check 'smart-menu' "an archive's menu starts with its head and puts Extract here first; typing finds a row and Enter runs it" {
+    # The arena has no archive: one is made here, and the list shows it by itself (the folder is watched). The next
+    # check's reset takes it away again.
+    $zip = Get-ArenaPath 'pack.zip'
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    [IO.Compression.ZipFile]::CreateFromDirectory((Get-ArenaPath 'inbox'), $zip)
+    Assert-Eventually { Test-RowsShown @('pack.zip') } 'the list shows the new archive' 10
+
+    Select-Row 'pack.zip'
+    Invoke-Click (Get-Row 'pack.zip') -Right
+    Assert-Eventually { Get-OpenMenu -Name 'Item menu' } "a right-click on the archive opens the 'Item menu'"
+    $menu = Get-OpenMenu -Name 'Item menu'
+    Assert-True (Find-El -Type Group -Name 'pack.zip' -Root $menu) 'the menu starts with a head named after the item'
+    $items = @(Get-Names (Find-Els -Type MenuItem -Root $menu))
+    $extract = [array]::IndexOf($items, 'Extract here')
+    $open = [array]::IndexOf($items, 'Open')
+    Assert-True ($extract -ge 0 -and $open -ge 0 -and $extract -lt $open) "Extract here is put forward, above Open (items: $($items -join ', '))"
+
+    # Typing in an open menu finds a row anywhere in it; Enter runs the first one found.
+    Send-Text 'ren'
+    Assert-Eventually { (@(Get-Names (Find-Els -Type MenuItem -Root (Get-OpenMenu -Name 'Item menu'))))[0] -eq 'Rename' } 'typing "ren" leaves the rows that match, Rename first'
+    Send-Key 'enter'
+    Assert-Eventually { Get-RenameBox } 'Enter runs the row found: the rename box opens on the archive'
+    Send-Key 'escape'
+    Assert-Eventually { -not (Get-RenameBox) } 'Escape closes the box'
+    Assert-True (Test-Path -LiteralPath $zip) 'and the archive keeps its name'
+    Focus-List
+}
+
 # ------------------------------------------------------------------------------------------------ dragging files
 
 Add-Check 'drag-copy' 'a real mouse drag of a file onto a folder row copies it (the original stays)' {

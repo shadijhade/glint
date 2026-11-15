@@ -606,3 +606,37 @@ fn the_facts_carry_what_is_on_the_clipboard_from_the_entity(cx: &mut TestAppCont
     let facts = cx.update(|cx| facts(cx, &[a_file("a.bin")]));
     assert_eq!(facts.clip, Clip::Text);
 }
+
+// ---- The pointer resting on a row or a tile ----------------------------------------------------------------
+
+#[gpui_kit::test]
+fn resting_on_an_item_asks_about_it_after_a_moment_and_leaving_sooner_asks_nothing(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let fake = Fake::new();
+    let _world = world(cx, &fake, &empty_disk(), "C:\\x");
+    // The pointer comes to a row and stays: the view keeps the task.
+    let staying = cx.update(|cx| rest_on(a_file("a.bin"), cx));
+    assert!(staying.is_some());
+    cx.executor().advance_clock(RESTS_FOR - Duration::from_millis(20));
+    cx.run_until_parked();
+    assert_eq!(fake.asked(), 0, "not before it has rested");
+    cx.executor().advance_clock(Duration::from_millis(40));
+    cx.run_until_parked();
+    assert_eq!(fake.asked(), 1);
+    assert_eq!(fake.calls.borrow()[0].lane, Lane::Quiet);
+    assert_eq!(fake.calls.borrow()[0].paths, vec!["C:\\x\\a.bin".to_string()]);
+
+    // It crosses another row without staying: the view drops the task, and nothing is asked.
+    let crossing = cx.update(|cx| rest_on(a_file("b.bin"), cx));
+    drop(crossing);
+    cx.executor().advance_clock(Duration::from_millis(400));
+    cx.run_until_parked();
+    assert_eq!(fake.asked(), 1);
+}
+
+#[gpui_kit::test]
+fn resting_asks_nothing_when_the_app_has_no_entity(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    cx.update(testing::init);
+    assert!(cx.update(|cx| rest_on(a_file("a.bin"), cx)).is_none());
+}

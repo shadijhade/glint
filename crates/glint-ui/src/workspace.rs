@@ -1329,10 +1329,8 @@ impl Workspace {
         .detach();
     }
 
-    /// "Move or copy to": the items go to `folder`, and the place is counted for this kind of thing.
+    /// "Move or copy to": the items go to `folder` (the explorer counts the place, as for every copy and move).
     fn send_to(paths: Vec<String>, folder: String, moving: bool, cx: &mut Context<Self>) {
-        let kinds = Self::kinds_sent(&paths, cx);
-        crate::aware::note_place(cx, &kinds, &folder);
         Self::explorer(cx, |e, cx| e.drop_files(paths, &folder, moving, cx).detach());
     }
 
@@ -1347,29 +1345,6 @@ impl Workspace {
             }
         })
         .detach();
-    }
-
-    /// The kinds of thing among `paths`, for counting where each goes: a file's extension, lower case, and ""
-    /// for a folder or a file with none. A path the panes don't show is taken for a file.
-    fn kinds_sent(paths: &[String], cx: &App) -> Vec<String> {
-        let explorer = explorer::explorer(cx);
-        let explorer = explorer.read(cx);
-        let mut kinds: Vec<String> = Vec::new();
-        for path in paths {
-            let shown = (0..2).filter_map(|pane| explorer.pane_tab(pane)).find_map(|tab| tab.rows.iter().find(|e| &e.path == path));
-            let kind = match shown {
-                Some(entry) if entry.dir => String::new(),
-                Some(entry) => entry.ext.clone(),
-                None => {
-                    let name = base_name(path);
-                    name.rfind('.').filter(|dot| *dot > 0).and_then(|dot| name.get(dot + 1..)).unwrap_or("").to_lowercase()
-                }
-            };
-            if !kinds.contains(&kind) {
-                kinds.push(kind);
-            }
-        }
-        kinds
     }
 
     fn on_queue_event(

@@ -812,6 +812,13 @@ impl SettingsView {
 
     fn history(&self, s: &Settings, t: &theme::Tokens, cx: &mut Context<Self>) -> AnyElement {
         let (searches, visited) = persistence::app(cx).map_or((0, 0), |app| (app.history.len(), app.visits.len()));
+        // How many actions and places are kept in all.
+        let learned = persistence::app(cx).map_or(0, |app| {
+            let kept = |maps: &std::collections::BTreeMap<String, std::collections::BTreeMap<String, _>>| {
+                maps.values().map(|inner| inner.len()).sum::<usize>()
+            };
+            kept(&app.habits.actions) + kept(&app.habits.places)
+        });
         let zoxide = self.tools.read(cx).tool("zoxide").and_then(|tool| tool.path.clone());
         let rows = vec![
             self.flag(
@@ -878,6 +885,43 @@ impl SettingsView {
                     // time they open, while this setting is on.
                     state::update(cx, |s| s.zoxide = on)
                 },
+                t,
+            )
+            .into_any_element(),
+            widgets::switch_row(
+                "suggest",
+                t!("Suggest the next step"),
+                Some(t!("Menus and the dock put forward what fits the selection: Extract here for an archive, Compare for two files")),
+                s.suggest,
+                false,
+                |on, _, cx| state::update(cx, |s| s.suggest = on),
+                t,
+            )
+            .into_any_element(),
+            widgets::switch_row(
+                "learn",
+                t!("Learn from what I do"),
+                Some(t!("Glint counts the actions you choose and where you move things, on this PC only, to offer the likely one first")),
+                s.learn,
+                false,
+                |on, _, cx| state::update(cx, |s| s.learn = on),
+                t,
+            )
+            .into_any_element(),
+            setting_row(
+                match learned {
+                    0 => t!("Nothing learned yet"),
+                    1 => t!("1 habit learned"),
+                    n => t!("{n} habits learned", n = glint_model::format::format_count(n)),
+                },
+                None,
+                vec![widgets::button("habits-forget", t!("Forget what Glint learned"), None)
+                    .disabled(learned == 0)
+                    .on_click(|_, window, cx| {
+                        crate::aware::forget_habits(cx);
+                        widgets::good(window, cx, t!("Forgotten"), None);
+                    })
+                    .into_any_element()],
                 t,
             )
             .into_any_element(),
