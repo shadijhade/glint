@@ -62,7 +62,7 @@ const ghJson = (...a) => JSON.parse(gh(...a) || "null");
 const tryGh = (...a) => run("gh", a, { allowFailure: true });
 /** npm and winget are found through the shell on Windows (npm.cmd, an app alias). */
 const shell = (line, options = {}) => run(line, [], { shell: true, ...options });
-const has = (cmd, cmdArgs) => spawnSync(cmd, cmdArgs, { cwd: root, encoding: "utf8", shell: true }).status === 0;
+const has = (cmd, cmdArgs) => spawnSync([cmd, ...cmdArgs].join(" "), { cwd: root, encoding: "utf8", shell: true }).status === 0;
 const sha256 = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
 const sleep = (seconds) => new Promise((resolve) => setTimeout(resolve, seconds * 1000));
 const read = (path) => readFileSync(join(root, path), "utf8");
