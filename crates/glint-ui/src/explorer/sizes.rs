@@ -4,7 +4,8 @@
 //!
 //! **What happens.**
 //! - "Folder sizes" (menu, command bar) measures the open folder's subfolders: from the instant search index
-//!   when it has the folder (a millisecond or two), else with the bundled pdu. The run shows as running (the
+//!   when it has the folder (a millisecond or two), else with pdu's engine in a worker copy of Glint (glint-core's
+//!   sizes.rs). The run shows as running (the
 //!   command bar says Stop, folders have "…") until it ends; Stop ends it with nothing said.
 //! - With the index ready for a folder's drive, every folder shows its subfolders' sizes as it opens and after
 //!   each refresh, quietly: from the index alone, and nothing happens when it can't answer.

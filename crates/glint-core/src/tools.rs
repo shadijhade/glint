@@ -2,7 +2,7 @@
 //! small for everyone who never uses those features. Each installs when asked, on any PC: with winget
 //! where the PC has it and winget has the tool, else (or when winget can't) from the tool's own release
 //! on GitHub, pinned by its SHA-256 and checked before anything is unpacked. Their arguments are built in
-//! Rust from typed options, like rg's, fd's and pdu's.
+//! Rust from typed options, like rg's and fd's. (pdu's engine is built in: sizes.rs.)
 
 use crate::fsx::blocking;
 use crate::proc::{self, Lanes, Origin};
@@ -84,21 +84,6 @@ pub static TOOLS: &[Tool] = &[
             "fd-v10.5.2-x86_64-pc-windows-msvc/fd.exe",
         ),
         used_for: "Finding files by name where instant search doesn't",
-    },
-    Tool {
-        id: "pdu",
-        name: "pdu",
-        exe: "pdu",
-        package: "parallel-disk-usage",
-        bundled: true,
-        winget: "",
-        release: release(
-            "0.24.0",
-            "https://github.com/KSXGitHub/parallel-disk-usage/releases/download/0.24.0/pdu-x86_64-pc-windows-msvc.exe",
-            "1133cde2e4cf3448b5fa6facd2883391d88957057da625a5ab910e7d7c15c36e",
-            "",
-        ),
-        used_for: "Folder sizes and disk-usage maps where instant search doesn't",
     },
     Tool {
         id: "czkawka",

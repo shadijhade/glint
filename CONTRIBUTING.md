@@ -46,7 +46,7 @@ Five crates make a workspace (`Cargo.toml`): `crates/glint` is `Glint.exe` (a th
 | `crates/glint-core/src/recent.rs` | Recent, a place listed like a folder: Windows' Recent Items, each shortcut's file at its own path |
 | `crates/glint-core/src/newmenu.rs` | Windows' New menu: the kinds of file the PC's apps registered (`ShellNew`), made from their templates, bytes or commands |
 | `crates/glint-core/src/archive/` | Archives opened like folders (zip, 7z, RAR, cabinets, installer packages, tar, compressed files): reading their list of entries, the folder tree, extracting on demand and into staging folders, safety limits ([docs/archives.md](docs/archives.md)) |
-| `crates/glint-core/src/find.rs`, `crates/glint-core/src/sizes.rs`, `crates/glint-core/src/usage.rs` | fd name search, pdu folder sizes and disk-usage maps (or the index when it's on) |
+| `crates/glint-core/src/find.rs`, `crates/glint-core/src/sizes.rs`, `crates/glint-core/src/usage.rs` | fd name search, folder sizes and disk-usage maps with pdu's engine in a worker copy of Glint (or the index when it's on) |
 | `crates/glint-core/src/shell.rs` | Copy, move, delete, rename (`IFileOperation`), clipboard, drag and drop (with its drag picture), Properties, and Windows' own Share, Eject and Mount, turning pictures and the desktop background, OneDrive's keep and free up |
 | `crates/glint-ui/src/platform/window_state.rs` | The window's place, kept and put back; the taskbar button's Jump List (tasks, pinned and most-used folders), its progress bar, and Back, Forward and Up under its preview |
 | `crates/glint-core/src/recycle.rs` | The Recycle Bin as a place: its items from the shell and their `$I` records, and emptying it ([docs/recycle-bin.md](docs/recycle-bin.md)) |
@@ -72,7 +72,7 @@ Five crates make a workspace (`Cargo.toml`): `crates/glint` is `Glint.exe` (a th
 | `crates/glint-ui/src/theme.rs`, `crates/glint-model/src/color.rs` | Windows 11's Mica and the accent color; colors as the theme's tokens |
 | `crates/glint-core/src/openers.rs`, `crates/glint-core/src/calc.rs`, `crates/glint-core/src/zoxide.rs` | Open in… (the editors and terminals found), the calculator in `Ctrl+K` (fend), and folder history shared with zoxide |
 | `crates/shadui-index/`, `crates/glint-core/src/index.rs` | The opt-in instant-search service (NTFS MFT + USN journal): names, folder sizes, maps, what grew and what moved ([docs/instant-search.md](docs/instant-search.md)); turning it on and off from the app |
-| `crates/glint/binaries/` | Bundled `rg`, `fd` and `pdu` executables |
+| `crates/glint/binaries/` | Bundled `rg` and `fd` executables |
 | `crates/glint/installer/` | The NSIS installer: its pages, hooks, look and artwork, and the **Extra tools** page ([crates/glint/installer/README.md](crates/glint/installer/README.md), [docs/releasing.md](docs/releasing.md#the-installer)) |
 | `crates/glint-core/src/tools.rs`, `crates/glint-core/src/proc.rs`, `crates/glint-ui/src/components/settings/tools.rs` | Every program Glint drives: the bundled ones, and optional ones installed on demand with winget or from their GitHub release (pinned by SHA-256) ([docs/tools.md](docs/tools.md)); finding and running them, a lane per tab; Settings → Tools, and the install card a feature shows when its tool is missing |
 | `vendor/` | The patched GPUI crates ([docs/gpui/VENDOR.md](docs/gpui/VENDOR.md)) |

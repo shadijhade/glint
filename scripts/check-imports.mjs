@@ -1,10 +1,10 @@
-// Checks that Windows 10 can start Glint.exe, the instant search service and the bundled rg, fd and pdu: that
+// Checks that Windows 10 can start Glint.exe, the instant search service and the bundled rg and fd: that
 // every DLL and function they import is one Windows 10 1809 has, in every edition (scripts/lib/windows-imports.mjs
 // says why: issue #6). The installer and MSIX scripts run the same check on what they pack; this is for a
 // build of your own, and for adding imports you've checked to scripts/windows10-imports.json.
 //
 // Usage: npm run check-imports [-- <program.exe> ...] [--update]
-//   <program.exe>  the programs to check (default: Glint.exe, shadui-index.exe, rg.exe, fd.exe and pdu.exe in
+//   <program.exe>  the programs to check (default: Glint.exe, shadui-index.exe, rg.exe and fd.exe in
 //                  <target>/release, the tools from crates/glint/binaries where the build hasn't put them there)
 //   --update       add every import that isn't listed yet to scripts/windows10-imports.json: only once you've
 //                  checked that Windows 10 1809 has each one. The DLLs known to be missing somewhere never go in.
@@ -24,7 +24,7 @@ const files = given.length
     : [
           join(release, "Glint.exe"),
           join(release, "shadui-index.exe"),
-          ...["rg", "fd", "pdu"].map((t) => [join(release, `${t}.exe`), join(root, "crates", "glint", "binaries", `${t}-x86_64-pc-windows-msvc.exe`)].find(existsSync) ?? join(release, `${t}.exe`)),
+          ...["rg", "fd"].map((t) => [join(release, `${t}.exe`), join(root, "crates", "glint", "binaries", `${t}-x86_64-pc-windows-msvc.exe`)].find(existsSync) ?? join(release, `${t}.exe`)),
       ];
 const absent = files.filter((f) => !existsSync(f));
 if (absent.length) {

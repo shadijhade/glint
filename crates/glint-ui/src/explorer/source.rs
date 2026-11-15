@@ -833,7 +833,7 @@ impl Source for CoreSource {
 
     fn cancel_folder_sizes(&self, lane: &str) {
         let (app, lane) = (self.app.clone(), lane.to_string());
-        // Ending pdu's process is not for the UI thread.
+        // Ending the sizing worker's process is not for the UI thread.
         glint_core::host::async_runtime::spawn_blocking(move || {
             if let Some(state) = app.try_state::<glint_core::AppState>() {
                 glint_core::sizes::cancel_folder_sizes(state, lane);

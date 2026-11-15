@@ -131,7 +131,7 @@ jobs:
 
       # The installer is packed from the binaries as they are to be released (SignPath's when it signed them), with
       # the service's update signature made over exactly that service: an installed service updates itself to this
-      # release with it (scripts/sign-service.mjs). rg, fd and pdu are the official ones from crates/glint/binaries.
+      # release with it (scripts/sign-service.mjs). rg and fd are the official ones from crates/glint/binaries.
       - name: Pack the installer
         shell: pwsh
         env:

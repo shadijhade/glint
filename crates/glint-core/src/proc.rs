@@ -114,8 +114,8 @@ fn stop(mut child: Child) {
     }
 }
 
-/// Waits until every process stopped so far has ended (an update replaces rg, fd and pdu: their
-/// files must be free).
+/// Waits until every process stopped so far has ended (an update replaces rg, fd and Glint.exe, which
+/// the sizing workers run: their files must be free).
 pub fn wait_stopped() {
     let ending = std::mem::take(&mut *ENDING.lock().unwrap_or_else(|e| e.into_inner()));
     for reaping in ending {
@@ -123,7 +123,7 @@ pub fn wait_stopped() {
     }
 }
 
-/// A bundled CLI tool (`rg`, `fd`, `pdu`), run without a console window.
+/// A bundled CLI tool (`rg`, `fd`), run without a console window.
 pub fn tool(name: &str) -> Result<Command, String> {
     let (exe, _) = locate(name).ok_or_else(|| format!("{name}.exe is missing next to the app; reinstall the app"))?;
     let mut command = Command::new(exe);
@@ -134,7 +134,7 @@ pub fn tool(name: &str) -> Result<Command, String> {
 /// Where the copy of a program that runs came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Origin {
-    /// Next to the app: the setup program puts rg, fd and pdu there, tauri-build next to every dev build.
+    /// Next to the app: the setup program puts rg and fd there, crates/glint/build.rs next to every dev build.
     Bundled,
     /// Glint's own tools folder, where it unpacks the optional tools it downloads (tools.rs).
     Downloaded,

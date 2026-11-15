@@ -33,8 +33,8 @@ const MISSING_SOMEWHERE = [
     },
 ];
 
-/** rg, fd and pdu, as the build puts them beside Glint.exe or as crates/glint/binaries keeps them. */
-export const isBundledTool = (file) => /^(rg|fd|pdu)(-x86_64-pc-windows-msvc)?\.exe$/i.test(basename(file));
+/** rg and fd, as the build puts them beside Glint.exe or as crates/glint/binaries keeps them. */
+export const isBundledTool = (file) => /^(rg|fd)(-x86_64-pc-windows-msvc)?\.exe$/i.test(basename(file));
 
 function readBaseline() {
     const baseline = JSON.parse(readFileSync(BASELINE, "utf8"));
