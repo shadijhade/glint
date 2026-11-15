@@ -93,6 +93,8 @@ const OPEN_MANY_ASKS_ABOVE: usize = 10;
 const MOST_SELECTION_READS: usize = 200;
 /// The width assumed before the list has been laid out once: wide, so no column is left out of the first frame.
 const FIRST_WIDTH: f32 = 1200.;
+/// How wide a row's spot is, in row heights: its picture and the start of its name (`FileList::spot_of`).
+const SPOT_ROWS_WIDE: f32 = 9.;
 
 /// What the list tells the coordinator. Each is something another part of the app does.
 #[derive(Clone, Debug, PartialEq)]
@@ -127,6 +129,9 @@ pub enum FileListEvent {
     ShowProperties { path: String },
     /// "Search subfolders too" under a filter that matched nothing: `runFind(query)`.
     SearchSubfolders { query: String },
+    /// The zoom (Ctrl+wheel, a pinch) has nowhere to go: no folder under the pointer to go into, or none above
+    /// to go out to. The pane's stage gives a little, to say so.
+    Limit { inward: bool },
 }
 
 impl EventEmitter<FileListEvent> for FileList {}
@@ -395,10 +400,6 @@ pub struct FileList {
     frame: Rc<Frame>,
     /// The width the list was last laid out at, measured by the canvas under it.
     width: Rc<Cell<f32>>,
-    /// The folder or search whose rows were drawn last (`TabView::facts_key`), and how many times that has
-    /// changed: each new one's rows arrive with a short rise (see `render`).
-    entered_for: Option<String>,
-    entered: usize,
     resizing: Option<Resize>,
     rename: Option<RenameBox>,
     typeahead: TypeAhead,
@@ -422,6 +423,8 @@ pub struct FileList {
     asked: Option<Asked>,
     /// Where the list is on screen (the area under the header), measured by the canvas under it.
     area: Rc<Cell<Bounds<Pixels>>>,
+    /// The Ctrl+wheel and pinch zoom's count (`zoom_by`).
+    wheel: crate::stage::Notches,
     /// A press or a marquee is under way: the window-level mouse listeners act.
     tracking: Rc<Cell<bool>>,
     /// A rectangle being dragged over the empty part.
@@ -535,8 +538,6 @@ impl FileList {
                 peeks: Rc::new(Vec::new()),
             }),
             width: Rc::new(Cell::new(0.)),
-            entered_for: None,
-            entered: 0,
             resizing: None,
             rename: None,
             typeahead: TypeAhead::default(),
@@ -551,6 +552,7 @@ impl FileList {
             facts,
             asked: None,
             area: Rc::new(Cell::new(Bounds::default())),
+            wheel: crate::stage::Notches::default(),
             tracking: Rc::new(Cell::new(false)),
             marquee: None,
             dragging: Arc::new(HashSet::new()),
@@ -565,6 +567,25 @@ impl FileList {
     /// Which pane this list shows.
     pub fn pane(&self) -> usize {
         self.pane
+    }
+
+    /// Where the row of `path` is drawn, among the rows drawn last: its picture and the start of its name, which
+    /// is where a flight into a folder begins and one out of it ends ([`crate::stage`]). None when the row is not
+    /// among them or is scrolled out of sight.
+    pub fn spot_of(&self, path: &str, window: &Window) -> Option<Bounds<Pixels>> {
+        let rows = &self.frame.rows;
+        let at = rows.row_of(path)?;
+        let area = self.area.get();
+        let row = ROW_HEIGHT.to_pixels(window.rem_size());
+        let top = area.origin.y + row * layout_rows::line_of_row(rows, at) as f32 - px(self.scroll_top());
+        let width = area.size.width.min(row * SPOT_ROWS_WIDE);
+        let left = if crate::i18n::is_rtl() {
+            area.right() - width
+        } else {
+            area.origin.x
+        };
+        let spot = Bounds::new(point(left, top), size(width, row)).intersect(&area);
+        (!spot.is_empty()).then_some(spot)
     }
 
     /// Gives the list the keyboard (F6 to this pane, a new folder opening).
@@ -1265,14 +1286,6 @@ impl Render for FileList {
         let syncing = crate::perf::span("list sync");
         self.sync(&view, window, cx);
         drop(syncing);
-        // Another folder (or search) than the one drawn last: its rows arrive. The tab's path changes only when the
-        // new listing is in, so this is the frame the rows change; a re-read of the same folder is not an arrival.
-        if self.entered_for.as_deref() != Some(view.facts_key.as_str()) {
-            if self.entered_for.is_some() {
-                self.entered += 1;
-            }
-            self.entered_for = Some(view.facts_key.clone());
-        }
 
         // What this frame's lines are drawn from.
         let tracks = self.tracks(&view, window, cx);
@@ -1355,8 +1368,8 @@ impl Render for FileList {
                     });
                 }
             },
-            // A press or a marquee follows the pointer wherever it goes in the window.
-            move |_, _, window, _| canvas_this.track(window),
+            // A press or a marquee follows the pointer wherever it goes in the window; the zoom is the list's own.
+            move |bounds, _, window, _| canvas_this.track(bounds, window),
         )
         .absolute()
         .size_full();
@@ -1364,12 +1377,7 @@ impl Render for FileList {
         let list = uniform_list("file-list-lines", lines, cx.processor(Self::render_lines))
             .track_scroll(&self.scroll)
             .size_full();
-        // A folder's rows arrive: readable from the first frame, settling upward the last few pixels.
-        let list = div().size_full().child(list).with_animation(
-            ("file-list-enter", self.entered),
-            Animation::new(theme::motion::BASE).with_easing(theme::motion::enter),
-            |rows, delta| rows.opacity(0.35 + 0.65 * delta).top(px(10. * (1. - delta))),
-        );
+        // How a folder's rows arrive is the pane's stage's to say (`crate::stage`): into a folder, out of one.
         let area = div()
             .id("file-list-area")
             .relative()

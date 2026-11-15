@@ -80,7 +80,8 @@ use crate::{drops, i18n, state, t, theme};
 use glint_model::columns::DESCENDING;
 use glint_model::entries::{is_archive_file, is_archived, is_recycled, FileEntry, Sort, SortKey};
 use glint_model::grid::{
-    grid_columns, grid_move, keep_place, marquee_hits, place_of, tile_layout, top_of, GridLayout, Point as ContentPoint,
+    grid_columns, grid_move, keep_place, marquee_hits, place_of, tile_layout, top_of, zoom_tiles, GridLayout,
+    Point as ContentPoint,
 };
 use glint_model::paths::{droppable, is_gallery, is_recent, is_recycle_bin};
 use std::cell::{Cell, RefCell};
@@ -89,12 +90,6 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use thumbnail::Thumbnails;
-
-/// Wheel movement for one tile size: a mouse wheel's notch. Touchpads and fine-grained wheels add up to it.
-const WHEEL_STEP: f32 = 100.0;
-
-/// A pause longer than this starts the wheel's count over.
-const WHEEL_PAUSE: Duration = Duration::from_millis(400);
 
 /// How far a press on a tile moves, in pixels, before it becomes a drag.
 const DRAG_AFTER: f32 = 6.0;
@@ -130,6 +125,10 @@ pub enum FileGridEvent {
     DragStart { paths: Vec<String>, from_archive: bool },
     /// Enter on more than ten files: ask "Open N files?", then `Explorer::open_file` each.
     OpenMany { paths: Vec<String> },
+    /// The zoom has nowhere to go: the tiles are at their biggest (or smallest) in the spin that brought them
+    /// there, or there is no folder under the pointer to go into, or none above to go out to. The pane's stage
+    /// gives a little, to say so.
+    Limit { inward: bool },
 }
 
 impl EventEmitter<FileGridEvent> for FileGrid {}
@@ -182,13 +181,6 @@ enum DropOver {
     Pane,
 }
 
-/// The Ctrl+wheel zoom's count: a notch is one step; finer wheels add up to it.
-#[derive(Default)]
-struct Wheel {
-    turned: f32,
-    last: Option<Instant>,
-}
-
 /// The tiles of one pane's active tab.
 ///
 /// **Actions it handles** (in its `FileList` key context): `OpenItem`, `OpenInNewTab`, `SelectAll`,
@@ -212,10 +204,18 @@ pub struct FileGrid {
     layout: Option<GridLayout>,
     /// Where the tiles were drawn last.
     metrics: Option<Metrics>,
+    /// The rows they were drawn from.
+    drawn: Option<Rows>,
+    /// The tiles' own stage, under the header: a change of their size is flown as a zoom ([`crate::stage`]).
+    zooming: crate::stage::Stagehand,
+    /// The zoom to fly, the size drawn last, and how many zooms there have been.
+    zoom_cue: Option<crate::stage::Cue>,
+    zoomed_to: Option<glint_model::grid::TileSize>,
+    zooms: u64,
+    /// The zoom has gone through to another folder: the tab, the folder, the size its tiles land at, and when.
+    landing: Option<(TabId, String, glint_model::grid::TileSize, Instant)>,
     /// The tab and view whose scroll position was restored last.
     placed_for: Option<(TabId, String)>,
-    /// How many times the folder (or search) shown has changed: each new one's tiles arrive with a short rise.
-    entered: usize,
     /// The last place saved for it, so it is saved when it changes.
     saved_place: Option<f32>,
     /// The focused item the list was last scrolled to.
@@ -228,7 +228,8 @@ pub struct FileGrid {
     dragging: Option<Arc<HashSet<String>>>,
     /// What a drop at the pointer would go into, while files are dragged over the grid.
     drop_over: Option<DropOver>,
-    wheel: Wheel,
+    /// The Ctrl+wheel and pinch zoom's count: a notch is one step; finer wheels add up to it.
+    wheel: crate::stage::Notches,
     /// What the folders read ahead hold: their tiles say it.
     peeks: crate::components::file_list::Peeks,
     type_ahead: keys::TypeAhead,
@@ -259,6 +260,11 @@ impl FileGrid {
                     this.stop_pointer();
                     cx.notify();
                 }
+                // The zoom went through to another folder, and its listing is in: the tiles are at the far end of
+                // their sizes there (before the frame that draws it, so it is drawn so from the first).
+                if let ExplorerEvent::ListingChanged { tab, same: false } = event {
+                    this.land_zoom(*tab, cx);
+                }
             }),
         ];
         // Git's marks arrived or changed: the pills on the tiles, and the faded ignored ones, are drawn again.
@@ -280,8 +286,13 @@ impl FileGrid {
             shown: Rc::new(Cell::new(0)),
             layout: None,
             metrics: None,
+            drawn: None,
+            zooming: crate::stage::Stagehand::default(),
+            zoom_cue: None,
+            zoomed_to: None,
+            zooms: 0,
+            landing: None,
             placed_for: None,
-            entered: 0,
             saved_place: None,
             scrolled_to: None,
             press: None,
@@ -289,7 +300,7 @@ impl FileGrid {
             marquee_scroll: None,
             dragging: None,
             drop_over: None,
-            wheel: Wheel::default(),
+            wheel: crate::stage::Notches::default(),
             peeks: crate::components::file_list::Peeks::default(),
             type_ahead: keys::TypeAhead::default(),
             scrub: scrub::ScrubSlot::default(),
@@ -302,6 +313,28 @@ impl FileGrid {
     /// The pane this grid shows.
     pub fn pane(&self) -> usize {
         self.pane
+    }
+
+    /// Where the tile of `path` is drawn, among the tiles drawn last: where a flight into a folder begins and one
+    /// out of it ends ([`crate::stage`]). None when it is not among them or is scrolled out of sight.
+    pub fn spot_of(&self, path: &str) -> Option<Bounds<Pixels>> {
+        let (metrics, rows) = (self.metrics?, self.drawn.as_ref()?);
+        let at = rows.row_of(path)?;
+        let cols = metrics.cols.max(1);
+        let (row, col) = (at / cols, at % cols);
+        let body = self.body.get();
+        // The tile's start edge, from the body's start edge (its left, or its right in Arabic).
+        let along = metrics.pad + col as f32 * metrics.col_w + metrics.inset;
+        let width = (metrics.col_w - 2. * metrics.inset).max(1.);
+        let left = if i18n::is_rtl() {
+            f32::from(body.origin.x) + metrics.content_w - along - width
+        } else {
+            f32::from(body.origin.x) + along
+        };
+        let top = f32::from(body.origin.y) + row as f32 * metrics.row_height + metrics.inset - self.scroll_top();
+        let height = (metrics.row_height - 2. * metrics.inset).max(1.);
+        let spot = Bounds::new(point(px(left), px(top)), size(px(width), px(height))).intersect(&body);
+        (!spot.is_empty()).then_some(spot)
     }
 
     /// The grid's focus: give it to the grid when its pane takes the keyboard (`window.focus(&grid.focus_handle(), cx)`).
@@ -697,40 +730,103 @@ impl FileGrid {
         }
     }
 
-    /// Ctrl+wheel over the grid: bigger tiles (wheel up) or smaller ones.
+    /// Ctrl+wheel over the grid: bigger tiles (wheel up, away from you, as in Explorer) or smaller ones, and on
+    /// through the folders where the sizes end ([`Self::zoom_by`]).
     fn ctrl_wheel(&mut self, event: &ScrollEvent, cx: &mut Context<Self>) {
+        self.zoom_by(crate::stage::Notches::of_wheel(&event.delta), event.position, cx);
+    }
+
+    /// A touchpad's pinch over the grid: the fingers apart for bigger tiles, as the wheel.
+    fn pinched(&mut self, event: &PinchEvent, cx: &mut Context<Self>) {
+        self.zoom_by(crate::stage::Notches::of_pinch(event.delta), event.position, cx);
+    }
+
+    /// The zoom, by the wheel or a pinch: `delta` in the wheel's measure (above zero for bigger), the pointer at
+    /// `at`. Tiles go a size bigger or smaller a notch. Where the sizes end the zoom goes on: past the biggest,
+    /// into the folder under the pointer; past the smallest, out to the folder above (see
+    /// [`crate::stage::Notches`] for why not in the spin that got there).
+    fn zoom_by(&mut self, delta: f32, at: Point<Pixels>, cx: &mut Context<Self>) {
         // Tiles move to other rows as they zoom, which would make the rename box anew.
-        if self
+        if self.is_renaming() {
+            return;
+        }
+        let size = state::settings(cx).tile_size;
+        let ends = |inward: bool| zoom_tiles(size.as_str(), if inward { 1 } else { -1 }) == size;
+        let turn = self.wheel.turn(delta, Instant::now());
+        if turn.fresh {
+            self.wheel.through = ends(delta > 0.0);
+        }
+        if turn.steps == 0 {
+            return;
+        }
+        let inward = turn.steps > 0;
+        if !ends(inward) {
+            self.zoom(turn.steps, cx);
+        } else if self.wheel.through {
+            self.zoom_through(inward, at, cx);
+        } else if !std::mem::replace(&mut self.wheel.said, true) {
+            cx.emit(FileGridEvent::Limit { inward });
+        }
+    }
+
+    /// The zoom past the tiles' sizes: into the folder (or archive) whose tile is under `at`, or out to the folder
+    /// above. Nothing while the tab is on its way somewhere; the stage gives a little where there is nowhere to go.
+    ///
+    /// The sizes go on through the folders as one ladder: a folder gone into is seen from afar, at the smallest
+    /// tiles, and the folder come out to from nearest, at the biggest. So a notch the other way is the way back,
+    /// and each folder takes the same turns of the wheel.
+    fn zoom_through(&mut self, inward: bool, at: Point<Pixels>, cx: &mut Context<Self>) {
+        use glint_model::grid::TILE_SIZES;
+        let Some(tab) = self.explorer.read(cx).pane_tab(self.pane) else {
+            return;
+        };
+        if tab.loading {
+            return;
+        }
+        let far_end = if inward { TILE_SIZES.first() } else { TILE_SIZES.last() }.map(|spec| spec.size);
+        let lands = |path: String| far_end.map(|size| (tab.id, path, size, Instant::now()));
+        if inward {
+            let folder = self
+                .tile_at(at, tab.rows.len())
+                .and_then(|index| tab.rows.get(index))
+                .filter(|entry| (entry.dir || is_archive_file(entry)) && !is_recycled(entry))
+                .cloned();
+            match folder {
+                Some(folder) => {
+                    self.landing = lands(folder.path.clone());
+                    self.open(&folder, cx);
+                }
+                None => cx.emit(FileGridEvent::Limit { inward }),
+            }
+        } else if tab.find.is_some() || tab.is_this_pc() {
+            cx.emit(FileGridEvent::Limit { inward });
+        } else {
+            self.landing = lands(glint_model::paths::parent_path(&tab.path));
+            self.explorer.update(cx, |explorer, cx| explorer.go_up(cx).detach());
+        }
+    }
+
+    /// Tab `tab` shows another folder: if it is the one the zoom went through to (and it got there soon), the
+    /// tiles take the size they land at.
+    fn land_zoom(&mut self, tab: TabId, cx: &mut Context<Self>) {
+        /// A folder that takes longer than this to open is not where the zoom was going any more.
+        const LANDS_WITHIN: Duration = Duration::from_secs(10);
+        let Some((for_tab, path, size, since)) = self.landing.take() else {
+            return;
+        };
+        if for_tab != tab {
+            // Another tab's folder: the zoom is still on its way.
+            self.landing = Some((for_tab, path, size, since));
+            return;
+        }
+        let there = self
             .explorer
             .read(cx)
-            .pane_tab(self.pane)
-            .is_some_and(|tab| tab.renaming.is_some())
-        {
-            return;
+            .tab(tab)
+            .is_some_and(|tab| glint_model::paths::same_path(&tab.path, &path));
+        if there && since.elapsed() <= LANDS_WITHIN && state::settings(cx).tile_size != size {
+            state::update(cx, |settings| settings.tile_size = size);
         }
-        let delta = match event.delta {
-            // A notch is three lines; multiplied before dividing so that a whole notch is exactly one step.
-            ScrollDelta::Lines(lines) => lines.y * WHEEL_STEP / 3.0,
-            ScrollDelta::Pixels(pixels) => f32::from(pixels.y),
-        };
-        let now = Instant::now();
-        let paused = self
-            .wheel
-            .last
-            .is_none_or(|last| now.duration_since(last) > WHEEL_PAUSE);
-        let turned_back = self.wheel.turned != 0.0 && (delta > 0.0) != (self.wheel.turned > 0.0);
-        if paused || turned_back {
-            self.wheel.turned = 0.0;
-        }
-        self.wheel.last = Some(now);
-        self.wheel.turned += delta;
-        let steps = (self.wheel.turned / WHEEL_STEP).trunc();
-        if steps == 0.0 {
-            return;
-        }
-        self.wheel.turned -= steps * WHEEL_STEP;
-        // Away from you (up) for bigger tiles, as in Explorer. Whole notches only, so the cast is exact.
-        self.zoom(steps as i64, cx);
     }
 
     fn zoom(&mut self, steps: i64, cx: &mut Context<Self>) {
@@ -1183,7 +1279,25 @@ impl Render for FileGrid {
         self.sync_rename(renaming.as_deref(), find_renamed, window, cx);
 
         // The layout: tiles from the tile-size setting and the text size, as many to a row as the width holds.
-        let tile = tile_layout(rem, state::settings(cx).tile_size.as_str());
+        let tile_size = state::settings(cx).tile_size;
+        let tile = tile_layout(rem, tile_size.as_str());
+        // Another size than the one drawn last, in the same folder: the tiles zoom to it about the pointer (the old
+        // size grows, or shrinks, into the new one) instead of jumping.
+        let same_place = self.placed_for.as_ref() == Some(&(tab_id, format!("{view_key}:grid")));
+        if let Some(was) = self
+            .zoomed_to
+            .replace(tile_size)
+            .filter(|was| *was != tile_size && same_place)
+        {
+            self.zooms += 1;
+            self.zoom_cue = Some(crate::stage::Cue {
+                serial: self.zooms,
+                plan: crate::stage::Plan::Resize {
+                    ratio: tile.width / tile_layout(rem, was.as_str()).width.max(1.),
+                    pivot: Some(window.mouse_position()),
+                },
+            });
+        }
         self.thumb = tile.thumb;
         let measured = self.body.get();
         let measured_width = f32::from(measured.size.width);
@@ -1217,10 +1331,6 @@ impl Render for FileGrid {
             top.clamp(0.0, if body_height > 0.0 { most } else { f32::MAX })
         };
         if self.placed_for.as_ref() != Some(&place_key) {
-            // Another folder than the one drawn last (not the first one drawn): its tiles arrive.
-            if self.placed_for.is_some() {
-                self.entered += 1;
-            }
             self.placed_for = Some(place_key.clone());
             self.type_ahead.reset();
             self.scrolled_to = None;
@@ -1243,6 +1353,7 @@ impl Render for FileGrid {
             self.set_scroll_top(next);
         }
         self.layout = Some(layout);
+        self.drawn = Some(rows.clone());
         self.metrics = Some(Metrics {
             cols,
             row_height: layout.row_height,
@@ -1326,12 +1437,9 @@ impl Render for FileGrid {
         .track_scroll(&self.scroll)
         .size_full()
         .pr(px(gutter));
-        // A folder's tiles arrive: there from the first frame, settling upward the last few pixels.
-        let list = div().size_full().child(list).with_animation(
-            ("file-grid-enter", self.entered),
-            Animation::new(theme::motion::BASE).with_easing(theme::motion::enter),
-            |tiles, delta| tiles.opacity(0.35 + 0.65 * delta).top(px(10. * (1. - delta))),
-        );
+        // How a folder's tiles arrive is the pane's stage's to say (`crate::stage`): into a folder, out of one. A
+        // change of their size is the grid's own: only the tiles zoom, under a header that stays.
+        let list = crate::stage::stage(&self.zooming, self.zoom_cue.clone(), div().size_full().child(list));
 
         let name = if search {
             t!("Search results")
@@ -1510,6 +1618,13 @@ impl FileGrid {
                     // Only an active listener can stop the list scrolling too: the capture phase comes first.
                     if phase == DispatchPhase::Capture && event.modifiers.control && bounds.contains(&event.position) {
                         wheeled.update(cx, |this, cx| this.ctrl_wheel(event, cx)).ok();
+                        cx.stop_propagation();
+                    }
+                });
+                let pinched = view.clone();
+                window.on_mouse_event(move |event: &PinchEvent, phase, _, cx| {
+                    if phase == DispatchPhase::Capture && bounds.contains(&event.position) {
+                        pinched.update(cx, |this, cx| this.pinched(event, cx)).ok();
                         cx.stop_propagation();
                     }
                 });

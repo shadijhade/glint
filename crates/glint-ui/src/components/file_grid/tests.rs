@@ -1322,3 +1322,134 @@ fn a_folder_read_ahead_says_what_it_holds_under_its_tile(cx: &mut TestAppContext
     let words = said(&mut env).expect("the folder's tile says what it holds");
     assert!(words.starts_with("1 file"), "{words}");
 }
+
+/// The wheel turned with Ctrl held over the middle of tile `tile`: three lines is a notch.
+fn zoom_over(env: &mut Env, tile: usize, lines: f32) {
+    env.visual.update(|window, cx| {
+        window.render_frame(cx);
+        let at = window.find(("file-grid-tile", tile)).bounds().center();
+        window.dispatch_event(
+            ScrollEvent {
+                position: at,
+                delta: ScrollDelta::Lines(point(0., lines)),
+                modifiers: Modifiers::control(),
+                ..Default::default()
+            }
+            .to_platform_input(),
+            cx,
+        );
+    });
+    env.visual.run_until_parked();
+    env.frame();
+}
+
+/// What the grid tells whoever listens, from here on.
+fn events_of(env: &mut Env) -> Rc<RefCell<Vec<FileGridEvent>>> {
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let (sink, grid) = (events.clone(), env.grid.clone());
+    env.visual.update(|_, cx| {
+        cx.subscribe(&grid, move |_, event: &FileGridEvent, _| {
+            sink.borrow_mut().push(event.clone())
+        })
+        .detach();
+    });
+    events
+}
+
+#[gpui_kit::test]
+fn past_the_biggest_tiles_the_zoom_goes_into_the_folder_under_the_pointer_in_a_spin_of_its_own(
+    cx: &mut TestAppContext,
+) {
+    use glint_model::grid::TileSize;
+    let _guard = testing::lock();
+    let mut env = env(cx, &disk(0), plain());
+    let events = events_of(&mut env);
+    // One size under the biggest (Medium, Large, Extra large). The grid has the keyboard first.
+    env.click(1);
+    env.act(GridLarger);
+    env.act(GridLarger);
+    assert_eq!(env.tile_size(), TileSize::XLarge);
+    // A spin over the folder's tile: a notch to the biggest, and the next notch of the same spin stops there (the
+    // pane is told to give, once), so nobody lands in a folder by turning the wheel too far.
+    zoom_over(&mut env, 0, 3.);
+    assert_eq!(env.tile_size(), TileSize::Huge);
+    zoom_over(&mut env, 0, 3.);
+    zoom_over(&mut env, 0, 3.);
+    assert_eq!(env.path(), "C:\\x");
+    assert!(
+        matches!(events.borrow().as_slice(), [FileGridEvent::Limit { inward: true }]),
+        "{} events",
+        events.borrow().len()
+    );
+    // A spin that begins at the biggest (the other way and back is one) goes on into the folder.
+    zoom_over(&mut env, 0, -3.);
+    assert_eq!(env.tile_size(), TileSize::XLarge);
+    env.act(GridLarger);
+    zoom_over(&mut env, 0, -3.);
+    env.act(GridLarger);
+    assert_eq!(env.tile_size(), TileSize::Huge);
+    zoom_over(&mut env, 0, 3.);
+    env.settle(|env| env.path() == "C:\\x\\docs");
+    // The folder gone into is seen from afar: its tiles are the smallest, and the same spin goes on to bigger.
+    assert_eq!(env.tile_size(), TileSize::Small);
+    zoom_over(&mut env, 0, 3.);
+    assert_eq!(env.tile_size(), TileSize::Medium);
+    assert_eq!(env.path(), "C:\\x\\docs");
+    // At the biggest again, over a file's tile, there is nothing to go into.
+    env.act(GridLarger);
+    env.act(GridLarger);
+    env.act(GridLarger);
+    assert_eq!(env.tile_size(), TileSize::Huge);
+    events.borrow_mut().clear();
+    zoom_over(&mut env, 0, -3.);
+    env.act(GridLarger);
+    zoom_over(&mut env, 0, 3.);
+    assert_eq!(env.path(), "C:\\x\\docs");
+    assert!(matches!(
+        events.borrow().as_slice(),
+        [FileGridEvent::Limit { inward: true }]
+    ));
+}
+
+#[gpui_kit::test]
+fn past_the_smallest_tiles_the_zoom_goes_out_to_the_folder_above(cx: &mut TestAppContext) {
+    use glint_model::grid::TileSize;
+    let _guard = testing::lock();
+    let mut env = env(cx, &disk(0), plain());
+    env.go("C:\\x\\docs");
+    env.click(0);
+    env.act(GridSmaller);
+    assert_eq!(env.tile_size(), TileSize::Small);
+    // The spin begins at the smallest size: out to the folder above, seen from nearest (the biggest tiles), so a
+    // notch back in is the folder just left.
+    zoom_over(&mut env, 0, -3.);
+    env.settle(|env| env.path() == "C:\\x");
+    assert_eq!(env.tile_size(), TileSize::Huge);
+}
+
+#[gpui_kit::test]
+fn a_tiles_spot_is_where_the_tile_is_drawn(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut env = env(cx, &disk(3), plain());
+    env.frame();
+    let tile = env.visual.update(|window, cx| {
+        window.render_frame(cx);
+        window.find(("file-grid-tile", 2usize)).bounds()
+    });
+    let grid = env.grid.clone();
+    let spot = env
+        .visual
+        .update(|_, cx| grid.read(cx).spot_of("C:\\x\\b.txt"))
+        .expect("the tile is drawn");
+    let near = |a: Pixels, b: Pixels| (f32::from(a) - f32::from(b)).abs() < 3.;
+    assert!(
+        near(spot.origin.x, tile.origin.x) && near(spot.origin.y, tile.origin.y),
+        "{spot:?} against {tile:?}"
+    );
+    assert!(
+        near(spot.size.width, tile.size.width) && near(spot.size.height, tile.size.height),
+        "{spot:?} against {tile:?}"
+    );
+    // What the grid doesn't show has no spot.
+    assert_eq!(env.visual.update(|_, cx| grid.read(cx).spot_of("C:\\x\\nothing")), None);
+}

@@ -748,6 +748,30 @@ pub trait Styled: Sized {
         self
     }
 
+    /// Glint: draws this element and its children `scale` times larger about its middle. Paint only: the
+    /// layout and what the pointer hits stay as they are, so it is for motion, and it costs no layout.
+    fn paint_scale(mut self, scale: f32) -> Self {
+        let zoom = self.style().paint_zoom.get_or_insert_with(Default::default);
+        zoom.scale = scale;
+        self
+    }
+
+    /// Glint: the point of this element's box that [`Self::paint_scale`] keeps where it is, in units of the
+    /// box (0.5, 0.5, its middle, unless set).
+    fn paint_origin(mut self, x: f32, y: f32) -> Self {
+        let zoom = self.style().paint_zoom.get_or_insert_with(Default::default);
+        (zoom.origin_x, zoom.origin_y) = (x, y);
+        self
+    }
+
+    /// Glint: draws this element and its children moved by this many pixels. Paint only, as
+    /// [`Self::paint_scale`]: nothing is laid out again.
+    fn paint_offset(mut self, x: crate::Pixels, y: crate::Pixels) -> Self {
+        let zoom = self.style().paint_zoom.get_or_insert_with(Default::default);
+        (zoom.offset_x, zoom.offset_y) = (x.0, y.0);
+        self
+    }
+
     /// Sets the grid columns of this element.
     fn grid_cols(mut self, cols: u16) -> Self {
         self.style().grid_cols = Some(GridTemplate {

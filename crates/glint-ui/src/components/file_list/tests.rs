@@ -9,7 +9,7 @@ use glint_model::columns::ColumnId;
 use glint_model::entries::{attr, with_details, RawEntry, SortKey};
 use glint_model::groups::GroupBy;
 use gpui_kit::test::{TestEventExt as _, TestQueryExt as _, TestWindowExt as _};
-use gpui_kit::{Modifiers, TestAppContext, VisualTestContext};
+use gpui_kit::{InputEvent as _, Modifiers, TestAppContext, VisualTestContext};
 use std::cell::RefCell;
 
 /// A window with a list on a folder of a fake disk, and the events the list raised.
@@ -1985,4 +1985,125 @@ fn a_folder_read_ahead_says_what_it_holds_in_its_row(cx: &mut TestAppContext) {
     ui.press("enter");
     assert_eq!(ui.path(), "C:\\x\\docs");
     assert_eq!(said(&mut ui, 0), None);
+}
+
+impl Ui {
+    /// The middle of row `i`, in the window.
+    fn middle_of(&mut self, i: usize) -> Point<Pixels> {
+        self.visual.update(|window, cx| {
+            window.render_frame(cx);
+            window.find(("file-row", i)).bounds().center()
+        })
+    }
+
+    /// The wheel turned over `at` with Ctrl held: three lines is a notch, away from you above zero.
+    fn zoom_at(&mut self, at: Point<Pixels>, lines: f32) {
+        self.visual.update(|window, cx| {
+            window.render_frame(cx);
+            window.dispatch_event(
+                ScrollEvent {
+                    position: at,
+                    delta: ScrollDelta::Lines(point(0., lines)),
+                    modifiers: ctrl(),
+                    ..Default::default()
+                }
+                .to_platform_input(),
+                cx,
+            );
+        });
+        self.frame();
+    }
+}
+
+#[gpui_kit::test]
+fn ctrl_and_the_wheel_go_into_the_folder_under_the_pointer_and_out_again(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut ui = open(cx, &small_disk(), "C:\\x");
+    let (docs, alpha) = (ui.middle_of(0), ui.middle_of(1));
+    // A notch toward you over a folder's row: into the folder.
+    ui.zoom_at(docs, 3.);
+    assert_eq!(ui.path(), "C:\\x\\docs");
+    // A notch back: out to the folder above, wherever the pointer is.
+    ui.zoom_at(docs, -3.);
+    assert_eq!(ui.path(), "C:\\x");
+    assert!(ui.events().is_empty(), "{:?}", ui.events());
+    // Over a file there is nothing to go into: the folder stays, and the pane is told to give.
+    ui.zoom_at(alpha, 3.);
+    assert_eq!(ui.path(), "C:\\x");
+    assert_eq!(ui.events(), [FileListEvent::Limit { inward: true }]);
+    // Without Ctrl the wheel scrolls, as ever.
+    ui.visual.update(|window, cx| {
+        window.dispatch_event(
+            ScrollEvent {
+                position: docs,
+                delta: ScrollDelta::Lines(point(0., 3.)),
+                ..Default::default()
+            }
+            .to_platform_input(),
+            cx,
+        );
+    });
+    ui.frame();
+    assert_eq!(ui.path(), "C:\\x");
+}
+
+#[gpui_kit::test]
+fn a_touchpads_pinch_goes_into_the_folder_under_it_and_out_again(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut ui = open(cx, &small_disk(), "C:\\x");
+    let docs = ui.middle_of(0);
+    let pinch = |ui: &mut Ui, delta: f32| {
+        ui.visual.update(|window, cx| {
+            window.render_frame(cx);
+            window.dispatch_event(
+                PinchEvent {
+                    position: docs,
+                    delta,
+                    ..Default::default()
+                }
+                .to_platform_input(),
+                cx,
+            );
+        });
+        ui.frame();
+    };
+    // The fingers a little apart: not yet a notch.
+    pinch(&mut ui, 0.1);
+    assert_eq!(ui.path(), "C:\\x");
+    // Half as far again in all: into the folder.
+    pinch(&mut ui, 0.4);
+    assert_eq!(ui.path(), "C:\\x\\docs");
+    // Together again: out.
+    pinch(&mut ui, -0.4);
+    assert_eq!(ui.path(), "C:\\x");
+}
+
+#[gpui_kit::test]
+fn a_rows_spot_is_the_start_of_its_row_where_it_is_drawn(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut ui = open(cx, &small_disk(), "C:\\x");
+    let row = ui.visual.update(|window, cx| {
+        window.render_frame(cx);
+        window.find(("file-row", 2usize)).bounds()
+    });
+    let list = ui.list.clone();
+    let spot_of = |ui: &mut Ui, path: &str| ui.visual.update(|window, cx| list.read(cx).spot_of(path, window));
+    let spot = spot_of(&mut ui, "C:\\x\\berry.png").expect("the row is drawn");
+    // On the row's own line, from its start edge, and no wider than the row.
+    assert!(
+        (f32::from(spot.origin.y) - f32::from(row.origin.y)).abs() < 1.5,
+        "{spot:?} in {row:?}"
+    );
+    assert!(
+        (f32::from(spot.size.height) - f32::from(row.size.height)).abs() < 1.5,
+        "{spot:?} in {row:?}"
+    );
+    assert!(
+        spot.size.width <= row.size.width + px(1.) && spot.size.width > px(40.),
+        "{spot:?} in {row:?}"
+    );
+    // Spelled another way it is the same row; what the list doesn't show has no spot.
+    assert_eq!(spot_of(&mut ui, "c:\\X\\BERRY.png\\"), Some(spot));
+    assert_eq!(spot_of(&mut ui, "C:\\x\\nothing.txt"), None);
+    assert_eq!(spot_of(&mut ui, "C:\\x\\.secret"), None);
 }

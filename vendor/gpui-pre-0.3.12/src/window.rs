@@ -14,7 +14,8 @@ use crate::{
     EntityId, EventEmitter, FileDropEvent, FontId, Global, GlobalElementId, GlyphId, GpuSpecs,
     Hsla, InputHandler, InputPreference, IsZero, KeyBinding, KeyContext, KeyDownEvent, KeyEvent,
     Keystroke, KeystrokeEvent, LayoutId, LineLayoutIndex, Modifiers, ModifiersChangedEvent,
-    MonochromeSprite, MouseButton, MouseEvent, MouseMoveEvent, MouseUpEvent, Path, Pixels,
+    MonochromeSprite, MouseButton, MouseEvent, MouseMoveEvent, MouseUpEvent, PaintPosition,
+    PaintSnapshot, PaintTransform, Path, Pixels,
     PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point,
     PolychromeSprite, Priority, PromptButton, PromptLevel, Quad, Render, RenderGlyphParams,
     RenderImage, RenderImageParams, RenderSvgParams, Replay, ResizeEdge, SMOOTH_SVG_SCALE_FACTOR,
@@ -271,6 +272,11 @@ impl WindowInvalidator {
 
     pub fn not_drawing(&self) -> bool {
         self.inner.borrow().draw_phase == DrawPhase::None
+    }
+
+    /// Glint: whether elements are being painted (rather than laid out or prepainted).
+    pub fn is_painting(&self) -> bool {
+        self.inner.borrow().draw_phase == DrawPhase::Paint
     }
 
     #[track_caller]
@@ -1243,6 +1249,10 @@ pub struct Window {
     pub(crate) rendered_entity_stack: Vec<EntityId>,
     pub(crate) element_offset_stack: Vec<Point<Pixels>>,
     pub(crate) element_opacity: f32,
+    /// Glint: the paint transform in force (every one around the element being drawn, composed), if any.
+    pub(crate) paint_transform: Option<PaintTransform>,
+    /// Glint: how many frames this window has drawn; the frame being drawn is this one plus one.
+    pub(crate) frames_drawn: u64,
     pub(crate) content_mask_stack: Vec<ContentMask<Pixels>>,
     pub(crate) requested_autoscroll: Option<Bounds<Pixels>>,
     /// The [`TextInputConfiguration`] most recently forwarded to the platform
@@ -2422,6 +2432,8 @@ impl Window {
             element_offset_stack: Vec::new(),
             content_mask_stack: Vec::new(),
             element_opacity: 1.0,
+            paint_transform: None,
+            frames_drawn: 0,
             requested_autoscroll: None,
             last_text_input_configuration: None,
             focused_text_input: None,
@@ -3800,6 +3812,8 @@ impl Window {
         let previous_window_active = self.rendered_frame.window_active;
         mem::swap(&mut self.rendered_frame, &mut self.next_frame);
         self.next_frame.clear();
+        self.frames_drawn += 1;
+        self.paint_transform = None;
         let current_focus_path = self.rendered_frame.focus_path();
         let current_window_active = self.rendered_frame.window_active;
         let mut focus_before_listeners = self.focus;
@@ -4530,7 +4544,8 @@ impl Window {
         result
     }
 
-    pub(crate) fn with_element_opacity<R>(
+    /// Glint: public, so an element of the app's own can fade what it paints (a view on its way in or out).
+    pub fn with_element_opacity<R>(
         &mut self,
         opacity: Option<f32>,
         f: impl FnOnce(&mut Self) -> R,
@@ -4546,6 +4561,97 @@ impl Window {
         let result = f(self);
         self.element_opacity = previous_opacity;
         result
+    }
+
+    /// Glint: draws what `f` paints `transform.scale` times larger and moved by `transform.translate` (a point
+    /// `p` of the window lands on `p * scale + translate`), inside any transform already in force. The GPU does
+    /// it: the quads, shadows, paths and sprites painted are placed and sized again, and nothing is laid out or
+    /// rasterized anew. Nothing transformed is drawn outside the content mask in force here.
+    ///
+    /// Only what is painted moves: hitboxes stay where layout put them, so this is for motion (something
+    /// arriving, leaving or answering the pointer), not for placing things. Call it around an element's
+    /// prepaint as well as its paint, with the same transform: a cached view inside is painted again when the
+    /// transform it was painted under changes. Does nothing for `None` and for a transform that changes
+    /// nothing; whoever animates one leaves it out under [`App::reduce_motion`](crate::App::reduce_motion).
+    pub fn with_paint_transform<R>(
+        &mut self,
+        transform: Option<PaintTransform>,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        self.invalidator.debug_assert_paint_or_prepaint();
+
+        let Some(mut transform) =
+            transform.filter(|transform| transform.is_drawable() && !transform.is_identity())
+        else {
+            return f(self);
+        };
+        let scale_factor = self.scale_factor();
+        if (transform.scale - 1.).abs() < 1e-4 {
+            // A move alone lands on whole device pixels, so text stays sharp while it slides.
+            transform.scale = 1.;
+            transform.translate = transform
+                .translate
+                .map(|length| Pixels((length.0 * scale_factor).round() / scale_factor));
+        }
+
+        let previous = self.paint_transform;
+        self.paint_transform = Some(match previous {
+            Some(outer) => transform.then(outer),
+            None => transform,
+        });
+        let painting = self.invalidator.is_painting();
+        if painting {
+            let clip = self.snapped_content_mask().bounds;
+            self.next_frame.scene.push_transform(
+                transform.scale,
+                transform.translate.scale(scale_factor),
+                clip,
+            );
+        }
+        let result = f(self);
+        if painting {
+            self.next_frame.scene.pop_transform();
+        }
+        self.paint_transform = previous;
+        result
+    }
+
+    /// Glint: the paint transform in force (see [`Self::with_paint_transform`]), if any.
+    pub fn paint_transform(&self) -> Option<PaintTransform> {
+        self.paint_transform
+    }
+
+    /// Glint: where painting has come to in the frame being drawn. Take one before and one after painting
+    /// something to name it for [`Self::snapshot_painted`]. This method should only be called during paint.
+    pub fn paint_position(&self) -> PaintPosition {
+        self.invalidator.debug_assert_paint();
+        PaintPosition {
+            frame: self.frames_drawn + 1,
+            index: self.next_frame.scene.len(),
+        }
+    }
+
+    /// Glint: a copy of what the frame on screen painted between two positions taken while it was drawn, to
+    /// paint again with [`Self::paint_snapshot`] (something leaving, drawn on its way out after its element
+    /// is gone). None when the positions are not from the frame on screen.
+    pub fn snapshot_painted(&self, range: Range<PaintPosition>) -> Option<PaintSnapshot> {
+        if range.start.frame != self.frames_drawn || range.end.frame != self.frames_drawn {
+            return None;
+        }
+        self.rendered_frame
+            .scene
+            .snapshot(range.start.index..range.end.index)
+    }
+
+    /// Glint: paints a snapshot again where it was, under the paint transform and the element opacity in
+    /// force, `opacity` times as opaque. This method should only be called during paint.
+    pub fn paint_snapshot(&mut self, snapshot: &PaintSnapshot, opacity: f32) {
+        self.invalidator.debug_assert_paint();
+        let opacity = (opacity * self.element_opacity()).clamp(0., 1.);
+        if opacity <= 0. {
+            return;
+        }
+        self.next_frame.scene.paint_snapshot(snapshot, opacity);
     }
 
     /// Perform prepaint on child elements in a "retryable" manner, so that any side effects

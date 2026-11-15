@@ -304,6 +304,22 @@ impl Rows {
         Some(at)
     }
 
+    /// The index of the row at this location: [`Rows::position_of`], and when the path isn't spelled as the row's is
+    /// (another case, a closing separator), the row that is the same place. That second look reads every row, so
+    /// it is not made in a listing too long for it to go unnoticed.
+    pub fn row_of(&self, path: &str) -> Option<usize> {
+        /// The most rows read one by one for a path spelled another way.
+        const MOST_COMPARED: usize = 5_000;
+        self.position_of(path).or_else(|| {
+            (self.len() <= MOST_COMPARED)
+                .then(|| {
+                    self.iter()
+                        .position(|entry| glint_model::paths::same_path(&entry.path, path))
+                })
+                .flatten()
+        })
+    }
+
     /// Whether `other` is these very rows: the same entries in the same order (shared, not compared).
     pub fn same_lists(&self, other: &Rows) -> bool {
         let same_order = match (&self.order, &other.order) {

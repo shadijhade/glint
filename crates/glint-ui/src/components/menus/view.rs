@@ -674,7 +674,13 @@ impl Render for MenuView {
             .with_animation(
                 ("menu-enter", level),
                 Animation::new(theme::motion::FAST).with_easing(theme::motion::enter),
-                |menu, delta| menu.opacity(0.4 + 0.6 * delta).top(px(-5. * (1. - delta))),
+                // It pops: there from the first frame, growing the last few percent as it clears.
+                |menu, delta| {
+                    let pop = theme::motion::POP;
+                    menu.opacity(0.4 + 0.6 * delta)
+                        .top(px(-5. * (1. - delta)))
+                        .paint_scale(pop + (1. - pop) * delta)
+                },
             )
     }
 }
