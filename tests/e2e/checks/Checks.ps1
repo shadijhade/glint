@@ -423,7 +423,17 @@ Add-Check 'quit' 'closing the window quits the app cleanly (exit code 0) and it 
     $p = $script:E2E.Process
     $main = Get-MainWindow
     [GlintE2E.Win]::Close($main.Handle)
-    Assert-True ($p.WaitForExit(10000)) 'the process exits within 10 s of closing the window'
+    if (-not $p.WaitForExit(10000)) {
+        # Still running: say whether the window was only hidden (Glint kept running in the tray), is still shown
+        # (a question asked before quitting), or closed with the process left behind (quitting hangs), and which
+        # windows the process still has. Without this a failure here said nothing about why.
+        $after = if (-not [GlintE2E.Win]::Exists($main.Handle)) { 'the window closed but the process stayed' }
+                 elseif ([GlintE2E.Win]::Describe($main.Handle).Visible) { 'the window is still shown' }
+                 else { 'the window was hidden, as when Glint keeps running in the tray' }
+        $windows = @([GlintE2E.Win]::TopWindows($p.Id) | Where-Object { $_.Class -ne 'IME' -and $_.Class -ne 'MSCTFIME UI' } |
+            ForEach-Object { '{0} "{1}"{2}' -f $_.Class, $_.Title, $(if ($_.Visible) { '' } else { ' (hidden)' }) }) -join ', '
+        throw "the process didn't exit within 10 s of closing the window: $after; its windows: $windows"
+    }
     Assert-Equal $p.ExitCode 0 'with exit code 0'
     $state = Join-Path $env:APPDATA 'com.shado.shadui-ripgrep\state.json'
     Assert-True (Test-Path -LiteralPath $state) 'state.json was written on the way out'
