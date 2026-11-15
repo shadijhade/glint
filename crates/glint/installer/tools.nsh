@@ -94,8 +94,8 @@
     "Convert document: Word, Markdown, HTML, EPUB and more" \
     "pandoc turns documents into one another: Word, OpenDocument, Markdown, HTML, EPUB, LaTeX, RTF and more, and Markdown into PowerPoint. It runs sandboxed: it reads only the document it's given."
   !insertmacro ${ROW} 30 typst "Typst" 6 tool typst typst.typst \
-    "PDFs from Convert document, and .typ files" \
-    "Typst typesets documents. Convert document makes its PDFs with it, without LaTeX or Word, and .typ files get a preview and Export as PDF."
+    "Convert document: PDFs without LaTeX or Word" \
+    "Typst typesets documents. Convert document makes its PDFs with it, from what pandoc writes, without LaTeX or Word."
   !insertmacro ${ROW} 31 restic "restic" 7 tool restic restic.restic \
     "Back up folders to a drive, a network folder or a cloud" \
     "restic backs up folders, encrypted, each backup adding only what changed. Glint backs up to a USB drive, a network folder or any cloud Remote reaches, and shows the backups in Previous versions."
