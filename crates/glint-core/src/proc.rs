@@ -187,6 +187,17 @@ fn find(name: &str, package: &str, downloaded: Option<&std::path::Path>) -> Opti
     if bundled.is_file() {
         return Some((bundled, Origin::Bundled));
     }
+    // This crate's tests run from target/<profile>/deps, where nothing is bundled: they use the official rg and
+    // fd the installer packs, so a PC (or GitHub's runner) with neither on its PATH runs them too.
+    #[cfg(test)]
+    {
+        let packed = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../glint/binaries")
+            .join(format!("{name}-x86_64-pc-windows-msvc.exe"));
+        if packed.is_file() {
+            return Some((packed, Origin::Bundled));
+        }
+    }
     if let Some(own) = downloaded.map(|d| d.join(&file)).filter(|p| p.is_file()) {
         return Some((own, Origin::Downloaded));
     }
