@@ -89,7 +89,7 @@ start or was aborted, 4 when something was not put back (see below). The last li
 | `search-inside` | Ctrl+Shift+F, a typed word, Enter: the file that holds the word is a row of the results under "Inside files", with the matching line and its number under it; Escape returns to the folder |
 | `settings` | Ctrl+, opens Settings (it is a dialog inside the main window), a section can be chosen, Escape closes it |
 | `tabs-sidebar` | Ctrl+T adds a tab, a sidebar place opens in it, Ctrl+W closes it |
-| `quit` | Closing the window ends the process with exit code 0 and writes `state.json` with the session |
+| `quit` | Closing the window ends the process with exit code 0 and writes `state.json` with the session. When it doesn't end, the failure says whether the window was hidden (kept running in the tray), is still shown, or closed with the process left behind, and lists the windows the process still has |
 
 Every check begins from `Reset-App`: overlays closed, Files mode, one pane, one tab, the arena open with its original
 contents, nothing selected.
@@ -164,3 +164,9 @@ tests/e2e/
   files moments before the app reads them, so the app's first look into a folder can re-read the one above.
 - `Send-Text` presses real keys for what the keyboard layout can type (so key handlers such as type-ahead see them)
   and sends Unicode key events for the rest (Arabic on an English layout).
+- With a redirected stream (`GLINT_E2E_STDERR`), Windows PowerShell 5.1's `Start-Process -PassThru` returns a process
+  without a handle, and once it exits its `ExitCode` is empty: `quit` failed every logged run on "with exit code 0"
+  until `Start-App` opened the handle at once (`$p.Handle`).
+- On 2026-11-14 `quit` failed every run for hours (closing the window left the process running with no window
+  shown). On 2026-11-15 the same binary quit at once and a fresh build passed 18/18, the installed Glint closed.
+  What held it then isn't known; the check now says what it finds if it happens again.
