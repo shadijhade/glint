@@ -3,7 +3,7 @@
 // CARGO_TARGET_DIR). It took the place of Tauri's bundler in 0.10.
 //
 // It builds Glint.exe (cargo build --release -p glint), gathers what the installer carries into one folder
-// (Glint.exe, rg.exe, fd.exe and pdu.exe beside it, the license and the notices, and the instant search
+// (Glint.exe, rg.exe and fd.exe beside it, the license and the notices, and the instant search
 // service when there is one), and runs makensis. It does not sign, publish or install anything: code signing
 // and the updater's signature belong to the release pipeline (see "Signing" below and
 // crates/glint/installer/README.md).
@@ -28,7 +28,7 @@
 // Environment: CARGO_TARGET_DIR (default <repo>/target/ui), MAKENSIS (a makensis.exe to use).
 //
 // Signing: set GLINT_SIGN_COMMAND to a command line with %1 where a file's path goes, such as
-// `signtool sign /fd SHA256 /a "%1"`; it is then run on Glint.exe, rg.exe, fd.exe, pdu.exe and the service
+// `signtool sign /fd SHA256 /a "%1"`; it is then run on Glint.exe, rg.exe, fd.exe and the service
 // before they are packed, on the uninstaller (makensis's !uninstfinalize) and on the finished setup, and then
 // checks that everything it signed carries a valid signature. Left unset, nothing is signed and the setup says
 // so. The script never reads a key: the command does whatever the person who runs the release has set it up to
@@ -109,7 +109,7 @@ if (!existsSync(join(root, "crates", "glint", "resources", "icon.ico"))) problem
 const exeOption = option("--exe");
 const glintExe = exeOption ? resolve(exeOption) : join(releaseDir, "Glint.exe");
 const willBuild = !exeOption && !flag("--no-build");
-/** rg.exe, fd.exe and pdu.exe: next to the built Glint.exe (crates/glint/build.rs puts them there), else the official ones in crates/glint/binaries. */
+/** rg.exe and fd.exe: next to the built Glint.exe (crates/glint/build.rs puts them there), else the official ones in crates/glint/binaries. */
 function tool(name) {
     const beside = join(resolve(glintExe, ".."), `${name}.exe`);
     if (existsSync(beside)) return beside;
@@ -118,7 +118,7 @@ function tool(name) {
 }
 const files = [
     { name: "Glint.exe", from: glintExe, built: willBuild },
-    ...["rg", "fd", "pdu"].map((t) => ({ name: `${t}.exe`, from: tool(t) ?? join(resolve(glintExe, ".."), `${t}.exe`), built: willBuild && !tool(t) })),
+    ...["rg", "fd"].map((t) => ({ name: `${t}.exe`, from: tool(t) ?? join(resolve(glintExe, ".."), `${t}.exe`), built: willBuild && !tool(t) })),
     { name: "LICENSE.txt", from: join(root, "LICENSE") },
     { name: "THIRD_PARTY_LICENSES.md", from: join(root, "THIRD_PARTY_LICENSES.md") },
     { name: "THIRD_PARTY_CRATES.md", from: join(root, "THIRD_PARTY_CRATES.md") },

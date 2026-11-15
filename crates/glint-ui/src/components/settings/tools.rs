@@ -1,7 +1,7 @@
 //! Settings → Tools: the programs Glint drives, and the meaning models (`ToolsSection`, `ToolRow`,
 //! `MeaningRow` and `MultilingualRow` of SettingsView.tsx; the state of tools.ts and meaning.ts).
 //!
-//! rg, fd and pdu come with Glint; the others install when a feature needs them, with winget or from the
+//! rg and fd come with Glint (and pdu's engine, built in); the others install when a feature needs them, with winget or from the
 //! tool's own release. Clouds also reads this model (is rclone there?) and draws [`needed`], the card that
 //! offers to install a missing tool (`ToolNeeded`).
 

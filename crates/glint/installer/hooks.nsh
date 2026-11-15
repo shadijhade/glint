@@ -79,8 +79,10 @@ Var OldDesktopShortcut
 !macroend
 
 !macro NSIS_HOOK_POSTINSTALL
-  ; Glint measured folders with dust until pdu took over: an update removes the dust.exe it left.
+  ; Glint measured folders with dust until pdu took over, and with pdu.exe until pdu's engine was built
+  ; into Glint.exe (after 0.12): an update removes what they left.
   Delete "$INSTDIR\dust.exe"
+  Delete "$INSTDIR\pdu.exe"
 
   ${If} $NoShortcutMode <> 1
     ${If} $OldStartMenuShortcut = 1

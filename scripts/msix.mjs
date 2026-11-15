@@ -1,6 +1,6 @@
 // Builds Glint for the Microsoft Store as an MSIX package (docs/releasing.md, The Microsoft Store): the
 // GPUI build (Glint.exe and the instant search service from cargo build --release -p glint -p shadui-index),
-// rg, fd and pdu, the notices, the Store's logos at every scale and AppxManifest.xml (crates/glint/msix), laid
+// rg and fd, the notices, the Store's logos at every scale and AppxManifest.xml (crates/glint/msix), laid
 // out in a folder and packed by the Windows SDK's makeappx into release/v<version>/Glint_<version>_x64.msix.
 // Nothing here signs it: the Store does, once Partner Center has it.
 //
@@ -89,8 +89,8 @@ const layout = join(out, tryIt ? "msix-try" : identity === TEST ? "msix-test" : 
 rmSync(layout, { recursive: true, force: true });
 mkdirSync(join(layout, "Assets"), { recursive: true });
 const built = from ?? join(targetDir(), "release");
-for (const exe of ["Glint.exe", "shadui-index.exe", "rg.exe", "fd.exe", "pdu.exe"]) {
-    // rg, fd and pdu are beside the build (crates/glint/build.rs copies them), else the official ones.
+for (const exe of ["Glint.exe", "shadui-index.exe", "rg.exe", "fd.exe"]) {
+    // rg and fd are beside the build (crates/glint/build.rs copies them), else the official ones.
     const tool = exe.replace(/\.exe$/, "");
     const source = [join(built, exe), join(root, "crates", "glint", "binaries", `${tool}-x86_64-pc-windows-msvc.exe`)].find(existsSync);
     if (!source) fail(`${exe} isn't in ${built}: build first (without --no-build)`);
@@ -98,7 +98,7 @@ for (const exe of ["Glint.exe", "shadui-index.exe", "rg.exe", "fd.exe", "pdu.exe
 }
 // Windows 10 has to be able to start what's packed: Windows refuses a program whose DLLs or functions it lacks
 // before any of its code runs (scripts/lib/windows-imports.mjs, issue #6).
-const imports = windows10Report(["Glint.exe", "shadui-index.exe", "rg.exe", "fd.exe", "pdu.exe"].map((exe) => join(layout, exe)));
+const imports = windows10Report(["Glint.exe", "shadui-index.exe", "rg.exe", "fd.exe"].map((exe) => join(layout, exe)));
 for (const warning of imports.warnings) console.log(`! ${warning}`);
 if (imports.problems.length) fail(`Windows 10 might not start what the package carries:\n${imports.problems.map((p) => `  - ${p}`).join("\n")}`);
 for (const [file, to] of [["LICENSE", "LICENSE.txt"], ["THIRD_PARTY_LICENSES.md", "THIRD_PARTY_LICENSES.md"], ["THIRD_PARTY_CRATES.md", "THIRD_PARTY_CRATES.md"]]) {

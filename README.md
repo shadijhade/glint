@@ -441,7 +441,7 @@ The tools that ship inside Glint:
 | :--- | :--- | :--- | :--- |
 | [ripgrep](https://github.com/BurntSushi/ripgrep) | 15.2.0 | Searching inside files | MIT or Unlicense |
 | [fd](https://github.com/sharkdp/fd) | 10.5.2 | Finding files by name | MIT or Apache-2.0 |
-| [pdu](https://github.com/KSXGitHub/parallel-disk-usage) | 0.24.0 | Folder sizes and disk-usage maps | Apache-2.0 |
+| [pdu](https://github.com/KSXGitHub/parallel-disk-usage) | 0.24.0 | Folder sizes and disk-usage maps (its engine, built into `Glint.exe`) | Apache-2.0 |
 
 The others, from FFmpeg to rclone, install with one click when a feature needs them: [docs/tools.md](docs/tools.md).
 

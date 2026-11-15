@@ -463,7 +463,6 @@ Var GlintFailed
   StrCpy $GlintFailed ""
   !insertmacro GLINT_CHECK_BUNDLED rg ripgrep
   !insertmacro GLINT_CHECK_BUNDLED fd fd
-  !insertmacro GLINT_CHECK_BUNDLED pdu pdu
   ClearErrors
   ${GetOptions} $CMDLINE "/TOOLS=" $0
   ${IfNot} ${Errors}

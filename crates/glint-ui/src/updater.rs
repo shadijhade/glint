@@ -13,7 +13,7 @@
 //! - Install downloads the setup program with progress, checks its minisign signature with the key the releases are
 //!   signed with ([`PUBLIC_KEY`], `requireSignedVersion` included: a signature for another version is refused)
 //!   **before anything runs it**, asks first when a copy is running or Compare has edits, saves, stops the tools
-//!   (the installer replaces rg, fd and pdu) and runs the setup passively with the arguments the Tauri updater used
+//!   (the installer replaces rg, fd and Glint.exe, which the sizing workers run) and runs the setup passively with the arguments the Tauri updater used
 //!   (`/P /UPDATE /R /ARGS …`, which hooks.nsh's update mode and the relaunch rely on), then quits.
 //! - The Microsoft Store's copy never updates itself (the Store does), and neither does a debug build ([`Policy`]).
 //! - A secondary window (`platform::secondary`) never looks, greets or writes the marks: the main process updates
@@ -1239,8 +1239,9 @@ impl Updater {
         });
     }
 
-    /// Saves, stops the tools (the setup program replaces rg, fd and pdu, which it can't while they run), checks
-    /// the file once more and runs it, then quits. Anything that goes wrong leaves Glint running.
+    /// Saves, stops the tools (the setup program replaces rg, fd and the sizing workers' Glint.exe, which it can't
+    /// while they run), checks the file once more and runs it, then quits. Anything that goes wrong leaves Glint
+    /// running.
     fn launch(&mut self, cx: &mut Context<Self>) {
         let (Some(path), Some(available)) = (self.ready.clone(), self.available.clone()) else {
             return;
