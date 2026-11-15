@@ -38,7 +38,7 @@ use crate::components::pane_head::PaneHead;
 use crate::components::preview::{self, PreviewPane};
 use crate::components::settings::SettingsEvent;
 use crate::components::sidebar::{Sidebar, SidebarEvent, SidebarRequest};
-use crate::components::status_bar::StatusBar;
+use crate::components::status_bar::{Insight, StatusBar, StatusBarEvent};
 use crate::components::tab_strip::{PaneDropZone, TabStrip};
 use crate::components::terminal::{TerminalPane, TerminalPaneEvent};
 use crate::components::this_pc::{ThisPc, ThisPcEvent};
@@ -222,6 +222,7 @@ impl Workspace {
         // In the dock the status bar's words are at the island's two sides: it leaves them room.
         command_bar.update(cx, |bar, cx| bar.set_side_room(DOCK_SIDE_ROOM, cx));
         subscriptions.push(cx.subscribe_in(&command_bar, window, Self::on_command_bar_event));
+        subscriptions.push(cx.subscribe_in(&status, window, Self::on_status_bar_event));
         // The terminal pane: the window lays out again as it opens, closes or gains a tab; closed, the keyboard goes
         // back to the files.
         let terminal = cx.new(|cx| TerminalPane::new(window, cx));
@@ -833,6 +834,29 @@ impl Workspace {
     }
 
     // ---- The command bar, requests, tools -----------------------------------------------------------------------
+
+    /// The chip at the dock's end was pressed: what it points at is shown (docs/gpui/aware, F11).
+    fn on_status_bar_event(
+        &mut self,
+        _: &Entity<StatusBar>,
+        event: &StatusBarEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            // What is changing in the folder: Recent changes.
+            StatusBarEvent::Insight(Insight::Changing(_)) => {
+                let folder = explorer::explorer(cx).read(cx).active_tab().map(|tab| tab.path.clone());
+                if let Some(folder) = folder {
+                    dialogs::timeline::open(window, cx, folder);
+                }
+            }
+            // What fills the drive: the folder's disk usage map, as the island's button shows it.
+            StatusBarEvent::Insight(Insight::NearlyFull(_)) => {
+                self.command_bar.update(cx, |bar, cx| bar.dispatch(Box::new(actions::DiskUsage), window, cx));
+            }
+        }
+    }
 
     fn on_command_bar_event(
         &mut self,

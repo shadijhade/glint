@@ -17,10 +17,13 @@ use crate::explorer::is_disk_image;
 use crate::kit::prelude::*;
 use crate::t;
 use glint_model::entries::{
-    attr, cloud_state, is_archive_file, is_archived, is_browsable, is_closed, is_cloud_file, is_recycled, is_remote,
-    CloudState, FileEntry, InArchive,
+    attr, cloud_state, is_archive_file, is_archived, is_browsable, is_closed, is_cloud_file, is_online_only,
+    is_recycled, is_remote, CloudState, FileEntry, InArchive,
 };
 use glint_model::paths::{is_folder_path, is_gallery, is_recent, is_recycle_bin, parent_path, same_path};
+
+/// The pictures Windows' text recognition reads.
+const TEXT_PICTURES: &[&str] = &["png", "jpg", "jpeg", "jpe", "bmp", "gif", "tif", "tiff", "webp"];
 
 /// The facts about the pane the items are in. Built by the host from the explorer, the saved state and
 /// [`MenuData`]; tests build it by hand.
@@ -79,6 +82,17 @@ pub fn item_menu(targets: &[FileEntry], c: &ItemCtx) -> Vec<Node> {
     // On a remote: read-only, and downloaded to be opened or copied, as an archive's are extracted.
     let remote = targets.iter().any(is_remote);
     let fixed = archived.is_some() || closed || remote;
+    // Why what changes things is greyed out: the first cause that holds.
+    let why_fixed: Option<SharedString> = if archived.is_some() {
+        Some(t!("Nothing changes inside an archive"))
+    } else if remote {
+        Some(t!("Read-only: on a remote connection"))
+    } else if closed {
+        Some(t!("Windows keeps this folder closed"))
+    } else {
+        None
+    };
+    let why_no_other = Some(t!("The other pane shows nothing that can take items"));
     let browses = one.is_some_and(|e| e.dir || is_archive_file(e));
     let pictures: Vec<&FileEntry> = targets.iter().filter(|e| can_convert(e)).collect();
     let media: Vec<&FileEntry> = if fixed {
@@ -133,7 +147,7 @@ pub fn item_menu(targets: &[FileEntry], c: &ItemCtx) -> Vec<Node> {
 
     // Quick-action icon bar at the top.
     let mut strip: Vec<Entry> = vec![
-        Entry::command(t!("Cut"), IconName::Scissors, Command::Cut).disabled(fixed),
+        Entry::command(t!("Cut"), IconName::Scissors, Command::Cut).disabled_because(fixed, &why_fixed),
         Entry::command(t!("Copy"), IconName::Copy, Command::Copy),
     ];
     if let Some(e) = one.filter(|e| e.dir) {
@@ -143,7 +157,7 @@ pub fn item_menu(targets: &[FileEntry], c: &ItemCtx) -> Vec<Node> {
                 IconName::ClipboardPaste,
                 MenuEvent::PasteInto { folder: e.path.clone() },
             )
-            .disabled(fixed),
+            .disabled_because(fixed, &why_fixed),
         );
     }
     strip.push(
@@ -152,7 +166,7 @@ pub fn item_menu(targets: &[FileEntry], c: &ItemCtx) -> Vec<Node> {
         } else {
             Entry::command(t!("Rename {n} items…", n = n), IconName::PenLine, Command::BatchRename).hinted("F2")
         }
-        .disabled(fixed),
+        .disabled_because(fixed, &why_fixed),
     );
     strip.push(Entry::command(
         if n == 1 { t!("Copy path") } else { t!("Copy paths") },
@@ -176,7 +190,7 @@ pub fn item_menu(targets: &[FileEntry], c: &ItemCtx) -> Vec<Node> {
     strip.push(
         Entry::command(t!("Delete"), IconName::Trash, Command::Delete)
             .danger(!fixed)
-            .disabled(fixed),
+            .disabled_because(fixed, &why_fixed),
     );
 
     let mut m: Vec<Option<Node>> = Vec::new();
@@ -322,6 +336,20 @@ pub fn item_menu(targets: &[FileEntry], c: &ItemCtx) -> Vec<Node> {
             .node(),
         );
     }
+    // Windows marked it as downloaded from the internet: one press takes the mark off.
+    let blocked = c.probed.as_ref().and_then(|p| p.origin.as_ref()).is_some_and(|o| o.blocked);
+    if let Some(e) = one.filter(|e| blocked && !e.dir && !fixed) {
+        m.push(
+            Entry::ask(
+                t!("Unblock"),
+                IconName::LockOpen,
+                MenuEvent::Unblock {
+                    paths: vec![e.path.clone()],
+                },
+            )
+            .node(),
+        );
+    }
     // As File Explorer's Previous Versions: what Windows' restore points and backups kept of it.
     if let Some(e) = one.filter(|e| !closed && archived.is_none() && !remote && on_a_drive(&e.path)) {
         m.push(
@@ -420,7 +448,7 @@ pub fn item_menu(targets: &[FileEntry], c: &ItemCtx) -> Vec<Node> {
                     moving: false,
                 },
             )
-            .disabled(!other)
+            .disabled_because(!other, &why_no_other)
             .node(),
         );
         m.push(
@@ -435,10 +463,11 @@ pub fn item_menu(targets: &[FileEntry], c: &ItemCtx) -> Vec<Node> {
                     moving: true,
                 },
             )
-            .disabled(!other || fixed)
+            .disabled_because(!other || fixed, if !other { &why_no_other } else { &why_fixed })
             .node(),
         );
     }
+    // G1: "Move or copy to" goes here.
     if let Some((a, b)) = pair {
         m.push(
             Entry::ask(
@@ -686,6 +715,20 @@ pub fn item_menu(targets: &[FileEntry], c: &ItemCtx) -> Vec<Node> {
     if !pdfs.is_empty() {
         m.push(Some(pdf_tools_menu(&pdfs)));
     }
+    // Windows' own text recognition, on a picture that is on the disk.
+    let readable_picture = |e: &&FileEntry| {
+        !e.dir && on_disk(e) && !is_online_only(e) && TEXT_PICTURES.contains(&e.ext.as_str())
+    };
+    if let Some(e) = one.filter(readable_picture) {
+        m.push(
+            Entry::ask(
+                t!("Copy the text in it"),
+                IconName::ScanText,
+                MenuEvent::CopyTextIn { path: e.path.clone() },
+            )
+            .node(),
+        );
+    }
     if let Some(e) = one.filter(|e| can_wallpaper(e)) {
         m.push(
             Entry::ask(
@@ -743,7 +786,7 @@ pub fn item_menu(targets: &[FileEntry], c: &ItemCtx) -> Vec<Node> {
                     state: CloudPin::Free,
                 },
             )
-            .disabled(freed)
+            .disabled_because(freed, &Some(t!("It is online only already")))
             .node(),
         );
     }

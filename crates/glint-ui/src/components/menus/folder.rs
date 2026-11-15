@@ -101,9 +101,14 @@ pub fn folder_menu(folder: &str, current: bool, c: &FolderCtx) -> Vec<Node> {
         )
     };
     let refresh = || Entry::command(t!("Refresh"), IconName::RotateCw, Command::Refresh);
-    let select_all =
-        |disabled: bool| Entry::command(t!("Select all"), IconName::ListChecks, Command::SelectAll).disabled(disabled);
-    let undo = || Entry::command(undo_label(&c.data), IconName::Undo2, Command::Undo).disabled(c.data.undo.is_none());
+    let select_all = |disabled: bool| {
+        Entry::command(t!("Select all"), IconName::ListChecks, Command::SelectAll)
+            .disabled_because(disabled, &why_not(false, true, false))
+    };
+    let undo = || {
+        Entry::command(undo_label(&c.data), IconName::Undo2, Command::Undo)
+            .disabled_because(c.data.undo.is_none(), &Some(t!("Nothing to undo")))
+    };
 
     // A remote's folder: read-only; its connection is changed from its top.
     if is_remote_path(folder) {
@@ -207,7 +212,10 @@ pub fn folder_menu(folder: &str, current: bool, c: &FolderCtx) -> Vec<Node> {
                 MenuEvent::PasteInto { folder: owned.clone() },
             )
         }
-        .disabled((current && find) || in_archive || shut),
+        .disabled_because(
+            (current && find) || in_archive || shut,
+            &why_not(in_archive, shut, current && find),
+        ),
     );
     if current {
         strip.push(undo());
@@ -240,7 +248,10 @@ pub fn folder_menu(folder: &str, current: bool, c: &FolderCtx) -> Vec<Node> {
         when(current, || {
             Node::Item(
                 Entry::command(t!("New folder"), IconName::FolderPlus, Command::NewFolder)
-                    .disabled(find || archive.is_some() || shut),
+                    .disabled_because(
+                        find || archive.is_some() || shut,
+                        &why_not(archive.is_some(), shut, find),
+                    ),
             )
         }),
         new_menu,
@@ -251,14 +262,15 @@ pub fn folder_menu(folder: &str, current: bool, c: &FolderCtx) -> Vec<Node> {
                     IconName::ClipboardPaste,
                     MenuEvent::PasteQueued { folder: owned.clone() },
                 )
-                .disabled(find || in_archive || shut),
+                .disabled_because(find || in_archive || shut, &why_not(in_archive, shut, find)),
             )
         }),
         when(current && view.is_some(), || Node::Item(select_all(unlisted))),
         separator(),
         when(current, || {
             Node::Item(
-                Entry::ask(t!("Folder sizes"), IconName::HardDrive, MenuEvent::FolderSizes).disabled(find || unlisted),
+                Entry::ask(t!("Folder sizes"), IconName::HardDrive, MenuEvent::FolderSizes)
+                    .disabled_because(find || unlisted, &why_not(false, unlisted, find)),
             )
         }),
         when(reads, || {
@@ -441,6 +453,20 @@ pub fn folder_menu(folder: &str, current: bool, c: &FolderCtx) -> Vec<Node> {
         m.push(closed_note());
     }
     visible_items(m.into_iter().flatten().collect())
+}
+
+/// Why a row of the folder's menu is greyed out: the first cause that holds (inside an archive, a folder
+/// Windows keeps closed, a search's results shown).
+fn why_not(in_archive: bool, closed: bool, find: bool) -> Option<SharedString> {
+    if in_archive {
+        Some(t!("Nothing changes inside an archive"))
+    } else if closed {
+        Some(t!("Windows keeps this folder closed"))
+    } else if find {
+        Some(t!("Not while a search's results are shown"))
+    } else {
+        None
+    }
 }
 
 fn open_entry(folder: &str) -> Entry {
