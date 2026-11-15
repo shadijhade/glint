@@ -314,20 +314,6 @@ pub fn folder_menu(folder: &str, current: bool, c: &FolderCtx) -> Vec<Node> {
                     },
                 ))
             }),
-            when(reads, || {
-                Node::Item(Entry::ask(
-                    t!("Look for passwords and keys"),
-                    IconName::KeyRound,
-                    MenuEvent::Secrets { path: owned.clone() },
-                ))
-            }),
-            when(reads, || {
-                Node::Item(Entry::ask(
-                    t!("Check with YARA rules"),
-                    IconName::ScanSearch,
-                    MenuEvent::Yara { path: owned.clone() },
-                ))
-            }),
         ],
     )));
     m.push(Some(Node::menu(

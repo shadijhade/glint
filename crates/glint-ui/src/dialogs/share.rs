@@ -2198,21 +2198,14 @@ pub fn send_to_pc_with(
     open_with(window, cx, model, View::Send, tools);
 }
 
-/// "Send to another PC…": looks for passwords and keys in `path` first (when Kingfisher is there), asking
-/// before it goes on if it finds any, then sends it (`offerToPC`).
+/// "Send to another PC…": sends `path` (`offerToPC`).
 pub fn offer_to_pc(window: &mut Window, cx: &mut App, path: String) {
-    let paths = vec![path.clone()];
-    super::check::secrets_check_first(window, cx, paths, t!("Send anyway"), move |window, cx| {
-        send_to_pc(window, cx, path.clone())
-    });
+    send_to_pc(window, cx, path)
 }
 
-/// "Share on this network…": the same look first, then the dialog with the choices (`offerOnNetwork`).
+/// "Share on this network…": the dialog with the choices (`offerOnNetwork`).
 pub fn offer_on_network(window: &mut Window, cx: &mut App, path: String) {
-    let paths = vec![path.clone()];
-    super::check::secrets_check_first(window, cx, paths, t!("Share anyway"), move |window, cx| {
-        open(window, cx, vec![path.clone()])
-    });
+    open(window, cx, vec![path])
 }
 
 /// "Share with Windows…": Windows' Share flyout for `paths` (`windowsShare`). Says so if Windows can't.

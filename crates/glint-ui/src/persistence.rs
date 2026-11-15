@@ -499,17 +499,8 @@ pub fn init_at(cx: &mut App, path: PathBuf) {
     .detach();
 }
 
-/// `GLINT_LANGUAGE` and `GLINT_THEME` (debug builds), applied over the settings in use.
+/// `GLINT_THEME` (debug builds), applied over the settings in use.
 fn apply_debug_overrides(cx: &mut App) {
-    if let Ok(language) = std::env::var("GLINT_LANGUAGE") {
-        crate::state::update(cx, |s| {
-            s.language = match language.as_str() {
-                "ar" => glint_model::store::Language::Ar,
-                "en" => glint_model::store::Language::En,
-                _ => s.language,
-            }
-        });
-    }
     if let Ok(theme) = std::env::var("GLINT_THEME") {
         crate::state::update(cx, |s| {
             s.theme = match theme.as_str() {
@@ -1108,7 +1099,7 @@ pub fn import_settings(state: &mut AppState, file: &SettingsFile, parts: &[Part]
 #[cfg(test)]
 mod tests {
     use super::*;
-    use glint_model::store::{Language, RemoteKind, RuleAction, Theme};
+    use glint_model::store::{RemoteKind, RuleAction, Theme};
 
     /// A fresh folder per test.
     fn temp_dir(name: &str) -> PathBuf {
@@ -1121,7 +1112,6 @@ mod tests {
     fn sample() -> AppState {
         let mut s = AppState::default();
         s.settings.theme = Theme::Dark;
-        s.settings.language = Language::Ar;
         s.pinned = vec!["C:\\Work".into()];
         s.saved_searches = vec![SavedSearch {
             query: "*.rs".into(),
@@ -1186,7 +1176,6 @@ mod tests {
         let loaded = load_from(&path);
         assert_eq!(loaded.state.pinned, vec!["D:\\x".to_string()]);
         assert_eq!(loaded.state.settings.theme, Theme::Dark);
-        assert_eq!(loaded.state.settings.language, Settings::default().language);
         assert!(loaded.set_aside.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1397,10 +1386,9 @@ mod tests {
             Part::FolderViews,
         ];
         let did = import_settings(&mut state, &file, &all, false);
-        // Settings: known and fitting options are taken; the wrong type (language: 5) and unknown ones are not.
+        // Settings: known and fitting options are taken; a wrong type and unknown ones are not.
         assert_eq!(state.settings.theme, Theme::Light);
         assert!(state.settings.show_hidden);
-        assert_eq!(state.settings.language, Language::Ar);
         assert_eq!(did[0], "settings");
         assert_eq!(
             state.saved_searches.len(),
@@ -1432,7 +1420,6 @@ mod tests {
         // Replacing starts from nothing.
         let did = import_settings(&mut state, &file, &[Part::Pinned, Part::Settings], true);
         assert_eq!(state.pinned, vec!["c:\\work".to_string(), "D:\\new".to_string()]);
-        assert_eq!(state.settings.language, Settings::default().language);
         assert_eq!(did, vec!["settings".to_string(), "2 pinned".to_string()]);
     }
 
@@ -1491,7 +1478,6 @@ mod tests {
     /// A saved state with a session and a last folder, which a secondary window must not take.
     fn with_session() -> AppState {
         let mut state = sample();
-        state.settings.language = Language::En;
         state.last_folder = Some("C:\\Last".into());
         state.session = Some(glint_model::store::Session {
             dual: false,
@@ -1574,7 +1560,6 @@ mod tests {
         // What a changed state in the main window looks like: a light theme, another pinned folder.
         let mut newer = sample();
         newer.settings.theme = Theme::Light;
-        newer.settings.language = Language::En;
         newer.pinned.push("C:\\Newly".into());
         newer.session = None;
         let heard = std::rc::Rc::new(std::cell::Cell::new(0));
@@ -1611,7 +1596,6 @@ mod tests {
         let path = dir.join(STATE_FILE);
         let mut first = sample();
         first.settings.theme = Theme::Dark;
-        first.settings.language = Language::En;
         save_to(&path, &first).expect("saves");
         cx.executor().allow_parking();
         cx.update(|cx| {
@@ -1622,7 +1606,6 @@ mod tests {
         // The main window saves a new theme (the same atomic replace it always uses).
         let mut second = sample();
         second.settings.theme = Theme::Light;
-        second.settings.language = Language::En;
         save_to(&path, &second).expect("saves");
         let mut followed = false;
         for _ in 0..600 {

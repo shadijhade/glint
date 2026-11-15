@@ -20,7 +20,6 @@ pub mod grid;
 pub mod groups;
 pub mod hex;
 pub mod i18n;
-pub mod i18n_ar;
 pub mod json_tree;
 pub mod markdown;
 pub mod paths;

@@ -24,7 +24,7 @@ pub mod action_run;
 pub mod backup;
 /// Renaming several items at once (BatchRenameDialog.tsx).
 pub mod batch_rename;
-/// Checking files: secrets, malware scans, YARA (CheckDialog.tsx).
+/// Scanning files with Microsoft Defender (CheckDialog.tsx).
 pub mod check;
 /// Cleaning up a drive or folder (CleanupDialog.tsx).
 pub mod cleanup;

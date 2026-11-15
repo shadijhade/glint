@@ -748,8 +748,6 @@ fn the_tools_menu_grows_as_the_bar_folds_and_is_greyed_for_what_cant_be_done() {
             "Receive from another PC here…",
             "# Check",
             "Scan this folder with Microsoft Defender",
-            "Look for passwords and keys left in files",
-            "Check with YARA rules",
         ]
     );
     // At 4 the map and folder sizes come in; at 5 the palette too.
@@ -826,7 +824,6 @@ fn the_tools_are_greyed_in_a_read_only_place_and_a_remote_has_no_clean_up() {
         "Send this folder to another PC…",
         "Receive from another PC here…",
         "Scan this folder with Microsoft Defender",
-        "Look for passwords and keys left in files",
     ] {
         assert!(entry(&nodes, off).disabled, "{off}");
     }
@@ -1391,24 +1388,24 @@ fn in_arabic_the_bar_mirrors_and_the_tooltips_are_the_catalogs(cx: &mut TestAppC
     rig.go("C:\\Work");
     rig.select(&["C:\\Work\\تقرير.txt"]);
     // The start edge is the right: New folder is right of the palette, and the view toggles are at the left end.
-    let new = rig.find("مجلد جديد").expect("the catalog's New folder").1;
-    let palette = rig.find("لوحة الأوامر (Ctrl+K)").expect("the catalog's palette").1;
+    let new = rig.find("New folder").expect("the catalog's New folder").1;
+    let palette = rig.find("Command palette (Ctrl+K)").expect("the catalog's palette").1;
     assert!(
         new.left() > palette.left(),
         "New folder {new:?} is at the start (right), the palette {palette:?} at the end"
     );
     // Cut, Paste, hidden items and the preview pane are in the catalog with their keys.
     for name in [
-        "قص (Ctrl+X)",
-        "لصق (Ctrl+V)",
-        "إظهار العناصر المخفية (Ctrl+H)",
-        "جزء المعاينة (Alt+P)",
+        "Cut (Ctrl+X)",
+        "Paste (Ctrl+V)",
+        "Show hidden items (Ctrl+H)",
+        "Preview pane (Alt+P)",
     ] {
         assert!(rig.present(name), "{name}");
     }
     // Cut and Copy keep their order along the reading direction: Cut is first, so it is right of Copy.
-    let cut = rig.find("قص (Ctrl+X)").expect("cut").1;
-    let paste = rig.find("لصق (Ctrl+V)").expect("paste").1;
+    let cut = rig.find("Cut (Ctrl+X)").expect("cut").1;
+    let paste = rig.find("Paste (Ctrl+V)").expect("paste").1;
     assert!(cut.left() > paste.left());
     // A sentence nobody translated stays English, whatever the direction.
     assert!(rig.present("Rename (F2) · Ctrl+Shift+R renames many"));
@@ -1453,7 +1450,7 @@ fn the_arabic_bar_in_the_recycle_bin_and_an_archive_names_things_in_arabic_or_en
     // The catalog has "Restore"; the archive note has no Arabic yet and stays English.
     assert!(rig.present("Read-only archive") && rig.present("Extract all"));
     rig.go(glint_model::paths::RECYCLE_BIN);
-    assert!(rig.present("استعادة"), "{:?}", rig.buttons());
+    assert!(rig.present("Restore"), "{:?}", rig.buttons());
     testing::set_rtl(false);
 }
 

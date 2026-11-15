@@ -1669,7 +1669,7 @@ mod tests {
         settle(&mut visual, |cx| has(cx, &label));
         assert_eq!(role_of(&mut visual, &label), Some(Role::Group));
         // The dialog's own name is the catalog's Arabic.
-        assert_eq!(role_of(&mut visual, "ما نُقل وحُذف"), Some(Role::Group));
+        assert_eq!(role_of(&mut visual, "Moved and deleted"), Some(Role::Group));
         testing::set_rtl(false);
     }
 }

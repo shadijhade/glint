@@ -410,8 +410,6 @@ fn the_folders_own_tools_ask_about_the_folder() {
         folder_event("share-network"),
         MenuEvent::ShareOnNetwork { path: HERE.into() }
     );
-    assert_eq!(folder_event("secrets"), MenuEvent::Secrets { path: HERE.into() });
-    assert_eq!(folder_event("yara"), MenuEvent::Yara { path: HERE.into() });
     assert_eq!(
         find(&commands, "send-pc").unwrap().label.as_ref(),
         "Send this folder to another PC"
@@ -435,17 +433,9 @@ fn one_selected_item_is_what_x_ray_sends_and_shares_name() {
         menu_event(find(&commands, "share-network").unwrap()),
         MenuEvent::ShareOnNetwork { path: path("a.txt") }
     );
-    assert_eq!(
-        menu_event(find(&commands, "secrets").unwrap()),
-        MenuEvent::Secrets { path: path("a.txt") }
-    );
-    // Two items: no single subject to send or share; the folder is still checked as a whole.
+    // Two items: no single subject to send or share.
     let commands = actions(&with_selected(&["a.txt", "b.txt"]));
     assert!(find(&commands, "send-pc").is_none() && find(&commands, "share-network").is_none());
-    assert_eq!(
-        menu_event(find(&commands, "secrets").unwrap()),
-        MenuEvent::Secrets { path: HERE.into() }
-    );
     // Nothing on the keyboard or selected: nothing to X-Ray.
     assert!(find(&actions(&with_selected(&[])), "file-xray").is_none());
 }
@@ -496,8 +486,6 @@ fn locks_and_scans_name_the_selection_and_remote_places_get_none() {
     for id in [
         "who-locks",
         "defender",
-        "secrets",
-        "yara",
         "send-pc",
         "compress",
         "terminal",

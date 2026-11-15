@@ -779,39 +779,33 @@ impl Workspace {
         }
     }
 
-    /// Compress to: a .zip, .7z or .tar.zst beside the items, after looking for secrets in them.
-    fn compress(paths: Vec<String>, format: explorer::CompressFormat, window: &mut Window, cx: &mut App) {
-        dialogs::check::secrets_check_first(window, cx, paths.clone(), t!("Compress anyway"), move |_, cx| {
-            let paths = paths.clone();
-            Self::explorer(cx, |e, cx| e.compress(paths, format, None, cx).detach())
-        });
+    /// Compress to: a .zip, .7z or .tar.zst beside the items.
+    fn compress(paths: Vec<String>, format: explorer::CompressFormat, _window: &mut Window, cx: &mut App) {
+        Self::explorer(cx, |e, cx| e.compress(paths, format, None, cx).detach())
     }
 
-    /// Compress with a password: after looking for secrets, the password (a .7z by default; a .zip keeps its
-    /// names readable), then the archive beside the items.
+    /// Compress with a password: the password (a .7z by default; a .zip keeps its names readable), then the archive
+    /// beside the items.
     fn compress_with_password(paths: Vec<String>, window: &mut Window, cx: &mut App) {
         let what = match paths.as_slice() {
             [one] => format!("“{}”", base_name(one)),
             _ => plural(paths.len(), "item"),
         };
-        dialogs::check::secrets_check_first(window, cx, paths.clone(), t!("Compress anyway"), move |window, cx| {
-            let paths = paths.clone();
-            dialogs::password::ask_compress_password(
-                window,
-                cx,
-                what.clone(),
-                dialogs::password::Format::SevenZ,
-                move |format, password, _, cx| {
-                    let format = match format {
-                        dialogs::password::Format::Zip => explorer::CompressFormat::Zip,
-                        dialogs::password::Format::SevenZ => explorer::CompressFormat::SevenZ,
-                    };
-                    let password = (!password.is_empty()).then_some(password);
-                    let paths = paths.clone();
-                    Self::explorer(cx, |e, cx| e.compress(paths, format, password, cx).detach())
-                },
-            )
-        });
+        dialogs::password::ask_compress_password(
+            window,
+            cx,
+            what,
+            dialogs::password::Format::SevenZ,
+            move |format, password, _, cx| {
+                let format = match format {
+                    dialogs::password::Format::Zip => explorer::CompressFormat::Zip,
+                    dialogs::password::Format::SevenZ => explorer::CompressFormat::SevenZ,
+                };
+                let password = (!password.is_empty()).then_some(password);
+                let paths = paths.clone();
+                Self::explorer(cx, |e, cx| e.compress(paths, format, password, cx).detach())
+            },
+        );
     }
 
     /// The list or the grid for the active tab (`chooseView`): a map it showed goes first.
@@ -1100,15 +1094,7 @@ impl Workspace {
             MenuEvent::Timeline { folder } => dialogs::timeline::open(window, cx, folder.clone()),
             MenuEvent::Cleanup { folder } => dialogs::cleanup::open(window, cx, folder),
             MenuEvent::XRay { path } => dialogs::xray::open(window, cx, path.clone()),
-            MenuEvent::Defender { paths } => {
-                dialogs::check::open(window, cx, paths.clone(), dialogs::check::What::Defender)
-            }
-            MenuEvent::Secrets { path } => {
-                dialogs::check::open(window, cx, vec![path.clone()], dialogs::check::What::Secrets)
-            }
-            MenuEvent::Yara { path } => {
-                dialogs::check::open(window, cx, vec![path.clone()], dialogs::check::What::Yara)
-            }
+            MenuEvent::Defender { paths } => dialogs::check::open(window, cx, paths.clone()),
             MenuEvent::Rule { folder } => dialogs::rules::open(window, cx, Some(folder.clone())),
             MenuEvent::CompressInPlace { paths } => dialogs::compress_in_place::open(window, cx, paths.clone()),
             MenuEvent::Restore { paths } => Self::explorer(cx, |e, cx| {
@@ -1181,7 +1167,6 @@ impl Workspace {
                     Self::compress(folders, explorer::CompressFormat::SevenZ, window, cx)
                 })
             }
-            MenuEvent::BackToJpeg { paths } => dialogs::shrink::back_to_jpeg(window, cx, paths.clone()),
             MenuEvent::ConvertPictures { paths } => dialogs::convert::open(window, cx, paths.clone()),
             MenuEvent::Media { paths, tool } => dialogs::media::open(window, cx, paths.clone(), *tool),
             MenuEvent::EditSongs { paths } => dialogs::song::open(window, cx, paths.clone()),

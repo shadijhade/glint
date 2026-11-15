@@ -569,11 +569,12 @@ fn about_updates_row_mirrors_in_arabic(cx: &mut TestAppContext) {
     };
     let (row, button) = place(&mut visual);
     assert!(button > row, "left to right: Install is at the end, on the right");
-    visual.update(|_, cx| state::update(cx, |s| s.language = glint_model::store::Language::Ar));
+    testing::set_rtl(true);
+    visual.update(|_, cx| cx.refresh_windows());
     visual.run_until_parked();
-    assert!(crate::i18n::is_rtl());
     reveal(&mut visual, &view, "settings-button-about-install");
     let (row, button) = place(&mut visual);
-    assert!(button < row, "right to left: Install is at the end, on the left");
+    assert!(button < row, "mirrored: Install is at the end, on the left");
     assert!(label_of(&mut visual, "settings-button-about-install").is_some());
+    testing::set_rtl(false);
 }

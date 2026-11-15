@@ -70,15 +70,15 @@ fn rows_say_how_they_differ_from_the_other_pane_and_the_same_ones_are_dimmed(cx:
 }
 
 #[gpui_kit::test]
-fn the_pills_are_there_in_the_arabic_interface_too(cx: &mut TestAppContext) {
+fn the_pills_are_there_in_a_mirrored_layout_too(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let mut ui = side_by_side(cx);
     testing::set_rtl(true);
     ui.frame();
-    // The words are in Arabic now ("Only here" is "هنا فقط"): the pill is named after the file.
+    // The pill is named after the file, mirrored or not.
     let found = ui.visual.update(|window, cx| {
         window.render_frame(cx);
-        window.try_find_by_label("هنا فقط: berry.png").is_some()
+        window.try_find_by_label("Only here: berry.png").is_some()
     });
     testing::set_rtl(false);
     assert!(found);

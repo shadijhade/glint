@@ -486,7 +486,7 @@ fn every_section_of_settings_has_every_control_named(cx: &mut TestAppContext) {
         let fake = std::sync::Arc::new(Fake::new());
         let (mut visual, view) = open_settings(cx, &fake, None);
         testing::set_rtl(rtl);
-        let sections: Vec<&'static str> = view.read_with(&visual, |v, _| v.sections().to_vec());
+        let sections: Vec<&'static str> = crate::components::settings::SettingsView::all_sections();
         assert!(sections.len() >= 8, "Settings has its sections, saw {sections:?}");
         let mut seen = 0;
         for section in sections {

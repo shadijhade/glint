@@ -1,5 +1,5 @@
-//! What features 0.12 removed left on users' PCs: photo, speech and meaning search's downloads and what they
-//! learned, paired devices' key and pairings, and the built-in Typst's previews. [`sweep`] deletes exactly those,
+//! What removed features left on users' PCs: 0.12's photo, speech and meaning search's downloads and what they
+//! learned, paired devices' key and pairings, and the built-in Typst's previews; 0.13's retired tools. [`sweep`] deletes exactly those,
 //! once per start, on a background thread (startup.rs in glint-ui), and nothing else. Whisper's model
 //! (`models\whisper-base`) stays: Media's Subtitles still uses it (whisper.rs).
 
@@ -30,6 +30,16 @@ const RETIRED: &[&str] = &[
     "devices.json",
     // The built-in Typst's pictures of .typ files' pages (docconvert.rs).
     "typst-previews",
+    // Tools 0.13 no longer offers, as Glint downloaded them: Kingfisher and YARA-X (Check's secrets and YARA
+    // rules), c2patool and Magika (File X-Ray's Content Credentials and real type), ab-av1, libjxl and Ghostscript
+    // (Make smaller's VMAF search, JPEG XL and PDF pictures). One installed with winget is the person's own.
+    "tools/kingfisher",
+    "tools/yara-x",
+    "tools/c2patool",
+    "tools/magika",
+    "tools/ab-av1",
+    "tools/libjxl",
+    "tools/ghostscript",
 ];
 
 /// Deletes what the removed features left in Glint's data folder, if it's there.

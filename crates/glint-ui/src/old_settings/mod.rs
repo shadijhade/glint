@@ -912,10 +912,7 @@ mod tests {
                         state.visits.len(),
                         state.folder_views.len()
                     );
-                    println!(
-                        "theme {:?}, language {:?}",
-                        state.settings.theme, state.settings.language
-                    );
+                    println!("theme {:?}", state.settings.theme);
                 }
                 println!("places {:?}", data.book_places);
                 println!(

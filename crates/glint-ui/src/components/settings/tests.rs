@@ -5,7 +5,7 @@ use super::backend::{Backend, Fut, IndexInfo, IndexState, Known, McpSetup, ToolI
 use super::*;
 use crate::testing;
 use glint_core::{agents, content, openers, rclone, term, verbs};
-use glint_model::store::{Backdrop, Language as LanguageChoice, Theme};
+use glint_model::store::{Backdrop, Theme};
 use gpui_kit::test::{TestQueryExt as _, TestWindowExt as _};
 use gpui_kit::{TestAppContext, VisualTestContext};
 use std::collections::VecDeque;
@@ -92,6 +92,7 @@ pub(super) fn tool(id: &str, name: &str, origin: Option<&str>) -> ToolInfo {
         path: origin.map(|_| format!("C:\\tools\\{id}.exe")),
         version: origin.map(|_| "1.0.0".into()),
         pinned: Some("1.0.0".into()),
+        update: None,
         removable: origin == Some("downloaded"),
     }
 }
@@ -342,11 +343,7 @@ pub(crate) fn open_settings(
         let file = dir.join("state.json");
         let _ = std::fs::remove_file(&file);
         crate::persistence::init_at(cx, file);
-        // The saved settings come with the language of the PC the tests run on; the tests read English.
-        state::update(cx, |s| {
-            s.language = LanguageChoice::En;
-            s.backdrop = Backdrop::Solid;
-        });
+        state::update(cx, |s| s.backdrop = Backdrop::Solid);
     });
     let (mut visual, _) = testing::open_window(cx, |_, cx| cx.new(|_| Host));
     let backend: std::sync::Arc<dyn Backend> = fake.clone();
@@ -402,8 +399,59 @@ pub(super) fn type_into(cx: &mut VisualTestContext, input: &Entity<InputState>, 
     cx.run_until_parked();
 }
 
-/// Scrolls the page down until the element with this id can be clicked.
+/// The open Settings view, if there is one.
+fn open_view(cx: &mut VisualTestContext) -> Option<Entity<SettingsView>> {
+    cx.update(|_, cx| cx.try_global::<super::Open>().and_then(|open| open.0.upgrade()))
+}
+
+/// Shows the page with the element `id` on it, if it isn't on the page shown: tests click what they want wherever
+/// it is, as they did when every section was on one long page.
+fn show_page_with(cx: &mut VisualTestContext, id: &str) {
+    let id = SharedString::from(id.to_string());
+    let present = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.try_find(id.clone()).is_some()
+        })
+    };
+    if present(cx) {
+        return;
+    }
+    let Some(view) = open_view(cx) else { return };
+    for page in Page::ALL {
+        cx.update(|window, cx| view.update(cx, |view, cx| view.show_page(page, window, cx)));
+        cx.run_until_parked();
+        if present(cx) {
+            return;
+        }
+    }
+}
+
+/// Scrolls the page until the element `id` on it can be clicked, if it's in Settings' page at all (dialogs over
+/// Settings and the side list are left as they are).
+fn scroll_into_view(cx: &mut VisualTestContext, id: &str) {
+    let Some(view) = open_view(cx) else { return };
+    let id = SharedString::from(id.to_string());
+    for _ in 0..60 {
+        let below = cx.update(|window, cx| {
+            window.render_frame(cx);
+            let Some(body) = window.try_find("settings-body").map(|b| b.bounds()) else { return false };
+            window.try_find(id.clone()).is_some_and(|e| {
+                let b = e.bounds();
+                b.left() >= body.left() && b.right() <= body.right() && b.top() >= body.top() && b.bottom() > body.bottom() - px(24.)
+            })
+        });
+        if !below {
+            return;
+        }
+        cx.update(|_, cx| view.read(cx).scroll_by(px(120.)));
+        cx.run_until_parked();
+    }
+}
+
+/// Shows the page with the element `id` on it, and scrolls it down until the element can be clicked.
 pub(super) fn reveal(cx: &mut VisualTestContext, view: &Entity<SettingsView>, id: &str) {
+    show_page_with(cx, id);
     for _ in 0..60 {
         let visible = cx.update(|window, cx| {
             window.render_frame(cx);
@@ -423,6 +471,8 @@ pub(super) fn reveal(cx: &mut VisualTestContext, view: &Entity<SettingsView>, id
 }
 
 pub(super) fn click(cx: &mut VisualTestContext, id: &str) {
+    show_page_with(cx, id);
+    scroll_into_view(cx, id);
     let id = SharedString::from(id.to_string());
     cx.update(|window, cx| {
         window.render_frame(cx);
@@ -431,9 +481,16 @@ pub(super) fn click(cx: &mut VisualTestContext, id: &str) {
     cx.run_until_parked();
 }
 
-/// Scrolls the page to a section by its name on the left, as a click does.
+/// Opens the page with a section: by its name on the left, as a click does, or by the section's own id for one
+/// that shares a page (Text search skips is on Inside files).
 pub(super) fn go_to(cx: &mut VisualTestContext, slot: &str) {
-    click(cx, &format!("settings-nav-{slot}"));
+    // As the name's click does (the side list may be scrolled past it in a small test window).
+    if let Some(view) = open_view(cx) {
+        match Page::ALL.into_iter().find(|page| page.slot() == slot) {
+            Some(page) => cx.update(|window, cx| view.update(cx, |view, cx| view.show_page(page, window, cx))),
+            None => cx.update(|_, cx| view.update(cx, |view, cx| view.scroll_to(slot, cx))),
+        }
+    }
     frame(cx);
     cx.run_until_parked();
     frame(cx);
@@ -454,21 +511,20 @@ fn settings_opens_as_a_named_dialog_with_every_section_listed(cx: &mut TestAppCo
         assert!(!window.find_all_by_role(Role::Dialog).is_empty(), "no Dialog role");
     });
     assert_eq!(role_of(&mut visual, "Settings"), Some(Role::Group));
-    // The names on the left, one button each, in the TypeScript's order and wording.
+    // The pages on the left, one button each, in groups.
     for (slot, name) in [
+        ("overview", "Overview"),
         ("appearance", "Appearance"),
         ("files", "Files"),
+        ("history", "History"),
+        ("terminal", "Terminal"),
         ("instant-search", "Instant search"),
         ("find-files-by-name", "Find files"),
         ("quick-search", "Quick search"),
-        ("ai-agents", "AI agents"),
         ("search-text-ripgrep", "Inside files"),
-        ("text-search-skips", "Text search skips"),
-        ("terminal", "Terminal"),
-        ("check", "Check"),
         ("clouds", "Clouds"),
+        ("ai-agents", "AI agents"),
         ("tools", "Tools"),
-        ("history", "History"),
         ("about", "About"),
     ] {
         let found = visual.update(|window, cx| {
@@ -483,11 +539,15 @@ fn settings_opens_as_a_named_dialog_with_every_section_listed(cx: &mut TestAppCo
         );
     }
     assert_eq!(role_of(&mut visual, "Settings sections"), Some(Role::Navigation));
-    // The page is the sections in order; Content waits until its service has answered.
+    assert!(!has(&mut visual, "Check"), "Check went with YARA-X");
+    assert!(!has(&mut visual, "Text search skips") || view.read_with(&visual, |v, _| v.page()) == Page::Inside);
+    // It opens on the Overview, one page at a time; Inside files has the content index first, once it answered.
+    assert_eq!(view.read_with(&visual, |v, _| v.page()), Page::Overview);
+    assert_eq!(view.read_with(&visual, |v, _| v.sections().to_vec()), ["overview"]);
+    go_to(&mut visual, "search-text-ripgrep");
     let order = visual.update(|_, cx| view.read(cx).sections().to_vec());
-    assert_eq!(&order[..3], &["appearance", "files", "instant-search"]);
-    assert_eq!(order.last().copied(), Some("about"));
-    assert!(order.contains(&"search-inside-files-instantly"));
+    assert_eq!(order, ["search-inside-files-instantly", "search-text-ripgrep", "text-search-skips"]);
+    assert_eq!(SettingsView::all_sections().last().copied(), Some("about"));
 }
 
 #[gpui_kit::test]
@@ -515,6 +575,7 @@ fn a_segmented_choice_marks_the_chosen_option_and_writes_the_setting(cx: &mut Te
     let _guard = testing::lock();
     let fake = std::sync::Arc::new(Fake::new());
     let (mut visual, _) = open_settings(cx, &fake, None);
+    go_to(&mut visual, "appearance");
     let role = visual.update(|window, cx| {
         window.render_frame(cx);
         window.find("settings-choice-theme").role()

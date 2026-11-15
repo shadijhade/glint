@@ -119,7 +119,7 @@ pub struct ToolInfo {
     pub id: String,
     pub name: String,
     pub used_for: String,
-    /// What Install tries first: "winget" or "release".
+    /// What Install tries first: "release" (winget only when the download can't be had).
     pub source: String,
     /// "bundled", "downloaded" or "installed"; `None` when it's missing.
     pub origin: Option<String>,
@@ -127,6 +127,8 @@ pub struct ToolInfo {
     pub version: Option<String>,
     /// The version its release download gets.
     pub pinned: Option<String>,
+    /// The version Update would bring: only for a copy Glint downloaded that is known to be older.
+    pub update: Option<String>,
     /// Glint downloaded this copy, so it can remove it.
     pub removable: bool,
 }
@@ -142,6 +144,7 @@ impl ToolInfo {
             path: tool.path.clone(),
             version: tool.version.clone(),
             pinned: tool.pinned.map(str::to_string),
+            update: tool.update.map(str::to_string),
             removable: tool.removable,
         }
     }
@@ -505,6 +508,7 @@ mod tests {
             path: Some("C:\\rg.exe".into()),
             version: Some("14.1.0".into()),
             pinned: Some("14.1.0"),
+            update: None,
             removable: false,
         });
         assert_eq!((tool.id.as_str(), tool.origin.as_deref()), ("rg", Some("bundled")));

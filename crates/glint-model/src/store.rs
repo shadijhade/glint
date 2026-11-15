@@ -221,15 +221,6 @@ pub enum Theme {
     System,
 }
 
-/// The interface's language (i18n): Windows' own where Glint speaks it, or one chosen.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Language {
-    System,
-    En,
-    Ar,
-}
-
 /// Windows 11's Mica behind the title bar and the sidebar, or a solid window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -305,7 +296,6 @@ pub struct ColumnWidths {
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
     pub theme: Theme,
-    pub language: Language,
     pub backdrop: Backdrop,
     pub accent: Accent,
     pub font_size: FontSize,
@@ -375,8 +365,6 @@ pub struct Settings {
     pub terminal_follow: bool,
     /// The disk-usage map's Growth colors: what grew in the last this many days (1, 7 or 30).
     pub growth_days: u32,
-    /// The YARA rules files are checked with: a .yar file, or a folder of them ("" until chosen).
-    pub yara_rules: String,
     /// A folder's README.md above its list, and whether it's open (or folded to its title).
     pub show_readme: bool,
     pub readme_open: bool,
@@ -389,7 +377,6 @@ impl Default for Settings {
         let strings = |items: &[&str]| items.iter().map(|s| (*s).to_string()).collect::<Vec<String>>();
         Settings {
             theme: Theme::System,
-            language: Language::System,
             backdrop: Backdrop::Mica,
             accent: Accent::Glint,
             font_size: FontSize::Medium,
@@ -488,7 +475,6 @@ impl Default for Settings {
             terminal_height: None,
             terminal_follow: true,
             growth_days: 7,
-            yara_rules: String::new(),
             show_readme: true,
             readme_open: false,
             zoxide: false,
@@ -809,7 +795,6 @@ lenient_deserialize!(ColumnWidths {
 });
 lenient_deserialize!(Settings {
     "theme" => theme,
-    "language" => language,
     "backdrop" => backdrop,
     "accent" => accent,
     "fontSize" => font_size,
@@ -855,7 +840,6 @@ lenient_deserialize!(Settings {
     "terminalHeight" => terminal_height,
     "terminalFollow" => terminal_follow,
     "growthDays" => growth_days,
-    "yaraRules" => yara_rules,
     "showReadme" => show_readme,
     "readmeOpen" => readme_open,
     "zoxide" => zoxide,
@@ -1186,7 +1170,7 @@ mod tests {
     fn expected_default_json() -> String {
         let settings = format!(
             concat!(
-                r#"{{"theme":"system","language":"system","backdrop":"mica","accent":"glint","fontSize":"medium","#,
+                r#"{{"theme":"system","backdrop":"mica","accent":"glint","fontSize":"medium","#,
                 r#""showLineNumbers":true,"defaultSearchPath":"","maxResults":10000,"autoOpenPreview":true,"#,
                 r#""confirmBeforeReplace":true,"editorPath":"","exclusions":{},"saveSearchHistory":true,"#,
                 r#""maxHistoryItems":1000,"startFolder":"home","restoreTabs":true,"showHidden":false,"#,
@@ -1198,7 +1182,7 @@ mod tests {
                 r#""quickShortcut":"Ctrl+Alt+F","keepInTray":false,"startWithWindows":false,"#,
                 r#""compareSubfolders":false,"compareContents":false,"columns":{{}},"previewWidth":null,"#,
                 r#""dualSplit":null,"gitTrusted":[],"terminalShell":"","terminalHeight":null,"#,
-                r#""terminalFollow":true,"growthDays":7,"yaraRules":"","showReadme":true,"readmeOpen":false,"#,
+                r#""terminalFollow":true,"growthDays":7,"showReadme":true,"readmeOpen":false,"#,
                 r#""zoxide":false}}"#
             ),
             DEFAULT_EXCLUSIONS
@@ -1518,7 +1502,6 @@ mod tests {
         assert_eq!(s.query, "keep");
         assert_eq!(s.pinned, vec!["C:/a".to_string()]);
         assert_eq!(s.settings.tile_size, TileSize::Medium);
-        assert_eq!(s.settings.language, Language::System);
         assert_eq!(s.settings.max_history_items, d.max_history_items);
         assert_eq!(s.settings.list_columns, d.list_columns);
         assert_eq!(s.settings.theme, Theme::Dark);

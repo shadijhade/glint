@@ -268,19 +268,14 @@ impl StatusBar {
         crate::dialogs::batch_rename::open(window, cx, paths);
     }
 
-    /// A zip of the selected items beside them, once the secrets check is through: what "Compress to > Zip file"
-    /// does (`secretsCheckFirst`, then `compressEntries`).
-    fn zip(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// A zip of the selected items beside them: what "Compress to > Zip file" does (`compressEntries`).
+    fn zip(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         let paths = self.selected_paths(cx);
         if paths.is_empty() {
             return;
         }
-        let explorer = self.explorer.clone();
-        crate::dialogs::check::secrets_check_first(window, cx, paths.clone(), t!("Zip anyway"), move |_, cx| {
-            let paths = paths.clone();
-            explorer.update(cx, |e, cx| {
-                e.compress(paths, explorer::CompressFormat::Zip, None, cx).detach()
-            });
+        self.explorer.update(cx, |e, cx| {
+            e.compress(paths, explorer::CompressFormat::Zip, None, cx).detach()
         });
     }
 
