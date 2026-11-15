@@ -242,6 +242,7 @@ impl MenuHost {
             return nodes;
         }
         let picks = Self::picks(&nodes, facts, probed, 3, cx);
+        // G1: the usual place goes in this Vec.
         smart::dress(nodes, head(), &picks, facts.shape, Vec::new())
     }
 

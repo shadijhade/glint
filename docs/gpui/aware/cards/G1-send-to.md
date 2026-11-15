@@ -36,7 +36,7 @@ With no places each heading has only its "Choose a folder…".
 ## The two marked places
 
 - **`item.rs`**, at the comment: `if !fixed { m.push(Some(send_to::menu(&paths, &c.places, &c.folder))); }`. Not in the Recycle Bin's menu, not for `fixed` items.
-- **`mod.rs`**, at the comment: before building the menu, set `ctx.places = aware::places_for(cx, &ext)` where `ext` is `shared_ext(&chosen)`, or `""` when every target is a folder, and leave `places` empty for anything else (a mix has no one place); then pass `send_to::usual_row(&paths, &ctx.places, ext, folders_only, &ctx.folder).into_iter().collect()` as `dress`'s `extra`. `MenuHost::suggestions` (the island) passes no extra: the island offers only what a rule or a habit of actions puts first.
+- **`mod.rs`**: the host builds an item menu in `item_nodes` and dresses it in `dressed`, which ends with the marked line `smart::dress(nodes, head(), &picks, facts.shape, Vec::new())`. Give `dressed` one more parameter, `extra: Vec<Node>`, passed on to `smart::dress` in place of that `Vec::new()` (the folder menus' calls pass `Vec::new()`). In `item_nodes`, before `item_menu` is called, set `ctx.places = aware::places_for(cx, &ext)` where `ext` is `shared_ext(&chosen)`, or `""` when every target is a folder, and leave `places` empty for anything else (a mix has no one place); then pass `send_to::usual_row(&paths, &ctx.places, ext, folders_only, &ctx.folder).into_iter().collect()` as `dress`'s `extra`. `MenuHost::suggestions` (the island) passes no extra: the island offers only what a rule or a habit of actions puts first.
 
 ## What changes in the old tests (`menus/tests.rs`)
 
