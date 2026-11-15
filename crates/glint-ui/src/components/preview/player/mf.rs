@@ -35,6 +35,8 @@ use windows::Win32::Graphics::Direct3D11::{
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
 use windows::Win32::Graphics::Dxgi::IDXGIAdapter;
 use windows::Win32::Media::MediaFoundation::*;
+// Looked up, not linked (glint-core's mfapi.rs): Windows' N editions have no Media Foundation.
+use glint_core::mfapi::{MFCreateAttributes, MFCreateDXGIDeviceManager, MFCreateFile, MFShutdown, MFStartup};
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
 };

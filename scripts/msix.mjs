@@ -28,6 +28,7 @@ import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { root, targetDir, workspaceVersion } from "./lib/project.mjs";
+import { windows10Report } from "./lib/windows-imports.mjs";
 import { signService } from "./sign-service.mjs";
 import { hasUpdateKey, unlockUpdateKey } from "./update-key.mjs";
 
@@ -95,6 +96,11 @@ for (const exe of ["Glint.exe", "shadui-index.exe", "rg.exe", "fd.exe", "pdu.exe
     if (!source) fail(`${exe} isn't in ${built}: build first (without --no-build)`);
     copyFileSync(source, join(layout, exe));
 }
+// Windows 10 has to be able to start what's packed: Windows refuses a program whose DLLs or functions it lacks
+// before any of its code runs (scripts/lib/windows-imports.mjs, issue #6).
+const imports = windows10Report(["Glint.exe", "shadui-index.exe", "rg.exe", "fd.exe", "pdu.exe"].map((exe) => join(layout, exe)));
+for (const warning of imports.warnings) console.log(`! ${warning}`);
+if (imports.problems.length) fail(`Windows 10 might not start what the package carries:\n${imports.problems.map((p) => `  - ${p}`).join("\n")}`);
 for (const [file, to] of [["LICENSE", "LICENSE.txt"], ["THIRD_PARTY_LICENSES.md", "THIRD_PARTY_LICENSES.md"], ["THIRD_PARTY_CRATES.md", "THIRD_PARTY_CRATES.md"]]) {
     copyFileSync(join(root, file), join(layout, to));
 }

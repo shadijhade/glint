@@ -41,6 +41,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync,
 import { delimiter, join, resolve } from "node:path";
 import { checkSignatures } from "./lib/codesign.mjs";
 import { root, workspaceVersion } from "./lib/project.mjs";
+import { windows10Report } from "./lib/windows-imports.mjs";
 
 const args = process.argv.slice(2);
 const flag = (name) => args.includes(name);
@@ -218,6 +219,13 @@ if (service) {
         copyFileSync(serviceSig, join(stage, "shadui-index.exe.sig"));
     }
 }
+
+// Windows 10 has to be able to start what's packed: Windows refuses a program whose DLLs or functions it lacks
+// before any of its code runs (scripts/lib/windows-imports.mjs, issue #6).
+const imports = windows10Report(readdirSync(stage).filter((f) => f.endsWith(".exe")).map((f) => join(stage, f)));
+for (const warning of imports.warnings) console.log(`\n! ${warning}`);
+if (imports.problems.length) fail(`Windows 10 might not start what the installer carries:\n${imports.problems.map((p) => `  - ${p}`).join("\n")}`);
+console.log("\nWindows 10 has every DLL and function Glint.exe and the service import.");
 
 mkdirSync(resolve(out, ".."), { recursive: true });
 rmSync(out, { force: true });

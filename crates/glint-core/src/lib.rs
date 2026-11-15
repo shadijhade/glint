@@ -40,6 +40,8 @@ pub mod mcp;
 pub mod metadata;
 pub mod media;
 pub mod media_tools;
+#[cfg(windows)]
+pub mod mfapi;
 pub mod newmenu;
 pub mod ocr;
 pub mod ondemand;

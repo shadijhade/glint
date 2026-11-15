@@ -107,7 +107,11 @@ Prefer crates that are light and pure Rust, and say what one adds to `Glint.exe`
 
 ## Updating a bundled tool
 
-Download the `x86_64-pc-windows-msvc` build from the tool's official GitHub release, check its SHA-256 against the digest GitHub shows for the asset, and replace the file in `crates/glint/binaries/` (keep the `-x86_64-pc-windows-msvc.exe` suffix). Then update the version in `README.md` and `THIRD_PARTY_LICENSES.md`.
+Download the `x86_64-pc-windows-msvc` build from the tool's official GitHub release, check its SHA-256 against the digest GitHub shows for the asset, and replace the file in `crates/glint/binaries/` (keep the `-x86_64-pc-windows-msvc.exe` suffix). Then update the version in `README.md` and `THIRD_PARTY_LICENSES.md`, and run `npm run check-imports -- crates/glint/binaries/<tool>-x86_64-pc-windows-msvc.exe` to see whether the new build imports anything Windows 10 might not have ([why](docs/releasing.md#windows-10-can-start-it)).
+
+## Calling a Windows function
+
+Windows refuses to start a program that imports a DLL or function it doesn't have, so `Glint.exe` imports only what Windows 10 1809 has in every edition, and the installer and MSIX scripts check it ([why and how](docs/releasing.md#windows-10-can-start-it)). Before using a function from the `windows` crate, check its Microsoft Learn page's Minimum supported client. One from Windows 11 (or later than Windows 10 1809) is looked up at run time with `GetProcAddress`, as `crates/glint-core/src/ioring.rs` does, and Media Foundation's functions go through `crates/glint-core/src/mfapi.rs` (Windows' N editions have none). A new import that Windows 10 does have goes into `scripts/windows10-imports.json` with `npm run check-imports -- --update`.
 
 ## Licensing
 

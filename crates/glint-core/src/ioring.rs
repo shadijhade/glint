@@ -2,6 +2,11 @@
 //! 4 KB, a photo's header) are queued by the hundred and the kernel works through them together, which
 //! is what an NVMe drive needs to go at full speed: one thread reading one file after another leaves it
 //! mostly idle. Windows 10 has no I/O rings: `read_many` says so (None), and callers read the usual way.
+//!
+//! The ring's functions are looked up when first needed, never linked: linking them makes Glint.exe import
+//! api-ms-win-core-ioring-l1-1-0.dll, which Windows 10 doesn't have, and Windows then refuses to start Glint
+//! at all (issue #6). The installer and MSIX scripts refuse to pack a Glint.exe that imports anything
+//! Windows 10 lacks (scripts/lib/windows-imports.mjs), so the next function like these is caught before it ships.
 
 use std::path::Path;
 
@@ -26,16 +31,20 @@ const BATCH: usize = 128;
 pub fn read_many(asks: &[Ask]) -> Option<Vec<Option<Got>>> {
     use windows::Win32::Foundation::{CloseHandle, GENERIC_READ, HANDLE, S_OK};
     use windows::Win32::Storage::FileSystem::{
-        BuildIoRingReadFile, CloseIoRing, CreateFileW, CreateIoRing, GetFileInformationByHandle, PopIoRingCompletion, SubmitIoRing, BY_HANDLE_FILE_INFORMATION,
-        FILE_FLAG_OVERLAPPED, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, IORING_BUFFER_REF, IORING_BUFFER_REF_0, IORING_CQE, IORING_CREATE_ADVISORY_FLAGS_NONE,
-        IORING_CREATE_FLAGS, IORING_CREATE_REQUIRED_FLAGS_NONE, IORING_HANDLE_REF, IORING_HANDLE_REF_0, IORING_REF_RAW, IORING_VERSION_3, IOSQE_FLAGS_NONE, OPEN_EXISTING,
+        CreateFileW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_FLAG_OVERLAPPED, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, HIORING, IORING_BUFFER_REF,
+        IORING_BUFFER_REF_0, IORING_CQE, IORING_CREATE_ADVISORY_FLAGS_NONE, IORING_CREATE_FLAGS, IORING_CREATE_REQUIRED_FLAGS_NONE, IORING_HANDLE_REF, IORING_HANDLE_REF_0,
+        IORING_REF_RAW, IORING_VERSION_3, IOSQE_FLAGS_NONE, OPEN_EXISTING,
     };
     use windows::core::PCWSTR;
 
+    let api = ring_api()?;
     let slices: usize = asks.iter().map(|a| a.slices.len()).sum::<usize>().max(1);
     let queue = (BATCH * 2).min(slices).next_power_of_two() as u32;
     let flags = IORING_CREATE_FLAGS { Required: IORING_CREATE_REQUIRED_FLAGS_NONE, Advisory: IORING_CREATE_ADVISORY_FLAGS_NONE };
-    let ring = unsafe { CreateIoRing(IORING_VERSION_3, flags, queue, queue * 2) }.ok()?;
+    let mut ring = HIORING::default();
+    if unsafe { (api.create)(IORING_VERSION_3, flags, queue, queue * 2, &mut ring) }.is_err() {
+        return None;
+    }
     let mut out: Vec<Option<Got>> = Vec::with_capacity(asks.len());
     for batch in asks.chunks(BATCH) {
         // Open them all, then queue every slice of every one.
@@ -56,21 +65,21 @@ pub fn read_many(asks: &[Ask]) -> Option<Vec<Option<Got>>> {
                 let data = IORING_BUFFER_REF { Kind: IORING_REF_RAW, Buffer: IORING_BUFFER_REF_0 { Address: buffers[f][s].as_mut_ptr().cast() } };
                 // Which file and slice, packed in the entry's user data.
                 let tag = (f << 8) | s;
-                if unsafe { BuildIoRingReadFile(ring, file, data, len, offset, tag, IOSQE_FLAGS_NONE) }.is_err() {
+                if unsafe { (api.build_read)(ring, file, data, len, offset, tag, IOSQE_FLAGS_NONE) }.is_err() {
                     failed[f] = true;
                     continue;
                 }
                 queued += 1;
                 if queued >= queue {
                     // The queue is full: let it drain before queueing more.
-                    let _ = unsafe { SubmitIoRing(ring, queued, u32::MAX, None) };
-                    drain(ring, &mut buffers, &mut failed, &mut queued);
+                    let _ = unsafe { (api.submit)(ring, queued, u32::MAX, std::ptr::null_mut()) };
+                    drain(api, ring, &mut buffers, &mut failed, &mut queued);
                 }
             }
         }
         if queued > 0 {
-            let _ = unsafe { SubmitIoRing(ring, queued, u32::MAX, None) };
-            drain(ring, &mut buffers, &mut failed, &mut queued);
+            let _ = unsafe { (api.submit)(ring, queued, u32::MAX, std::ptr::null_mut()) };
+            drain(api, ring, &mut buffers, &mut failed, &mut queued);
         }
         for (f, handle) in handles.into_iter().enumerate() {
             let got = handle.filter(|_| !failed[f]).map(|handle| {
@@ -90,14 +99,14 @@ pub fn read_many(asks: &[Ask]) -> Option<Vec<Option<Got>>> {
         }
     }
     unsafe {
-        let _ = CloseIoRing(ring);
+        let _ = (api.close)(ring);
     }
     return Some(out);
 
     /// Takes every completion there is, trimming each buffer to what was read (an error empties it).
-    fn drain(ring: windows::Win32::Storage::FileSystem::HIORING, buffers: &mut [Vec<Vec<u8>>], failed: &mut [bool], queued: &mut u32) {
+    fn drain(api: &RingApi, ring: HIORING, buffers: &mut [Vec<Vec<u8>>], failed: &mut [bool], queued: &mut u32) {
         let mut cqe = IORING_CQE::default();
-        while *queued > 0 && unsafe { PopIoRingCompletion(ring, &mut cqe) } == S_OK {
+        while *queued > 0 && unsafe { (api.pop)(ring, &mut cqe) } == S_OK {
             *queued -= 1;
             let (f, s) = (cqe.UserData >> 8, cqe.UserData & 0xFF);
             if let Some(buffer) = buffers.get_mut(f).and_then(|b| b.get_mut(s)) {
@@ -110,6 +119,48 @@ pub fn read_many(asks: &[Ask]) -> Option<Vec<Option<Got>>> {
             }
         }
     }
+}
+
+/// The I/O ring's functions (Windows 11 and later), as ioringapi.h declares them.
+#[cfg(windows)]
+mod ring_fns {
+    use windows::core::HRESULT;
+    use windows::Win32::Storage::FileSystem::{HIORING, IORING_BUFFER_REF, IORING_CQE, IORING_CREATE_FLAGS, IORING_HANDLE_REF, IORING_SQE_FLAGS, IORING_VERSION};
+    pub type Create = unsafe extern "system" fn(IORING_VERSION, IORING_CREATE_FLAGS, u32, u32, *mut HIORING) -> HRESULT;
+    pub type BuildRead = unsafe extern "system" fn(HIORING, IORING_HANDLE_REF, IORING_BUFFER_REF, u32, u64, usize, IORING_SQE_FLAGS) -> HRESULT;
+    pub type Submit = unsafe extern "system" fn(HIORING, u32, u32, *mut u32) -> HRESULT;
+    pub type Pop = unsafe extern "system" fn(HIORING, *mut IORING_CQE) -> HRESULT;
+    pub type Close = unsafe extern "system" fn(HIORING) -> HRESULT;
+    pub type Found = unsafe extern "system" fn() -> isize;
+}
+
+#[cfg(windows)]
+struct RingApi {
+    create: ring_fns::Create,
+    build_read: ring_fns::BuildRead,
+    submit: ring_fns::Submit,
+    pop: ring_fns::Pop,
+    close: ring_fns::Close,
+}
+
+/// The I/O ring's functions, found once; None on Windows 10, which has none.
+#[cfg(windows)]
+fn ring_api() -> Option<&'static RingApi> {
+    static API: std::sync::LazyLock<Option<RingApi>> = std::sync::LazyLock::new(|| unsafe {
+        use ring_fns::*;
+        use std::mem::transmute;
+        use windows::core::{s, w};
+        use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryExW, LOAD_LIBRARY_SEARCH_SYSTEM32};
+        let dll = LoadLibraryExW(w!("api-ms-win-core-ioring-l1-1-0.dll"), None, LOAD_LIBRARY_SEARCH_SYSTEM32).ok()?;
+        Some(RingApi {
+            create: transmute::<Found, Create>(GetProcAddress(dll, s!("CreateIoRing"))?),
+            build_read: transmute::<Found, BuildRead>(GetProcAddress(dll, s!("BuildIoRingReadFile"))?),
+            submit: transmute::<Found, Submit>(GetProcAddress(dll, s!("SubmitIoRing"))?),
+            pop: transmute::<Found, Pop>(GetProcAddress(dll, s!("PopIoRingCompletion"))?),
+            close: transmute::<Found, Close>(GetProcAddress(dll, s!("CloseIoRing"))?),
+        })
+    });
+    API.as_ref()
 }
 
 #[cfg(not(windows))]
@@ -148,7 +199,11 @@ mod tests {
         let asks: Vec<Ask> = paths.iter().map(|(p, _)| Ask { path: p, slices: vec![(0, 4096), (10_000 - 4096, 4096), (9_990, 4096)] }).collect();
         let mut missing = asks.iter().map(|a| Ask { path: a.path, slices: a.slices.clone() }).collect::<Vec<_>>();
         missing.push(Ask { path: r"C:\nowhere\at\all.bin", slices: vec![(0, 16)] });
-        let Some(got) = read_many(&missing) else { return }; // no I/O rings on this Windows
+        // Windows 11 (build 22000) brought I/O rings: there, finding none means the lookup is broken.
+        let Some(got) = read_many(&missing) else {
+            assert!(windows_build() < 22_000, "Windows build {} has I/O rings, but none was found", windows_build());
+            return;
+        };
         for ((_, bytes), got) in paths.iter().zip(&got) {
             let got = got.as_ref().expect("opened");
             assert_eq!(got.slices[0], bytes[..4096]);
@@ -158,5 +213,13 @@ mod tests {
         }
         assert!(got.last().unwrap().is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// This Windows' build number, from `ver` ("Microsoft Windows [Version 10.0.26100.1]").
+    fn windows_build() -> u32 {
+        let out = std::process::Command::new("cmd").args(["/c", "ver"]).output().expect("ver");
+        let text = String::from_utf8_lossy(&out.stdout);
+        let version = text.rsplit("Version ").next().unwrap_or_default();
+        version.split('.').nth(2).and_then(|b| b.trim_end_matches(|c: char| !c.is_ascii_digit()).parse().ok()).expect("a build number")
     }
 }
