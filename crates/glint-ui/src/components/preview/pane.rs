@@ -13,7 +13,7 @@ use super::states::centered;
 use crate::components::file_grid::thumbnail::{self, Thumbnails, Want};
 use crate::components::git::RepoCard;
 use crate::dialogs::action_run::tools_model;
-use crate::dialogs::{batch_rename, check, compare_files};
+use crate::dialogs::{batch_rename, compare_files};
 use crate::explorer::{self, CompressFormat, Explorer, ExplorerEvent, Rows, Selection, Tab};
 use crate::kit::prelude::*;
 use crate::{state, t, theme};
@@ -706,13 +706,10 @@ impl PreviewPane {
     }
 }
 
-/// Zip: a .zip beside the items, after looking for secrets in them (`compressEntries`).
-fn zip(window: &mut Window, cx: &mut App, paths: Vec<String>) {
-    check::secrets_check_first(window, cx, paths.clone(), t!("Compress anyway"), move |_, cx| {
-        let paths = paths.clone();
-        explorer::explorer(cx).update(cx, |explorer, cx| {
-            explorer.compress(paths, CompressFormat::Zip, None, cx).detach()
-        });
+/// Zip: a .zip beside the items (`compressEntries`).
+fn zip(_window: &mut Window, cx: &mut App, paths: Vec<String>) {
+    explorer::explorer(cx).update(cx, |explorer, cx| {
+        explorer.compress(paths, CompressFormat::Zip, None, cx).detach()
     });
 }
 

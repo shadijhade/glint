@@ -4,8 +4,7 @@
 //! threads, so every test that renders a view or flips the direction holds [`lock`] for its whole body.
 
 use crate::{actions, core_bridge, dialogs, i18n, state, theme};
-use glint_model::i18n::Language;
-use glint_model::store::{Backdrop, Language as LanguageChoice};
+use glint_model::store::Backdrop;
 use gpui_kit::base::Root;
 use gpui_kit::{
     px, size, App, Bounds, Entity, Render, TestAppContext, VisualTestContext, Window, WindowBounds, WindowOptions,
@@ -22,7 +21,7 @@ pub(crate) fn lock() -> MutexGuard<'static, ()> {
 
 /// Sets the interface direction without an app: Arabic when `rtl`, else English.
 pub(crate) fn set_rtl(rtl: bool) {
-    i18n::set_mirror(if rtl { Language::Ar } else { Language::En });
+    i18n::set_mirror(rtl);
 }
 
 /// The start-up sequence of `run`, minus what needs the real PC: English whatever Windows speaks, no Mica,
@@ -30,11 +29,8 @@ pub(crate) fn set_rtl(rtl: bool) {
 pub(crate) fn init(cx: &mut App) {
     gpui_kit::init(cx);
     state::init(cx);
-    state::update(cx, |settings| {
-        settings.language = LanguageChoice::En;
-        settings.backdrop = Backdrop::Solid;
-    });
-    i18n::set_language(cx, Language::En);
+    state::update(cx, |settings| settings.backdrop = Backdrop::Solid);
+    i18n::set_mirror(false);
     theme::apply(cx);
     actions::init(cx);
     core_bridge::init_with(cx, false);

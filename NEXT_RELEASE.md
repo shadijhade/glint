@@ -455,3 +455,33 @@ clippy `-D warnings` clean; the touched glint-ui files rustfmt-clean. The releas
 15 of 18 with item 6 in (the two sidebar checks above, and `quit`); after its revert, 17 of 18, `quit` failing as it
 does on 0.11.0. The checks that draw on demand (keys, drags, rename, Quick Look, dual panes) all pass with the vsync
 thread resting (item 2).
+
+### Wave: Settings, tools that install right, no Arabic (2026-11-15)
+
+Asked for after 0.12.0: a settings wave, Arabic out (always Windows' language, which today is English), tool installs
+and updates that just work (people wrote in about them), useless tools out, a notice that offers to index every drive,
+smart suggestions, and Settings reworked.
+
+- **Tools install and update right.** The pinned release comes first for every tool (winget only when it can't be
+  downloaded, and never over a copy Glint downloaded): winget first made the "Update never ends" reports, a copy Glint
+  downloaded standing in front of winget's. Each download gets `glint-version.txt`; restic and pdfcpu are asked
+  `version`, ExifTool `-ver`, 7-Zip with nothing (all four said no version, so Update stayed forever); an answer is
+  kept while the program file is the same; Update shows only for a known older version. An update swaps the files
+  aside, so a running tool (an rclone mount) is replaced too; leftovers are swept at start. Settings → Tools: grouped
+  by what they're for, a summary with **Update all**, a Ready pill, a progress bar, words instead of winget's lines;
+  the install card no longer squeezes its text into one letter's width (the Clouds screenshot).
+- **Out:** Kingfisher, YARA-X (Check is Defender only now; the secrets look before zipping and sharing went with it),
+  c2patool and Magika (File X-Ray), ab-av1, libjxl and Ghostscript (Make smaller: fixed CRFs per format, MozJPEG,
+  pdfcpu; Back to JPEG went). Their downloaded folders are swept (retired.rs); the installer's Extra tools page lost
+  their rows. The Arabic catalog, the Language row and `GLINT_LANGUAGE` went; `t!` and the direction-neutral layout
+  stay (tests still mirror with `testing::set_rtl`).
+- **Settings reworked:** one page at a time under a header, a side list in groups with **Search settings** (Ctrl+F;
+  `pages::SEARCH`, checked against the rows drawn), and an **Overview** first: instant search, tools, clouds and the
+  theme as tiles, and **Suggestions for you** (`suggestions.rs`: index all drives, a nearly full drive, tool updates,
+  the shortcut needing the tray, start with Windows, Windows' dark mode, connect a cloud). The first three may come up
+  as one notification 40 s after start, at most weekly each, with "Don't suggest this again".
+- Tested: all unit tests (core 299, model 226, ui 2348, index 93), clippy `-D warnings`; in the real app on a scratch
+  profile: the Overview, search, the Tools page, ExifTool and pdfcpu installed by `tools install` (4.4 s, release
+  first), marked older, then **Update all** (both back to the pinned versions, nothing left behind), and the tool
+  updates notification. Not tried for real: the index-all-drives notification (this PC's service is on), an update
+  while the tool runs (a unit test runs PING.EXE through it), winget's fallback.

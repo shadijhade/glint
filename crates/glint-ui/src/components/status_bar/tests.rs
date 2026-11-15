@@ -770,13 +770,12 @@ fn x_ray_opens_the_dialog_for_the_file(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn zip_compresses_the_selection_once_the_secrets_check_lets_it_through(cx: &mut TestAppContext) {
+fn zip_compresses_the_selection(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let mut setup = setup(cx, index(State::Off, vec![]), Ok(index(State::On, vec![])));
     go(&mut setup, "C:\\a");
     select_names(&mut setup, &["notes.md", "file2.txt"]);
     click(&mut setup, "status-bar-zip");
-    // No Kingfisher to look with (no core in tests): the check is an offer, not a gate.
     settle(&mut setup.visual, |_| !setup.disk.compressions().is_empty());
     let compressions = setup.disk.compressions();
     assert_eq!(compressions.len(), 1);

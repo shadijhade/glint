@@ -199,7 +199,7 @@ A tour of what Glint does. **Every feature, in detail: [docs/features.md](docs/f
 ### More to do with files
 
 -   **Media**, with FFmpeg: convert and shrink videos (to fit under 10, 25 or 50 MB, on the PC's own video encoder when it has one), take the sound out, make GIFs, even out loudness, and write **subtitles** from what's said, with whisper.cpp on your PC.
--   **Make smaller.** Videos that still look the same (scored by VMAF), photos as JPEG XL without losing a bit, PNGs, PDFs and the pictures inside Office files. Nothing that comes out bigger is kept.
+-   **Make smaller.** Videos re-encoded to look the same, smaller photos, PNGs, PDFs and the pictures inside Office files. Nothing that comes out bigger is kept.
 -   **PDF tools** ([pdfcpu](https://github.com/pdfcpu/pdfcpu)), **data files of any size** ([DuckDB](https://duckdb.org)), **Convert document** ([pandoc](https://pandoc.org)) and **Convert pictures** ([rimage](https://github.com/vlad-salone/rimage)).
 -   **Archives and disk images open like folders.** Zip, 7z, RAR, tar and the rest, ISO, VHDX and WIM images and installers, read-only, with nothing extracted until a file's bytes are needed. Compress to zip, 7z or tar.zst, a zip or a 7z with a password.
 -   **Remove personal info** from photos, videos, PDFs and Office files, **Encrypt** with [age](https://age-encryption.org), **Compress in place** with Windows' own compression, and **Batch rename** with a live preview.
@@ -223,7 +223,7 @@ A tour of what Glint does. **Every feature, in detail: [docs/features.md](docs/f
 -   **Clean up** the build output and package caches of projects you've left alone, empty folders, programs' leftovers, big files, and with Czkawka, look-alike pictures and videos.
 -   **What's locking this?** The programs holding a file open, and **End** to close one.
 -   **Where did a file go?** 30 days of renames, moves and deletes, read from each drive's change journal.
--   **File X-Ray.** Checksums against a pasted one, who signed a program, hidden streams and a file's real type; scan with Microsoft Defender, look for leaked keys with Kingfisher, or check YARA rules.
+-   **File X-Ray.** Checksums against a pasted one, who signed a program and hidden streams; scan with Microsoft Defender.
 -   **Drive health.** Each drive's temperature, wear and errors, read without administrator rights.
 
 [More about the tools →](docs/features.md#tools)
@@ -253,7 +253,7 @@ A tour of what Glint does. **Every feature, in detail: [docs/features.md](docs/f
 -   **Windows' own menu** on `Shift`+right-click, Properties and Open with, and OneDrive's sync marks.
 -   **Mica and your accent color**, the Recycle Bin as a place, and the taskbar button's jump list.
 -   **Open in Glint** from File Explorer, `Win+E` and folders that open in Glint by default (installer copy), and `Ctrl+Alt+G` to take any file dialog to Glint's folder.
--   **English and Arabic**, right to left.
+-   **Settings that find themselves.** An Overview of how Glint is set up, suggestions for this PC (index every drive, a drive nearly full, tool updates), and a search box for any setting.
 
 [More about Windows integration →](docs/features.md#at-home-on-windows)
 
@@ -502,7 +502,7 @@ npm run test:signing
 -   [x] An MCP server, so AI agents can use Glint's instant search
 -   [x] Previous versions, from Windows' shadow copies
 -   [x] Remotes in File Explorer, on demand
--   [x] Search inside files from an index, tags, and Glint in Arabic
+-   [x] Search inside files from an index, and tags
 
 </details>
 
@@ -516,7 +516,7 @@ Bug reports, ideas and pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING
 
 -   [fd](https://github.com/sharkdp/fd), [pdu](https://github.com/KSXGitHub/parallel-disk-usage) and [ripgrep](https://github.com/BurntSushi/ripgrep), which do the heavy lifting and ship inside the app.
 -   [GPUI](https://www.gpui.rs/) and [gpui-component](https://github.com/longbridge/gpui-kit), which draw Glint's window.
--   The tools Glint installs when a feature needs them, from FFmpeg and rclone to Czkawka, Difftastic and YARA-X ([docs/tools.md](docs/tools.md)), and the crates it's built from ([THIRD_PARTY_CRATES.md](THIRD_PARTY_CRATES.md)).
+-   The tools Glint installs when a feature needs them, from FFmpeg and rclone to Czkawka, Difftastic and restic ([docs/tools.md](docs/tools.md)), and the crates it's built from ([THIRD_PARTY_CRATES.md](THIRD_PARTY_CRATES.md)).
 -   [Everything](https://www.voidtools.com/) and [WizTree](https://diskanalyzer.com/), which showed that reading the MFT directly is the fast way, and [goz](https://github.com/mustafaahci/goz) and [everyfind](https://github.com/kyo5uke/everyfind), whose ideas the index service borrows.
 -   [zoxide](https://github.com/ajeetdsouza/zoxide) for frecency, and macOS for Quick Look.
 

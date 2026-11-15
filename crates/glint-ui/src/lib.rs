@@ -10,7 +10,7 @@
 //! 6. [`workspace`]: the main window the components plug into.
 //!
 //! **Start-up order** (in [`run`]): one copy per session (`platform::launch::begin`), then `gpui_kit::init`,
-//! `state::init`, `persistence::init`, `theme::init`, `i18n::init`, `actions::init`, `core_bridge::init`;
+//! `state::init`, `persistence::init`, `theme::init`, `actions::init`, `core_bridge::init`;
 //! then `startup::start`: the preview host, the explorer and its saved share, the tray, the Jump List, the
 //! main window (hidden, placed, shown), the first folders and later launches. startup.rs is where the
 //! services meet.
@@ -38,6 +38,7 @@ mod selftest;
 pub mod stage;
 mod startup;
 pub mod state;
+pub mod suggestions;
 pub mod theme;
 /// Typst in process: a World over the disk and the system fonts, compiling to pages and PDF.
 /// Glint keeping itself up to date: latest.json, the signed installer, the Update button.
@@ -78,7 +79,6 @@ pub fn run() -> i32 {
         persistence::init(cx);
         glint_core::startup::mark("saved state");
         theme::init(cx);
-        i18n::init(cx);
         actions::init(cx);
         glint_core::startup::mark("theme, language, actions");
         core_bridge::init(cx);

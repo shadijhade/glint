@@ -1191,15 +1191,6 @@ fn nearby_and_files(inputs: &Inputs, place: &Place) -> Vec<Command> {
         ),
     );
     add(
-        any(is_jxl),
-        menu(
-            "jxl-to-jpeg",
-            t!("Turn the selected JPEG XL files back into JPEGs"),
-            I::ImageDown,
-            MenuEvent::BackToJpeg { paths: all.clone() },
-        ),
-    );
-    add(
         any(can_convert),
         menu(
             "convert",
@@ -1487,8 +1478,6 @@ fn inspect_and_share(inputs: &Inputs, place: &Place) -> Vec<Command> {
     let chosen = inputs.chosen;
     let on_disk_only = !inputs.in_archive && !place.remote;
     let here = place.writable && !place.shut;
-    // One item, or the folder when nothing is chosen.
-    let one = inputs.selected.len() == 1;
     let sendable = on_disk_only
         && !place.closed_items
         && !place.bin
@@ -1654,29 +1643,6 @@ fn inspect_and_share(inputs: &Inputs, place: &Place) -> Vec<Command> {
             },
             I::ShieldCheck,
             MenuEvent::Defender { paths: targets },
-        ),
-    );
-    let checked = match inputs.selected.as_slice() {
-        [only] => only.clone(),
-        _ => folder,
-    };
-    let can_check = on_disk_only && !place.closed_items && (place.in_folder || one);
-    add(
-        can_check,
-        menu(
-            "secrets",
-            t!("Look for passwords and keys left in files"),
-            I::KeyRound,
-            MenuEvent::Secrets { path: checked.clone() },
-        ),
-    );
-    add(
-        can_check,
-        menu(
-            "yara",
-            t!("Check with YARA rules"),
-            I::ScanSearch,
-            MenuEvent::Yara { path: checked },
         ),
     );
     out

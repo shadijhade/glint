@@ -656,7 +656,7 @@ mod tests {
         testing::set_rtl(true);
         visual.update(open);
         visual.run_until_parked();
-        assert_eq!(role_of(&mut visual, "اختصارات لوحة المفاتيح"), Some(Role::Group));
+        assert_eq!(role_of(&mut visual, "Keyboard shortcuts"), Some(Role::Group));
         // Every section and row is there in the mirrored layout (one group per section, one per row).
         visual.update(|window, cx| {
             window.render_frame(cx);

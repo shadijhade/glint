@@ -1,5 +1,4 @@
-//! A file's X-Ray: checksums, entropy, size on disk, hidden streams, signature, real type and Content
-//! Credentials. Ported from src/components/explorer/XRayDialog.tsx and the parts of SignatureChip.tsx it uses
+//! A file's X-Ray: checksums, entropy, size on disk, hidden streams and signature. Ported from src/components/explorer/XRayDialog.tsx and the parts of SignatureChip.tsx it uses
 //! (`describeSignature`), built the way [`super::drive_health`] is.
 //!
 //! | TypeScript                                    | Here                                                          |
@@ -7,9 +6,7 @@
 //! | `useXRayStore` + `inspectXRay(path, full)`    | [`XRay`], a model entity; [`open`]                            |
 //! | `inspectFileXRay`, `cancelXRay`               | [`Backend::inspect`], [`Backend::cancel`]                     |
 //! | `verifySignature`, `describeSignature`        | [`Backend::signature`], [`describe_signature`]                |
-//! | `fileRealType`, `contentCredentials`          | [`Backend::real_type`], [`Backend::credentials`]              |
 //! | `removeNtfsStream`, `confirm(...)`            | [`Backend::remove_stream`], [`super::confirm`]                |
-//! | `ToolNeeded` (Magika, c2patool)               | `settings::tools::needed`                                     |
 //! | `scanWithDefender([path])`                    | the check dialog's Defender scan (`check::open`)              |
 //! | `XRayDialog`                                  | [`XRayDialog`]                                                |
 //!
@@ -18,13 +15,10 @@
 //!
 //! The toasts of the TypeScript are notifications raised from [`XRayEvent`]s.
 
-use crate::components::settings::tools::{self, Tools};
-use crate::components::settings::{Backend as SettingsBackend, CoreBackend as SettingsCoreBackend};
 use crate::kit::prelude::*;
 use crate::{core_bridge, t, theme};
-use glint_core::credentials::Credentials;
 use glint_core::sign::Signature;
-use glint_core::xray::{FileXRayReport, NtfsStream, RealType};
+use glint_core::xray::{FileXRayReport, NtfsStream};
 use glint_model::format::{format_count, format_full_date, format_size};
 use glint_model::paths::base_name;
 use std::future::Future;
@@ -42,10 +36,6 @@ pub trait Backend: Send + Sync {
     fn cancel(&self);
     /// `verify_signature`.
     fn signature(&self, path: String) -> Fut<Signature>;
-    /// `file_real_type`: `None` when Magika isn't installed.
-    fn real_type(&self, path: String) -> Fut<Option<RealType>>;
-    /// `content_credentials`: `Ok(None)` when it has none, `Err("tool")` when c2patool isn't installed.
-    fn credentials(&self, path: String) -> Fut<Option<Credentials>>;
     /// `remove_ntfs_stream`.
     fn remove_stream(&self, path: String, stream: String) -> Fut<()>;
 }
@@ -62,12 +52,6 @@ impl Backend for CoreBackend {
     }
     fn signature(&self, path: String) -> Fut<Signature> {
         Box::pin(glint_core::sign::verify_signature(path))
-    }
-    fn real_type(&self, path: String) -> Fut<Option<RealType>> {
-        Box::pin(glint_core::xray::file_real_type(path))
-    }
-    fn credentials(&self, path: String) -> Fut<Option<Credentials>> {
-        Box::pin(glint_core::credentials::content_credentials(path))
     }
     fn remove_stream(&self, path: String, stream: String) -> Fut<()> {
         Box::pin(glint_core::xray::remove_ntfs_stream(path, stream))
@@ -106,12 +90,6 @@ const SIGNABLE: &[&str] = &[
     "wsf",
 ];
 
-/// Pictures, videos, sounds and PDFs, which can carry Content Credentials.
-const CREDENTIALS: &[&str] = &[
-    "jpg", "jpeg", "png", "webp", "avif", "heic", "heif", "tif", "tiff", "dng", "gif", "mp4", "mov", "m4v", "avi",
-    "webm", "mp3", "m4a", "wav", "pdf",
-];
-
 /// The extension after the last dot of the file name (lowercase), if the name has one that isn't its start.
 fn extension(path: &str) -> Option<String> {
     let name = path.rsplit('\\').next().unwrap_or(path);
@@ -122,11 +100,6 @@ fn extension(path: &str) -> Option<String> {
 /// Whether a signature can be checked (`signable`).
 pub fn signable(path: &str) -> bool {
     extension(path).is_some_and(|e| SIGNABLE.contains(&e.as_str()))
-}
-
-/// Whether the file may hold Content Credentials.
-pub fn may_have_credentials(path: &str) -> bool {
-    extension(path).is_some_and(|e| CREDENTIALS.contains(&e.as_str()))
 }
 
 /// How a signature reads: good, bad, a caution or neutral.
@@ -246,16 +219,6 @@ pub enum Load {
     Ready,
 }
 
-/// A part that comes from a tool or Windows on its own.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Side<T> {
-    Looking,
-    /// The tool isn't installed.
-    NeedsTool,
-    Failed(SharedString),
-    Done(T),
-}
-
 /// What the model tells the view to say.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum XRayEvent {
@@ -274,8 +237,6 @@ pub struct XRay {
     load: Load,
     report: Option<FileXRayReport>,
     signature: Option<Signature>,
-    real_type: Side<RealType>,
-    credentials: Side<Option<Credentials>>,
     /// The hidden stream being deleted.
     removing: Option<String>,
     backend: Arc<dyn Backend>,
@@ -287,7 +248,7 @@ pub struct XRay {
 impl EventEmitter<XRayEvent> for XRay {}
 
 impl XRay {
-    /// The X-Ray of `path`, started: the report, and the signature, real type and credentials beside it.
+    /// The X-Ray of `path`, started: the report, and the signature beside it.
     pub fn new(path: String, backend: Arc<dyn Backend>, cx: &mut Context<Self>) -> Self {
         let mut this = Self {
             path,
@@ -295,8 +256,6 @@ impl XRay {
             load: Load::Loading,
             report: None,
             signature: None,
-            real_type: Side::Looking,
-            credentials: Side::Looking,
             removing: None,
             backend,
             run: 0,
@@ -352,13 +311,11 @@ impl XRay {
         .detach();
     }
 
-    /// Asks for the signature, the real type and the credentials (each only where it applies).
+    /// Asks for the signature, where the file can be signed.
     pub fn look_aside(&mut self, cx: &mut Context<Self>) {
         self.side_run += 1;
         let run = self.side_run;
         self.signature = None;
-        self.real_type = Side::Looking;
-        self.credentials = Side::Looking;
         cx.notify();
         let path = self.path.clone();
         if signable(&path) {
@@ -377,40 +334,6 @@ impl XRay {
                 });
             })
             .detach();
-        }
-        let work = self.backend.real_type(path.clone());
-        cx.spawn(async move |this, cx| {
-            let result = core_bridge::run(work).await.and_then(|inner| inner);
-            let _ = this.update(cx, |this, cx| {
-                if this.side_run == run {
-                    this.real_type = match result {
-                        Ok(Some(found)) => Side::Done(found),
-                        Ok(None) => Side::NeedsTool,
-                        Err(reason) => Side::Failed(reason.into()),
-                    };
-                    cx.notify();
-                }
-            });
-        })
-        .detach();
-        if may_have_credentials(&path) {
-            let work = self.backend.credentials(path);
-            cx.spawn(async move |this, cx| {
-                let result = core_bridge::run(work).await.and_then(|inner| inner);
-                let _ = this.update(cx, |this, cx| {
-                    if this.side_run == run {
-                        this.credentials = match result {
-                            Ok(found) => Side::Done(found),
-                            Err(reason) if reason == "tool" => Side::NeedsTool,
-                            Err(reason) => Side::Failed(reason.into()),
-                        };
-                        cx.notify();
-                    }
-                });
-            })
-            .detach();
-        } else {
-            self.credentials = Side::Done(None);
         }
     }
 
@@ -464,20 +387,19 @@ impl Drop for XRay {
 /// A file's X-Ray in full.
 pub struct XRayDialog {
     xray: Entity<XRay>,
-    tools: Option<Entity<Tools>>,
     expected: Entity<InputState>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl XRayDialog {
-    /// The view of `xray`. `tools` is the model the install cards read (none in tests).
-    pub fn new(xray: Entity<XRay>, tools: Option<Entity<Tools>>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    /// The view of `xray`.
+    pub fn new(xray: Entity<XRay>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         // F5 is the Refresh button's key, as in the web app's dialogs.
         super::refresh_on_f5(cx, |this, _, cx| {
             this.xray.update(cx, |xray, cx| xray.inspect(false, cx));
         });
         let expected = cx.new(|cx| InputState::new(window, cx).placeholder(t!("Paste a checksum to compare")));
-        let mut subscriptions = vec![
+        let subscriptions = vec![
             cx.observe(&xray, |_, _, cx| cx.notify()),
             cx.subscribe_in(&expected, window, |_, _, event: &InputEvent, _, cx| {
                 if matches!(event, InputEvent::Change) {
@@ -502,23 +424,8 @@ impl XRayDialog {
                 ),
             }),
         ];
-        if let Some(tools) = &tools {
-            // A tool that was just installed starts what was waiting for it (the effect on `installed`).
-            subscriptions.push(cx.observe(tools, |this, tools, cx| {
-                let installed = |id: &str| tools.read(cx).tool(id).is_some_and(|t| t.origin.is_some());
-                let (magika, c2pa) = (installed("magika"), installed("c2patool"));
-                let waiting = this.xray.read(cx);
-                let again = (magika && waiting.real_type == Side::NeedsTool)
-                    || (c2pa && waiting.credentials == Side::NeedsTool);
-                if again {
-                    this.xray.update(cx, |xray, cx| xray.look_aside(cx));
-                }
-                cx.notify();
-            }));
-        }
         Self {
             xray,
-            tools,
             expected,
             _subscriptions: subscriptions,
         }
@@ -578,23 +485,6 @@ impl XRayDialog {
         }
     }
 
-    fn needs(&self, id: &'static str, why: SharedString, name: IconName, cx: &App) -> AnyElement {
-        self.tools
-            .as_ref()
-            .and_then(|tools| tools::needed(tools, id, why.clone(), name, cx))
-            .unwrap_or_else(|| {
-                div()
-                    .id(SharedString::from(format!("xray-needs-{id}")))
-                    .role(Role::Group)
-                    .aria_label(why.clone())
-                    .test_support()
-                    .text_size(theme::size::XS)
-                    .text_color(theme::tokens(cx).muted_foreground)
-                    .child(why)
-                    .into_any_element()
-            })
-    }
-
     fn signature_section(&self, t: &theme::Tokens, cx: &App) -> impl IntoElement {
         let xray = self.xray.read(cx);
         let described = xray.signature.as_ref().map(describe_signature);
@@ -637,203 +527,6 @@ impl XRayDialog {
                             .child(format!("• {line}"))
                     }))
             }))
-    }
-
-    fn real_type_section(&self, t: &theme::Tokens, cx: &App) -> Option<AnyElement> {
-        let xray = self.xray.read(cx);
-        let path = xray.path.clone();
-        match &xray.real_type {
-            Side::NeedsTool => Some(self.needs(
-                "magika",
-                t!("Magika tells a file's real type by its content: a program named photo.jpg, say."),
-                IconName::ScanSearch,
-                cx,
-            )),
-            Side::Looking => None,
-            side => {
-                let label = t!("Real type");
-                let found = match side {
-                    Side::Done(found) => Some(found),
-                    _ => None,
-                };
-                let ext = extension(&path).unwrap_or_default();
-                let mismatch =
-                    found.is_some_and(|f| !ext.is_empty() && !f.extensions.is_empty() && !f.extensions.contains(&ext));
-                let program = mismatch && found.is_some_and(|f| f.group == "executable");
-                let headline: AnyElement = match (side, found) {
-                    (_, Some(f)) => align_row(2.)
-                        .child(div().font_weight(FontWeight::MEDIUM).child(f.description.clone()))
-                        .child(
-                            div()
-                                .id("xray-real-type-sure")
-                                .text_color(t.muted_foreground)
-                                .child(t!("{n}% sure · Magika", n = (f.score * 100.0).round() as i64))
-                                .tooltip({
-                                    let tip = t!("{mime} · Magika's label: {label}", mime = f.mime, label = f.label);
-                                    move |window, cx| crate::kit::tooltip(tip.clone(), window, cx)
-                                }),
-                        )
-                        .into_any_element(),
-                    (Side::Failed(reason), _) => div()
-                        .text_color(t.muted_foreground)
-                        .child(reason.clone())
-                        .into_any_element(),
-                    _ => div().into_any_element(),
-                };
-                let note: Option<AnyElement> = if program {
-                    Some(
-                        div()
-                            .id("xray-real-type-program")
-                            .role(Role::Alert)
-                            .aria_label(t!(
-                                "This is a program, though its name ends in .{ext}: don't open it unless you trust where it came from.",
-                                ext = ext
-                            ))
-                            .test_support()
-                            .px(space(2.5))
-                            .py(space(1.5))
-                            .rounded(theme::size::RADIUS_SM)
-                            .bg(t.destructive.opacity(0.1))
-                            .text_color(t.destructive)
-                            .font_weight(FontWeight::MEDIUM)
-                            .child(t!(
-                                "This is a program, though its name ends in .{ext}: don't open it unless you trust where it came from.",
-                                ext = ext
-                            ))
-                            .into_any_element(),
-                    )
-                } else if mismatch {
-                    let first = found.and_then(|f| f.extensions.first().cloned()).unwrap_or_default();
-                    Some(
-                        div()
-                            .id("xray-real-type-mismatch")
-                            .text_color(t.warning)
-                            .child(t!(
-                                "Its content is what .{real} files hold, not .{ext}.",
-                                real = first,
-                                ext = ext
-                            ))
-                            .into_any_element(),
-                    )
-                } else {
-                    None
-                };
-                Some(
-                    Self::section("xray-real-type", label.clone(), t)
-                        .child(
-                            row_start()
-                                .flex_wrap()
-                                .items_center()
-                                .gap(space(2.))
-                                .child(Self::card_title(IconName::ScanSearch, label, t))
-                                .child(headline),
-                        )
-                        .children(note)
-                        .into_any_element(),
-                )
-            }
-        }
-    }
-
-    fn credentials_section(&self, t: &theme::Tokens, cx: &App) -> Option<AnyElement> {
-        let xray = self.xray.read(cx);
-        if !may_have_credentials(&xray.path) {
-            return None;
-        }
-        match &xray.credentials {
-            Side::Looking => None,
-            Side::NeedsTool => Some(self.needs(
-                "c2patool",
-                t!("c2patool reads a picture's or video's Content Credentials: who made it, with what, and whether AI did."),
-                IconName::ShieldCheck,
-                cx,
-            )),
-            Side::Done(None) => Some(
-                div()
-                    .id("xray-no-credentials")
-                    .role(Role::Status)
-                    .aria_label(t!("No Content Credentials: nothing in it says where it came from."))
-                    .test_support()
-                    .text_size(theme::size::XS)
-                    .text_color(t.muted_foreground)
-                    .child(t!("No Content Credentials: nothing in it says where it came from."))
-                    .into_any_element(),
-            ),
-            side => {
-                let (found, failed) = match side {
-                    Side::Done(Some(found)) => (Some(found), None),
-                    Side::Failed(reason) => (None, Some(reason.clone())),
-                    _ => (None, None),
-                };
-                let label = t!("Content Credentials");
-                let mut head = row_start()
-                    .flex_wrap()
-                    .items_center()
-                    .gap(space(2.))
-                    .child(Self::card_title(IconName::ShieldCheck, label.clone(), t));
-                if let Some(found) = found {
-                    if let Some(ai) = found.ai {
-                        head = head.child(Self::status_pill("xray-credentials-ai", ai.into(), t.warning.opacity(0.15), t.warning));
-                    }
-                    if !found.valid {
-                        head = head.child(Self::status_pill(
-                            "xray-credentials-changed",
-                            t!("changed since it was signed"),
-                            t.destructive.opacity(0.1),
-                            t.destructive,
-                        ));
-                    } else if !found.trusted {
-                        head = head.child(
-                            div()
-                                .text_color(t.muted_foreground)
-                                .child(t!("signed, by a signer c2patool doesn't know")),
-                        );
-                    }
-                }
-                let mut lines: Vec<String> = Vec::new();
-                if let Some(found) = found {
-                    if let Some(made) = found.made_with.as_ref().filter(|m| !m.is_empty()) {
-                        lines.push(t!("Made with {app}", app = made).to_string());
-                    }
-                    if !found.actions.is_empty() {
-                        lines.push(found.actions.join(" · "));
-                    }
-                    if found.ingredients > 0 {
-                        lines.push(if found.ingredients == 1 {
-                            t!("From one file").to_string()
-                        } else {
-                            t!("From {n} files", n = found.ingredients).to_string()
-                        });
-                    }
-                    if let Some(by) = found.signed_by.as_ref().filter(|s| !s.is_empty()) {
-                        lines.push(match found.signed_at.as_ref().filter(|s| !s.is_empty()) {
-                            Some(at) => t!("Signed by {by}, {at}", by = by, at = at).to_string(),
-                            None => t!("Signed by {by}", by = by).to_string(),
-                        });
-                    }
-                }
-                Some(
-                    Self::section("xray-credentials", label, t)
-                        .gap(space(1.5))
-                        .child(head)
-                        .children(failed.map(|f| div().text_color(t.muted_foreground).child(f)))
-                        .children((!lines.is_empty()).then(|| {
-                            col()
-                                .gap(space(0.5))
-                                .text_color(t.muted_foreground)
-                                .children(lines.into_iter().enumerate().map(|(i, l)| {
-                                    div()
-                                        .id(("xray-credentials-line", i))
-                                        .role(Role::ListItem)
-                                        .aria_label(l.clone())
-                                        .test_support()
-                                        .child(l)
-                                }))
-                        }))
-                        .into_any_element(),
-                )
-            }
-        }
     }
 
     fn zone_banner(&self, report: &FileXRayReport, t: &theme::Tokens, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -1489,8 +1182,6 @@ impl Render for XRayDialog {
                     .gap(space(4.))
                     .children(self.zone_banner(report, &t, cx))
                     .children(signable(&path).then(|| self.signature_section(&t, cx)))
-                    .children(self.real_type_section(&t, cx))
-                    .children(self.credentials_section(&t, cx))
                     .child(self.checksums(report, &t, cx))
                     .child(self.entropy(report, &t, cx))
                     .child(
@@ -1581,7 +1272,7 @@ fn defender_button(path: &str) -> Option<AnyElement> {
             .label(t!("Scan with Defender"))
             .tooltip(t!("A custom scan of this file by Microsoft Defender"))
             .on_click(move |_, window, cx| {
-                super::check::open(window, cx, vec![path.clone()], super::check::What::Defender)
+                super::check::open(window, cx, vec![path.clone()])
             })
             .into_any_element(),
     )
@@ -1594,19 +1285,11 @@ pub fn open(window: &mut Window, cx: &mut App, path: String) {
     if path.is_empty() {
         return;
     }
-    let tools = tools_model(window, cx);
-    open_with(window, cx, Arc::new(CoreBackend), tools, path);
+    open_with(window, cx, Arc::new(CoreBackend), path);
 }
 
-/// [`open`] with a backend of your own (tests pass a fake) and the install cards' tools if any. Returns the
-/// view.
-pub fn open_with(
-    window: &mut Window,
-    cx: &mut App,
-    backend: Arc<dyn Backend>,
-    tools: Option<Entity<Tools>>,
-    path: String,
-) -> Entity<XRayDialog> {
+/// [`open`] with a backend of your own (tests pass a fake). Returns the view.
+pub fn open_with(window: &mut Window, cx: &mut App, backend: Arc<dyn Backend>, path: String) -> Entity<XRayDialog> {
     let title = t!(
         "File X-Ray: {name}",
         name = {
@@ -1619,16 +1302,9 @@ pub fn open_with(
         }
     );
     let xray = cx.new(|cx| XRay::new(path, backend, cx));
-    let view = cx.new(|cx| XRayDialog::new(xray, tools, window, cx));
+    let view = cx.new(|cx| XRayDialog::new(xray, window, cx));
     super::show(window, cx, title, px(760.), view.clone());
     view
-}
-
-/// The tools model the install cards read (none without core).
-fn tools_model(window: &mut Window, cx: &mut App) -> Option<Entity<Tools>> {
-    let core = cx.try_global::<core_bridge::Core>()?;
-    let backend: Arc<dyn SettingsBackend> = Arc::new(SettingsCoreBackend::new(core.app.clone()));
-    Some(cx.new(|cx| Tools::new(backend, window, cx)))
 }
 
 // ---- Tests ------------------------------------------------------------------------------------------
@@ -1697,8 +1373,6 @@ mod tests {
     struct Fake {
         report: Mutex<Result<FileXRayReport, String>>,
         signature: Signature,
-        real: Option<RealType>,
-        credentials: Result<Option<Credentials>, String>,
         inspected: Mutex<Vec<bool>>,
         removed: Mutex<Vec<String>>,
         cancelled: AtomicUsize,
@@ -1716,16 +1390,6 @@ mod tests {
                     issuer: Some("Contoso CA".into()),
                     ..Default::default()
                 },
-                real: Some(RealType {
-                    label: "pebin".into(),
-                    description: "Windows executable".into(),
-                    group: "executable".into(),
-                    mime: "application/x-dosexec".into(),
-                    extensions: vec!["exe".into(), "dll".into()],
-                    text: false,
-                    score: 0.99,
-                }),
-                credentials: Ok(None),
                 inspected: Mutex::new(Vec::new()),
                 removed: Mutex::new(Vec::new()),
                 cancelled: AtomicUsize::new(0),
@@ -1752,27 +1416,6 @@ mod tests {
         fn signature(&self, _: String) -> Fut<Signature> {
             let s = self.signature.clone();
             Box::pin(async move { Ok(s) })
-        }
-        fn real_type(&self, _: String) -> Fut<Option<RealType>> {
-            let r = self.real.clone();
-            Box::pin(async move { Ok(r) })
-        }
-        fn credentials(&self, _: String) -> Fut<Option<Credentials>> {
-            let c = match &self.credentials {
-                Ok(Some(c)) => Ok(Some(Credentials {
-                    made_with: c.made_with.clone(),
-                    signed_by: c.signed_by.clone(),
-                    signed_at: c.signed_at.clone(),
-                    actions: c.actions.clone(),
-                    ai: c.ai,
-                    ingredients: c.ingredients,
-                    valid: c.valid,
-                    trusted: c.trusted,
-                })),
-                Ok(None) => Ok(None),
-                Err(e) => Err(e.clone()),
-            };
-            Box::pin(async move { c })
         }
         fn remove_stream(&self, _: String, stream: String) -> Fut<()> {
             self.removed.lock().unwrap().push(stream);
@@ -1821,7 +1464,7 @@ mod tests {
     fn open_fake(cx: &mut VisualTestContext, fake: &Arc<Fake>, path: &str) -> Entity<XRayDialog> {
         let backend: Arc<dyn Backend> = fake.clone();
         let path = path.to_string();
-        cx.update(|window, cx| open_with(window, cx, backend, None, path))
+        cx.update(|window, cx| open_with(window, cx, backend, path))
     }
 
     #[test]
@@ -1831,8 +1474,6 @@ mod tests {
         assert!(!signable("C:\\x\\notes.txt"));
         assert!(!signable("C:\\x.dir\\noext"));
         assert!(!signable("C:\\x\\.exe"), "a name that is only an extension isn't one");
-        assert!(may_have_credentials("D:\\photo.JPG"));
-        assert!(!may_have_credentials("D:\\readme.md"));
     }
 
     #[test]
@@ -1941,11 +1582,9 @@ mod tests {
         assert!(has(&mut visual, "Attributes: Archive"));
         assert!(has(&mut visual, "Hidden streams (0)"));
         assert!(!has(&mut visual, "Reading the file…"));
-        // The signature and real type came beside it.
+        // The signature came beside it.
         settle(&mut visual, "the signature", |cx| has(cx, "Signed by Contoso Ltd"));
-        assert!(has(&mut visual, "Real type"));
         assert!(!has(&mut visual, "Marked as downloaded · Internet"));
-        assert!(!has(&mut visual, "Content Credentials"), "an .exe has none");
         assert_eq!(*fake.inspected.lock().unwrap(), [false]);
     }
 
@@ -2068,57 +1707,6 @@ mod tests {
         });
         visual.run_until_parked();
         assert!(fake.removed.lock().unwrap().is_empty(), "Cancel deletes nothing");
-    }
-
-    #[gpui_kit::test]
-    fn a_program_named_like_something_else_is_called_out(cx: &mut TestAppContext) {
-        let _guard = testing::lock();
-        let mut visual = window(cx);
-        let fake = Arc::new(Fake::new(report("C:\\dl\\photo.jpg")));
-        open_fake(&mut visual, &fake, "C:\\dl\\photo.jpg");
-        let warning =
-            "This is a program, though its name ends in .jpg: don't open it unless you trust where it came from.";
-        settle(&mut visual, "the warning", |cx| has(cx, warning));
-        assert_eq!(role_of(&mut visual, warning), Some(Role::Alert));
-        // A photo can carry Content Credentials; this one has none.
-        settle(&mut visual, "no credentials", |cx| {
-            has(cx, "No Content Credentials: nothing in it says where it came from.")
-        });
-    }
-
-    #[gpui_kit::test]
-    fn content_credentials_list_who_made_it(cx: &mut TestAppContext) {
-        let _guard = testing::lock();
-        let mut visual = window(cx);
-        let mut fake = Fake::new(report("C:\\p\\art.png"));
-        fake.real = None;
-        fake.credentials = Ok(Some(Credentials {
-            made_with: Some("Adobe Firefly 4.0".into()),
-            signed_by: Some("Adobe Inc.".into()),
-            signed_at: Some("2026-11-01".into()),
-            actions: vec!["Created".into(), "Edited".into()],
-            ai: Some("Made by AI"),
-            ingredients: 2,
-            valid: true,
-            trusted: true,
-        }));
-        let fake = Arc::new(fake);
-        open_fake(&mut visual, &fake, "C:\\p\\art.png");
-        settle(&mut visual, "the credentials", |cx| has(cx, "Content Credentials"));
-        assert_eq!(
-            role_of(&mut visual, "Made by AI"),
-            Some(Role::Status),
-            "an AI note is a pill of its own"
-        );
-        assert!(has(&mut visual, "Made with Adobe Firefly 4.0"));
-        assert!(has(&mut visual, "Created · Edited"));
-        assert!(has(&mut visual, "From 2 files"));
-        assert!(has(&mut visual, "Signed by Adobe Inc., 2026-11-01"));
-        // Magika isn't installed (None): its install card stands in for the section, whose text is the why.
-        assert!(has(
-            &mut visual,
-            "Magika tells a file's real type by its content: a program named photo.jpg, say."
-        ));
     }
 
     #[gpui_kit::test]

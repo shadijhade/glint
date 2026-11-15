@@ -27,18 +27,13 @@ pub struct UiState {
 
 impl Global for UiState {}
 
-/// Puts the default settings in place. First in the start-up order: the theme and the language read them.
+/// Puts the default settings in place. First in the start-up order: the theme reads them.
 ///
-/// Debug builds also read two environment variables, for looking at the interface in the other mode without
-/// opening Settings: `GLINT_LANGUAGE=ar` (or `en`) and `GLINT_THEME=light` (or `dark`). Release builds ignore them.
+/// Debug builds also read `GLINT_THEME=light` (or `dark`), for looking at the interface in the other mode without
+/// opening Settings. Release builds ignore it.
 pub fn init(cx: &mut App) {
     let mut settings = Settings::default();
     if cfg!(debug_assertions) {
-        match std::env::var("GLINT_LANGUAGE").as_deref() {
-            Ok("ar") => settings.language = glint_model::store::Language::Ar,
-            Ok("en") => settings.language = glint_model::store::Language::En,
-            _ => {}
-        }
         match std::env::var("GLINT_THEME").as_deref() {
             Ok("light") => settings.theme = glint_model::store::Theme::Light,
             Ok("dark") => settings.theme = glint_model::store::Theme::Dark,
@@ -53,15 +48,13 @@ pub fn settings(cx: &App) -> &Settings {
     &cx.global::<UiState>().settings
 }
 
-/// Changes the settings, then re-applies what depends on them and redraws every window. The language and the
-/// theme are applied again only when a setting they read changed: most changes (a sort, a zoom notch, a column's
-/// width) touch neither.
+/// Changes the settings, then re-applies what depends on them and redraws every window. The theme is applied
+/// again only when a setting it reads changed: most changes (a sort, a zoom notch, a column's width) don't.
 pub fn update(cx: &mut App, change: impl FnOnce(&mut Settings)) {
-    let looks = |s: &Settings| (s.theme, s.accent, s.backdrop, s.font_size, s.language);
+    let looks = |s: &Settings| (s.theme, s.accent, s.backdrop, s.font_size);
     let before = looks(settings(cx));
     change(&mut cx.global_mut::<UiState>().settings);
     if looks(settings(cx)) != before {
-        crate::i18n::apply_setting(cx);
         crate::theme::apply(cx);
     }
     // Saved soon (nothing before `persistence::init`, which loads the saved settings through here).
@@ -86,11 +79,6 @@ mod tests {
             assert!(crate::theme::tokens(cx).dark, "the tokens follow the setting");
             update(cx, |s| s.theme = Theme::Light);
             assert!(!crate::theme::tokens(cx).dark);
-            // The language follows its setting too, and the direction with it.
-            update(cx, |s| s.language = glint_model::store::Language::Ar);
-            assert!(crate::i18n::is_rtl() && crate::i18n::is_rtl_in(cx));
-            update(cx, |s| s.language = glint_model::store::Language::En);
-            assert!(!crate::i18n::is_rtl());
         });
     }
 

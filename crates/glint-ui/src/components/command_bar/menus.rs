@@ -581,21 +581,6 @@ pub fn tools_menu(f: &Facts, selected: &[FileEntry], fold: usize, sizing: bool) 
         MenuEvent::Defender { paths: paths_or_folder },
         read_only || (!in_folder && paths.is_empty()),
     ));
-    let one_only_check = read_only || (!in_folder && paths.len() != 1);
-    nodes.push(ask(
-        t!("Look for passwords and keys left in files"),
-        IconName::KeyRound,
-        MenuEvent::Secrets {
-            path: one_or_folder.clone(),
-        },
-        one_only_check,
-    ));
-    nodes.push(ask(
-        t!("Check with YARA rules"),
-        IconName::ScanSearch,
-        MenuEvent::Yara { path: one_or_folder },
-        one_only_check,
-    ));
     nodes
 }
 

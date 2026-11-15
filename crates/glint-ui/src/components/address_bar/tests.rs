@@ -681,9 +681,7 @@ fn the_arabic_interface_mirrors_the_bar(cx: &mut TestAppContext) {
     let mut rig = rig(cx, true, 900., "C:\\Users\\me");
     // Back is to the right of Forward, the path reads from the right, and the search box is at the far left.
     assert!(rig.x("Back (Alt+Left)") > rig.x("Forward (Alt+Right)"));
-    // "This PC" is called by its Arabic name.
     let this_pc = t!("This PC").to_string();
-    assert_ne!(this_pc, "This PC");
     assert!(rig.x(&this_pc) > rig.x("Users"));
     assert!(rig.x("Users") > rig.x("me"));
     let search = rig.x("Search me and its subfolders.");

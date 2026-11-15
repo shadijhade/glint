@@ -75,11 +75,11 @@ Retired with the migration (0.10). What it said about strings still holds: indic
   - Every interactive element has an accessibility role and a name: `.role(...)`, plus labels on inputs and icon-only buttons.
   - Lists and tables expose rows with names, as gpui-component's DataTable does.
   - Keyboard-only use must work: focus order, Enter, Escape, the arrows.
-- **Right to left is required:**
-  - No left/right assumptions: use the kit's start/end helpers and row direction, so the Arabic UI mirrors.
+- **Layouts stay direction-neutral, and right-to-left text works:**
+  - No left/right assumptions: use the kit's start/end helpers and row direction. The interface is English since 0.13 (the Arabic catalog went), but the tests still mirror layouts (`testing::set_rtl`) to keep them that way.
   - Never assume x grows with the text index. Use `LineLayout`'s caret functions, and `x_ranges_for_index_range` for highlights.
-  - Test with an Arabic name in every text you lay out.
-- **Strings are translatable:** every user-visible string goes through `t!("English text")`, with English as the key. Arabic comes from the same catalog the TS used.
+  - Test with an Arabic name in every text you lay out: file names, folders and documents are often Arabic or Hebrew.
+- **Strings go through `t!`:** every user-visible string is `t!("English text")`, with English as the key, so a language could come back without touching the views.
 - **The UI thread never waits:**
   - File system, index service, process work and hashing go to `cx.background_spawn`, with results coming back to the entity.
   - Streams arrive through `Sink`s and update the view at most once per frame.
@@ -131,7 +131,7 @@ Retired with the migration (0.10). What it said about strings still holds: indic
 - `isolate(text)` (RLI…PDI) is for display only, never in paths, inputs or aria labels.
 - `rtl_line(text)` (RLE…PDF) is for a line of counts, words and units ("6 folders · 15 files · 13 MB"): in Arabic it reads from the right as one line. `isolate` is not enough there: a line that begins with a number keeps that number at the left. Display only, like `isolate`.
 - A column child that should fill needs `.min_w_0()`, or long text won't wrap.
-- Debug builds take `GLINT_LANGUAGE=ar` and `GLINT_THEME=light|dark`, so you can look at both.
+- Debug builds take `GLINT_THEME=light|dark`, so you can look at both.
 
 **Style:**
 - `let t = theme::tokens(cx).clone();` at the top of render; colors come only from `t`.

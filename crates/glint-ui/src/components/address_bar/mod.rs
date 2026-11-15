@@ -306,7 +306,6 @@ impl AddressBar {
             cx.subscribe_in(&edit, window, Self::on_edit_event),
             cx.subscribe_in(&search, window, Self::on_search_event),
             cx.observe_global::<theme::GlintTheme>(|_, cx| cx.notify()),
-            cx.observe_global::<i18n::Current>(|this, cx| this.sync_view(cx)),
         ];
         // Repositories come and go as the folders open: the chip and the `git:` hint follow the Git model.
         if let Some(model) = git::try_shared(cx) {
@@ -435,15 +434,6 @@ impl AddressBar {
         if changed {
             cx.notify();
         }
-    }
-
-    /// The language changed: names are rebuilt.
-    fn sync_view(&mut self, cx: &mut Context<Self>) {
-        let seen = Seen::of(self.explorer.read(cx));
-        if seen != *self.seen {
-            self.seen = Rc::new(seen);
-        }
-        cx.notify();
     }
 
     // ---- Typing a path ----------------------------------------------------------------------------------
