@@ -9,11 +9,29 @@
 //! and Space choose; the arrow toward the end of the line (Right in English, Left in Arabic) enters a submenu or,
 //! in the strip, moves to the next button; the arrow toward the start (and Backspace) goes back; Escape closes.
 //! The first row past the strip is selected when a menu opens, as `focusFirst` did.
+//!
+//! **The Aware wave** (docs/gpui/aware/PLAN.md) adds four things. A menu may start with a *head* (the item's
+//! picture, name, facts and badges: [`Node::Head`]); a row may carry a small *reason* line, be drawn as a
+//! *suggestion*, or say why it is greyed out; typing in an open menu *filters* every row, submenus included
+//! (`filter::matches`); and going into a submenu or back *slides* the rows in from the side they came from.
 
-use super::spec::{Entry, Node, Run};
+use super::filter::{self, Found};
+use super::spec::{Badge, Entry, Head, HeadPicture, Node, Run, Tone};
 use crate::kit::prelude::*;
-use crate::{i18n, t, theme};
+use crate::kit::rtl_line;
+use crate::{art, i18n, t, theme};
 use gpui_kit::rems;
+
+/// The longest the typed filter may grow: nothing is as long as this in a menu.
+const MOST_TYPED: usize = 64;
+/// How many badges a head draws; with more, the last place says how many are not shown.
+const MOST_BADGES: usize = 3;
+/// What a head and the menu's frame take from the room the rows may use (so the whole menu fits the window).
+const HEAD_ROOM: f32 = 96.;
+/// The same for the filter line.
+const FILTER_ROOM: f32 = 56.;
+/// The frame's own padding and border.
+const FRAME_ROOM: f32 = 10.;
 
 /// What the view tells its host.
 #[derive(Clone, Debug, PartialEq)]
@@ -35,6 +53,18 @@ pub(super) enum Stop {
     Row(usize),
     /// A button of the strip: the strip's place, then the button's.
     Button(usize, usize),
+}
+
+/// Which row a drawn row is: one of the level's nodes, or one the filter found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Spot {
+    Row(usize),
+    Found(usize),
+}
+
+/// Whether a key's text is something to type: there is some, and none of it is a control character.
+fn visible_text(text: &str) -> bool {
+    !text.is_empty() && !text.chars().any(char::is_control)
 }
 
 /// A menu being shown: the top one, or a submenu entered from it.
@@ -97,6 +127,16 @@ pub struct MenuView {
     cur: Option<Stop>,
     /// What a screen reader calls the menu.
     label: SharedString,
+    /// What has been typed: the menu shows the rows that match it, in place of itself.
+    query: String,
+    /// The rows that match `query`, best first.
+    found: Vec<Found>,
+    /// Which of `found` the keyboard is on.
+    found_at: usize,
+    /// How many times the menu went into a submenu or back: what keys the rows' slide.
+    moves: usize,
+    /// Which way the last move went: 1 into a submenu (the rows arrive from the end edge), -1 back, 0 none yet.
+    slide: i8,
 }
 
 impl MenuView {
@@ -109,7 +149,30 @@ impl MenuView {
             scroll_to: None,
             cur: None,
             label,
+            query: String::new(),
+            found: Vec::new(),
+            found_at: 0,
+            moves: 0,
+            slide: 0,
         }
+    }
+
+    /// Replaces the head of the top menu (what is known about the item changed while the menu is open). Nothing
+    /// else moves: its height is fixed, and the keyboard stays where it was (R2 of docs/gpui/aware/PLAN.md).
+    pub fn set_head(&mut self, head: Head, cx: &mut Context<Self>) {
+        let Some(top) = self.levels.first_mut() else { return };
+        let Some(slot) = top.nodes.iter_mut().find(|node| matches!(node, Node::Head(_))) else {
+            return;
+        };
+        *slot = Node::Head(head);
+        cx.notify();
+    }
+
+    /// Whether the top menu starts with a head.
+    fn has_head(&self) -> bool {
+        self.levels
+            .first()
+            .is_some_and(|l| l.nodes.iter().any(|n| matches!(n, Node::Head(_))))
     }
 
     /// Takes the keyboard.
@@ -130,6 +193,9 @@ impl MenuView {
     /// The label of the row the keyboard is on, for tests and screen readers.
     #[cfg(test)]
     pub fn selected_label(&self) -> Option<SharedString> {
+        if !self.query.is_empty() {
+            return self.found.get(self.found_at).map(|f| f.entry.label.clone());
+        }
         let level = self.levels.last()?;
         match level.stop()? {
             Stop::Back => level.title.clone(),
@@ -145,14 +211,22 @@ impl MenuView {
         }
     }
 
+    /// The labels of the rows the filter found, best first, for tests.
+    #[cfg(test)]
+    pub fn found_labels(&self) -> Vec<SharedString> {
+        self.found.iter().map(|f| f.entry.label.clone()).collect()
+    }
+
     // ---- Moving -----------------------------------------------------------------------------------------
 
-    /// Where the child of the scroll list for `stop` is: the Back row first, then one child per node.
+    /// Where the child of the scroll list for `stop` is: the Back row first, then one child per node (the head
+    /// is drawn above the list, so it is not one).
     fn child_of(level: &Level, stop: Stop) -> usize {
         let back = usize::from(level.title.is_some());
+        let before = |i: usize| level.nodes.iter().take(i).filter(|n| !matches!(n, Node::Head(_))).count();
         match stop {
             Stop::Back => 0,
-            Stop::Row(i) | Stop::Button(i, _) => i + back,
+            Stop::Row(i) | Stop::Button(i, _) => before(i) + back,
         }
     }
 
@@ -232,6 +306,8 @@ impl MenuView {
             .map(|at| level.stops().get(at).map_or(0, |s| Self::child_of(&level, *s)));
         self.scroll.set_offset(point(px(0.), px(0.)));
         self.levels.push(level);
+        self.moves += 1;
+        self.slide = 1;
         cx.notify();
     }
 
@@ -239,6 +315,8 @@ impl MenuView {
     fn leave(&mut self, cx: &mut Context<Self>) {
         if self.levels.len() > 1 {
             self.levels.pop();
+            self.moves += 1;
+            self.slide = -1;
             self.scroll.set_offset(point(px(0.), px(0.)));
             if let Some(level) = self.levels.last() {
                 self.scroll_to = level.stop().map(|s| Self::child_of(level, s));
@@ -282,7 +360,23 @@ impl MenuView {
             return;
         }
         let rtl = i18n::is_rtl();
+        let typing = !self.query.is_empty();
         match event.keystroke.key.as_str() {
+            "down" if typing => self.step_found(1, cx),
+            "up" if typing => self.step_found(-1, cx),
+            "home" if typing => self.jump_found(false, cx),
+            "end" if typing => self.jump_found(true, cx),
+            "enter" if typing => self.choose_found(cx),
+            "space" if typing => self.type_text(" ", cx),
+            "right" | "left" if typing => {}
+            "backspace" if typing => {
+                self.query.pop();
+                self.refilter(cx);
+            }
+            "escape" if typing => {
+                self.query.clear();
+                self.refilter(cx);
+            }
             "down" => self.step(1, cx),
             "up" => self.step(-1, cx),
             "home" => self.jump(false, cx),
@@ -292,9 +386,71 @@ impl MenuView {
             "left" => self.sideways(rtl, cx),
             "backspace" => self.leave(cx),
             "escape" => cx.emit(MenuViewEvent::Dismissed),
-            _ => return,
+            _ => {
+                // Anything else that is text starts or goes on a filter.
+                let Some(text) = event.keystroke.key_char.as_deref().filter(|text| visible_text(text)) else {
+                    return;
+                };
+                self.type_text(text, cx);
+            }
         }
         cx.stop_propagation();
+    }
+
+    // ---- Typing -----------------------------------------------------------------------------------------
+
+    /// Adds what was typed to the filter.
+    fn type_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        if self.query.chars().count() + text.chars().count() <= MOST_TYPED {
+            self.query.push_str(text);
+        }
+        self.refilter(cx);
+    }
+
+    /// Looks through the whole menu (the top one, whichever level shows) for what is typed.
+    fn refilter(&mut self, cx: &mut Context<Self>) {
+        self.found = match self.levels.first() {
+            Some(top) if !self.query.is_empty() => filter::matches(&top.nodes, &self.query),
+            _ => Vec::new(),
+        };
+        self.found_at = 0;
+        self.scroll.set_offset(point(px(0.), px(0.)));
+        cx.notify();
+    }
+
+    fn move_found(&mut self, at: usize, cx: &mut Context<Self>) {
+        self.found_at = at;
+        self.scroll_to = Some(at);
+        cx.notify();
+    }
+
+    /// Down (`step` 1) or Up (-1) through the found rows, round the ends.
+    fn step_found(&mut self, step: isize, cx: &mut Context<Self>) {
+        let count = self.found.len();
+        if count == 0 {
+            return;
+        }
+        let at = if step > 0 {
+            (self.found_at + 1) % count
+        } else {
+            (self.found_at + count - 1) % count
+        };
+        self.move_found(at, cx);
+    }
+
+    /// Home and End through the found rows.
+    fn jump_found(&mut self, last: bool, cx: &mut Context<Self>) {
+        if !self.found.is_empty() {
+            self.move_found(if last { self.found.len() - 1 } else { 0 }, cx);
+        }
+    }
+
+    /// Chooses the found row the keyboard is on (nothing when nothing was found).
+    fn choose_found(&mut self, cx: &mut Context<Self>) {
+        if let Some(found) = self.found.get(self.found_at) {
+            let entry = found.entry.clone();
+            self.choose(entry, cx);
+        }
     }
 
     // ---- Drawing ----------------------------------------------------------------------------------------
@@ -341,22 +497,46 @@ impl MenuView {
         }
     }
 
-    fn render_row(&self, ix: usize, entry: &Entry, t: &theme::Tokens, cx: &mut Context<Self>) -> AnyElement {
-        let stop = Stop::Row(ix);
-        let selected = self.is_at(stop);
+    /// A row of the menu, or (`Spot::Found`) one the filter found: `path` is the submenus it is in.
+    fn render_row(
+        &self,
+        spot: Spot,
+        entry: &Entry,
+        path: Option<&SharedString>,
+        t: &theme::Tokens,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let (id, selected) = match spot {
+            Spot::Row(ix) => (ElementId::from(("menu-row", ix)), self.is_at(Stop::Row(ix))),
+            Spot::Found(i) => (ElementId::from(("menu-found", i)), self.found_at == i),
+        };
         let role = match entry.check {
             Some(_) => Role::MenuItemCheckBox,
             None => Role::MenuItem,
         };
-        let tint = if entry.danger {
+        let tint = if entry.smart {
+            t.primary
+        } else if entry.danger {
             t.destructive
         } else {
             t.muted_foreground
         };
+        // What a screen reader says: where a found row lives, then what it is.
+        let name: SharedString = match path {
+            Some(path) => format!("{path} › {}", entry.label).into(),
+            None => entry.label.clone(),
+        };
+        // Why it is put forward, or why it can't be chosen.
+        let note = if entry.disabled {
+            entry.why_not.clone()
+        } else {
+            entry.reason.clone()
+        };
+        let two_lines = entry.reason.is_some() && !entry.disabled;
         let mut row = row_start()
-            .id(("menu-row", ix))
+            .id(id)
             .role(role)
-            .aria_label(entry.label.clone())
+            .aria_label(name)
             .test_support()
             .w_full()
             .gap(space(2.))
@@ -366,6 +546,7 @@ impl MenuView {
             .text_size(theme::size::SM)
             .text_start()
             .cursor_pointer()
+            .when(two_lines, |d| d.items_start())
             .when(selected, |d| d.bg(t.accent))
             .when(entry.danger, |d| d.text_color(t.destructive))
             .when(entry.disabled, |d| d.opacity(0.4).cursor_default());
@@ -375,27 +556,76 @@ impl MenuView {
         if selected {
             row = row.aria_active_descendant();
         }
+        if let Some(note) = note {
+            row = row.aria_description(note);
+        }
+        if let (true, Some(why)) = (entry.disabled, entry.why_not.clone()) {
+            row = row.tooltip(move |window, cx| tooltip(why.clone(), window, cx));
+        }
         if !entry.disabled {
             row = row
                 .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                     if *hovered {
-                        this.hover(stop, cx);
+                        this.point_at(spot, cx);
                     }
                 }))
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    this.hover(stop, cx);
-                    this.activate(cx);
+                    this.point_at(spot, cx);
+                    match spot {
+                        Spot::Row(_) => this.activate(cx),
+                        Spot::Found(_) => this.choose_found(cx),
+                    }
                 }));
         }
-        row.children(Self::icon_of(entry, Some(tint)))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .text_start()
-                    .child(isolate(entry.label.clone())),
-            )
+        // The icon sits at the top of a two-line row, a pixel or two down so it lines up with the label.
+        let mark = Self::icon_of(entry, Some(tint)).map(|mark| {
+            if two_lines {
+                div().flex_none().mt(px(2.)).child(mark).into_any_element()
+            } else {
+                mark
+            }
+        });
+        let label = div()
+            .flex_1()
+            .min_w_0()
+            .truncate()
+            .text_start()
+            .child(isolate(entry.label.clone()));
+        let body = match (path, &entry.reason) {
+            (_, Some(reason)) if two_lines => col()
+                .flex_1()
+                .min_w_0()
+                .items_start()
+                .child(label.w_full())
+                .child(
+                    div()
+                        .w_full()
+                        .min_w_0()
+                        .truncate()
+                        .text_start()
+                        .text_size(theme::size::XXS)
+                        .text_color(t.muted_foreground)
+                        .child(isolate(reason.clone())),
+                )
+                .into_any_element(),
+            (Some(path), _) => row_start()
+                .flex_1()
+                .min_w_0()
+                .child(
+                    div()
+                        .flex_none()
+                        .max_w_1_2()
+                        .truncate()
+                        .text_start()
+                        .text_color(t.muted_foreground)
+                        .child(isolate(format!("{path} › "))),
+                )
+                .child(label)
+                .into_any_element(),
+            _ => label.into_any_element(),
+        };
+        row.children(mark)
+            .child(body)
             .children(entry.hint.clone().map(|hint| {
                 div()
                     .flex_none()
@@ -404,6 +634,189 @@ impl MenuView {
                     .text_color(t.muted_foreground)
                     .child(hint)
             }))
+            .into_any_element()
+    }
+
+    /// The pointer is over `spot`: the keyboard follows it.
+    fn point_at(&mut self, spot: Spot, cx: &mut Context<Self>) {
+        match spot {
+            Spot::Row(ix) => self.hover(Stop::Row(ix), cx),
+            Spot::Found(i) => {
+                if self.found_at != i {
+                    self.found_at = i;
+                    cx.notify();
+                }
+            }
+        }
+    }
+
+    // ---- The head -----------------------------------------------------------------------------------------
+
+    /// One badge of a head: a pill, pressed with the mouse when it has something behind it.
+    fn render_badge(&self, ix: usize, badge: &Badge, t: &theme::Tokens, cx: &mut Context<Self>) -> AnyElement {
+        let (fg, bg) = match badge.tone {
+            Tone::Plain => (t.foreground, t.accent),
+            Tone::Warn => (t.warning, t.warning.opacity(0.13)),
+            Tone::Good => (t.success, t.success.opacity(0.13)),
+        };
+        let pressable = badge.run != Run::Nothing;
+        let mut pill = row_start()
+            .id(("menu-badge", ix))
+            .role(if pressable { Role::Button } else { Role::Label })
+            .aria_label(badge.label.clone())
+            .test_support()
+            .flex_none()
+            .h(px(20.))
+            .px(space(2.))
+            .gap(space(1.))
+            .rounded_full()
+            .bg(bg)
+            .text_color(fg)
+            .text_size(theme::size::XXS)
+            .font_weight(FontWeight::MEDIUM)
+            .when(pressable, |d| d.cursor_pointer())
+            .child(icon(badge.icon).size(px(11.)).flex_none())
+            .child(div().whitespace_nowrap().child(isolate(badge.label.clone())));
+        if let Some(tip) = badge.tip.clone() {
+            pill = pill.tooltip(move |window, cx| tooltip(tip.clone(), window, cx));
+        }
+        if pressable {
+            let run = badge.run.clone();
+            pill = pill.on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
+                cx.emit(MenuViewEvent::Chose(run.clone()));
+            }));
+        }
+        pill.into_any_element()
+    }
+
+    /// A menu's head: the picture, the name, a line of facts, and the badges with when it changed.
+    fn render_head(&self, head: &Head, t: &theme::Tokens, cx: &mut Context<Self>) -> AnyElement {
+        let picture = match &head.picture {
+            HeadPicture::Kind(kind) => art::kind(kind, px(40.), cx),
+            HeadPicture::Folder => art::folder(px(40.), theme::folder_tone(cx), None, cx),
+            HeadPicture::Several => art::page(px(40.), t.muted_foreground, Some(IconName::Files), cx),
+        };
+        // At most three badges; with more, the third place says how many are not shown.
+        let shown: Vec<Badge> = if head.badges.len() > MOST_BADGES {
+            let hidden = &head.badges[MOST_BADGES - 1..];
+            let mut shown: Vec<Badge> = head.badges[..MOST_BADGES - 1].to_vec();
+            let names = hidden.iter().map(|b| b.label.to_string()).collect::<Vec<_>>();
+            shown.push(Badge {
+                label: format!("+{}", hidden.len()).into(),
+                icon: IconName::Ellipsis,
+                tone: Tone::Plain,
+                tip: Some(names.join(", ").into()),
+                run: Run::Nothing,
+            });
+            shown
+        } else {
+            head.badges.clone()
+        };
+        let mut said = vec![head.line.to_string()];
+        said.extend(head.badges.iter().map(|b| b.label.to_string()));
+        let description: SharedString = said.join(", ").into();
+        let badges: Vec<AnyElement> = shown
+            .iter()
+            .enumerate()
+            .map(|(i, badge)| self.render_badge(i, badge, t, cx))
+            .collect();
+        row_start()
+            .id("menu-head")
+            .role(Role::Group)
+            .aria_label(head.title.clone())
+            .aria_description(description)
+            .test_support()
+            .w_full()
+            .flex_none()
+            .gap(space(2.5))
+            .px(space(2.))
+            .pt(space(2.))
+            .pb(space(2.25))
+            .mb(space(1.))
+            .border_b_1()
+            .border_color(t.border)
+            .child(picture)
+            .child(
+                col()
+                    .flex_1()
+                    .min_w_0()
+                    .items_start()
+                    .child(
+                        div()
+                            .w_full()
+                            .truncate()
+                            .text_start()
+                            .text_size(theme::size::SM)
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(isolate(head.title.clone())),
+                    )
+                    .child(
+                        div()
+                            .w_full()
+                            .truncate()
+                            .text_start()
+                            .text_size(theme::size::XS)
+                            .text_color(t.muted_foreground)
+                            .child(rtl_line(head.line.clone())),
+                    )
+                    .child(
+                        // Always 20 px high, even with nothing in it, so the head never changes height.
+                        row_start()
+                            .w_full()
+                            .h(px(20.))
+                            .flex_none()
+                            .mt(px(3.))
+                            .gap(space(1.))
+                            .overflow_hidden()
+                            .children(badges)
+                            .children(head.changed.clone().map(|changed| {
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_start()
+                                    .text_size(theme::size::XXS)
+                                    .text_color(t.muted_foreground)
+                                    .child(isolate(changed))
+                            })),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    /// The line a filter starts with: what is typed, a caret, and how to take it back.
+    fn render_filter(&self, t: &theme::Tokens) -> AnyElement {
+        row_start()
+            .id("menu-filter")
+            .role(Role::SearchInput)
+            .aria_label(t!("Filter: {query}", query = self.query))
+            .test_support()
+            .w_full()
+            .flex_none()
+            .gap(space(2.))
+            .px(space(2.))
+            .py(space(1.75))
+            .mb(space(1.))
+            .border_b_1()
+            .border_color(t.border)
+            .text_size(theme::size::SM)
+            .child(icon(IconName::Search).size_4().flex_none().text_color(t.muted_foreground))
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(isolate(self.query.clone())),
+            )
+            .child(div().flex_none().w(px(1.5)).h(px(15.)).bg(t.primary))
+            .child(div().flex_1())
+            .child(
+                div()
+                    .flex_none()
+                    .text_size(theme::size::XXS)
+                    .text_color(t.muted_foreground)
+                    .child(t!("Esc")),
+            )
             .into_any_element()
     }
 
@@ -574,6 +987,7 @@ impl Render for MenuView {
                 cx.notify();
             }
         }
+        let typing = !self.query.is_empty();
         self.cur = self.levels.last().and_then(Level::stop);
         let no_nodes: Vec<Node> = Vec::new();
         let (title, nodes) = match self.levels.last() {
@@ -581,37 +995,82 @@ impl Render for MenuView {
             None => (None, &no_nodes),
         };
         let count = nodes.len();
-        let rows: Vec<AnyElement> = nodes
-            .iter()
-            .enumerate()
-            .map(|(i, node)| match node {
-                Node::Separator => div()
-                    .h(px(1.))
-                    .my(space(1.))
-                    .bg(t.border.opacity(0.7))
-                    .into_any_element(),
-                Node::Heading(text) => div()
+        // The head is drawn above the list that scrolls, and is not one of its rows.
+        let head = if typing {
+            None
+        } else {
+            nodes.iter().find_map(|node| match node {
+                Node::Head(head) => Some(self.render_head(head, &t, cx)),
+                _ => None,
+            })
+        };
+        let rows: Vec<AnyElement> = if typing {
+            Vec::new()
+        } else {
+            nodes
+                .iter()
+                .enumerate()
+                .filter_map(|(i, node)| {
+                    Some(match node {
+                        Node::Separator => div()
+                            .h(px(1.))
+                            .my(space(1.))
+                            .bg(t.border.opacity(0.7))
+                            .into_any_element(),
+                        Node::Heading(text) => {
+                            // The strip and the head have their own hairline: no second line right under them.
+                            let first = i == 0 || matches!(nodes.get(i - 1), Some(Node::Strip(_) | Node::Head(_)));
+                            div()
+                                .px(space(2.))
+                                .pb(space(1.))
+                                .pt(space(if first { 1.5 } else { 2. }))
+                                .text_size(theme::size::XS)
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(t.muted_foreground)
+                                .text_start()
+                                .when(!first, |d| d.mt(space(1.)).border_t_1().border_color(t.border))
+                                .child(isolate(text.clone()))
+                                .into_any_element()
+                        }
+                        Node::Strip(entries) => self.render_strip(i, entries, i + 1 == count, &t, cx),
+                        Node::Head(_) => return None,
+                        Node::Item(entry) => self.render_row(Spot::Row(i), entry, None, &t, cx),
+                        Node::Menu {
+                            label, icon, disabled, ..
+                        } => self.render_menu_row(i, label, *icon, *disabled, &t, cx),
+                    })
+                })
+                .collect()
+        };
+        // What typing shows in their place: a line saying what is typed, and what matches it.
+        let filter = typing.then(|| self.render_filter(&t));
+        let found: Vec<AnyElement> = if typing {
+            if self.found.is_empty() {
+                let none = t!("Nothing in this menu matches");
+                vec![div()
+                    .id("menu-nothing")
+                    .role(Role::Label)
+                    .aria_label(none.clone())
+                    .test_support()
                     .px(space(2.))
-                    .pb(space(1.))
-                    .pt(space(if i > 0 { 2. } else { 1.5 }))
-                    .text_size(theme::size::XS)
-                    .font_weight(FontWeight::MEDIUM)
+                    .py(space(2.))
+                    .text_size(theme::size::SM)
                     .text_color(t.muted_foreground)
                     .text_start()
-                    .when(i > 0, |d| d.mt(space(1.)).border_t_1().border_color(t.border))
-                    .child(isolate(text.clone()))
-                    .into_any_element(),
-                Node::Strip(entries) => self.render_strip(i, entries, i + 1 == count, &t, cx),
-                // Card E1 of docs/gpui/aware draws the head.
-                Node::Head(_) => div().into_any_element(),
-                Node::Item(entry) => self.render_row(i, entry, &t, cx),
-                Node::Menu {
-                    label, icon, disabled, ..
-                } => self.render_menu_row(i, label, *icon, *disabled, &t, cx),
-            })
-            .collect();
+                    .child(none)
+                    .into_any_element()]
+            } else {
+                self.found
+                    .iter()
+                    .enumerate()
+                    .map(|(i, found)| self.render_row(Spot::Found(i), &found.entry, found.path.as_ref(), &t, cx))
+                    .collect()
+            }
+        } else {
+            Vec::new()
+        };
 
-        let back = title.map(|title| {
+        let back = title.filter(|_| !typing).map(|title| {
             let selected = self.is_at(Stop::Back);
             row_start()
                 .id("menu-back")
@@ -643,11 +1102,46 @@ impl Render for MenuView {
                 .child(div().flex_1().min_w_0().truncate().text_start().child(isolate(title)))
         });
 
-        // No taller than the window: what doesn't fit scrolls.
+        // No taller than the window: what doesn't fit scrolls (the rows; the head and the filter stay).
         let max_height = (window.viewport_size().height - px(8.)).max(px(120.));
-        // A menu arrives: there at once, settling the last few pixels as it fades in (a level deeper or back
-        // arrives the same way).
-        let level = self.levels.len();
+        let reserved = FRAME_ROOM
+            + if typing {
+                FILTER_ROOM
+            } else if head.is_some() {
+                HEAD_ROOM
+            } else {
+                0.
+            };
+        let rows_height = (max_height - px(reserved)).max(px(80.));
+        // A menu with a head is wider, so the head has room for its badges (and the width doesn't change as
+        // the keyboard goes into a submenu and back).
+        let wide = if self.has_head() { 17. } else { 14.5 };
+        // The rows slide in from the side they came from when the menu goes into a submenu or back (not when
+        // typing starts or ends: the key stays as it was).
+        let slide = self.slide;
+        let toward_end = if i18n::is_rtl() { -1. } else { 1. };
+        let rows = col()
+            .id("menu-rows")
+            .w_full()
+            .min_h_0()
+            .max_h(rows_height)
+            .overflow_y_scroll()
+            .track_scroll(&self.scroll)
+            .children(back)
+            .children(rows)
+            .children(found)
+            .with_animation(
+                ("menu-slide", self.moves),
+                Animation::new(theme::motion::FAST).with_easing(theme::motion::enter),
+                move |rows, delta| {
+                    if slide == 0 {
+                        return rows;
+                    }
+                    let from = f32::from(slide) * toward_end * 10. * (1. - delta);
+                    rows.opacity(0.4 + 0.6 * delta).paint_offset(px(from), px(0.))
+                },
+            );
+        // The menu arrives once, when it opens: there at once, settling the last few pixels as it fades in.
         col()
             .id("menu")
             .role(Role::Menu)
@@ -658,11 +1152,9 @@ impl Render for MenuView {
             .on_key_down(cx.listener(Self::on_key_down))
             .on_mouse_down_out(cx.listener(|_, _, _, cx| cx.emit(MenuViewEvent::Dismissed)))
             .occlude()
-            .min_w(rems(14.5))
+            .min_w(rems(wide))
             .max_w(rems(26.))
             .max_h(max_height)
-            .overflow_y_scroll()
-            .track_scroll(&self.scroll)
             .p(space(1.))
             .rounded(theme::size::RADIUS_SHEET)
             .border_1()
@@ -671,10 +1163,11 @@ impl Render for MenuView {
             .text_color(t.popover_foreground)
             .shadow(theme::elevation::floating(cx))
             .text_start()
-            .children(back)
-            .children(rows)
+            .children(head)
+            .children(filter)
+            .child(rows)
             .with_animation(
-                ("menu-enter", level),
+                "menu-enter",
                 Animation::new(theme::motion::FAST).with_easing(theme::motion::enter),
                 // It pops: there from the first frame, growing the last few percent as it clears.
                 |menu, delta| {

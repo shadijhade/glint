@@ -9,6 +9,8 @@ Wave 3 · crate `glint-ui` · the menu host and the menus' rows
 
 ## 1. The host dresses every menu (`mod.rs`)
 
+**Only when the app has its Aware entity** (`aware::try_shared(cx)` is `Some`, as it always is in the running app). Without it the menu is shown exactly as `item_menu` or `folder_menu` made it: that is what keeps every old test in `menus/tests.rs` passing unchanged (they start no entity), and your new tests start one (`aware::init_with`). Write this as one early check in a private `fn dressed(…)` that the three `open_…` functions call.
+
 In `open_list_menu` and `open_entries_menu`, after `item_menu(&chosen, &ctx)`:
 
 ```rust
@@ -25,7 +27,7 @@ let nodes = smart::dress(nodes, head, &picks, facts.shape, Vec::new());   // G1:
 - With one target on screen, ask for what isn't known, at once: `aware.update(cx, |a, cx| a.look_now(std::slice::from_ref(entry), cx))`.
 - `ItemCtx` has a new field, `probed: Option<Probed>` (the coordinator added it): set it from `probed` before calling `item_menu` (section 3 reads it).
 - **The folder's own menu** (`open_background_menu`): `head::folder_head(name, Some(tab.rows.len()), branch)` where `name` is the tab's display name (`ex.tab_name(&tab.path)`, as `item_ctx` does for the other pane) and `branch` is `git::view_of(cx, tab.id)`'s branch when there is one; `facts` is `aware::facts(cx, &[])` (shape `Nothing`); picks as above. **A place's or a tile's menu** (`open_folder_menu`): the same with `items: None` and no branch.
-- **Not dressed:** a menu with fewer than four nodes (This PC's one row), so it stays as it is.
+- **Not dressed:** a menu with fewer than four nodes (This PC's one row), so it stays as it is; and any menu while there is no Aware entity (above).
 - `Open` keeps two more things: `shape: Shape` and `targets: Vec<FileEntry>`.
 
 ## 2. While the menu is open
