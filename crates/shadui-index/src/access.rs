@@ -231,12 +231,16 @@ mod tests {
         std::fs::write(dir.join("sub").join("notes.txt"), "hi").unwrap();
         icacls(&dir, &["/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F"]);
         icacls(&dir, &["/inheritance:r"]);
+        // Where new folders get an entry of their own for whoever made them (GitHub's runners), that one goes
+        // too: the folder keeps its owner out however it came by its permissions.
+        let me = win::current_user_sid().unwrap();
+        icacls(&dir, &["/remove", &format!("*{me}")]);
         // Elevated, the test runs as an administrator, whom the folder lets in anyway.
         if !win::is_elevated() {
             assert!(std::fs::read_dir(&dir).is_err(), "the folder starts out locked");
         }
 
-        let result = grant(&dir.to_string_lossy(), &win::current_user_sid().unwrap());
+        let result = grant(&dir.to_string_lossy(), &me);
         let acl = icacls(&dir, &[]);
         let inside = std::fs::read_to_string(dir.join("sub").join("notes.txt"));
         // Put back as it was before anything can fail, so the folder can be deleted.

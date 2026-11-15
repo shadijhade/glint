@@ -89,7 +89,8 @@ jobs:
           echo "INSTALLER_NAME=Glint_${version}_x64-setup.exe" >> $env:GITHUB_ENV
           cargo clippy --workspace --all-targets --locked -- -D warnings
           # The crates that need no window; glint-ui's tests open GPUI windows and run on the maintainer's PC.
-          cargo test -p glint-model -p glint-core -p shadui-index --locked
+          # --no-fail-fast: one run says everything a runner does differently, not the first thing.
+          cargo test -p glint-model -p glint-core -p shadui-index --locked --no-fail-fast
 
       - name: Build Glint.exe and the instant search service
         shell: pwsh
@@ -158,6 +159,25 @@ jobs:
           }
           New-Item -ItemType Directory -Path "$env:RUNNER_TEMP\unsigned-installer" -Force | Out-Null
           node scripts/gpui-installer.mjs --no-build --exe "$pack\Glint.exe" --service "$pack\shadui-index.exe" @serviceSig --service-signed --out "$env:RUNNER_TEMP\unsigned-installer\$($env:INSTALLER_NAME)"
+
+      # The Microsoft Store's package, from the same binaries and the same service signature. The Store signs it,
+      # so it is an artifact of the run (npm run ship sends it), never a file of the release. A failure here
+      # doesn't hold the release: npm run ship packs it from the released setup program instead.
+      - name: Pack the Microsoft Store's package
+        id: msix
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          node scripts/msix.mjs --from "$env:RUNNER_TEMP\pack" --out "$env:RUNNER_TEMP\msix"
+
+      - name: Upload the Microsoft Store's package artifact
+        if: steps.msix.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: msix-v${{ env.VERSION }}
+          path: ${{ runner.temp }}/msix/*.msix
+          if-no-files-found: error
 
       - name: Upload unsigned NSIS installer artifact
         id: upload-installer
