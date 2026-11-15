@@ -67,7 +67,7 @@ const TITLE_BAR_HEIGHT: Pixels = px(48.);
 /// The dock's height, at the foot of the sheet: the status bar's, with the commands' island over its middle.
 const DOCK_HEIGHT: Pixels = crate::components::status_bar::HEIGHT;
 /// The room, in rems, the dock keeps at each side of the commands' island for the status bar's words.
-const DOCK_SIDE_ROOM: f32 = 13.;
+const DOCK_SIDE_ROOM: f32 = 10.;
 /// The air between the sheet and the window's end and bottom edges.
 const SHEET_GAP: Pixels = px(8.);
 /// How long the window's light takes to turn to another place's color.
@@ -3103,5 +3103,34 @@ mod tests {
             1,
             "and nothing was asked"
         );
+    }
+
+    /// What the status bar was told each of its ends has, and what the island's last drawing leaves them.
+    fn told_and_left(visual: &mut VisualTestContext, workspace: &Entity<Workspace>) -> (f32, f32, f32) {
+        for _ in 0..8 {
+            visual.update(|window, cx| window.render_frame(cx));
+            visual.run_until_parked();
+        }
+        workspace.read_with(visual, |workspace, cx| {
+            let rem = f32::from(theme::rem_size(cx));
+            let (dock, island) = workspace.command_bar.read(cx).widths(rem);
+            let left = ((dock - island) / 2. - rem * 1.5).max(1.);
+            (workspace.status.read(cx).beside().get(), left, island)
+        })
+    }
+
+    #[gpui_kit::test]
+    fn the_docks_ends_are_told_again_when_the_island_alone_changes_width(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let (mut visual, workspace) = open_workspace(cx, false);
+        let (told, left, island) = told_and_left(&mut visual, &workspace);
+        assert!(island > 0., "the island was drawn");
+        assert_eq!(told, left, "each end has what the island leaves");
+        // Only the island changes (it may take the whole dock, and unfolds): nothing else asks the window to draw.
+        let bar = workspace.read_with(&visual, |workspace, _| workspace.command_bar.clone());
+        visual.update(|_, cx| bar.update(cx, |bar, cx| bar.set_side_room(0., cx)));
+        let (told, left, now) = told_and_left(&mut visual, &workspace);
+        assert_ne!(now, island, "the island is another width");
+        assert_eq!(told, left, "the ends were told the new room");
     }
 }

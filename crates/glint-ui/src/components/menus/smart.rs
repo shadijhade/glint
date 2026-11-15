@@ -263,8 +263,17 @@ pub fn row_for(nodes: &[Node], key: &str) -> Option<Entry> {
             return true;
         }
         let mut row = entry.clone();
-        if !menus.is_empty() {
-            row.label = format!("{} › {}", menus.join(" › "), entry.label).into();
+        // "Inspect & check" and "Clean up & share" are shelves: what is on them says what it does by itself
+        // ("Scan with Microsoft Defender"). A row of any other submenu needs its menu's name ("Compress to ›
+        // Zip file").
+        let shelves = [t!("Inspect & check"), t!("Clean up & share")];
+        let named: Vec<&str> = menus
+            .iter()
+            .copied()
+            .filter(|menu| !shelves.iter().any(|shelf| shelf.as_ref() == *menu))
+            .collect();
+        if !named.is_empty() {
+            row.label = format!("{} › {}", named.join(" › "), entry.label).into();
         }
         row.smart = true;
         row.check = None;

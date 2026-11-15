@@ -412,11 +412,19 @@ struct Wide {
     extra_large: bool,
     /// The bar's ends are beside the commands' island: what acts on the selection is there, not here.
     docked: bool,
+    /// The end has room for how the folder was read ("shown in 33 ms") whole: under it, its picture alone.
+    work: bool,
+    /// The start has room for words at all.
+    words: bool,
+    /// How wide each end is beside the island, in pixels: words longer than it end in an ellipsis. Zero when
+    /// the bar is not in the dock.
+    side: f32,
 }
 
 impl Wide {
-    /// What fits at one end of the dock, `side` pixels wide: the counts always, X-Ray and the index's progress
-    /// from 13 rem, how the folder was read from 15, how its sizes and Git's status were from 28.
+    /// What fits at one end of the dock, `side` pixels wide: the counts from 3.5 rem (under it, no words: a cut
+    /// word says less than none), how the folder was read in short from 8, X-Ray and the index's progress
+    /// from 13, the whole sentence on one line from 15, how its sizes and Git's status were from 28.
     fn beside(side: f32, window: &Window) -> Self {
         let rem = f32::from(window.rem_size());
         let at = |rems: f32| side >= rem * rems;
@@ -426,6 +434,9 @@ impl Wide {
             large: at(15.),
             extra_large: at(28.),
             docked: true,
+            work: at(8.),
+            words: at(3.5),
+            side,
         }
     }
 
@@ -439,8 +450,30 @@ impl Wide {
             large: at(LARGE),
             extra_large: at(EXTRA_LARGE),
             docked: false,
+            work: true,
+            words: true,
+            side: 0.,
         }
     }
+}
+
+/// How much the chip at the dock's end says: its words, fewer of them, or its picture alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ChipRoom {
+    Whole,
+    Short,
+    Picture,
+}
+
+/// The selection's words where the dock's start is tight: what is selected, and what is known of it under it in
+/// smaller letters.
+fn two_lines(head: AnyElement, rest: Option<AnyElement>) -> AnyElement {
+    col()
+        .justify_center()
+        .line_height(rems(1.))
+        .child(head)
+        .children(rest.map(|rest| div().text_size(theme::size::XXS).child(rest)))
+        .into_any_element()
 }
 
 /// "· git · 12 ms", with what Git found in the folder on hover, while the tab has a Git view of its folder.
@@ -598,8 +631,12 @@ impl StatusBar {
         t: &theme::Tokens,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        // Beside the island, with little room, the words start at the selection.
+        let brief = wide.docked && !wide.large && s.selected > 0;
         let text: SharedString = if s.this_pc {
             drives(s.drives)
+        } else if brief {
+            sentence::words(&sentence::pieces_in(s, deep, true))
         } else {
             sentence::counts_deep(s, deep)
         };
@@ -607,9 +644,18 @@ impl StatusBar {
         let moved = |roll: Option<(u64, u64)>| roll.is_some_and(|(from, to)| from != to);
         let rolling = !s.this_pc && deep.bytes.is_some() && (!deep.done || moved(rolls.0) || moved(rolls.1));
         let words: AnyElement = if rolling {
-            self.rolling_words(s, deep, rolls, cx)
+            self.rolling_words(s, deep, rolls, brief, cx)
+        } else if brief {
+            // Little room: what is selected on one line, what is known of it under it.
+            let pieces = sentence::pieces_in(s, deep, true);
+            let head = sentence::words(pieces.get(..1).unwrap_or(&[]));
+            let rest = sentence::words(pieces.get(1..).unwrap_or(&[]));
+            two_lines(
+                div().truncate().child(head).into_any_element(),
+                (!rest.is_empty()).then(|| div().truncate().child(rest).into_any_element()),
+            )
         } else {
-            div().child(text.clone()).into_any_element()
+            div().truncate().child(text.clone()).into_any_element()
         };
         // An archive's items, a remote's, a closed folder's and the Recycle Bin's aren't files to look into or
         // rename here.
@@ -684,7 +730,10 @@ impl StatusBar {
                     .role(Role::Status)
                     .aria_label(text.clone())
                     .test_support()
-                    .child(words),
+                    // Words longer than the room beside the island end in an ellipsis.
+                    .when(wide.side > 0., |counts| counts.max_w(px(wide.side)).overflow_hidden())
+                    // No room for a word: none is drawn (a screen reader is still told).
+                    .children(wide.words.then_some(words)),
             )
             .children(xray)
             .children(rename)
@@ -703,7 +752,10 @@ impl StatusBar {
         t: &theme::Tokens,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        if !s.this_pc && !wide.two_xs {
+        // Beside the island the end folds as the island does, words first, down to a picture; alone, the bar
+        // drops its end in a very narrow window.
+        let fits = if wide.docked { wide.words } else { wide.two_xs };
+        if !s.this_pc && !fits {
             return None;
         }
         let index = self.index_info.as_ref();
@@ -747,8 +799,17 @@ impl StatusBar {
 
         // What is happening to the folder, before the work line, where there is room for it.
         let chip = insight
-            .filter(|_| wide.large && !s.this_pc && s.find.is_none())
-            .map(|insight| self.insight_chip(insight, t, cx));
+            .filter(|_| !s.this_pc && s.find.is_none())
+            .map(|insight| {
+                let room = if !wide.docked || wide.medium {
+                    ChipRoom::Whole
+                } else if wide.two_xs {
+                    ChipRoom::Short
+                } else {
+                    ChipRoom::Picture
+                };
+                self.insight_chip(insight, room, t, cx)
+            });
         Some(
             row_start()
                 .flex_1()
@@ -758,8 +819,10 @@ impl StatusBar {
                 .items_center()
                 .gap(space(1.5))
                 .whitespace_nowrap()
+                // With little room the chip stands in for how the folder was read: what is happening now
+                // matters more than how long the listing took.
+                .children((chip.is_none() || wide.large).then_some(content))
                 .children(chip)
-                .child(content)
                 .into_any_element(),
         )
     }
@@ -770,11 +833,20 @@ impl StatusBar {
         s: &Summary,
         deep: &sentence::Deep,
         rolls: Rolls,
+        brief: bool,
         cx: &App,
     ) -> AnyElement {
         let mut row = row_start().items_center().gap(space(1.));
-        for (i, piece) in sentence::pieces(s, deep).into_iter().enumerate() {
-            if i > 0 {
+        // Where the start is tight, what is selected is a line of its own and the numbers roll under it.
+        let mut head: Option<AnyElement> = None;
+        for (i, piece) in sentence::pieces_in(s, deep, brief).into_iter().enumerate() {
+            if brief && i == 0 {
+                if let sentence::Piece::Text(text) = piece {
+                    head = Some(div().child(text).into_any_element());
+                    continue;
+                }
+            }
+            if i > usize::from(head.is_some()) {
                 row = row.child(div().child("·"));
             }
             row = row.child(match piece {
@@ -791,12 +863,28 @@ impl StatusBar {
                 },
             });
         }
-        row.into_any_element()
+        match head {
+            Some(head) => two_lines(head, Some(row.into_any_element())),
+            None => row.into_any_element(),
+        }
     }
 
     /// The pill at the dock's end that says what is happening to the folder, or that its drive is nearly full.
-    /// Pressing it (or Enter or Space on it) tells the window.
-    fn insight_chip(&self, insight: Insight, t: &theme::Tokens, cx: &mut Context<Self>) -> AnyElement {
+    /// Pressing it (or Enter or Space on it) tells the window. Beside the island with little room it says it in
+    /// fewer words and its line is shorter, and with less still it is its picture alone; what a screen reader
+    /// calls it is the same.
+    fn insight_chip(
+        &self,
+        insight: Insight,
+        room: ChipRoom,
+        t: &theme::Tokens,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let tight = room != ChipRoom::Whole;
+        let short = match &insight {
+            Insight::Changing(_) => t!("Changing"),
+            Insight::NearlyFull(drive) => t!("{drive} nearly full", drive = drive),
+        };
         let (words, tip, color, fill, hover, mark) = match &insight {
             Insight::Changing(pulse) => (
                 t!("Changing now"),
@@ -804,7 +892,10 @@ impl StatusBar {
                 t.foreground,
                 t.accent,
                 t.pressed,
-                viz::spark(pulse, t.primary).flex_none().into_any_element(),
+                viz::spark(pulse, t.primary)
+                    .flex_none()
+                    .when(tight, |spark| spark.w(px(28.)))
+                    .into_any_element(),
             ),
             Insight::NearlyFull(drive) => (
                 t!("{drive} is nearly full", drive = drive),
@@ -826,7 +917,7 @@ impl StatusBar {
             .focus(|style| style.bg(t.ring))
             .flex_none()
             .h(px(22.))
-            .px(space(2.5))
+            .px(if room == ChipRoom::Picture { space(1.5) } else { space(2.5) })
             .rounded_full()
             .flex()
             .flex_row()
@@ -847,7 +938,11 @@ impl StatusBar {
                 }
             }))
             .child(mark)
-            .child(words)
+            .children(match room {
+                ChipRoom::Whole => Some(words),
+                ChipRoom::Short => Some(short),
+                ChipRoom::Picture => None,
+            })
             .into_any_element()
     }
 
@@ -878,7 +973,7 @@ impl StatusBar {
                     .gap(space(1.))
                     .child(icon(IconName::FileArchive).size_3().text_color(t.warning).flex_none())
                     .children(wide.large.then(|| div().child(lead.clone())))
-                    .child(div().child(shown.clone()))
+                    .children(wide.work.then(|| div().child(shown.clone())))
                     .into_any_element(),
             ),
             Work::Index { lead, shown, title } => (
@@ -888,7 +983,7 @@ impl StatusBar {
                     .gap(space(1.))
                     .child(icon(IconName::FolderLock).size_3().text_color(t.warning).flex_none())
                     .children(wide.large.then(|| div().child(lead.clone())))
-                    .child(div().child(shown.clone()))
+                    .children(wide.work.then(|| div().child(shown.clone())))
                     .into_any_element(),
             ),
             Work::Disk {
@@ -914,7 +1009,7 @@ impl StatusBar {
                         .gap(space(1.))
                         .child(icon(IconName::Zap).size_3().text_color(t.primary).flex_none())
                         .children(wide.large.then(|| div().child(lead.clone())))
-                        .child(div().child(shown.clone()))
+                        .children(wide.work.then(|| div().child(shown.clone())))
                         .children(sized)
                         .children(git)
                         .into_any_element(),
@@ -943,6 +1038,8 @@ impl StatusBar {
                     .gap(space(1.))
                     .min_w_0()
                     .overflow_hidden()
+                    // The bar's own letters, not the kit's button's: both ends of the dock read as one line.
+                    .text_size(theme::size::XS)
                     .children(wide.medium.then(|| scanning.map(|v| indexing_line(v, t))).flatten())
                     .child(pieces)
                     .children(thumbs.and_then(|th| thumbs_piece(th, wide, t))),
