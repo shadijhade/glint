@@ -11,6 +11,7 @@
 use super::event::MenuEvent;
 use crate::actions::{self, BINDINGS};
 use crate::kit::prelude::*;
+use glint_model::file_types::Kind;
 use glint_model::paths::THIS_PC;
 use std::sync::Arc;
 
@@ -34,6 +35,10 @@ pub enum Node {
     /// A compact top strip of icon buttons for the frequent commands (Cut, Copy, Paste, Rename, Copy path,
     /// Pin, Delete): `actions` in the TypeScript.
     Strip(Vec<Entry>),
+    /// The card a menu starts with: what it is for, as a picture, a name, a line of facts and badges
+    /// (docs/gpui/aware/PLAN.md, F1). Never a stop for the keyboard; its height doesn't change while the menu
+    /// is open.
+    Head(Head),
 }
 
 impl Node {
@@ -46,6 +51,65 @@ impl Node {
             items: items.into_iter().flatten().collect(),
         }
     }
+}
+
+/// The card a menu starts with.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Head {
+    /// The item's name, the folder's, or "3 items".
+    pub title: SharedString,
+    pub picture: HeadPicture,
+    /// What is known, in a line: "PNG image · 2.4 MB · 1920 × 1080".
+    pub line: SharedString,
+    /// What is worth pointing out, most important first (the view draws three).
+    pub badges: Vec<Badge>,
+    /// "Changed yesterday": fills the badges' line when there is room.
+    pub changed: Option<SharedString>,
+}
+
+/// The picture in a menu's head.
+#[derive(Clone, Debug)]
+pub enum HeadPicture {
+    /// A file of this kind (`art::kind`).
+    Kind(&'static Kind),
+    /// A folder.
+    Folder,
+    /// Several items.
+    Several,
+}
+
+impl PartialEq for HeadPicture {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            // A kind is one of the table's entries: the same entry is the same kind.
+            (HeadPicture::Kind(a), HeadPicture::Kind(b)) => std::ptr::eq(*a, *b),
+            (HeadPicture::Folder, HeadPicture::Folder) | (HeadPicture::Several, HeadPicture::Several) => true,
+            _ => false,
+        }
+    }
+}
+
+/// One thing worth pointing out in a menu's head: "In use by Word", "From github.com".
+#[derive(Clone, Debug, PartialEq)]
+pub struct Badge {
+    pub label: SharedString,
+    pub icon: IconName,
+    pub tone: Tone,
+    /// Its tooltip.
+    pub tip: Option<SharedString>,
+    /// What pressing it does ([`Run::Nothing`]: it only says).
+    pub run: Run,
+}
+
+/// How a badge is colored.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tone {
+    /// Something to know.
+    Plain,
+    /// Something to mind.
+    Warn,
+    /// Something reassuring.
+    Good,
 }
 
 /// A row, or one button of the strip.
@@ -70,6 +134,12 @@ pub struct Entry {
     pub check: Option<bool>,
     /// What choosing it does.
     pub run: Run,
+    /// The small second line of a suggested row: why it is put forward.
+    pub reason: Option<SharedString>,
+    /// Why it is greyed out, for its tooltip and for screen readers.
+    pub why_not: Option<SharedString>,
+    /// A suggested row: its icon is drawn in the accent color.
+    pub smart: bool,
 }
 
 impl Entry {
@@ -85,6 +155,9 @@ impl Entry {
             active: false,
             check: None,
             run,
+            reason: None,
+            why_not: None,
+            smart: false,
         }
     }
 
@@ -134,6 +207,13 @@ impl Entry {
     /// Greyed out when `yes`.
     pub fn disabled(mut self, yes: bool) -> Entry {
         self.disabled = yes;
+        self
+    }
+
+    /// Greyed out when `yes`, and saying `why` (its tooltip, and what a screen reader adds).
+    pub fn disabled_because(mut self, yes: bool, why: &Option<SharedString>) -> Entry {
+        self.disabled = yes;
+        self.why_not = if yes { why.clone() } else { None };
         self
     }
 
@@ -355,7 +435,7 @@ pub fn visible_items(items: Vec<Node>) -> Vec<Node> {
             !matches!(node, Node::Separator)
                 || (*i > 0
                     && *i + 1 < headed.len()
-                    && !matches!(headed[i - 1], Node::Separator | Node::Strip(_))
+                    && !matches!(headed[i - 1], Node::Separator | Node::Strip(_) | Node::Head(_))
                     && !matches!(headed[i + 1], Node::Heading(_)))
         })
         .map(|(_, node)| node.clone())
@@ -410,6 +490,7 @@ mod tests {
                 Node::Heading(h) => format!("# {h}"),
                 Node::Separator => "-".into(),
                 Node::Strip(entries) => format!("[{}]", entries.len()),
+                Node::Head(head) => format!("<{}>", head.title),
             })
             .collect()
     }

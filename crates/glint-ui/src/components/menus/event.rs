@@ -224,4 +224,18 @@ pub enum MenuEvent {
     ShowOnDemand { id: String, name: String },
     /// "Stop showing in File Explorer" (`hideOnDemand`).
     HideOnDemand { id: String },
+
+    // ---- What Glint knows (docs/gpui/aware) ----
+    /// "Unblock": takes Windows' "downloaded" mark off these files.
+    Unblock { paths: Vec<String> },
+    /// "Copy the text in it": the text Windows reads in a picture, to the clipboard.
+    CopyTextIn { path: String },
+    /// "Move or copy to" a folder used before: these items go to `folder`.
+    SendTo {
+        paths: Vec<String>,
+        folder: String,
+        moving: bool,
+    },
+    /// "Choose a folder…" under "Move or copy to": asks where, then as [`MenuEvent::SendTo`].
+    ChooseSendTo { paths: Vec<String>, moving: bool },
 }

@@ -55,13 +55,29 @@
 
 mod data;
 mod event;
+/// Finding a menu's rows by typing.
+pub mod filter;
 mod folder;
+/// What a menu's head says.
+pub mod head;
 mod item;
 /// What kind of item each command is offered for (also the Ctrl+K palette's conditions).
 pub(crate) mod kinds;
+/// "Move or copy to": the folders this kind of thing usually goes to.
+pub mod send_to;
+/// The Suggested section, and every row's key.
+pub mod smart;
 mod spec;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_host;
+#[cfg(test)]
+mod tests_send_to;
+#[cfg(test)]
+mod tests_smart;
+#[cfg(test)]
+mod tests_view;
 mod view;
 
 pub use data::{MenuData, Sources};
@@ -69,7 +85,7 @@ pub use event::{CloudPin, CompressFormat, MediaTool, MenuEvent, PdfTool};
 pub use folder::{folder_menu, undo_label, Connection, FolderCtx, FolderView};
 pub use item::{item_menu, open_in_menu, scripts_menu, shell_menu_fits, ItemCtx};
 pub use kinds::on_disk;
-pub use spec::{key_text, visible_items, Command, Entry, Node, Run, Task};
+pub use spec::{key_text, visible_items, Badge, Command, Entry, Head, HeadPicture, Node, Run, Task, Tone};
 pub use view::{MenuView, MenuViewEvent};
 
 use crate::core_bridge::{self, Core};
@@ -99,6 +115,27 @@ struct Open {
     /// What had the keyboard: the file list, so a chosen command is dispatched to it and the keys return to it.
     focus: Option<FocusHandle>,
     _subscription: Subscription,
+}
+
+/// The window's menu host, kept where the commands' island can ask it what it would suggest.
+struct SharedHost(WeakEntity<MenuHost>);
+
+impl Global for SharedHost {}
+
+/// The window's menu host, once it has been made.
+pub fn host(cx: &App) -> Option<Entity<MenuHost>> {
+    cx.try_global::<SharedHost>().and_then(|shared| shared.0.upgrade())
+}
+
+/// A row put forward for what is selected in a pane (the island's next step).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Suggested {
+    /// The row, made to stand alone, with its reason.
+    pub entry: Entry,
+    /// Its key (`Run::key`).
+    pub key: String,
+    /// What the selection is: what choosing it is counted under.
+    pub shape: glint_model::aware::Shape,
 }
 
 /// Shows the menus of the explorer window and runs what is chosen. One per window, drawn last in its root.
@@ -131,7 +168,15 @@ impl MenuHost {
             shell_calls: Default::default(),
         };
         host.read_lists(true, cx);
+        cx.set_global(SharedHost(cx.weak_entity()));
         host
+    }
+
+    /// The rows Suggested would hold for the selection of `pane`, best first, at most `most`. None for no
+    /// selection, or one of more than 200 items. Card E4 of docs/gpui/aware fills this in.
+    pub fn suggestions(&self, pane: usize, most: usize, cx: &App) -> Vec<Suggested> {
+        let _ = (pane, most, cx);
+        Vec::new()
     }
 
     /// Whether a menu is on screen.

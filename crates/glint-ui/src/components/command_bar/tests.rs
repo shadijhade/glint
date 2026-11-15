@@ -268,6 +268,7 @@ fn labels(nodes: &[Node]) -> Vec<String> {
             Node::Heading(h) => format!("# {h}"),
             Node::Separator => "-".into(),
             Node::Strip(entries) => format!("[{}]", entries.len()),
+            Node::Head(head) => format!("<{}>", head.title),
         })
         .collect()
 }

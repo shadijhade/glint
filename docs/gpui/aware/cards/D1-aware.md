@@ -40,6 +40,7 @@ impl Sources {
 
 Constants: `MOST_KEPT: usize = 512`, `MOST_TO_LOOK_AT: usize = 200`, `INSIDE_FRESH: Duration = 30 s`, `SELECTION_SETTLES: Duration = 150 ms`.
 
+- The model has what the bookkeeping needs: `Want::minus(&probed)` (what is still unknown), `Want::without(asked)` (what hasn't been asked yet), `Want::and(other)` (both), `Want::is_empty()`, and `Probed::take(part)`. The two function types in `Sources` have names in the code: `Probe` and `ReadClip`.
 - **Kept per path** (lower case): the entry's size and modified time when asked, the `Probed` so far, the `Want` already asked for, and when. A look at an entry whose size or modified time differ from what is kept forgets what is kept first.
 - **`look_ahead(entries, cx)`** and **`look_now(entries, cx)`**: take the first `MOST_TO_LOOK_AT` entries; for each, `want = want_for(entry)` minus what is kept and minus what was already asked; skip entries with nothing left to ask, and entries on a drive that isn't `DriveKind::Fixed` (find the drive whose `path` the entry's path starts with, ignoring case, in `explorer.read(cx).drives()`; no drive found: skip). A folder's `inside` is asked again when its answer is older than `INSIDE_FRESH` (the old answer stays until the new one arrives). If anything is left, call `sources.probe` with `Lane::Quiet` or `Lane::Now` and a new stop flag.
   - `look_ahead` first sets the stop flag of the last quiet run (the pointer has moved on); what that run already answered stays.
