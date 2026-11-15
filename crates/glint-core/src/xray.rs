@@ -233,6 +233,13 @@ pub fn zone_of(path: &str) -> Option<u32> {
     Some(parse_zone_identifier(&String::from_utf8_lossy(&bytes)).map_or(3, |z| z.zone_id))
 }
 
+/// What Windows marked a downloaded file with: its zone and where it came from. None for a file with no mark
+/// (one made on this PC), or one that can't be read.
+pub fn zone_info(path: &str) -> Option<ZoneIdentifier> {
+    let bytes = fs::read(format!("{path}:Zone.Identifier")).ok()?;
+    parse_zone_identifier(&String::from_utf8_lossy(&bytes))
+}
+
 fn parse_zone_identifier(text: &str) -> Option<ZoneIdentifier> {
     let mut zone_id = None;
     let mut host_url = None;

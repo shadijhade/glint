@@ -48,6 +48,13 @@ pub fn recent_kept() -> bool {
     kept()
 }
 
+/// Where a shortcut (.lnk) points: a file's or a folder's path; None for one to something else, or one that
+/// can't be read. Asked in an apartment of its own, as the shell wants.
+pub fn link_target(shortcut: &std::path::Path) -> Option<String> {
+    let shortcut = shortcut.to_path_buf();
+    crate::shell::in_sta(move || Ok(imp::target(&shortcut))).ok().flatten()
+}
+
 /// Recent as a listing: each item at its own path, newest first.
 pub fn listing(started: Instant) -> Result<fsx::Listing, String> {
     let entries = if kept() { crate::shell::in_sta(|| Ok(imp::items(&shortcuts())))? } else { Vec::new() };
