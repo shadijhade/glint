@@ -2,3 +2,9 @@
 # crates/target from a relative path (1.7 GB each time). CARGO_TARGET_DIR still wins when set.
 [build]
 target-dir = "target/ui"
+
+# The C runtime goes inside Glint.exe and the instant search service: without this they need
+# VCRUNTIME140.dll and MSVCP140.dll, which Windows doesn't come with (only the Visual C++ Redistributable
+# brings them), and a PC without it can't start Glint at all. scripts/check-imports.mjs checks it.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
