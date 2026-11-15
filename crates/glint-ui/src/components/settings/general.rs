@@ -4,14 +4,14 @@
 
 use super::shortcut;
 use super::widgets::{self, named, setting_row, Named};
-use super::{SettingsView, ABOUT};
+use super::SettingsView;
 use crate::kit::prelude::*;
 use crate::persistence;
 use crate::{core_bridge, state, t, theme};
 use glint_model::grid::TileSize;
 use glint_model::grid::TILE_SIZES;
 use glint_model::paths::same_path;
-use glint_model::store::{Accent, Backdrop, FontSize, Language, OrderedMap, Settings, StartFolder, Theme};
+use glint_model::store::{Accent, Backdrop, FontSize, OrderedMap, Settings, StartFolder, Theme};
 
 /// The presets of "Text search skips": a name, an icon and the patterns it adds (`PRESETS`).
 struct Preset {
@@ -207,46 +207,37 @@ impl SettingsView {
         setting_row(label, hint, vec![control], t).into_any_element()
     }
 
-    /// Every section in the order the page draws them. Sections that draw nothing until their service has
-    /// answered once (content index, photos and recordings, devices) are left out until then, as the
-    /// TypeScript's `return null` left them.
-    pub(super) fn page(&mut self, t: &theme::Tokens, cx: &mut Context<Self>) -> Vec<(&'static str, AnyElement)> {
+    /// The section `slot` draws (`settings-<slot>`), or None for one that draws nothing yet: the content index
+    /// waits until its service has answered once, as the TypeScript's `return null` did. The Overview is drawn by
+    /// the view itself.
+    pub(super) fn section_of(&mut self, slot: &str, t: &theme::Tokens, cx: &mut Context<Self>) -> Option<AnyElement> {
         let s = state::settings(cx).clone();
-        let mut page: Vec<(&'static str, AnyElement)> = vec![
-            ("appearance", self.appearance(&s, t, cx).into_any_element()),
-            ("files", self.files(&s, t, cx).into_any_element()),
-            (
+        Some(match slot {
+            "appearance" => self.appearance(&s, t, cx),
+            "files" => self.files(&s, t, cx),
+            "instant-search" => widgets::section(
                 "instant-search",
-                widgets::section(
-                    "instant-search",
-                    t!("Instant search"),
-                    None,
-                    vec![self.instant.clone().into_any_element()],
-                    t,
-                )
-                .into_any_element(),
+                t!("Instant search"),
+                None,
+                vec![self.instant.clone().into_any_element()],
+                t,
             ),
-        ];
-        if self.content.read(cx).status().is_some() {
-            page.push(("search-inside-files-instantly", self.content.clone().into_any_element()));
-        }
-        page.extend([
-            ("find-files-by-name", self.find(&s, t, cx).into_any_element()),
-            ("quick-search", self.quick_search(&s, t, cx).into_any_element()),
-            ("ai-agents", self.agents.clone().into_any_element()),
-            ("search-text-ripgrep", self.search_text(&s, t, cx).into_any_element()),
-            ("text-search-skips", self.text_skips(&s, t, cx).into_any_element()),
-            ("terminal", self.terminal(&s, t, cx).into_any_element()),
-            ("check", self.check(&s, t, cx).into_any_element()),
-            ("clouds", self.clouds.clone().into_any_element()),
-            ("tools", self.tools.clone().into_any_element()),
-            ("history", self.history(&s, t, cx).into_any_element()),
-            (
-                ABOUT.strip_prefix("settings-").unwrap_or("about"),
-                self.about.clone().into_any_element(),
-            ),
-        ]);
-        page
+            "search-inside-files-instantly" => {
+                self.content.read(cx).status()?;
+                self.content.clone().into_any_element()
+            }
+            "find-files-by-name" => self.find(&s, t, cx),
+            "quick-search" => self.quick_search(&s, t, cx),
+            "ai-agents" => self.agents.clone().into_any_element(),
+            "search-text-ripgrep" => self.search_text(&s, t, cx),
+            "text-search-skips" => self.text_skips(&s, t, cx),
+            "terminal" => self.terminal(&s, t, cx),
+            "clouds" => self.clouds.clone().into_any_element(),
+            "tools" => self.tools.clone().into_any_element(),
+            "history" => self.history(&s, t, cx),
+            "about" => self.about.clone().into_any_element(),
+            _ => return None,
+        })
     }
 
     fn appearance(&self, s: &Settings, t: &theme::Tokens, cx: &mut Context<Self>) -> AnyElement {
@@ -257,18 +248,6 @@ impl SettingsView {
                 s.theme,
                 vec![(Theme::Light, t!("Light")), (Theme::Dark, t!("Dark")), (Theme::System, t!("System"))],
                 |s, v| s.theme = v,
-                t,
-                cx,
-            ),
-            self.choice(
-                named("language", t!("Language"), Some(t!("The interface's language. Glint restarts its window to change it; what isn't translated yet stays in English."))),
-                s.language,
-                vec![
-                    (Language::System, t!("Windows' language")),
-                    (Language::En, "English".into()),
-                    (Language::Ar, "العربية".into()),
-                ],
-                |s, v| s.language = v,
                 t,
                 cx,
             ),
@@ -651,37 +630,6 @@ impl SettingsView {
         widgets::section("quick-search", t!("Quick search"), None, rows, t)
     }
 
-    /// A text box with a Browse button that picks a folder into the same setting.
-    fn path_row(
-        &self,
-        name: Named,
-        input: &Entity<InputState>,
-        picker: (SharedString, String),
-        apply: fn(&mut Settings, String),
-        t: &theme::Tokens,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let Named { slot, label, hint } = name;
-        let (title, start) = picker;
-        setting_row(
-            label.clone(),
-            hint,
-            vec![
-                div()
-                    .w(space(52.))
-                    .child(Input::new(input).aria_label(label))
-                    .into_any_element(),
-                widgets::button(&format!("{slot}-browse"), t!("Browse…"), None)
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.browse(title.clone(), start.clone(), window, cx, apply)
-                    }))
-                    .into_any_element(),
-            ],
-            t,
-        )
-        .into_any_element()
-    }
-
     fn search_text(&self, s: &Settings, t: &theme::Tokens, cx: &mut Context<Self>) -> AnyElement {
         let chosen = self
             .editors
@@ -860,22 +808,6 @@ impl SettingsView {
             ),
         ];
         widgets::section("terminal", t!("Terminal"), None, rows, t)
-    }
-
-    fn check(&self, s: &Settings, t: &theme::Tokens, cx: &mut Context<Self>) -> AnyElement {
-        let rows = vec![self.path_row(
-            named(
-                "yara-rules",
-                t!("YARA rules"),
-                Some(t!("A folder of .yar and .yara files (its subfolders too), for Check with YARA rules: YARA-X compiles them each time")),
-            ),
-            &self.yara_rules,
-            (t!("A folder of YARA rules (.yar, .yara)"), s.yara_rules.clone()),
-            |s, v| s.yara_rules = v,
-            t,
-            cx,
-        )];
-        widgets::section("check", t!("Check"), None, rows, t)
     }
 
     fn history(&self, s: &Settings, t: &theme::Tokens, cx: &mut Context<Self>) -> AnyElement {

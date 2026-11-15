@@ -146,8 +146,6 @@ pub enum MenuEvent {
     MakeSmaller { paths: Vec<String> },
     /// "Back up…" a folder (`openBackup`).
     BackUp { folder: String },
-    /// "Back to JPEG" (`backToJpeg`).
-    BackToJpeg { paths: Vec<String> },
     /// "Convert picture…" (`convertPictures`).
     ConvertPictures { paths: Vec<String> },
     /// One of the media studio's tools (`openMedia`).
@@ -180,10 +178,6 @@ pub enum MenuEvent {
     Locks { paths: Vec<String> },
     /// "Scan with Microsoft Defender" (`scanWithDefender`).
     Defender { paths: Vec<String> },
-    /// "Look for passwords and keys" (`checkForSecrets`).
-    Secrets { path: String },
-    /// "Check with YARA rules" (`checkWithYara`).
-    Yara { path: String },
 
     // ---- Cleaning up and sharing ----
     /// "Find duplicate files" (`inspectDuplicates`).

@@ -16,6 +16,40 @@ pub fn id(parts: &[&str]) -> SharedString {
     SharedString::from(parts.join("-"))
 }
 
+thread_local! {
+    /// The label of the row search opened, marked for a moment ([`mark`]).
+    static MARKED: std::cell::RefCell<Option<SharedString>> = const { std::cell::RefCell::new(None) };
+    /// Where the marked row was drawn last, for Settings to scroll it into view.
+    static MARKED_AT: std::cell::Cell<Option<Bounds<Pixels>>> = const { std::cell::Cell::new(None) };
+}
+
+/// Marks the row drawn with `label` (search opened its page), or takes the mark off.
+pub fn mark(label: Option<SharedString>) {
+    MARKED.with(|marked| *marked.borrow_mut() = label);
+    MARKED_AT.with(|at| at.set(None));
+}
+
+/// Where the marked row was drawn last, if it was.
+pub fn marked_at() -> Option<Bounds<Pixels>> {
+    MARKED_AT.with(|at| at.get())
+}
+
+fn marked(label: &str) -> bool {
+    MARKED.with(|marked| marked.borrow().as_deref() == Some(label))
+}
+
+/// A row's mark: a soft wash of the accent, and a probe that says where the row is.
+fn with_mark<E: Styled + ParentElement>(row: E, label: &str, t: &theme::Tokens) -> E {
+    if !marked(label) {
+        return row;
+    }
+    row.bg(t.primary.opacity(0.10)).child(
+        canvas(|bounds, _, _| MARKED_AT.with(|at| at.set(Some(bounds))), |_, _, _, _| {})
+            .absolute()
+            .size_full(),
+    )
+}
+
 /// A section: its title (and an optional action at the other end of it) over a card of rows divided by lines.
 /// `slot` names it for the section list and for scrolling to it (`settings-about`).
 pub fn section(
@@ -93,18 +127,20 @@ pub fn setting_row(
     controls: Vec<AnyElement>,
     t: &theme::Tokens,
 ) -> AnyElement {
-    row_start()
+    let row = row_start()
         .id(id(&["settings-row", &label]))
         .role(Role::Group)
         .aria_label(label.clone())
         .when_some(hint.clone(), |this, hint| this.aria_description(hint))
         .test_support()
+        .relative()
         .flex_wrap()
         .justify_between()
         .gap_x(space(6.))
         .gap_y(space(2.))
         .px(space(4.))
-        .py(space(3.))
+        .py(space(3.));
+    with_mark(row, &label, t)
         .child(label_block(label, hint, false, t).flex_1().min_w(space(48.)))
         .child(row_start().flex_none().flex_wrap().gap(space(1.5)).children(controls))
         .into_any_element()
@@ -139,6 +175,7 @@ pub fn switch_row(
         .disabled(disabled)
         .accessibility_label(label.clone())
         .on_click(move |value, window, cx| on_change(*value, window, cx));
+    let marked_label = label.clone();
     let text = label_block(label, hint, disabled, t)
         .id(id(&["settings-label", slot]))
         .test_support()
@@ -149,11 +186,13 @@ pub fn switch_row(
                 toggled(!checked, window, cx);
             }
         });
-    row_start()
+    let row = row_start()
+        .relative()
         .justify_between()
         .gap(space(6.))
         .px(space(4.))
-        .py(space(3.))
+        .py(space(3.));
+    with_mark(row, &marked_label, t)
         .child(text)
         .child(div().flex_none().child(switch))
 }

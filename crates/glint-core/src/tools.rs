@@ -133,36 +133,6 @@ pub static TOOLS: &[Tool] = &[
         },
         used_for: "Reading videos for Clean up's look-alike videos",
     },
-    Tool {
-        id: "magika",
-        name: "Magika",
-        exe: "magika",
-        package: "google.magika",
-        bundled: false,
-        winget: "Google.Magika",
-        release: release(
-            "1.1.0",
-            "https://github.com/google/magika/releases/download/cli%2Fv1.1.0/magika-cli-x86_64-pc-windows-msvc.zip",
-            "d4de347c53e2d25f9663780c93fdf26d156284c64d6a5ec4bcdb829f9994f6f3",
-            "magika.exe",
-        ),
-        used_for: "A file's real type in the File X-Ray, told by its content (a program named photo.jpg, say)",
-    },
-    Tool {
-        id: "c2patool",
-        name: "c2patool",
-        exe: "c2patool",
-        package: "c2patool",
-        bundled: false,
-        winget: "",
-        release: release(
-            "0.27.22",
-            "https://github.com/contentauth/c2pa-rs/releases/download/c2patool-v0.27.22/c2patool-v0.27.22-x86_64-pc-windows-msvc.zip",
-            "2e6808719b5610f9ab096857f600f16938fda3c7388de3829f0dea1c2a345011",
-            "c2patool/c2patool.exe",
-        ),
-        used_for: "A picture's or video's Content Credentials in its preview and the File X-Ray: who made it, with what, and whether AI did",
-    },
     // Its CPU build: ggml picks the build of its CPU code that this PC's processor runs fastest.
     Tool {
         id: "whisper",
@@ -192,36 +162,6 @@ pub static TOOLS: &[Tool] = &[
             ],
         },
         used_for: "Subtitles for videos and recordings (Media), heard on this PC",
-    },
-    Tool {
-        id: "yara-x",
-        name: "YARA-X",
-        exe: "yr",
-        package: "virustotal.yara-x",
-        bundled: false,
-        winget: "VirusTotal.YARA-X",
-        release: release(
-            "1.23.0",
-            "https://github.com/VirusTotal/yara-x/releases/download/v1.23.0/yara-x-v1.23.0-x86_64-pc-windows-msvc.zip",
-            "b72fd2001c0902981afe9b86ffb152412d904db94e2da9fa626f622b8c5b6a79",
-            "yr.exe",
-        ),
-        used_for: "Scanning files with YARA rules, from a rules folder chosen in Settings",
-    },
-    Tool {
-        id: "kingfisher",
-        name: "Kingfisher",
-        exe: "kingfisher",
-        package: "kingfisher",
-        bundled: false,
-        winget: "",
-        release: release(
-            "2.17.0",
-            "https://github.com/mongodb/kingfisher/releases/download/v2.17.0/kingfisher-windows-x64.zip",
-            "541df38ed22f20b6c50ea8a7ec6ec714664d51ffb562f37bc73d770b88fc7456",
-            "kingfisher.exe",
-        ),
-        used_for: "Finding passwords, keys and tokens left in files before they're shared (MongoDB's secret scanner; nothing is sent anywhere)",
     },
     Tool {
         id: "ast-grep",
@@ -471,56 +411,6 @@ pub static TOOLS: &[Tool] = &[
         },
         used_for: "Disk images and installers opened like folders: ISO, VHD and VHDX, VMDK, DMG, WIM, ext4 and APFS images, installers, Debian and RPM packages",
     },
-    // It finds the quality setting; the video itself is then encoded by Glint's FFmpeg run.
-    Tool {
-        id: "ab-av1",
-        name: "ab-av1",
-        exe: "ab-av1",
-        package: "ab-av1",
-        bundled: false,
-        winget: "",
-        release: release(
-            "0.11.7",
-            "https://github.com/alexheretic/ab-av1/releases/download/v0.11.7/ab-av1.exe",
-            "a3a9534d2adecabc4861acf632d0f64741f56e2050d52032a5307bebb4fbdcc9",
-            "",
-        ),
-        used_for: "Make smaller for videos: the smallest size that still looks the same, found from short samples scored by VMAF",
-    },
-    Tool {
-        id: "libjxl",
-        name: "libjxl",
-        exe: "cjxl",
-        package: "libjxl",
-        bundled: false,
-        winget: "",
-        release: Release {
-            version: "0.12.0",
-            url: "https://github.com/libjxl/libjxl/releases/download/v0.12.0/jxl-x64-windows-static.zip",
-            sha256: "3025d7e308390796d20492322e606bc92decaee7b6bc99d3f7547870ae5db7de",
-            member: "x64-windows-static/bin/cjxl.exe",
-            with: &["x64-windows-static/bin/djxl.exe"],
-        },
-        used_for: "Make smaller for photos: JPEGs repacked as JPEG XL without losing a bit, and Back to JPEG, which gives the very same file back",
-    },
-    // AGPL-3.0, run as a program of its own from Artifex's release. Its Windows release is only an NSIS
-    // installer: 7-Zip (installed first when it isn't) takes the program and its DLL out; nothing in it runs.
-    Tool {
-        id: "ghostscript",
-        name: "Ghostscript",
-        exe: "gswin64c",
-        package: "ghostscript",
-        bundled: false,
-        winget: "",
-        release: Release {
-            version: "10.08.0",
-            url: "https://github.com/ArtifexSoftware/ghostpdl-downloads/releases/download/gs10080/gs10080w64.exe",
-            sha256: "52a91b8bf09298788d7a57b9206127026c23eacd75405f0a131e26dc381dce50",
-            member: "bin/gswin64c.exe",
-            with: &["bin/gsdll64.dll"],
-        },
-        used_for: "Make smaller for PDFs full of pictures: the pictures rewritten for screens and mail, or for print",
-    },
     Tool {
         id: "pandoc",
         name: "pandoc",
@@ -627,8 +517,8 @@ pub struct ToolStatus {
     pub id: &'static str,
     pub name: &'static str,
     pub used_for: &'static str,
-    /// What Install tries first on this PC: "winget" (where it's on the PC and has the tool, for one that
-    /// doesn't come with Glint), else "release".
+    /// What Install tries first: always "release", the tool's own pinned download (winget only when that
+    /// can't be had; see [`install`]). Kept for the window's hint.
     pub source: &'static str,
     /// Where the copy that runs came from: "bundled", "downloaded" or "installed"; None when it's missing.
     pub origin: Option<&'static str>,
@@ -636,31 +526,77 @@ pub struct ToolStatus {
     pub version: Option<String>,
     /// The version its release download gets.
     pub pinned: Option<&'static str>,
+    /// The version an update would bring: set only for a copy Glint downloaded whose version is known and
+    /// older than the pinned one. A version Glint can't read never offers an update (it used to, forever).
+    pub update: Option<&'static str>,
     /// Glint downloaded this copy, so it can remove it.
     pub removable: bool,
 }
 
+/// The file in a downloaded tool's folder that says which release Glint put there, so its version is known
+/// without running it (some don't say theirs to `--version`, and the first run of a new download can be slow
+/// while Windows' antivirus looks at it).
+const VERSION_FILE: &str = "glint-version.txt";
+
 fn status(tool: &'static Tool) -> ToolStatus {
     let found = proc::locate(tool.exe);
-    let source = if !tool.bundled && !tool.winget.is_empty() && winget().is_some() { "winget" } else { "release" };
-    let pinned = Some(tool.release.version);
+    let pinned = tool.release.version;
     let origin = found.as_ref().map(|(_, origin)| match origin {
         Origin::Bundled => "bundled",
         Origin::Downloaded => "downloaded",
         Origin::Installed => "installed",
     });
-    let removable = matches!(found, Some((_, Origin::Downloaded)));
+    let downloaded = matches!(found, Some((_, Origin::Downloaded)));
+    let version = found.as_ref().and_then(|(path, origin)| {
+        let recorded = matches!(origin, Origin::Downloaded).then(|| recorded_version(path)).flatten();
+        recorded.or_else(|| version_of(path))
+    });
+    let update = (downloaded && version.as_deref().is_some_and(|v| older(v, pinned))).then_some(pinned);
     ToolStatus {
         id: tool.id,
         name: tool.name,
         used_for: tool.used_for,
-        source,
+        source: "release",
         origin,
-        version: found.as_ref().and_then(|(path, _)| version_of(path)),
+        version,
         path: found.map(|(path, _)| path.display().to_string()),
-        pinned,
-        removable,
+        pinned: Some(pinned),
+        update,
+        removable: downloaded,
     }
+}
+
+/// The version [`VERSION_FILE`] beside a downloaded program says, if Glint wrote one.
+fn recorded_version(program: &Path) -> Option<String> {
+    let text = fs::read_to_string(program.with_file_name(VERSION_FILE)).ok()?;
+    let version = text.trim();
+    (!version.is_empty() && version.len() < 40).then(|| version.to_string())
+}
+
+/// Whether version `have` is older than `pinned`, comparing their numbers in order ("0.9.10" < "0.10.0",
+/// whisper.cpp's "b5000" < "b5454"). Versions without numbers are only told apart by being different.
+fn older(have: &str, pinned: &str) -> bool {
+    let numbers = |v: &str| -> Vec<u64> { v.split(|c: char| !c.is_ascii_digit()).filter(|p| !p.is_empty()).filter_map(|p| p.parse().ok()).collect() };
+    let (a, b) = (numbers(have), numbers(pinned));
+    if a.is_empty() || b.is_empty() {
+        return have != pinned;
+    }
+    a < b
+}
+
+/// The tools Glint downloaded whose pinned release is newer, by the [`VERSION_FILE`] beside each: nothing is run,
+/// so it's cheap enough for a check a while after start (the suggestion to update them). Copies downloaded before
+/// 0.13 wrote that file are left to Settings → Tools, which asks them.
+pub fn updates_ready() -> Vec<&'static str> {
+    TOOLS
+        .iter()
+        .filter(|tool| {
+            let Some(folder) = folder_of(tool.id) else { return false };
+            let program = folder.join(format!("{}.exe", tool.exe));
+            program.is_file() && recorded_version(&program).is_some_and(|v| older(&v, tool.release.version))
+        })
+        .map(|tool| tool.name)
+        .collect()
 }
 
 /// Every tool, where it runs from and its version (each asked at once, so a slow one doesn't hold the rest).
@@ -668,13 +604,45 @@ pub async fn tools_status() -> Result<Vec<ToolStatus>, String> {
     blocking(|| Ok(std::thread::scope(|scope| TOOLS.iter().map(|tool| scope.spawn(move || status(tool))).collect::<Vec<_>>().into_iter().filter_map(|h| h.join().ok()).collect()))).await
 }
 
-/// The version a program says it is, from `--version`; None when it doesn't answer within a few seconds.
+/// What a program is asked to say its version: `--version` for most. restic and pdfcpu have a `version`
+/// command (both answer `--version` with "unknown flag"), ExifTool's is `-ver` (`--version` prints its manual),
+/// and 7-Zip shows its banner when run with nothing (`--version` is an "Unknown switch" with no banner).
+fn version_args(exe: &str) -> &'static [&'static str] {
+    match exe.to_ascii_lowercase().as_str() {
+        "restic" | "pdfcpu" => &["version"],
+        "exiftool" => &["-ver"],
+        "7z" => &[],
+        _ => &["--version"],
+    }
+}
+
+/// The version a program says it is (asked as [`version_args`] says for it); None when it doesn't answer within
+/// a few seconds. An answer is kept for as long as the program file stays the same, so opening Settings again
+/// runs nothing.
 pub fn version_of(path: &Path) -> Option<String> {
+    type Seen = HashMap<PathBuf, (u64, Option<std::time::SystemTime>, String)>;
+    static SEEN: std::sync::LazyLock<Mutex<Seen>> = std::sync::LazyLock::new(Mutex::default);
+    let meta = fs::metadata(path).ok()?;
+    let stamp = (meta.len(), meta.modified().ok());
+    if let Some((len, modified, version)) = SEEN.lock().unwrap_or_else(|e| e.into_inner()).get(path) {
+        if (*len, *modified) == stamp {
+            return Some(version.clone());
+        }
+    }
+    let exe = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    let version = ask_version(path, version_args(&exe))?;
+    SEEN.lock().unwrap_or_else(|e| e.into_inner()).insert(path.to_path_buf(), (stamp.0, stamp.1, version.clone()));
+    Some(version)
+}
+
+/// Runs `path` with `args` and reads the first version number it prints; None after 8 seconds without an answer
+/// (the first run of a program just downloaded can wait on the antivirus).
+fn ask_version(path: &Path, args: &[&str]) -> Option<String> {
     let mut command = Command::new(path);
-    command.arg("--version").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    command.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     proc::no_window(&mut command);
     let mut child = command.spawn().ok()?;
-    let deadline = Instant::now() + Duration::from_secs(4);
+    let deadline = Instant::now() + Duration::from_secs(8);
     while child.try_wait().ok()?.is_none() {
         if Instant::now() > deadline {
             let _ = child.kill();
@@ -736,23 +704,29 @@ impl Installs {
     }
 }
 
-/// Installs a tool (or puts a bundled one back): with winget where the PC has it and winget has the tool,
-/// else, or when winget can't, from the tool's own release.
+/// Installs or updates a tool (or puts a bundled one back): from the tool's own release, else, when that can't be
+/// had, with winget.
 pub async fn tool_install(id: String, on_progress: Channel<Progress>, installs: State<'_, Installs>) -> Result<ToolStatus, String> {
     install(&id, on_progress, &installs).await
 }
 
 pub(crate) async fn install(id: &str, on_progress: Channel<Progress>, installs: &Installs) -> Result<ToolStatus, String> {
     let tool = get(id).ok_or_else(|| format!("No tool is called {id}"))?;
-    // The ways to get it, in order (None is its release): winget first, as what it installs goes on PATH,
-    // where terminals find it too; but a tool that comes with Glint is put back from its release first, the
-    // very build Glint ships. When one way can't, the next is tried.
-    let mut ways: Vec<Option<PathBuf>> = winget().filter(|_| !tool.winget.is_empty()).into_iter().map(Some).collect();
-    ways.insert(if tool.bundled { 0 } else { ways.len() }, None);
+    // The ways to get it, in order (None is its release). The release first: the version Glint is tested with,
+    // checked against its SHA-256, for this account alone (no administrator prompt, no winget source to refresh),
+    // and Glint knows what it put there. winget went first until 0.12 and made most of the trouble people wrote
+    // about: slow, now and then a prompt, a newer version than Glint knows, and a copy on PATH that the one Glint
+    // downloaded earlier stood in front of, so Update never ended. winget is tried only when the release can't be
+    // had (a network that blocks GitHub), and never over a copy Glint downloaded, which would still stand in front.
+    let downloaded = blocking(move || Ok(matches!(proc::locate(tool.exe), Some((_, Origin::Downloaded))))).await?;
+    let mut ways: Vec<Option<PathBuf>> = vec![None];
+    if !tool.bundled && !downloaded && !tool.winget.is_empty() {
+        ways.extend(winget().map(Some));
+    }
     let mut failed = Vec::new();
     for (i, way) in ways.into_iter().enumerate() {
         if i > 0 {
-            let _ = on_progress.send(Progress { stage: "That didn't work, so Glint tries another way".into(), done: 0, total: 0 });
+            let _ = on_progress.send(Progress { stage: "The download didn't work, so Glint tries winget".into(), done: 0, total: 0 });
         }
         let tried = match way {
             Some(winget) => with_winget(tool, winget, on_progress.clone(), installs).await,
@@ -853,7 +827,10 @@ fn run_winget(winget: &Path, args: &[&str], lanes: &Lanes, lane: &str, progress:
             if let Some((done, total)) = bytes_of(&text) {
                 let _ = progress.send(Progress { stage: "Downloading".into(), done, total });
             } else if text.chars().filter(|c| c.is_alphabetic()).count() > 2 {
-                let _ = progress.send(Progress { stage: text.clone(), done: 0, total: 0 });
+                // winget's own lines name addresses and package ids ("Downloading https://github.com/…"): the
+                // window says what is happening in words, and the line is kept for an error.
+                let stage = if text.starts_with("Downloading") { "Downloading with winget" } else { "Installing with winget" };
+                let _ = progress.send(Progress { stage: stage.into(), done: 0, total: 0 });
                 said = text;
             }
         }
@@ -893,23 +870,16 @@ const MAX_DOWNLOAD: u64 = 512 << 20;
 /// name, and anything it needs beside it.
 async fn download(tool: &'static Tool, stop: &AtomicBool, progress: &Channel<Progress>) -> Result<(), String> {
     let release = &tool.release;
-    // Ghostscript's installer is opened by 7-Zip: that first, when it isn't on the PC.
-    let nsis = tool.id == "ghostscript";
-    if nsis && proc::locate("7z").is_none() {
-        let seven = get("7zip").ok_or("7-Zip isn't known")?;
-        Box::pin(download(seven, stop, progress)).await.map_err(|e| format!("Ghostscript needs 7-Zip to unpack it, which didn't install: {e}"))?;
-    }
     let temp = fetch(release.url, release.sha256, tool.id, tool.name, stop, progress).await?;
     let _ = progress.send(Progress { stage: "Unpacking".into(), done: 0, total: 0 });
     let into = DIR.get().ok_or("Glint's data folder isn't available")?.join(tool.id);
+    let folder = into.clone();
     let file = temp.clone();
     let unpacked = blocking(move || {
         let program = format!("{}.exe", tool.exe);
         let files: Vec<(&str, &str)> = std::iter::once((release.member, program.as_str())).chain(release.with.iter().map(|m| (*m, m.rsplit('/').next().unwrap_or(m)))).collect();
         if release.member.is_empty() {
             place(&file, &into, tool.exe)
-        } else if nsis {
-            unpack_nsis(&file, &files, &into)
         } else if release.url.ends_with(".tar.gz") {
             unpack_tarball(&file, &files, &into)
         } else if release.url.ends_with(".exe") {
@@ -920,7 +890,10 @@ async fn download(tool: &'static Tool, stop: &AtomicBool, progress: &Channel<Pro
     })
     .await;
     let _ = fs::remove_file(&temp);
-    unpacked
+    unpacked?;
+    // Which release is there, so its version is known without running it ([`VERSION_FILE`]).
+    let _ = fs::write(folder.join(VERSION_FILE), release.version);
+    Ok(())
 }
 
 /// Downloads `url` (what `name` is) into a file of its own in Glint's data folder, with progress, and
@@ -1116,30 +1089,6 @@ fn unpack_sfx(exe: &Path, files: &[(&str, &str)], into: &Path) -> Result<(), Str
     })
 }
 
-/// The files named, `(member, name)`, out of a checked NSIS installer (Ghostscript's), by 7-Zip, which
-/// reads the installer's archive without running anything in it.
-fn unpack_nsis(installer: &Path, files: &[(&str, &str)], into: &Path) -> Result<(), String> {
-    fresh_folder(into, |fresh| {
-        let raw = fresh.join(".raw");
-        let mut seven = command("7zip")?;
-        seven.arg("x").arg("-y").arg("-bd").arg("-bso0").arg(format!("-o{}", raw.display())).arg("--").arg(installer);
-        for (member, _) in files {
-            seven.arg(member.replace('/', "\\"));
-        }
-        let stop = AtomicBool::new(false);
-        crate::actions::run_tool(seven, "7-Zip", &stop, |_| {})?;
-        for (member, name) in files {
-            let from = raw.join(member.replace('/', "\\"));
-            if !from.is_file() {
-                return Err(format!("{member} isn't in the download"));
-            }
-            fs::rename(&from, fresh.join(name)).map_err(|e| e.to_string())?;
-        }
-        let _ = fs::remove_dir_all(&raw);
-        Ok(())
-    })
-}
-
 /// Takes only the files named, `(member, name)`, out of a checked release tarball (.tar.gz), into a fresh
 /// folder that then replaces the old one.
 fn unpack_tarball(tarball: &Path, files: &[(&str, &str)], into: &Path) -> Result<(), String> {
@@ -1169,12 +1118,81 @@ fn place(download: &Path, into: &Path, exe: &str) -> Result<(), String> {
     fresh_folder(into, |fresh| fs::copy(download, fresh.join(format!("{exe}.exe"))).map(|_| ()).map_err(|e| e.to_string()))
 }
 
+/// Puts the filled `fresh` folder where `into` is. The old copy goes aside first and is deleted after, so an update
+/// never leaves half a tool: deleting it in place stopped at the first file in use (an rclone mount, a backup
+/// running), with the files before it already gone. When the folder itself can't be moved, because a program in it
+/// is running, its files are moved aside one by one (Windows lets a running program's file be renamed, not
+/// deleted) and the fresh ones take their place. What can't be deleted yet is swept at the next start ([`sweep`]).
 fn replace(into: &Path, fresh: &Path) -> Result<(), String> {
-    match fs::remove_dir_all(into) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(format!("The copy there now is in use, so it can't be replaced yet ({e})")),
-        _ => {}
+    if fs::symlink_metadata(into).is_err() {
+        return fs::rename(fresh, into).map_err(|e| e.to_string());
     }
-    fs::rename(fresh, into).map_err(|e| e.to_string())
+    let aside = aside_of(into);
+    let _ = fs::remove_dir_all(&aside);
+    if fs::rename(into, &aside).is_ok() {
+        if let Err(e) = fs::rename(fresh, into) {
+            let _ = fs::rename(&aside, into);
+            return Err(e.to_string());
+        }
+        let _ = fs::remove_dir_all(&aside);
+        return Ok(());
+    }
+    let in_use = |e: std::io::Error| format!("The copy there now is in use, so it can't be replaced yet ({e})");
+    fs::create_dir_all(&aside).map_err(|e| e.to_string())?;
+    let mut moved: Vec<std::ffi::OsString> = Vec::new();
+    let mut step = || -> std::io::Result<()> {
+        for entry in fs::read_dir(into)? {
+            let name = entry?.file_name();
+            fs::rename(into.join(&name), aside.join(&name))?;
+            moved.push(name);
+        }
+        for entry in fs::read_dir(fresh)? {
+            let name = entry?.file_name();
+            fs::rename(fresh.join(&name), into.join(&name))?;
+        }
+        Ok(())
+    };
+    if let Err(e) = step() {
+        // Back as it was: what came in goes, what went aside comes back.
+        for name in &moved {
+            let _ = fs::remove_dir_all(into.join(name)).or_else(|_| fs::remove_file(into.join(name)));
+            let _ = fs::rename(aside.join(name), into.join(name));
+        }
+        let _ = fs::remove_dir_all(fresh);
+        return Err(in_use(e));
+    }
+    let _ = fs::remove_dir(fresh);
+    let _ = fs::remove_dir_all(&aside);
+    Ok(())
+}
+
+/// Where [`replace`] puts a tool's old copy while the new one goes in: `tools\<id>.old`.
+fn aside_of(into: &Path) -> PathBuf {
+    into.with_extension("old")
+}
+
+/// Deletes what installs left in the tools folder: old copies [`replace`] couldn't delete while they ran
+/// (`<id>.old`), fresh folders an install stopped filling (`<id>.new`), and downloads cut off (`.<id>-<pid>.download`).
+/// Once per start, on a background thread (with [`crate::retired::sweep`]). A fresh folder or a download is only
+/// taken once it's an hour old: another Glint (the setup's `tools install`) may be filling it now.
+pub fn sweep() {
+    if let Some(dir) = DIR.get() {
+        sweep_in(dir, Duration::from_secs(3600));
+    }
+}
+
+fn sweep_in(dir: &Path, settled: Duration) {
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let path = entry.path();
+        let old_enough = || entry.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age >= settled);
+        if name.ends_with(".old") || (name.ends_with(".new") && old_enough()) {
+            let _ = fs::remove_dir_all(&path);
+        } else if name.starts_with('.') && name.ends_with(".download") && old_enough() {
+            let _ = fs::remove_file(&path);
+        }
+    }
 }
 
 /// Removes a copy Glint downloaded. One installed with winget may be the person's own, used outside
@@ -1365,6 +1383,75 @@ mod tests {
     use super::*;
 
     #[test]
+    fn an_update_is_offered_only_for_a_known_older_version() {
+        assert!(older("0.16.3", "0.16.4"));
+        assert!(older("0.9.10", "0.10.0"), "by number, not by text");
+        assert!(!older("0.10.0", "0.9.10"));
+        assert!(!older("0.19.1", "0.19.1"));
+        assert!(!older("3.14", "3.13"), "a newer copy isn't offered the older pin");
+        assert!(older("b5000", "b5454"), "whisper.cpp's build numbers");
+        assert!(!older("b5454", "b5454"));
+        assert!(older("13.6", "13.61"), "ExifTool's minor numbers are numbers too");
+    }
+
+    #[test]
+    fn asks_each_program_for_its_version_the_way_it_answers() {
+        // restic and pdfcpu answer --version with "unknown flag", ExifTool prints its manual, 7-Zip says nothing.
+        assert_eq!(version_args("restic"), &["version"]);
+        assert_eq!(version_args("pdfcpu"), &["version"]);
+        assert_eq!(version_args("exiftool"), &["-ver"]);
+        assert!(version_args("7z").is_empty());
+        assert_eq!(version_args("rclone"), &["--version"]);
+        assert_eq!(version_in("restic 0.19.1 compiled with go1.26.4 on windows/amd64").as_deref(), Some("0.19.1"));
+        assert_eq!(version_in("version: 0.16.4\n commit: 0f5ac76d").as_deref(), Some("0.16.4"));
+        assert_eq!(version_in("13.61").as_deref(), Some("13.61"));
+        assert_eq!(version_in("\n7-Zip 26.06 (x64) : Copyright (c) 1999-2026 Igor Pavlov : 2026-11-06").as_deref(), Some("26.06"));
+    }
+
+    #[test]
+    fn a_downloaded_copy_says_its_version_from_the_file_glint_wrote() {
+        let dir = std::env::temp_dir().join(format!("glint-tools-version-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let program = dir.join("restic.exe");
+        fs::write(&program, b"not a program").unwrap();
+        assert_eq!(recorded_version(&program), None);
+        fs::write(dir.join(VERSION_FILE), "0.19.1\r\n").unwrap();
+        assert_eq!(recorded_version(&program).as_deref(), Some("0.19.1"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_running_tool_is_updated_and_its_old_copy_swept_later() {
+        let dir = std::env::temp_dir().join(format!("glint-tools-running-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let into = dir.join("pinger");
+        fs::create_dir_all(&into).unwrap();
+        let system = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+        fs::copy(Path::new(&system).join(r"System32\PING.EXE"), into.join("pinger.exe")).unwrap();
+        fs::write(into.join("old.txt"), "old").unwrap();
+        // The old copy runs while the new one goes in, as an rclone mount or a backup would.
+        let mut running = Command::new(into.join("pinger.exe")).args(["-n", "6", "127.0.0.1"]).stdout(Stdio::null()).spawn().unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        let fresh = dir.join("pinger.new");
+        fs::create_dir_all(&fresh).unwrap();
+        fs::write(fresh.join("pinger.exe"), b"the new program").unwrap();
+        fs::write(fresh.join(VERSION_FILE), "2.0").unwrap();
+        replace(&into, &fresh).unwrap();
+        assert_eq!(fs::read(into.join("pinger.exe")).unwrap(), b"the new program");
+        assert!(!into.join("old.txt").exists(), "the old copy's other files went aside too");
+        assert!(!fresh.exists());
+        assert!(running.try_wait().unwrap().is_none(), "the old copy kept running");
+        running.kill().unwrap();
+        let _ = running.wait();
+        // What couldn't be deleted while it ran goes at the next start.
+        sweep_in(&dir, Duration::ZERO);
+        assert!(!aside_of(&into).exists());
+        assert!(into.join("pinger.exe").exists(), "the new copy stays");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn reads_versions_from_what_tools_say() {
         assert_eq!(version_in("ripgrep 15.2.0 (rev 4519153e5e)\n\nfeatures:+pcre2").as_deref(), Some("15.2.0"));
         assert_eq!(version_in("fd 10.5.0").as_deref(), Some("10.5.0"));
@@ -1393,9 +1480,7 @@ mod tests {
             let github = release.url.starts_with("https://github.com/") && release.url.contains("/releases/download/");
             let sourceforge = tool.id == "exiftool" && release.url.starts_with("https://downloads.sourceforge.net/project/exiftool/");
             assert!(github || sourceforge, "{}'s release is on GitHub", tool.id);
-            // Ghostscript names its releases without the dots (gs10080 for 10.08.0).
-            let dotless = tool.id == "ghostscript" && release.url.contains(&release.version.replace('.', ""));
-            assert!(release.url.contains(release.version) || dotless, "{}'s address is its version's", tool.id);
+            assert!(release.url.contains(release.version), "{}'s address is its version's", tool.id);
             assert!(release.sha256.len() == 64 && release.sha256.bytes().all(|b| b.is_ascii_hexdigit()), "{}'s SHA-256", tool.id);
             let exe = release.url.ends_with(".exe");
             // An .exe that names a member is a 7z self-extractor (7-Zip's installer), unpacked by Glint.

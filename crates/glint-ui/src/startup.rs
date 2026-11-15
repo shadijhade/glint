@@ -192,7 +192,10 @@ pub(crate) fn start(cx: &mut App, request: launch::Request) {
             // After the app updated, instant search's service follows (once per start, quietly if it can).
             if services.service_update {
                 if let Some(main) = main_window(cx) {
-                    let _ = main.update(cx, |_, window, cx| crate::notices::service_update(window, cx));
+                    let _ = main.update(cx, |_, window, cx| {
+                        crate::notices::service_update(window, cx);
+                        crate::suggestions::offer(window, cx);
+                    });
                 }
             }
             if services.background {
@@ -260,6 +263,7 @@ fn start_background(cx: &mut App) {
         cx.background_executor().timer(BACKGROUND_AFTER).await;
         std::thread::spawn(move || {
             glint_core::retired::sweep();
+            glint_core::tools::sweep();
             glint_core::content::start(&app);
             glint_core::ondemand::start();
             glint_core::backup::start_scheduler(app);

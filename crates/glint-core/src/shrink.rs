@@ -3,13 +3,10 @@
 //! originals or in their place and Undo takes it back. Nothing that comes out bigger is kept, and what's
 //! made keeps the original's date modified (a photo stays where it was in a folder sorted by date).
 //!
-//! - Videos: ab-av1 encodes short samples and scores them with VMAF (XPSNR where FFmpeg has no libvmaf)
-//!   to find the highest CRF that still looks the same; FFmpeg then encodes the whole video at it with
-//!   x264, x265 or SVT-AV1 (software encoders make smaller files than the hardware ones at a quality).
-//! - JPEG photos: re-encoded by MozJPEG (rimage), or repacked as JPEG XL without losing a bit (cjxl),
-//!   which djxl turns back into the very same JPEG (Back to JPEG). BMPs become PNGs; PNGs go through OxiPNG.
-//! - PDFs: Ghostscript rewrites their pictures for screens and mail (150 dpi) or print (300 dpi); pdfcpu's
-//!   optimize is the lossless choice.
+//! - Videos: FFmpeg encodes them with x264, x265 or SVT-AV1 at a quality that keeps them looking the same
+//!   ([`crf_for`]; software encoders make smaller files than the hardware ones at a quality).
+//! - JPEG photos: re-encoded by MozJPEG (rimage). BMPs become PNGs; PNGs go through OxiPNG.
+//! - PDFs: pdfcpu's optimize, which changes nothing on their pages.
 //! - Word, PowerPoint and Excel files: their pictures recompressed (JPEGs capped at 3000 pixels), the rest
 //!   of the file copied as it was.
 
@@ -18,7 +15,6 @@ use crate::fsx::blocking;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use crate::host::ipc::Channel;
@@ -62,40 +58,19 @@ pub enum VideoCodec {
     Av1,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum PhotoWay {
-    /// MozJPEG at `quality`: still a JPEG, opens everywhere.
-    Jpeg,
-    /// JPEG XL, losslessly: the very same JPEG comes back with Back to JPEG.
-    Jxl,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum PdfWay {
-    /// Pictures at 150 dpi, for screens and mail.
-    Screen,
-    /// Pictures at 300 dpi, for print.
-    Print,
-    /// Nothing lost: pdfcpu's optimize.
-    Lossless,
-}
-
 #[derive(Clone, Debug)]
 pub struct ShrinkChoices {
     pub video: VideoCodec,
-    pub photo: PhotoWay,
-    pub pdf: PdfWay,
     /// MozJPEG's quality for photos and the pictures in Office files (50 to 95).
     pub quality: u8,
 }
 
-/// What this PC's FFmpeg can do for Make smaller: its software encoders, and VMAF.
+/// What this PC's FFmpeg can do for Make smaller: its software encoders.
 #[derive(Clone, Debug, Default)]
 pub struct Engines {
     pub h264: bool,
     pub hevc: bool,
     pub av1: bool,
-    pub vmaf: bool,
 }
 
 static ENGINES: Mutex<Option<Engines>> = Mutex::new(None);
@@ -114,13 +89,13 @@ fn engines() -> Result<Engines, String> {
         let done = command.output().map_err(|e| format!("Couldn't start FFmpeg: {e}"))?;
         Ok(String::from_utf8_lossy(&done.stdout).into_owned())
     };
-    let (encoders, filters) = (list("-encoders")?, list("-filters")?);
-    let found = Engines { h264: listed(&encoders, "libx264"), hevc: listed(&encoders, "libx265"), av1: listed(&encoders, "libsvtav1"), vmaf: listed(&filters, "libvmaf") };
+    let encoders = list("-encoders")?;
+    let found = Engines { h264: listed(&encoders, "libx264"), hevc: listed(&encoders, "libx265"), av1: listed(&encoders, "libsvtav1") };
     *ENGINES.lock().unwrap_or_else(|e| e.into_inner()) = Some(found.clone());
     Ok(found)
 }
 
-/// Whether FFmpeg's `-encoders` or `-filters` list names `name` (its second word on a line).
+/// Whether FFmpeg's `-encoders` list names `name` (its second word on a line).
 fn listed(list: &str, name: &str) -> bool {
     list.lines().any(|l| l.split_whitespace().nth(1) == Some(name))
 }
@@ -141,35 +116,6 @@ pub async fn shrink_run(window: Window, files: Vec<String>, choices: ShrinkChoic
     .await
 }
 
-/// Back to JPEG: JPEG XL files as JPEGs, the very JPEG they were made from when Make smaller (or cjxl)
-/// repacked one, else a JPEG of their pixels.
-pub async fn jxl_to_jpeg(window: Window, files: Vec<String>, output: Output, on_progress: Channel<Progress>) -> Result<Report, String> {
-    let owner = crate::shell::owner(&window);
-    STOP.store(false, Ordering::SeqCst);
-    blocking(move || {
-        let djxl = djxl()?;
-        let jobs: Vec<Job> = files.iter().filter(|f| f.to_ascii_lowercase().ends_with(".jxl")).map(Job::one).collect();
-        actions::run(owner, "jpeg", &jobs, &output, 3, &STOP, &|p| drop(on_progress.send(p)), |job, _, work| {
-            let file = &job.inputs[0];
-            let made = actions::renamed(work, file, "jpg");
-            let mut command = Command::new(&djxl);
-            crate::proc::no_window(&mut command);
-            command.arg(file).arg(&made).arg("--quiet");
-            actions::run_tool(command, "djxl", &STOP, |_| {})?;
-            keep_date(file, &made);
-            Ok(vec![made])
-        })
-    })
-    .await
-}
-
-/// djxl, which comes beside cjxl in libjxl's release.
-fn djxl() -> Result<PathBuf, String> {
-    let (cjxl, _) = crate::proc::locate("cjxl").ok_or("libjxl isn't installed. Settings → Tools installs it.")?;
-    let djxl = cjxl.with_file_name("djxl.exe");
-    djxl.is_file().then_some(djxl).ok_or_else(|| "djxl isn't beside cjxl: Settings → Tools installs libjxl again".to_string())
-}
-
 fn already() -> String {
     "It's already about as small as this makes it".into()
 }
@@ -180,10 +126,9 @@ fn make(choices: &ShrinkChoices, file: &Path, part: &(dyn Fn(f32) + Sync), work:
     let quality = choices.quality.clamp(50, 95).to_string();
     let made = match kind {
         Kind::Video => video(file, choices.video, part, work)?,
-        Kind::Jpeg if choices.photo == PhotoWay::Jxl => jxl(file, work)?,
         Kind::Jpeg => rimage(file, &["mozjpeg", "-q", &quality], "jpg", work)?,
         Kind::Bmp | Kind::Png => rimage(file, &["oxipng"], "png", work)?,
-        Kind::Pdf => pdf(file, choices.pdf, part, work)?,
+        Kind::Pdf => pdf(file, work)?,
         Kind::Office => office(file, &quality, part, work)?,
     };
     // Kept only when it saves something worth having.
@@ -218,15 +163,6 @@ fn rimage(file: &Path, codec: &[&str], ext: &str, work: &Path) -> Result<PathBuf
     let stem = file.file_stem().ok_or("It has no name")?.to_string_lossy();
     let made = work.join(format!("{stem}.{ext}"));
     made.is_file().then_some(made).ok_or_else(|| "rimage made nothing".to_string())
-}
-
-/// A JPEG repacked as JPEG XL, losslessly.
-fn jxl(file: &Path, work: &Path) -> Result<PathBuf, String> {
-    let made = actions::renamed(work, file, "jxl");
-    let mut command = crate::tools::command("libjxl")?;
-    command.arg(file).arg(&made).args(["--lossless_jpeg=1", "--quiet"]);
-    actions::run_tool(command, "cjxl", &STOP, |_| {})?;
-    Ok(made)
 }
 
 /// A video's colours as ffprobe reads them: HDR's need keeping on what's made.
@@ -283,49 +219,18 @@ fn video(file: &Path, codec: VideoCodec, part: &(dyn Fn(f32) + Sync), work: &Pat
         return Err("It's an HDR video, whose colours H.264 can't keep: choose HEVC or AV1".into());
     }
     let pixels = if colour.hdr() || codec == VideoCodec::Av1 { "yuv420p10le" } else { "yuv420p" };
-    let crf = search(file, encoder, preset, pixels, &colour, engines.vmaf, codec == VideoCodec::Av1, part, work)?;
-    encode(file, &info, encoder, preset, pixels, &colour, crf, part, work)
+    encode(file, &info, encoder, preset, pixels, &colour, crf_for(codec), part, work)
 }
 
-/// ab-av1's search for the highest CRF whose samples still look the same (VMAF 95, or XPSNR 40 where
-/// FFmpeg has no libvmaf), at most 90% of the original's size; its samples take the first third of the
-/// job's progress.
-#[allow(clippy::too_many_arguments)]
-fn search(file: &Path, encoder: &str, preset: &str, pixels: &str, colour: &Colour, vmaf: bool, whole_steps: bool, part: &(dyn Fn(f32) + Sync), work: &Path) -> Result<f64, String> {
-    let mut command = crate::tools::command("ab-av1")?;
-    command.args(["crf-search", "-e", encoder, "--preset", preset, "--pix-format", pixels, "--max-encoded-percent", "90", "--cache", "false", "--stdout-format", "json"]);
-    command.args(if vmaf { ["--min-vmaf", "95"] } else { ["--min-xpsnr", "40"] });
-    if whole_steps {
-        // FFmpeg takes SVT-AV1's CRF as a whole number.
-        command.args(["--crf-increment", "1"]);
+/// The quality each encoder is asked for: what keeps a video looking the same (VMAF about 95 on most videos)
+/// while making it smaller. ab-av1 used to search for it video by video, from samples; a fixed one per format is
+/// as good for nearly all of them, and nothing that comes out bigger is kept.
+fn crf_for(codec: VideoCodec) -> f64 {
+    match codec {
+        VideoCodec::H264 => 23.0,
+        VideoCodec::Hevc => 26.0,
+        VideoCodec::Av1 => 32.0,
     }
-    for (name, value) in colour.pairs() {
-        command.arg("--enc").arg(format!("{name}={value}"));
-    }
-    command.arg("--temp-dir").arg(work).arg("-i").arg(file);
-    // ab-av1 runs the FFmpeg on PATH: Glint's first.
-    if let Some((ffmpeg, _)) = crate::proc::locate("ffmpeg") {
-        if let Some(dir) = ffmpeg.parent() {
-            let path = std::env::var_os("PATH").unwrap_or_default();
-            let joined = std::env::join_paths(std::iter::once(dir.to_path_buf()).chain(std::env::split_paths(&path))).unwrap_or(path);
-            command.env("PATH", joined);
-        }
-    }
-    let mut found = None;
-    let mut samples = 0u32;
-    actions::run_tool(command, "ab-av1", &STOP, |line| {
-        let Ok(said) = serde_json::from_str::<serde_json::Value>(line) else { return };
-        match said["type"].as_str() {
-            Some("sample-encode-done") => {
-                samples += 1;
-                part((samples as f32 * 0.05).min(0.33));
-            }
-            Some("crf-search-done") => found = said["crf"].as_f64(),
-            _ => {}
-        }
-    })
-    .map_err(|e| if e.to_ascii_lowercase().contains("suitable crf") { already() } else { e })?;
-    found.ok_or_else(|| "ab-av1 found no setting".to_string())
 }
 
 /// A CRF as FFmpeg takes it: whole, or to two places (x264 and x265 take fractions).
@@ -370,53 +275,21 @@ fn encode(file: &Path, info: &crate::media_tools::Probe, encoder: &str, preset: 
     actions::run_tool(command, "FFmpeg", &STOP, |line| {
         if let Some(us) = line.strip_prefix("out_time_us=").and_then(|v| v.trim().parse::<f64>().ok()) {
             if seconds > 0.0 {
-                part(0.33 + 0.67 * (us / 1e6 / seconds).clamp(0.0, 1.0) as f32);
+                part((us / 1e6 / seconds).clamp(0.0, 1.0) as f32);
             }
         }
     })?;
     Ok(out)
 }
 
-/// A PDF made smaller: by Ghostscript, its pictures for screens or print, or losslessly by pdfcpu.
-fn pdf(file: &Path, way: PdfWay, part: &(dyn Fn(f32) + Sync), work: &Path) -> Result<PathBuf, String> {
+/// A PDF made smaller by pdfcpu's optimize: nothing on its pages changes.
+fn pdf(file: &Path, work: &Path) -> Result<PathBuf, String> {
     let out = actions::renamed(work, file, "pdf");
-    if way == PdfWay::Lossless {
-        let mut command = crate::tools::command("pdfcpu")?;
-        command.args(["-c", "disable", "--offline", "optimize", "--"]).arg(file).arg(&out);
-        actions::run_tool(command, "pdfcpu", &STOP, |_| {})?;
-        return Ok(out);
-    }
-    let mut command = crate::tools::command("ghostscript")?;
-    command.args(gs_arguments(way, &out)).arg("-f").arg(file);
-    let mut pages = 0u32;
-    actions::run_tool(command, "Ghostscript", &STOP, |line| {
-        if let Some(count) = line.strip_prefix("Processing pages 1 through ") {
-            pages = count.trim().trim_end_matches('.').parse().unwrap_or(0);
-        } else if let Some(page) = line.strip_prefix("Page ").and_then(|n| n.trim().parse::<u32>().ok()) {
-            if pages > 0 {
-                part(page as f32 / pages as f32);
-            }
-        }
-    })
-    .map_err(|e| if e.to_ascii_lowercase().contains("password") { "It has a password: take it off first, in PDF tools".to_string() } else { e })?;
+    let mut command = crate::tools::command("pdfcpu")?;
+    command.args(["-c", "disable", "--offline", "optimize", "--"]).arg(file).arg(&out);
+    actions::run_tool(command, "pdfcpu", &STOP, |_| {})
+        .map_err(|e| if e.to_ascii_lowercase().contains("password") { "It has a password: take it off first, in PDF tools".to_string() } else { e })?;
     Ok(out)
-}
-
-/// Ghostscript's arguments (the PDF to read goes after them, behind `-f`).
-fn gs_arguments(way: PdfWay, out: &Path) -> Vec<String> {
-    let setting = if way == PdfWay::Print { "/printer" } else { "/ebook" };
-    vec![
-        "-dSAFER".into(),
-        "-dBATCH".into(),
-        "-dNOPAUSE".into(),
-        "-sDEVICE=pdfwrite".into(),
-        "-dCompatibilityLevel=1.7".into(),
-        format!("-dPDFSETTINGS={setting}"),
-        "-dDetectDuplicateImages=true".into(),
-        "-dAutoRotatePages=/None".into(),
-        // A % starts a format in Ghostscript's file names.
-        format!("-sOutputFile={}", out.to_string_lossy().replace('%', "%%")),
-    ]
 }
 
 /// A Word, PowerPoint or Excel file with its pictures recompressed: JPEGs by MozJPEG (their longest side
@@ -509,7 +382,6 @@ mod tests {
     fn reads_ffmpegs_lists() {
         let encoders = " V....D libx264              libx264 H.264 / AVC\n V....D libx265              libx265 H.265 / HEVC\n";
         assert!(listed(encoders, "libx264") && listed(encoders, "libx265") && !listed(encoders, "libsvtav1"));
-        assert!(listed(" .. libvmaf           VV->V      Calculate the VMAF", "libvmaf"));
     }
 
     #[test]
@@ -528,24 +400,16 @@ mod tests {
         assert!(Colour::default().pairs().is_empty());
     }
 
-    #[test]
-    fn asks_ghostscript_for_the_resolution_chosen() {
-        let args = gs_arguments(PdfWay::Screen, Path::new(r"C:\w\100% done.pdf"));
-        assert!(args.contains(&"-dPDFSETTINGS=/ebook".to_string()) && args.contains(&"-dSAFER".to_string()));
-        assert!(args.contains(&r"-sOutputFile=C:\w\100%% done.pdf".to_string()));
-        assert!(gs_arguments(PdfWay::Print, Path::new("x.pdf")).contains(&"-dPDFSETTINGS=/printer".to_string()));
-    }
-
     /// Every file in SAMPLES made smaller with the tools in TOOLS_DIR (tools\<id>\<program>, as Glint keeps
-    /// them; FFmpeg from the PC), each way, and JPEG XL back to the very same JPEG.
+    /// them; FFmpeg from the PC), each way.
     #[test]
     #[ignore]
     fn shrinks_real_files() {
         crate::tools::set_dir(PathBuf::from(std::env::var("TOOLS_DIR").expect("TOOLS_DIR")));
         let samples = PathBuf::from(std::env::var("SAMPLES").expect("SAMPLES"));
         let ways = [
-            ShrinkChoices { video: VideoCodec::H264, photo: PhotoWay::Jpeg, pdf: PdfWay::Screen, quality: 80 },
-            ShrinkChoices { video: VideoCodec::Hevc, photo: PhotoWay::Jxl, pdf: PdfWay::Print, quality: 80 },
+            ShrinkChoices { video: VideoCodec::H264, quality: 80 },
+            ShrinkChoices { video: VideoCodec::Hevc, quality: 70 },
         ];
         let mut failed = Vec::new();
         for (n, choices) in ways.iter().enumerate() {
@@ -557,13 +421,8 @@ mod tests {
                     Ok(made) => {
                         println!("{n} {}: {} → {} ({}) in {:.1} s", file.display(), size(&file), size(&made), made.extension().unwrap().to_string_lossy(), started.elapsed().as_secs_f32());
                         assert_eq!(fs::metadata(&made).unwrap().modified().unwrap(), fs::metadata(&file).unwrap().modified().unwrap(), "date kept");
-                        if choices.photo == PhotoWay::Jxl && kind_of(&file) == Some(Kind::Jpeg) {
-                            let back = work.join("back.jpg");
-                            let status = Command::new(djxl().unwrap()).arg(&made).arg(&back).status().unwrap();
-                            assert!(status.success() && fs::read(&back).unwrap() == fs::read(&file).unwrap(), "the very same JPEG back");
-                        }
                     }
-                    // Already small enough (a PDF whose pictures are under print's resolution) is an answer.
+                    // Already about as small as it gets is an answer.
                     Err(why) if why == already() => println!("{n} {}: {why}", file.display()),
                     Err(why) => {
                         println!("{n} {}: {why}", file.display());

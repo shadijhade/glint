@@ -1,14 +1,18 @@
-//! Settings (ported from src/components/SettingsView.tsx).
+//! Settings (ported from src/components/SettingsView.tsx, and reworked in 0.13).
 //!
-//! **How it shows.** The TypeScript opened Settings as a modal `<dialog>` above everything (54 rem wide, at
-//! most 85% of the window high), with a column of section names on the left, one scrolling page of sections
-//! on the right, and Escape or a click outside closing it. Here it is a dialog of the window's dialog layer,
-//! the same: [`open`] shows it and [`open_at`] opens it scrolled to a section (`"settings-about"`, where an
-//! update installs). Wire it to `actions::OpenSettings`.
+//! **How it shows.** A dialog of the window's dialog layer (54 rem wide, at most 85% of the window high): a side
+//! list on the left, with a search box over its pages in groups (Look, Browse, Search, Connect, Glint), and one page
+//! at a time on the right, under a header that says what the page is for. It opens on the Overview ([`overview`]):
+//! how Glint is set up (instant search, tools, clouds, updates, theme) and suggestions of what would make it better
+//! (`crate::suggestions`). [`open`] shows it and [`open_at`] opens the page with a section (`"settings-about"`,
+//! where an update installs). Escape or a click outside closes it. Wire it to `actions::OpenSettings`.
+//!
+//! **Search.** Typing in the box lists the settings whose names or other words match (`pages::find`); choosing one
+//! opens its page with the row marked for a moment and scrolled into view. Ctrl+F goes to the box.
 //!
 //! **Where the settings live.** Every control reads `state::settings(cx)` and writes through `state::update`,
-//! so the app reacts (theme, language, the tray, the explorer) and saves by itself; Settings keeps only what is
-//! being typed and what core said last.
+//! so the app reacts (theme, the tray, the explorer) and saves by itself; Settings keeps only what is being typed
+//! and what core said last.
 //!
 //! | TypeScript                                   | Here                                               |
 //! |----------------------------------------------|----------------------------------------------------|
@@ -18,15 +22,15 @@
 //! | `ContentIndexSection`                        | [`content::ContentIndex`]                          |
 //! | `AgentsSection`                              | [`agents::Agents`]                                 |
 //! | `CloudsSection`                              | [`clouds::Clouds`]                                 |
-//! | `ToolsSection`, `Meaning*Row`                | [`tools::Tools`]                                   |
+//! | `ToolsSection`                               | [`tools::Tools`]                                   |
 //! | `FileExplorerRows`                           | [`integration::FileExplorerRows`]                  |
 //! | About, `UpdateRow`, `SettingsFileRows`       | [`about::About`], [`transfer::Transfer`]           |
 //! | the other sections                           | `general.rs`, methods of [`SettingsView`]          |
 //! | `invoke(..)` and Tauri's dialogs             | [`backend::Backend`] (a fake in the tests)         |
 //!
-//! **What waits for other parts** (it has a `PORT ME` where it is): the logo. The connect-a-cloud and
-//! folder-rules dialogs are asked for with a [`SettingsEvent`] after Settings closes itself. Which shortcut another app holds is told to the view with
-//! [`SettingsView::set_quick_taken`] by whoever registers the hotkey.
+//! The connect-a-cloud and folder-rules dialogs are asked for with a [`SettingsEvent`] after Settings closes
+//! itself. Which shortcut another app holds is told to the view with [`SettingsView::set_quick_taken`] by whoever
+//! registers the hotkey.
 
 pub mod about;
 pub mod agents;
@@ -36,6 +40,8 @@ pub mod content;
 mod general;
 pub mod instant;
 pub mod integration;
+mod overview;
+pub mod pages;
 pub mod pattern;
 mod shortcut;
 pub mod tools;
@@ -53,15 +59,20 @@ mod tests_services;
 pub(crate) use backend::fetch_channel;
 pub use backend::{Backend, CoreBackend, Fetch, Fut, IndexInfo, IndexState, Known, McpSetup, ToolInfo, Volume};
 pub use clouds::Request as CloudsRequest;
+pub use pages::Page;
 
 use crate::kit::prelude::*;
 use crate::{core_bridge, dialogs, persistence, state, t, theme};
 use glint_core::{openers::Opener, term::Shell};
 use glint_model::store::Settings;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 /// The section Settings opens at to show About, where an update installs (`openAbout`).
 pub const ABOUT: &str = "settings-about";
+
+/// How long a row search opened stays marked.
+const MARKED_FOR: Duration = Duration::from_millis(2600);
 
 /// What Settings asks of the rest of the app. It closes itself first, as the TypeScript's did ("Settings sits
 /// above everything: it goes first"); the coordinator opens the dialog asked for.
@@ -72,70 +83,6 @@ pub enum SettingsEvent {
     /// Clouds → Folder rules: the folder rules dialog (`openRules`).
     FolderRules,
 }
-
-/// Every section's id (after `settings-`) in the order the names are listed on the left (`SECTIONS`).
-const NAV: [&str; 14] = [
-    "appearance",
-    "files",
-    "instant-search",
-    "find-files-by-name",
-    "quick-search",
-    "ai-agents",
-    "search-text-ripgrep",
-    "text-search-skips",
-    "terminal",
-    "check",
-    "clouds",
-    "tools",
-    "history",
-    "about",
-];
-
-/// A section's short name in the list on the left.
-fn nav_name(slot: &str) -> SharedString {
-    match slot {
-        "appearance" => t!("Appearance"),
-        "files" => t!("Files"),
-        "instant-search" => t!("Instant search"),
-        "find-files-by-name" => t!("Find files"),
-        "quick-search" => t!("Quick search"),
-        "ai-agents" => t!("AI agents"),
-        "search-text-ripgrep" => t!("Inside files"),
-        "text-search-skips" => t!("Text search skips"),
-        "terminal" => t!("Terminal"),
-        "check" => t!("Check"),
-        "clouds" => t!("Clouds"),
-        "tools" => t!("Tools"),
-        "history" => t!("History"),
-        "about" => t!("About"),
-        _ => SharedString::default(),
-    }
-}
-
-/// A section's sign in the list on the left.
-fn nav_icon(slot: &str) -> IconName {
-    match slot {
-        "appearance" => IconName::Sun,
-        "files" => IconName::Files,
-        "instant-search" => IconName::Zap,
-        "find-files-by-name" => IconName::FileSearch,
-        "quick-search" => IconName::Search,
-        "ai-agents" => IconName::Sparkles,
-        "search-text-ripgrep" => IconName::TextSearch,
-        "text-search-skips" => IconName::EyeOff,
-        "terminal" => IconName::SquareTerminal,
-        "check" => IconName::ShieldCheck,
-        "clouds" => IconName::Cloud,
-        "tools" => IconName::Wrench,
-        "history" => IconName::ClockArrowLeft,
-        _ => IconName::Info,
-    }
-}
-
-/// How many sections are drawn while Settings opens: what the first screen shows (see `SettingsView::opened`).
-const FIRST_SECTIONS: usize = 3;
-/// How long after opening the rest of the page is drawn: once the dialog has settled.
-const SETTLE: std::time::Duration = std::time::Duration::from_millis(260);
 
 /// The open Settings, so a second request doesn't stack another on it.
 struct Open(WeakEntity<SettingsView>);
@@ -158,28 +105,28 @@ pub fn tell_quick_taken(shortcut: Option<String>, cx: &mut App) {
     }
 }
 
-/// Settings: the section names, and the page of sections.
+/// Settings: the side list, and the page shown.
 pub struct SettingsView {
     pub(crate) backend: Arc<dyn Backend>,
     scroll: ScrollHandle,
     focus: FocusHandle,
-    /// The sections in the order the page drew them last (their positions in the scrolling column).
+    /// The page shown.
+    page: Page,
+    /// The sections the page drew last, in order (their positions in the scrolling column).
     order: Vec<&'static str>,
-    /// A section asked for as Settings opened, scrolled to once the page knows where the sections are.
+    /// A section asked for, scrolled to once its page has drawn it.
     pending_section: Option<String>,
-    /// When Settings opened, while only its first screen is drawn; None once the whole page is. The page is some
-    /// 150 rows, none of them virtual: laid out whole in every frame of the dialog's entrance it cost three frames'
-    /// worth of time in each, so the entrance stuttered. The first screen alone is what is seen while it settles.
-    opened: Option<std::time::Instant>,
-    /// Draws the rest of the page once the dialog has settled.
-    settle: Option<Task<()>>,
+    /// The search box; while it holds words, what they find shows instead of the page.
+    pub(crate) search: Entity<InputState>,
+    /// Until when the row search opened stays marked; it's scrolled into view once drawn.
+    marked_until: Option<Instant>,
+    reveal_mark: bool,
     /// A shortcut another app holds, when the tray could not take it (`quickTaken`).
     // Told by whoever registers the hotkey, through [`tell_quick_taken`] (the open view hears it at once; a Settings
     // opened later starts with what was last said).
     quick_taken: Option<String>,
     // What is typed.
     pub(crate) editor_path: Entity<InputState>,
-    pub(crate) yara_rules: Entity<InputState>,
     pub(crate) shortcut_box: Entity<InputState>,
     pub(crate) shortcut_error: Option<SharedString>,
     // The parts that talk to the PC.
@@ -194,14 +141,16 @@ pub struct SettingsView {
     pub(crate) about: Entity<about::About>,
     pub(crate) shells: Vec<Shell>,
     pub(crate) editors: Vec<Opener>,
+    /// The fixed drives' room, for the full-drive suggestion; None until core has said.
+    pub(crate) drives: Option<Vec<crate::suggestions::Room>>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl EventEmitter<SettingsEvent> for SettingsView {}
 
 impl SettingsView {
-    /// Settings over `backend`, scrolled to `section` ("settings-about") or the top. `store` is whether this is
-    /// the Microsoft Store's copy.
+    /// Settings over `backend`, on the page with `section` ("settings-about") or the Overview. `store` is whether this
+    /// is the Microsoft Store's copy.
     pub fn new(
         backend: Arc<dyn Backend>,
         store: bool,
@@ -218,8 +167,8 @@ impl SettingsView {
             })
         };
         let editor_path = input(window, cx, &settings.editor_path, t!("System default"));
-        let yara_rules = input(window, cx, &settings.yara_rules, t!("None chosen"));
         let shortcut_box = input(window, cx, "", t!("Another shortcut, e.g. Ctrl+Alt+K"));
+        let search = input(window, cx, "", t!("Search settings"));
 
         let find_exclusions = cx.new(|cx| {
             pattern::PatternEditor::new(
@@ -271,7 +220,6 @@ impl SettingsView {
             // What is typed goes to the settings as it is typed; a change from elsewhere (Reset, an import)
             // comes back into the boxes.
             Self::bind(&editor_path, |s| &s.editor_path, |s, v| s.editor_path = v, window, cx),
-            Self::bind(&yara_rules, |s| &s.yara_rules, |s, v| s.yara_rules = v, window, cx),
             cx.subscribe_in(
                 &shortcut_box,
                 window,
@@ -284,12 +232,29 @@ impl SettingsView {
                     _ => {}
                 },
             ),
+            cx.subscribe_in(&search, window, |this, _, event: &InputEvent, window, cx| match event {
+                // Enter opens what comes first.
+                InputEvent::PressEnter { .. } => {
+                    let query = this.search.read(cx).value().to_string();
+                    if let Some(first) = pages::find(&query).first() {
+                        this.open_found(first, window, cx);
+                    }
+                }
+                InputEvent::Change => {
+                    this.scroll.set_offset(point(px(0.), px(0.)));
+                    cx.notify();
+                }
+                _ => {}
+            }),
             cx.observe_global_in::<state::UiState>(window, |this, window, cx| {
                 this.sync_inputs(window, cx);
                 cx.notify();
             }),
             cx.observe_global::<persistence::Persistence>(|_, cx| cx.notify()),
             cx.observe(&tools, |_, _, cx| cx.notify()),
+            cx.observe(&instant, |_, _, cx| cx.notify()),
+            cx.observe(&clouds, |_, _, cx| cx.notify()),
+            cx.observe(&about, |_, _, cx| cx.notify()),
             cx.subscribe_in(&clouds, window, |_, _, request: &clouds::Request, window, cx| {
                 // Settings goes first; the dialog asked for opens in its place.
                 window.close_dialog(cx);
@@ -300,19 +265,21 @@ impl SettingsView {
             }),
         ];
         subscriptions.shrink_to_fit();
+        widgets::mark(None);
 
+        let page = section.and_then(Page::of_section).unwrap_or(Page::Overview);
         let mut this = Self {
             backend: backend.clone(),
             scroll: ScrollHandle::new(),
             focus: cx.focus_handle(),
+            page,
             order: Vec::new(),
             pending_section: section.map(str::to_string),
-            // Opened at a section, or with motion off (tests, Windows' setting): the whole page at once.
-            opened: (section.is_none() && !cx.reduce_motion()).then(std::time::Instant::now),
-            settle: None,
+            search,
+            marked_until: None,
+            reveal_mark: false,
             quick_taken: cx.try_global::<QuickTaken>().and_then(|taken| taken.0.clone()),
             editor_path,
-            yara_rules,
             shortcut_box,
             shortcut_error: None,
             find_exclusions,
@@ -326,9 +293,11 @@ impl SettingsView {
             about,
             shells: Vec::new(),
             editors: Vec::new(),
+            drives: None,
             _subscriptions: subscriptions,
         };
         this.load_shells_and_editors(window, cx);
+        this.load_drives(window, cx);
         this
     }
 
@@ -352,14 +321,9 @@ impl SettingsView {
 
     /// Puts the settings' text back in the boxes when the settings changed from elsewhere.
     fn sync_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let settings = state::settings(cx).clone();
-        for (input, now) in [
-            (&self.editor_path, settings.editor_path),
-            (&self.yara_rules, settings.yara_rules),
-        ] {
-            if input.read(cx).value().as_ref() != now.as_str() {
-                input.update(cx, |input, cx| input.set_value(now, window, cx));
-            }
+        let now = state::settings(cx).editor_path.clone();
+        if self.editor_path.read(cx).value().as_ref() != now.as_str() {
+            self.editor_path.update(cx, |input, cx| input.set_value(now, window, cx));
         }
     }
 
@@ -412,24 +376,77 @@ impl SettingsView {
         cx.notify();
     }
 
-    /// The names of the sections drawn, in the page's order.
+    /// The page shown.
+    pub fn page(&self) -> Page {
+        self.page
+    }
+
+    /// The sections the page shows now, in order.
     pub fn sections(&self) -> &[&'static str] {
         &self.order
     }
 
-    /// Scrolls so `section` ("settings-about" or "about") is at the top (`scrollIntoView`).
+    /// Every section of every page, in the side list's order (the content index's whether it shows or not).
+    pub fn all_sections() -> Vec<&'static str> {
+        Page::ALL.iter().flat_map(|page| page.sections().iter().copied()).collect()
+    }
+
+    /// Shows `page` from its top; a search under way is put away.
+    pub fn show_page(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.search.read(cx).value().is_empty() {
+            self.search.update(cx, |input, cx| input.set_value("", window, cx));
+        }
+        self.go(page, cx);
+    }
+
+    fn go(&mut self, page: Page, cx: &mut Context<Self>) {
+        if self.page != page {
+            self.page = page;
+            self.order.clear();
+            widgets::mark(None);
+            self.marked_until = None;
+        }
+        self.scroll.set_offset(point(px(0.), px(0.)));
+        cx.notify();
+    }
+
+    /// Opens the page with `section` ("settings-about" or "about") and scrolls it to the top.
     pub fn scroll_to(&mut self, section: &str, cx: &mut Context<Self>) {
-        // Asked for while only the first screen is drawn: the whole page first, then there.
-        if self.opened.take().is_some() {
+        let Some(page) = Page::of_section(section) else {
+            return;
+        };
+        if page != self.page {
+            self.go(page, cx);
             self.pending_section = Some(section.to_string());
-            cx.notify();
             return;
         }
         let slot = section.strip_prefix("settings-").unwrap_or(section);
-        if let Some(at) = self.order.iter().position(|s| *s == slot) {
-            self.scroll.scroll_to_top_of_item(at);
-            cx.notify();
+        match self.order.iter().position(|s| *s == slot) {
+            Some(0) | None => self.scroll.set_offset(point(px(0.), px(0.))),
+            Some(at) => self.scroll.scroll_to_top_of_item(at),
         }
+        cx.notify();
+    }
+
+    /// Opens what search found: its page, the search put away, its row marked and scrolled into view.
+    fn open_found(&mut self, found: &pages::Entry, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_page(found.page, window, cx);
+        widgets::mark(Some(found.label.into()));
+        self.marked_until = Some(Instant::now() + MARKED_FOR);
+        self.reveal_mark = true;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(MARKED_FOR).await;
+            this.update(cx, |this, cx| {
+                if this.marked_until.is_some_and(|until| until <= Instant::now()) {
+                    this.marked_until = None;
+                    widgets::mark(None);
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
     }
 
     /// Moves the page by `dy` pixels (negative: up), as far as it goes.
@@ -440,71 +457,94 @@ impl SettingsView {
         self.scroll.set_offset(offset);
     }
 
-    /// The section at the top of the page, marked on the left (`onScroll`): the last one whose top has passed
-    /// the top of the page, and the last section once scrolled to the end.
-    fn current_section(&self) -> usize {
-        let bounds = self.scroll.bounds();
-        let max = self.scroll.max_offset().y;
-        let at_end = max > px(0.) && self.scroll.offset().y <= -max + px(2.);
-        let last = |slot: &str| NAV.iter().position(|s| *s == slot);
-        if at_end {
-            return NAV.len() - 1;
-        }
-        let top = bounds.origin.y + px(40.);
-        let mut current = 0;
-        for (at, slot) in self.order.iter().enumerate() {
-            // The bounds of an item are where layout put it; the page is scrolled by `offset` from there.
-            let offset = self.scroll.offset().y;
-            let passed = self
-                .scroll
-                .bounds_for_item(at)
-                .is_some_and(|item| item.origin.y + offset <= top);
-            if passed {
-                if let Some(nav) = last(slot) {
-                    current = nav;
-                }
-            }
-        }
-        current
-    }
-
     /// How far the page is scrolled (zero or negative).
     pub fn scroll_offset(&self) -> Point<Pixels> {
         self.scroll.offset()
     }
 
-    /// The section marked on the left, by its id.
+    /// The page marked on the left, by its id.
     #[cfg(test)]
     pub fn current_section_name(&self) -> &'static str {
-        NAV[self.current_section().min(NAV.len() - 1)]
+        self.page.slot()
     }
 
-    /// The names on the left.
-    fn nav(&self, current: usize, t: &theme::Tokens, cx: &mut Context<Self>) -> impl IntoElement {
+    /// Scrolls the row search marked into view once it has been drawn: a third of the way down the page.
+    fn reveal_marked(&mut self, cx: &mut Context<Self>) {
+        if !self.reveal_mark {
+            return;
+        }
+        let Some(row) = widgets::marked_at() else {
+            // Not drawn yet: next frame.
+            cx.notify();
+            return;
+        };
+        self.reveal_mark = false;
+        let body = self.scroll.bounds();
+        if row.top() >= body.top() && row.bottom() <= body.bottom() {
+            return;
+        }
+        let max = self.scroll.max_offset().y;
+        let mut offset = self.scroll.offset();
+        offset.y = (offset.y - (row.top() - body.top() - body.size.height / 3.)).max(-max).min(px(0.));
+        self.scroll.set_offset(offset);
+        cx.notify();
+    }
+
+    /// The side list: the search box over the pages, in groups.
+    fn side(&self, t: &theme::Tokens, cx: &mut Context<Self>) -> impl IntoElement {
         let rtl = crate::i18n::is_rtl();
-        col()
-            .id("settings-sections")
-            .role(Role::Navigation)
-            .aria_label(t!("Settings sections"))
-            .test_support()
-            .w(space(47.))
+        let searching = !self.search.read(cx).value().is_empty();
+        let updates = self.tools.read(cx).counts().updates;
+        let mut items: Vec<AnyElement> = vec![div()
+            .id("settings-search")
             .flex_none()
-            .h_full()
-            .overflow_y_scroll()
-            .gap(space(0.5))
-            .p(space(2.))
-            .border_color(t.border)
-            .when(rtl, |this| this.border_l_1())
-            .when(!rtl, |this| this.border_r_1())
-            .children(NAV.iter().enumerate().map(|(i, slot)| {
-                let chosen = i == current;
-                let name = nav_name(slot);
-                let slot = *slot;
-                let (over, foreground, pressed, ring) = (t.accent, t.foreground, t.pressed, t.ring);
+            .pb(space(2.))
+            .child(
+                Input::new(&self.search)
+                    .small()
+                    .prefix(icon(IconName::Search).size_3p5().text_color(t.muted_foreground))
+                    .cleanable(true)
+                    .aria_label(t!("Search settings")),
+            )
+            .into_any_element()];
+        let mut last_group = None;
+        for page in Page::ALL {
+            let group = page.group();
+            if last_group != Some(group) {
+                last_group = Some(group);
+                if let Some(heading) = group.heading() {
+                    items.push(
+                        div()
+                            .flex_none()
+                            .pt(space(2.5))
+                            .pb(space(0.5))
+                            .px(space(2.5))
+                            .text_size(theme::size::XXS)
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(t.muted_foreground)
+                            .child(heading.to_uppercase())
+                            .into_any_element(),
+                    );
+                }
+            }
+            let chosen = page == self.page && !searching;
+            let name = page.name();
+            let (over, foreground, pressed, ring) = (t.accent, t.foreground, t.pressed, t.ring);
+            let badge = (page == Page::Tools && updates > 0).then(|| {
+                div()
+                    .flex_none()
+                    .px(space(1.5))
+                    .rounded_full()
+                    .bg(t.primary)
+                    .text_size(theme::size::XXS)
+                    .text_color(t.primary_foreground)
+                    .child(updates.to_string())
+            });
+            items.push(
                 // A row of its own rather than the kit's button, which centres its label: a list of names reads
                 // from the start edge, each behind its sign.
                 row_start()
-                    .id(widgets::id(&["settings-nav", slot]))
+                    .id(widgets::id(&["settings-nav", page.slot()]))
                     .role(Role::Button)
                     .aria_label(name.clone())
                     .aria_selected(chosen)
@@ -512,7 +552,7 @@ impl SettingsView {
                     .tab_index(0)
                     .w_full()
                     .flex_none()
-                    .h(space(8.))
+                    .h(space(7.))
                     .gap(space(2.5))
                     .px(space(2.5))
                     .rounded(theme::size::RADIUS)
@@ -524,14 +564,129 @@ impl SettingsView {
                     .hover(move |style| style.bg(over).text_color(foreground))
                     .active(move |style| style.bg(pressed))
                     .focus_visible(move |style| style.border_color(ring))
-                    .on_click(cx.listener(move |this, _, _, cx| this.scroll_to(slot, cx)))
-                    .child(icon(nav_icon(slot)).size_4().flex_none().text_color(if chosen {
+                    .on_click(cx.listener(move |this, _, window, cx| this.show_page(page, window, cx)))
+                    .child(icon(page.icon()).size_4().flex_none().text_color(if chosen {
                         t.primary
                     } else {
                         t.muted_foreground
                     }))
                     .child(div().flex_1().min_w_0().truncate().child(name))
-            }))
+                    .children(badge)
+                    .into_any_element(),
+            );
+        }
+        col()
+            .id("settings-sections")
+            .role(Role::Navigation)
+            .aria_label(t!("Settings sections"))
+            .test_support()
+            .w(space(52.))
+            .flex_none()
+            .h_full()
+            .overflow_y_scroll()
+            .gap(space(0.25))
+            .p(space(2.))
+            .border_color(t.border)
+            .when(rtl, |this| this.border_l_1())
+            .when(!rtl, |this| this.border_r_1())
+            .children(items)
+    }
+
+    /// The top of a page: its sign in a tile of the glint's colour, its name and what it is for.
+    fn page_header(&self, t: &theme::Tokens, cx: &App) -> impl IntoElement {
+        let page = self.page;
+        row_start()
+            .id("settings-page-header")
+            .role(Role::Heading)
+            .aria_label(page.name())
+            .aria_description(page.about())
+            .test_support()
+            .flex_none()
+            .gap(space(3.))
+            .pb(space(1.))
+            .child(
+                div()
+                    .size(space(10.))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(theme::size::RADIUS_LG)
+                    .bg(theme::glint_fill(cx))
+                    .child(icon(page.icon()).size_5().text_color(t.primary_foreground)),
+            )
+            .child(
+                col()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .text_size(rems(1.125))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(page.name()),
+                    )
+                    .child(
+                        div()
+                            .text_size(theme::size::XS)
+                            .text_color(t.muted_foreground)
+                            .child(page.about()),
+                    ),
+            )
+    }
+
+    /// What the search box found, or that it found nothing.
+    fn results(&self, query: &str, t: &theme::Tokens, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let found = pages::find(query);
+        if found.is_empty() {
+            return vec![div()
+                .id("settings-nothing-found")
+                .role(Role::Status)
+                .aria_label(t!("No setting matches “{words}”", words = query))
+                .test_support()
+                .py(space(10.))
+                .text_center()
+                .text_color(t.muted_foreground)
+                .child(t!("No setting matches “{words}”", words = query))
+                .into_any_element()];
+        }
+        let rows: Vec<AnyElement> = found
+            .into_iter()
+            .enumerate()
+            .map(|(i, entry)| {
+                let (over, ring) = (t.accent, t.ring);
+                row_start()
+                    .id(widgets::id(&["settings-found", &i.to_string()]))
+                    .role(Role::Button)
+                    .aria_label(SharedString::from(format!("{} › {}", entry.page.name(), crate::i18n::translate(entry.label))))
+                    .test_support()
+                    .tab_index(0)
+                    .w_full()
+                    .gap(space(3.))
+                    .px(space(4.))
+                    .py(space(2.5))
+                    .border_1()
+                    .border_color(gpui_kit::transparent_black())
+                    .cursor_pointer()
+                    .hover(move |style| style.bg(over))
+                    .focus_visible(move |style| style.border_color(ring))
+                    .on_click(cx.listener(move |this, _, window, cx| this.open_found(entry, window, cx)))
+                    .child(icon(entry.page.icon()).size_4().flex_none().text_color(t.primary))
+                    .child(
+                        col()
+                            .flex_1()
+                            .min_w_0()
+                            .child(div().text_size(theme::size::SM).child(crate::i18n::translate(entry.label)))
+                            .child(
+                                div()
+                                    .text_size(theme::size::XS)
+                                    .text_color(t.muted_foreground)
+                                    .child(entry.page.name()),
+                            ),
+                    )
+                    .child(icon(IconName::ChevronRight).size_4().flex_none().text_color(t.muted_foreground))
+                    .into_any_element()
+            })
+            .collect();
+        vec![widgets::section("search", t!("Found"), None, rows, t)]
     }
 }
 
@@ -543,35 +698,32 @@ impl Render for SettingsView {
         // min(85vh, 46rem), less the dialog's own title bar.
         let height = (viewport.height * 0.85).min(rem * 46.) - px(56.);
         let wide = viewport.width >= px(768.);
+        let query = self.search.read(cx).value().trim().to_string();
 
-        let mut page = self.page(&t, cx);
-        self.order = page.iter().map(|(slot, _)| *slot).collect();
-        // While the dialog arrives, its first screen only (see `opened`); then the rest, in one more frame.
-        if let Some(opened) = self.opened {
-            let left = SETTLE.saturating_sub(opened.elapsed());
-            if left.is_zero() || self.pending_section.is_some() {
-                self.opened = None;
-                self.settle = None;
+        let mut body: Vec<AnyElement> = Vec::new();
+        let mut order: Vec<&'static str> = Vec::new();
+        if query.is_empty() {
+            body.push(self.page_header(&t, cx).into_any_element());
+            if self.page == Page::Overview {
+                order.push("overview");
+                body.push(self.overview(&t, window, cx));
             } else {
-                page.truncate(FIRST_SECTIONS);
-                if self.settle.is_none() {
-                    self.settle = Some(cx.spawn(async move |this, cx| {
-                        cx.background_executor().timer(left).await;
-                        this.update(cx, |this, cx| {
-                            if this.opened.take().is_some() {
-                                cx.notify();
-                            }
-                        })
-                        .ok();
-                    }));
+                for slot in self.page.sections() {
+                    if let Some(section) = self.section_of(slot, &t, cx) {
+                        order.push(slot);
+                        body.push(section);
+                    }
                 }
             }
+        } else {
+            body.extend(self.results(&query, &t, cx));
         }
-        // A section asked for as Settings opened: now the page knows where the sections are.
+        self.order = order;
+        // A section asked for: now the page knows where its sections are.
         if let Some(section) = self.pending_section.take() {
             self.scroll_to(&section, cx);
         }
-        let current = self.current_section();
+        self.reveal_marked(cx);
 
         col()
             .id("settings")
@@ -583,11 +735,20 @@ impl Render for SettingsView {
             .text_size(theme::size::SM)
             // The dialog layer is outside the workspace's tree, so the start-aligned text is set here too.
             .text_start()
+            .key_context("Settings")
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                // Ctrl+F goes to the search box.
+                if event.keystroke.key == "f" && event.keystroke.modifiers.control {
+                    let focus = this.search.read(cx).focus_handle(cx);
+                    window.focus(&focus, cx);
+                    cx.stop_propagation();
+                }
+            }))
             .child(
                 row_start()
                     .flex_1()
                     .min_h_0()
-                    .when(wide, |this| this.child(self.nav(current, &t, cx)))
+                    .when(wide, |this| this.child(self.side(&t, cx)))
                     .child(
                         col()
                             .id("settings-body")
@@ -613,12 +774,12 @@ impl Render for SettingsView {
                             .min_w_0()
                             .flex_1()
                             .h_full()
-                            .px(space(5.))
+                            .px(space(6.))
                             .py(space(5.))
-                            .gap(space(6.))
+                            .gap(space(5.))
                             .overflow_y_scroll()
                             .track_scroll(&self.scroll)
-                            .children(page.into_iter().map(|(_, section)| section))
+                            .children(body)
                             .vertical_scrollbar(&self.scroll),
                     ),
             )

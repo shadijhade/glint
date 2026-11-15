@@ -1,23 +1,20 @@
-//! Making files smaller: "Make smaller…" (videos, photos, PNGs, BMPs, PDFs, Office files) and "Back to JPEG".
+//! Making files smaller: "Make smaller…" (videos, photos, PNGs, BMPs, PDFs, Office files).
 //! Ported from src/components/explorer/ShrinkDialog.tsx, built the way [`super::drive_health`] is.
 //!
 //! | TypeScript                          | Here                                                              |
 //! |-------------------------------------|-------------------------------------------------------------------|
-//! | `KINDS`, `canShrink`, `isJxl`       | [`kind_of`], [`can_shrink`], [`is_jxl`] (by name; the menus know the rest) |
+//! | `KINDS`, `canShrink`                | [`kind_of`], [`can_shrink`] (by name; the menus know the rest)    |
 //! | `openShrink(entries)`               | [`open`]                                                          |
-//! | `backToJpeg(entries)`               | [`back_to_jpeg`]                                                  |
 //! | `ShrinkDialog` / `ShrinkModal`      | [`ShrinkDialog`]                                                  |
-//! | `shrink_run`, `shrink_cancel`, `shrink_engines`, `jxl_to_jpeg` | [`Backend`] ([`CoreBackend`] is glint-core) |
+//! | `shrink_run`, `shrink_cancel`, `shrink_engines` | [`Backend`] ([`CoreBackend`] is glint-core)                |
 //! | `useActionRun`, `WhereChooser`, `Choices`, `RunProgress`, `RunResult`, `RunFooter` | [`action_run`]    |
-//! | `ToolNeeded` for ffmpeg, ab-av1, rimage, libjxl, ghostscript, pdfcpu | `settings::tools::needed`, through [`action_run::Tooling`] |
+//! | `ToolNeeded` for ffmpeg, rimage, pdfcpu | `settings::tools::needed`, through [`action_run::Tooling`]   |
 //!
 //! **How the coordinator wires it.**
 //! * `MenuEvent::MakeSmaller { paths }` is `dialogs::shrink::open(window, cx, paths, compress)`. The files among
 //!   `paths` are the ones Make smaller works on; folders among them (it asks the active folder's listing, as the
 //!   menus got them from there) are offered Compress instead. `compress` runs for "Compress to 7z" with the
 //!   folders (`compressEntries(folders, "7z")`): the same as the Compress > 7z file menu item (workspace.rs). "In place" opens `dialogs::compress_in_place` itself.
-//! * `MenuEvent::BackToJpeg { paths }` is `dialogs::shrink::back_to_jpeg(window, cx, paths)`. It makes a JPEG
-//!   beside each `.jxl` file, with no dialog, and Ctrl+Z takes them back.
 //!
 //! Enter in the dialog doesn't start the run (the TypeScript's modal submitted on Enter); the buttons do.
 
@@ -30,7 +27,7 @@ use action_run::{
     ActionRun, Choice, FooterSpec, Fut, ResultWords, Run, Tooling, WhereChooser,
 };
 use glint_core::actions::{Output, Progress, Report};
-use glint_core::shrink::{Engines, Kind, PdfWay, PhotoWay, ShrinkChoices, VideoCodec};
+use glint_core::shrink::{Engines, Kind, ShrinkChoices, VideoCodec};
 use glint_model::format::{format_count, plural};
 use glint_model::paths::base_name;
 use std::collections::HashSet;
@@ -48,11 +45,6 @@ pub fn kind_of(path: &str) -> Option<Kind> {
 /// to be read, is for the menus to know).
 pub fn can_shrink(path: &str) -> bool {
     kind_of(path).is_some()
-}
-
-/// A JPEG XL file, for Back to JPEG (`isJxl`).
-pub fn is_jxl(path: &str) -> bool {
-    path.to_lowercase().ends_with(".jxl")
 }
 
 /// How many of each kind of file there are (`counts`).
@@ -97,13 +89,6 @@ pub trait Backend: Send + Sync {
     ) -> Fut<Report>;
     /// What this PC's FFmpeg can do (`shrink_engines`).
     fn engines(&self) -> Fut<Engines>;
-    /// JPEG XL files as JPEGs (`jxl_to_jpeg`).
-    fn jxl_to_jpeg(
-        &self,
-        files: Vec<String>,
-        output: Output,
-        progress: glint_core::host::ipc::Channel<Progress>,
-    ) -> Fut<Report>;
     /// Stops the run under way (`shrink_cancel`).
     fn cancel(&self);
 }
@@ -138,18 +123,6 @@ impl Backend for CoreBackend {
         on_core(glint_core::shrink::shrink_engines())
     }
 
-    fn jxl_to_jpeg(
-        &self,
-        files: Vec<String>,
-        output: Output,
-        progress: glint_core::host::ipc::Channel<Progress>,
-    ) -> Fut<Report> {
-        match action_run::main_window(&self.app) {
-            Ok(window) => on_core(glint_core::shrink::jxl_to_jpeg(window, files, output, progress)),
-            Err(reason) => Box::pin(async move { Err(reason) }),
-        }
-    }
-
     fn cancel(&self) {
         glint_core::shrink::shrink_cancel();
     }
@@ -173,10 +146,6 @@ impl Backend for Unavailable {
         action_run::no_core()
     }
 
-    fn jxl_to_jpeg(&self, _: Vec<String>, _: Output, _: glint_core::host::ipc::Channel<Progress>) -> Fut<Report> {
-        action_run::no_core()
-    }
-
     fn cancel(&self) {}
 }
 
@@ -193,10 +162,7 @@ fn core_backend(cx: &App) -> Arc<dyn Backend> {
 fn why(id: &str) -> SharedString {
     match id {
         "ffmpeg" => t!("FFmpeg encodes the videos, on this PC."),
-        "ab-av1" => t!("ab-av1 finds the smallest size at which a video still looks the same, from short samples."),
         "rimage" => t!("rimage makes photos and pictures smaller, on this PC."),
-        "libjxl" => t!("libjxl repacks JPEGs as JPEG XL without losing a bit."),
-        "ghostscript" => t!("Ghostscript rewrites a PDF's pictures for screens or print, on this PC."),
         "pdfcpu" => t!("pdfcpu makes PDFs smaller without changing what's on their pages."),
         _ => SharedString::default(),
     }
@@ -205,8 +171,8 @@ fn why(id: &str) -> SharedString {
 /// The card's icon: a film for video, a page for PDFs, a picture for the rest.
 fn tool_icon(id: &str) -> IconName {
     match id {
-        "ffmpeg" | "ab-av1" => IconName::Film,
-        "ghostscript" | "pdfcpu" => IconName::FileText,
+        "ffmpeg" => IconName::Film,
+        "pdfcpu" => IconName::FileText,
         _ => IconName::FileImage,
     }
 }
@@ -245,8 +211,6 @@ pub struct ShrinkDialog {
     tooling: Tooling,
     compress: CompressHook,
     video: VideoCodec,
-    photo: PhotoWay,
-    pdf: PdfWay,
     quality: u8,
     engines: Option<Engines>,
     engines_asked: bool,
@@ -298,8 +262,6 @@ impl ShrinkDialog {
             tooling,
             compress,
             video: VideoCodec::H264,
-            photo: PhotoWay::Jpeg,
-            pdf: PdfWay::Screen,
             quality: 80,
             engines: None,
             engines_asked: false,
@@ -374,20 +336,13 @@ impl ShrinkDialog {
         let counts = self.counts;
         let mut needs: Vec<&'static str> = Vec::new();
         if counts.video > 0 {
-            needs.extend(["ffmpeg", "ab-av1"]);
+            needs.push("ffmpeg");
         }
-        if (counts.jpeg > 0 && self.photo == PhotoWay::Jpeg) || counts.png > 0 || counts.bmp > 0 || counts.office > 0 {
+        if counts.jpeg > 0 || counts.png > 0 || counts.bmp > 0 || counts.office > 0 {
             needs.push("rimage");
         }
-        if counts.jpeg > 0 && self.photo == PhotoWay::Jxl {
-            needs.push("libjxl");
-        }
         if counts.pdf > 0 {
-            needs.push(if self.pdf == PdfWay::Lossless {
-                "pdfcpu"
-            } else {
-                "ghostscript"
-            });
+            needs.push("pdfcpu");
         }
         needs.into_iter().map(|id| (id, self.tooling.ready(id, cx))).collect()
     }
@@ -424,8 +379,6 @@ impl ShrinkDialog {
         let output = self.where_.read(cx).choice(cx).output();
         let choices = ShrinkChoices {
             video: self.video,
-            photo: self.photo,
-            pdf: self.pdf,
             quality: self.quality,
         };
         let (channel, receiver) = core_bridge::stream::<Progress>();
@@ -534,11 +487,6 @@ impl Render for ShrinkDialog {
                 if counts.video > 0 {
                     let engines = self.engines.clone();
                     let off = |has: fn(&Engines) -> bool| engines.as_ref().is_some_and(|e| !has(e));
-                    let scored_by = if engines.as_ref().is_some_and(|e| !e.vmaf) {
-                        "XPSNR"
-                    } else {
-                        "VMAF"
-                    };
                     parts.push(
                         col()
                             .gap(space(1.5))
@@ -571,44 +519,13 @@ impl Render for ShrinkDialog {
                                 cx,
                             ))
                             .child(help(
-                                t!(
-                                    "Short samples are encoded and scored by {metric} first, to find the smallest size that still looks the same, then the whole video is encoded: it takes a while. An HDR video keeps its colours as HEVC or AV1.",
-                                    metric = scored_by
-                                ),
+                                t!("Each video is encoded again at a quality that keeps it looking the same: it takes a while. An HDR video keeps its colours as HEVC or AV1."),
                                 &t,
                             ))
                             .into_any_element(),
                     );
                 }
-                if counts.jpeg > 0 {
-                    parts.push(
-                        col()
-                            .gap(space(1.5))
-                            .child(section_title(SharedString::from(plural(counts.jpeg, "photo")), &t))
-                            .child(choices::<Self, PhotoWay>(
-                                "shrink-photo",
-                                t!("Photos"),
-                                self.photo,
-                                vec![
-                                    Choice::new(PhotoWay::Jpeg, t!("A smaller JPEG")).hint(t!("Opens everywhere")),
-                                    Choice::new(PhotoWay::Jxl, t!("JPEG XL, losslessly"))
-                                        .hint(t!("About a fifth smaller, every bit kept")),
-                                ],
-                                2,
-                                |this, picked, _, _| this.photo = picked,
-                                &t,
-                                cx,
-                            ))
-                            .when(self.photo == PhotoWay::Jxl, |this| {
-                                this.child(help(
-                                    t!("Windows 11 and Chrome open JPEG XL. Back to JPEG, on a .jxl file's menu, gives back the very same JPEG."),
-                                    &t,
-                                ))
-                            })
-                            .into_any_element(),
-                    );
-                }
-                if (counts.jpeg > 0 && self.photo == PhotoWay::Jpeg) || counts.office > 0 {
+                if counts.jpeg > 0 || counts.office > 0 {
                     let heading = if counts.office > 0 {
                         t!("JPEG quality (pictures in Office files too)")
                     } else {
@@ -637,33 +554,11 @@ impl Render for ShrinkDialog {
                 }
                 if counts.pdf > 0 {
                     parts.push(
-                        col()
-                            .gap(space(1.5))
-                            .child(section_title(SharedString::from(plural(counts.pdf, "PDF")), &t))
-                            .child(choices::<Self, PdfWay>(
-                                "shrink-pdf",
-                                t!("PDFs"),
-                                self.pdf,
-                                vec![
-                                    Choice::new(PdfWay::Screen, t!("For screens and mail"))
-                                        .hint(t!("Pictures at {n} dpi", n = 150)),
-                                    Choice::new(PdfWay::Print, t!("For print"))
-                                        .hint(t!("Pictures at {n} dpi", n = 300)),
-                                    Choice::new(PdfWay::Lossless, t!("Lossless"))
-                                        .hint(t!("Nothing changes on the page")),
-                                ],
-                                3,
-                                |this, picked, _, _| this.pdf = picked,
-                                &t,
-                                cx,
-                            ))
-                            .when(self.pdf != PdfWay::Lossless, |this| {
-                                this.child(help(
-                                    t!("Ghostscript rewrites the PDF: its text and links stay, a digital signature wouldn't."),
-                                    &t,
-                                ))
-                            })
-                            .into_any_element(),
+                        help(
+                            t!("PDFs are made smaller without changing anything on their pages: what pdfcpu can tidy, it does."),
+                            &t,
+                        )
+                        .into_any_element(),
                     );
                 }
                 if counts.png > 0 || counts.bmp > 0 {
@@ -797,52 +692,6 @@ pub fn open_with(
     view
 }
 
-/// Back to JPEG: JPEG XL files among `paths` as JPEGs beside them, the very JPEG for ones Make smaller repacked
-/// (`backToJpeg`). No dialog; Ctrl+Z takes them back.
-pub fn back_to_jpeg(window: &mut Window, cx: &mut App, paths: Vec<String>) {
-    let backend = core_backend(cx);
-    back_to_jpeg_with(window, cx, backend, paths);
-}
-
-/// [`back_to_jpeg`] with a backend of your own (tests pass a fake).
-pub fn back_to_jpeg_with(window: &mut Window, cx: &mut App, backend: Arc<dyn Backend>, paths: Vec<String>) {
-    let files: Vec<String> = paths.into_iter().filter(|p| is_jxl(p)).collect();
-    if files.is_empty() {
-        return;
-    }
-    // The progress has nobody to tell: the TypeScript passed a function that did nothing.
-    let (channel, _unheard) = core_bridge::stream::<Progress>();
-    let call = backend.jxl_to_jpeg(files, Output::Beside { suffix: String::new() }, channel);
-    window
-        .spawn(cx, async move |cx| {
-            let result = call.await;
-            let _ = cx.update(|window, cx| match result {
-                Ok(report) => {
-                    if !report.made.is_empty() {
-                        let what = if report.made.len() > 1 {
-                            t!("JPEGs from JPEG XL")
-                        } else {
-                            t!("JPEG from JPEG XL")
-                        };
-                        action_run::remember_undo(&report, &what, cx);
-                        window.push_notification(Notification::success(what).message(t!("Ctrl+Z takes it back")), cx);
-                    }
-                    if let Some((_, why)) = report.failed.first() {
-                        window.push_notification(
-                            Notification::error(why.clone())
-                                .title(t!("Couldn't make {what}", what = plural(report.failed.len(), "JPEG"))),
-                            cx,
-                        );
-                    }
-                }
-                Err(reason) => {
-                    window.push_notification(Notification::error(reason).title(t!("Couldn't make JPEGs")), cx);
-                }
-            });
-        })
-        .detach();
-}
-
 // ---- Tests -------------------------------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -858,7 +707,6 @@ mod tests {
     /// A backend that answers from memory and remembers what it was asked.
     struct Fake {
         runs: Mutex<Vec<(Vec<String>, ShrinkChoices, Output)>>,
-        jxl: Mutex<Vec<(Vec<String>, Output)>>,
         engines: Engines,
         report: Report,
         error: Option<String>,
@@ -869,7 +717,6 @@ mod tests {
         fn new(engines: Engines, report: Report) -> Arc<Fake> {
             Arc::new(Fake {
                 runs: Mutex::new(Vec::new()),
-                jxl: Mutex::new(Vec::new()),
                 engines,
                 report,
                 error: None,
@@ -914,19 +761,6 @@ mod tests {
             Box::pin(async move { Ok(engines) })
         }
 
-        fn jxl_to_jpeg(
-            &self,
-            files: Vec<String>,
-            output: Output,
-            _: glint_core::host::ipc::Channel<Progress>,
-        ) -> Fut<Report> {
-            if let Ok(mut jxl) = self.jxl.lock() {
-                jxl.push((files, output));
-            }
-            let report = self.report.clone();
-            Box::pin(async move { Ok(report) })
-        }
-
         fn cancel(&self) {
             if let Ok(mut n) = self.cancelled.lock() {
                 *n += 1;
@@ -939,7 +773,6 @@ mod tests {
             h264: true,
             hevc: true,
             av1: true,
-            vmaf: true,
         }
     }
 
@@ -1063,7 +896,6 @@ mod tests {
         assert_eq!(kind_of("C:\\v\\a.docm"), Some(Kind::Office));
         assert_eq!(kind_of("C:\\v\\a.txt"), None);
         assert!(can_shrink("C:\\v\\a.pdf") && !can_shrink("C:\\v\\Folder"));
-        assert!(is_jxl("C:\\v\\a.JXL") && !is_jxl("C:\\v\\a.jpg"));
         let files = strings(&[
             "C:\\v\\a.mp4",
             "C:\\v\\b.mkv",
@@ -1100,12 +932,11 @@ mod tests {
         let _guard = testing::lock();
         let mut visual = window(cx);
         let fake = Fake::new(all_engines(), report(&["C:\\v\\a (smaller).mp4"], 1_000_000, 400_000));
-        // Only FFmpeg: ab-av1 is missing, so nothing starts.
-        let view = open_view(&mut visual, &["C:\\v\\a.mp4"], &[], &fake, &["ffmpeg"], no_compress());
-        settle(&mut visual, |cx| view.read_with(cx, |v, _| v.engines().is_some()));
+        // No FFmpeg, so nothing starts.
+        let view = open_view(&mut visual, &["C:\\v\\a.mp4"], &[], &fake, &[], no_compress());
+        assert_eq!(view.read_with(&visual, |v, cx| v.needs(cx)), [("ffmpeg", false)]);
         assert_eq!(role_of(&mut visual, "Make smaller: a.mp4"), Some(Role::Group));
         assert_eq!(role_of(&mut visual, "C:\\v"), Some(Role::Group));
-        assert_eq!(role_of(&mut visual, "Video format"), Some(Role::RadioGroup));
         assert!(disabled(&mut visual, "shrink-start"));
         visual.update(|window, cx| {
             window.render_frame(cx);
@@ -1118,10 +949,11 @@ mod tests {
             &["C:\\v\\a.mp4"],
             &[],
             &fake,
-            &["ffmpeg", "ab-av1"],
+            &["ffmpeg"],
             no_compress(),
         );
         settle(&mut visual, |cx| view.read_with(cx, |v, _| v.engines().is_some()));
+        assert_eq!(role_of(&mut visual, "Video format"), Some(Role::RadioGroup));
         assert!(!disabled(&mut visual, "shrink-start"));
         assert_eq!(role_of(&mut visual, "H.264. Plays everywhere"), Some(Role::RadioButton));
         click(&mut visual, ("shrink-video", 1_usize));
@@ -1158,7 +990,6 @@ mod tests {
             h264: false,
             hevc: true,
             av1: false,
-            vmaf: false,
         };
         let fake = Fake::new(engines, report(&[], 0, 0));
         let view = open_view(
@@ -1166,7 +997,7 @@ mod tests {
             &["C:\\v\\a.mp4"],
             &[],
             &fake,
-            &["ffmpeg", "ab-av1"],
+            &["ffmpeg"],
             no_compress(),
         );
         settle(&mut visual, |cx| view.read_with(cx, |v, _| v.engines().is_some()));
@@ -1191,28 +1022,17 @@ mod tests {
             &["rimage"],
             no_compress(),
         );
-        // A PDF made smaller for screens needs Ghostscript.
-        assert_eq!(
-            view.read_with(&visual, |v, cx| v.needs(cx)),
-            [("rimage", true), ("ghostscript", false)]
-        );
-        assert!(disabled(&mut visual, "shrink-start"));
-        for label in ["Photos", "PDFs", "JPEG quality", "Where"] {
-            assert_eq!(role_of(&mut visual, label), Some(Role::RadioGroup), "{label}");
-        }
-        // Lossless needs pdfcpu instead; JPEG XL needs libjxl in place of rimage for the photo.
-        click(&mut visual, ("shrink-pdf", 2_usize));
+        // The photo and the Office file want rimage, the PDF pdfcpu.
         assert_eq!(
             view.read_with(&visual, |v, cx| v.needs(cx)),
             [("rimage", true), ("pdfcpu", false)]
         );
-        click(&mut visual, ("shrink-photo", 1_usize));
-        assert_eq!(
-            view.read_with(&visual, |v, cx| v.needs(cx)),
-            [("rimage", true), ("libjxl", false), ("pdfcpu", false)]
-        );
-        // The Office file still wants rimage; the quality choice stays for it.
-        assert!(has(&mut visual, "JPEG quality"));
+        assert!(disabled(&mut visual, "shrink-start"));
+        for label in ["JPEG quality", "Where"] {
+            assert_eq!(role_of(&mut visual, label), Some(Role::RadioGroup), "{label}");
+        }
+        assert!(!has(&mut visual, "Photos"), "photos have one way now");
+        assert!(!has(&mut visual, "PDFs"), "PDFs have one way now");
     }
 
     #[gpui_kit::test]
@@ -1246,7 +1066,7 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn progress_stop_failure_and_back_to_jpeg(cx: &mut TestAppContext) {
+    fn progress_stop_and_failure(cx: &mut TestAppContext) {
         let _guard = testing::lock();
         let mut visual = window(cx);
         let fake = Fake::new(all_engines(), report(&["C:\\p\\a.jpg"], 100, 50));
@@ -1272,20 +1092,12 @@ mod tests {
         );
         click(&mut visual, "shrink-stop");
         assert_eq!(fake.cancelled.lock().map(|n| *n).unwrap_or(0), 1);
-        visual.update(|_, cx| run.update(cx, |run, cx| run.set(Run::Failed("Ghostscript crashed".into()), cx)));
+        visual.update(|_, cx| run.update(cx, |run, cx| run.set(Run::Failed("rimage crashed".into()), cx)));
         assert_eq!(
-            role_of(&mut visual, "Couldn't make them smaller. Ghostscript crashed"),
+            role_of(&mut visual, "Couldn't make them smaller. rimage crashed"),
             Some(Role::Alert)
         );
         testing::set_rtl(false);
-        // Back to JPEG makes JPEGs beside the .jxl files and nothing of the others.
-        let backend: Arc<dyn Backend> = fake.clone();
-        visual.update(|window, cx| {
-            back_to_jpeg_with(window, cx, backend, strings(&["C:\\p\\a.jxl", "C:\\p\\b.jpg"]));
-        });
-        settle(&mut visual, |_| fake.jxl.lock().map(|j| !j.is_empty()).unwrap_or(false));
-        let jxl = fake.jxl.lock().map(|j| j.clone()).unwrap_or_default();
-        assert_eq!(jxl[0].0, ["C:\\p\\a.jxl"]);
-        assert_eq!(jxl[0].1, Output::Beside { suffix: String::new() });
     }
 }
+

@@ -47,8 +47,7 @@ lines say which.
 
 - **A profile of its own.** The app is started with `APPDATA` and `LOCALAPPDATA` pointing into the scratch folder
   (`profile\Roaming` and `profile\Local`; Glint finds its data folders through those two variables), so it starts on
-  its defaults on any PC (no `state.json`, no old app's settings to import; English names and a light theme:
-  `GLINT_LANGUAGE=en`, `GLINT_THEME=light`), with a `window.json` that places the window at a known size, and it
+  its defaults on any PC (no `state.json`, no old app's settings to import; a light theme: `GLINT_THEME=light`; no suggestion notification: `GLINT_SUGGESTIONS=off`), with a `window.json` that places the window at a known size, and it
   writes its state there. Your own `state.json`, `window.json` and `startup.json` are never moved, deleted or
   written: the run only hashes them (SHA-256) before and after, and the summary says whether they match.
 - **Clipboard.** Its text, file list and picture are saved first and put back at the end (the summary says whether it

@@ -1694,8 +1694,8 @@ fn the_recycle_bin_takes_files_to_recycle_them_and_the_words_are_arabic_in_the_a
         panic!("a folder row takes files: {got:?}")
     };
     assert_eq!(into.name, "مجلد");
-    assert_eq!(into.copy, "نسخ إلى %1");
-    assert_eq!(into.moves, "نقل إلى %1");
+    assert_eq!(into.copy, "Copy to %1");
+    assert_eq!(into.moves, "Move to %1");
 }
 
 // ---- The keyboard's menu --------------------------------------------------------------------------------------

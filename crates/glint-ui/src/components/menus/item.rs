@@ -575,16 +575,6 @@ pub fn item_menu(targets: &[FileEntry], c: &ItemCtx) -> Vec<Node> {
             .node(),
         );
     }
-    if !fixed && targets.iter().any(is_jxl) {
-        m.push(
-            Entry::ask(
-                t!("Back to JPEG"),
-                IconName::ImageDown,
-                MenuEvent::BackToJpeg { paths: paths.clone() },
-            )
-            .node(),
-        );
-    }
     if !pictures.is_empty() {
         m.push(
             Entry::ask(
@@ -810,22 +800,6 @@ pub fn item_menu(targets: &[FileEntry], c: &ItemCtx) -> Vec<Node> {
                     IconName::ShieldCheck,
                     MenuEvent::Defender { paths: paths.clone() },
                 ))
-            }),
-            one.filter(|_| !fixed).and_then(|e| {
-                Entry::ask(
-                    t!("Look for passwords and keys"),
-                    IconName::KeyRound,
-                    MenuEvent::Secrets { path: e.path.clone() },
-                )
-                .node()
-            }),
-            one.filter(|_| !fixed).and_then(|e| {
-                Entry::ask(
-                    t!("Check with YARA rules"),
-                    IconName::ScanSearch,
-                    MenuEvent::Yara { path: e.path.clone() },
-                )
-                .node()
             }),
         ],
     )));

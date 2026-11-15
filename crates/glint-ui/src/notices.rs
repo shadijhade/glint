@@ -356,6 +356,11 @@ pub fn init_service_with(cx: &mut App, source: ServiceSource) {
     cx.set_global(SharedService(source));
 }
 
+/// Asks instant search how it does (the suggestion to index every drive reads it); None without core.
+pub(crate) fn index_status(cx: &App) -> Option<SettingsFut<IndexInfo>> {
+    service_source(cx).map(|source| (source.status)())
+}
+
 fn service_source(cx: &App) -> Option<ServiceSource> {
     if let Some(shared) = cx.try_global::<SharedService>() {
         return Some(shared.0.clone());

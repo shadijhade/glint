@@ -130,11 +130,6 @@ pub fn can_shrink(e: &FileEntry) -> bool {
     readable(e) && !e.dir && has(SHRINKS, &ext_of(&e.name))
 }
 
-/// A JPEG XL file, for Back to JPEG (`isJxl`).
-pub fn is_jxl(e: &FileEntry) -> bool {
-    readable(e) && !e.dir && ext_of(&e.name) == "jxl"
-}
-
 /// Files and folders Compress in place takes: on the PC itself (`canCompressInPlace`).
 pub fn can_compress_in_place(e: &FileEntry) -> bool {
     readable(e) && !is_remote(e) && !e.path.starts_with("\\\\")
@@ -247,7 +242,6 @@ mod tests {
         assert!(is_song(&file("C:\\x", "a.flac", 1, 0)));
         assert!(can_shrink(&file("C:\\x", "a.mp4", 1, 0)));
         assert!(!can_shrink(&file("C:\\x", "a.txt", 1, 0)));
-        assert!(is_jxl(&file("C:\\x", "a.jxl", 1, 0)));
         assert!(can_clean(&file("C:\\x", "a.docx", 1, 0)) && can_redate(&file("C:\\x", "a.heic", 1, 0)));
         assert!(!can_redate(&file("C:\\x", "a.pdf", 1, 0)));
     }

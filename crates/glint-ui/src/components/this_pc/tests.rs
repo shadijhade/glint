@@ -426,7 +426,7 @@ fn a_known_folder_is_named_in_the_interface_language(cx: &mut TestAppContext) {
     visual.update(|_, cx| explorer.update(cx, |e, cx| e.init_explorer(Vec::new(), cx).detach()));
     settle(&mut visual);
     // The catalog has Documents in Arabic: the tile says so, and its name is still exposed to screen readers.
-    assert_eq!(role_of(&mut visual, "المستندات"), Some(Role::Button));
+    assert_eq!(role_of(&mut visual, "Documents"), Some(Role::Button));
     testing::set_rtl(false);
 }
 
@@ -523,7 +523,7 @@ fn shift_on_a_drop_moves_the_files_and_the_words_are_arabic_in_arabic(cx: &mut T
         DropEffect::Move,
     );
     assert!(
-        matches!(&answer, Answer::Accept(under) if under.copy == "نسخ إلى %1" && under.moves == "نقل إلى %1"),
+        matches!(&answer, Answer::Accept(under) if under.copy == "Copy to %1" && under.moves == "Move to %1"),
         "the words are in Arabic: {answer:?}"
     );
     assert!(

@@ -161,14 +161,10 @@ fn text_boxes_write_the_settings_as_they_are_typed_and_follow_a_change_from_else
     let _guard = testing::lock();
     let fake = Arc::new(Fake::new());
     let (mut visual, view) = open_settings(cx, &fake, None);
-    let (editor, yara) = visual.update(|_, cx| {
-        let view = view.read(cx);
-        (view.editor_path.clone(), view.yara_rules.clone())
-    });
+    go_to(&mut visual, "search-text-ripgrep");
+    let editor = visual.update(|_, cx| view.read(cx).editor_path.clone());
     type_into(&mut visual, &editor, "code");
-    type_into(&mut visual, &yara, "D:\\rules");
-    let s = settings(&mut visual);
-    assert_eq!((s.editor_path.as_str(), s.yara_rules.as_str()), ("code", "D:\\rules"));
+    assert_eq!(settings(&mut visual).editor_path, "code");
     // An editor found on this PC fills in its path (the terminal found with it is not offered).
     go_to(&mut visual, "search-text-ripgrep");
     assert!(has(&mut visual, "An editor found on this PC"));
@@ -180,9 +176,9 @@ fn text_boxes_write_the_settings_as_they_are_typed_and_follow_a_change_from_else
         "C:\\Code.exe"
     );
     // Changing a setting from elsewhere (Reset, an import) puts its text back in the box.
-    visual.update(|_, cx| state::update(cx, |s| s.yara_rules = "E:\\Else".into()));
+    visual.update(|_, cx| state::update(cx, |s| s.editor_path = "E:\\Else.exe".into()));
     visual.run_until_parked();
-    assert_eq!(visual.update(|_, cx| yara.read(cx).value().to_string()), "E:\\Else");
+    assert_eq!(visual.update(|_, cx| editor.read(cx).value().to_string()), "E:\\Else.exe");
 }
 
 #[gpui_kit::test]
@@ -190,21 +186,13 @@ fn browse_buttons_pick_a_folder_into_the_setting_and_cancel_changes_nothing(cx: 
     let _guard = testing::lock();
     let fake = Arc::new(Fake::new());
     let (mut visual, view) = open_settings(cx, &fake, None);
-    go_to(&mut visual, "check");
-    lock(&fake.picks).push_back(None);
-    click(&mut visual, "settings-button-yara-rules-browse");
-    settle(&mut visual, |_| {
-        fake.calls()
-            .iter()
-            .any(|c| c.starts_with("pick_folder A folder of YARA rules"))
-    });
-    assert_eq!(settings(&mut visual).yara_rules, "");
-    lock(&fake.picks).push_back(Some("D:\\yara".into()));
-    click(&mut visual, "settings-button-yara-rules-browse");
-    settle(&mut visual, |cx| settings(cx).yara_rules == "D:\\yara");
-    // The gallery's folders: added once, each taken out with its cross.
+    // The gallery's folders: Cancel adds nothing; one is added once, each taken out with its cross.
     go_to(&mut visual, "files");
     reveal(&mut visual, &view, "settings-button-gallery-add");
+    lock(&fake.picks).push_back(None);
+    click(&mut visual, "settings-button-gallery-add");
+    settle(&mut visual, |_| fake.calls().iter().any(|c| c.starts_with("pick_folder")));
+    assert!(settings(&mut visual).gallery_folders.is_empty());
     lock(&fake.picks).push_back(Some("D:\\Photos".into()));
     click(&mut visual, "settings-button-gallery-add");
     settle(&mut visual, |cx| settings(cx).gallery_folders == ["D:\\Photos"]);
@@ -356,21 +344,14 @@ fn history_counts_clear_and_come_back_with_undo(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn arabic_mirrors_the_layout_and_carries_arabic_names_through(cx: &mut TestAppContext) {
+fn a_mirrored_layout_and_arabic_names_carry_through(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let fake = Arc::new(Fake::new());
     let (mut visual, view) = open_settings(cx, &fake, None);
-    visual.update(|_, cx| state::update(cx, |s| s.language = glint_model::store::Language::Ar));
+    testing::set_rtl(true);
+    visual.update(|_, cx| cx.refresh_windows());
     visual.run_until_parked();
-    assert!(crate::i18n::is_rtl());
-    // Words come from the Arabic catalog where it has them; the rest stays English, in the mirrored layout.
-    let title = visual.update(|window, cx| {
-        window.render_frame(cx);
-        window.find("settings").label().map(str::to_string)
-    });
-    assert_eq!(title.as_deref(), Some(&*crate::t!("Settings")));
-    assert_ne!(title.as_deref(), Some("Settings"), "the catalog has Settings");
-    // The section list moves to the start edge (the right), and the page to its left.
+    // Mirrored, the section list moves to the start edge (the right), and the page to its left.
     let (nav, body) = visual.update(|window, cx| {
         window.render_frame(cx);
         (
@@ -380,7 +361,7 @@ fn arabic_mirrors_the_layout_and_carries_arabic_names_through(cx: &mut TestAppCo
     });
     assert!(
         nav.origin.x > body.origin.x,
-        "the names are on the right in Arabic: {nav:?} vs {body:?}"
+        "the names are on the right when mirrored: {nav:?} vs {body:?}"
     );
     // Arabic text goes through a list, a chip and the name of a button, untouched.
     go_to(&mut visual, "files");
@@ -397,31 +378,132 @@ fn arabic_mirrors_the_layout_and_carries_arabic_names_through(cx: &mut TestAppCo
     assert!(settings(&mut visual)
         .find_exclusions
         .contains(&"ملفات_مؤقتة".to_string()));
-    visual.update(|_, cx| state::update(cx, |s| s.language = glint_model::store::Language::En));
+    testing::set_rtl(false);
 }
 
 #[gpui_kit::test]
-fn opening_at_about_scrolls_there_and_marks_it_on_the_left(cx: &mut TestAppContext) {
+fn opening_at_about_shows_its_page_and_marks_it_on_the_left(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let fake = Arc::new(Fake::new());
     let (mut visual, view) = open_settings(cx, &fake, Some(ABOUT));
     frame(&mut visual);
     visual.run_until_parked();
     frame(&mut visual);
-    // The page was still filling in (tools, clouds) when it first scrolled; asked again once settled it lands.
-    assert!(
-        visual.update(|_, cx| view.read(cx).scroll_offset().y) < px(0.),
-        "it scrolled as it opened"
-    );
-    visual.update(|_, cx| view.update(cx, |view, cx| view.scroll_to(ABOUT, cx)));
+    assert_eq!(visual.update(|_, cx| view.read(cx).current_section_name()), "about");
+    assert_eq!(role_of(&mut visual, "About"), Some(Role::Heading), "the page's header names it");
+    let marked = visual.update(|window, cx| {
+        window.render_frame(cx);
+        window.find("settings-nav-about").selected()
+    });
+    assert_eq!(marked, Some(true));
+    // A section that shares a page opens that page.
+    visual.update(|_, cx| view.update(cx, |view, cx| view.scroll_to("text-search-skips", cx)));
     frame(&mut visual);
-    frame(&mut visual);
-    let toggled = visual.update(|_, cx| view.read(cx).current_section_name());
-    assert_eq!(toggled, "about");
+    assert_eq!(visual.update(|_, cx| view.read(cx).page()), Page::Inside);
     // A second request while it's open doesn't stack another dialog on it.
     let again = visual.update(|window, cx| {
         let backend: Arc<dyn Backend> = fake.clone();
         open_with(window, cx, backend, false, Some("settings-appearance"))
     });
     assert_eq!(again.entity_id(), view.entity_id());
+}
+
+#[gpui_kit::test]
+fn the_overview_says_how_glint_is_set_up_and_suggests_indexing_every_drive(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let fake = Arc::new(Fake::new());
+    let (mut visual, view) = open_settings(cx, &fake, None);
+    let said = |cx: &mut VisualTestContext, tile: &str| {
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window
+                .try_find(format!("settings-tile-{tile}"))
+                .and_then(|e| e.description().map(str::to_string))
+        })
+    };
+    settle(&mut visual, |cx| {
+        said(cx, "instant-search").as_deref() == Some("Off: names are searched drive by drive")
+    });
+    assert_eq!(view.read_with(&visual, |v, _| v.page()), Page::Overview);
+    for tile in ["instant-search", "tools", "clouds", "appearance"] {
+        assert!(
+            visual.update(|window, cx| {
+                window.render_frame(cx);
+                window.try_find(format!("settings-tile-{tile}")).is_some()
+            }),
+            "the {tile} tile"
+        );
+    }
+    // Instant search is off on the fake: the suggestion to index every drive leads the list.
+    assert_eq!(
+        role_of(&mut visual, "Find any file on every drive, instantly"),
+        Some(Role::Group)
+    );
+    // Its button turns it on (Windows would ask for approval).
+    click(&mut visual, "settings-button-suggestion-index-all-drives");
+    settle(&mut visual, |_| fake.calls().iter().any(|c| c == "index_enable"));
+    settle(&mut visual, |cx| !has(cx, "Find any file on every drive, instantly"));
+    // A tile's name opens its page.
+    click(&mut visual, "settings-tile-open-tools");
+    assert_eq!(view.read_with(&visual, |v, _| v.page()), Page::Tools);
+}
+
+#[gpui_kit::test]
+fn a_suggestion_put_away_stays_away(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let fake = Arc::new(Fake::new());
+    let (mut visual, _) = open_settings(cx, &fake, None);
+    visual.update(|_, cx| state::update(cx, |s| s.quick_shortcut = Some("Ctrl+Alt+F".into())));
+    settle(&mut visual, |cx| has(cx, "Keep Quick search's shortcut working"));
+    click(&mut visual, "settings-suggestion-never-shortcut-needs-tray");
+    assert!(!has(&mut visual, "Keep Quick search's shortcut working"));
+    let put_away = visual.update(|_, cx| crate::suggestions::dismissed(cx, crate::suggestions::Kind::ShortcutNeedsTray));
+    assert!(put_away, "kept in the saved notices");
+    // Its button does what it says: keep running in the tray.
+    visual.update(|_, cx| state::update(cx, |s| s.keep_in_tray = false));
+    settle(&mut visual, |cx| has(cx, "Find any file on every drive, instantly"));
+    click(&mut visual, "settings-button-suggestion-index-all-drives");
+    settle(&mut visual, |_| fake.calls().iter().any(|c| c == "index_enable"));
+}
+
+#[gpui_kit::test]
+fn search_finds_a_setting_by_other_words_and_opens_its_page_with_the_row_marked(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let fake = Arc::new(Fake::new());
+    let (mut visual, view) = open_settings(cx, &fake, None);
+    let search = visual.update(|_, cx| view.read(cx).search.clone());
+    type_into(&mut visual, &search, "tray");
+    assert_eq!(
+        role_of(&mut visual, "Quick search › Keep running in the tray"),
+        Some(Role::Button)
+    );
+    type_into(&mut visual, &search, "zzzz");
+    assert!(has(&mut visual, "No setting matches “zzzz”"));
+    type_into(&mut visual, &search, "dark mode");
+    click(&mut visual, "settings-found-0");
+    assert_eq!(view.read_with(&visual, |v, _| v.page()), Page::Appearance);
+    assert!(visual.update(|_, cx| search.read(cx).value().is_empty()), "the search is put away");
+    assert!(has(&mut visual, "Theme"));
+    // Enter opens the first one found.
+    type_into(&mut visual, &search, "start with");
+    visual.update(|window, cx| window.press("enter", cx));
+    visual.run_until_parked();
+    assert_eq!(view.read_with(&visual, |v, _| v.page()), Page::Quick);
+}
+
+#[gpui_kit::test]
+fn the_search_index_names_rows_that_are_drawn(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let fake = Arc::new(Fake::new());
+    let (mut visual, view) = open_settings(cx, &fake, None);
+    for entry in pages::SEARCH {
+        visual.update(|window, cx| view.update(cx, |v, cx| v.show_page(entry.page, window, cx)));
+        settle(&mut visual, |_| true);
+        assert!(
+            has(&mut visual, entry.label) || entry.label == entry.page.name().as_ref(),
+            "search names “{}” on {:?}, which doesn't draw it",
+            entry.label,
+            entry.page
+        );
+    }
 }
