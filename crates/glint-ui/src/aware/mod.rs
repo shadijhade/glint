@@ -37,7 +37,7 @@ pub const MOST_TO_LOOK_AT: usize = 200;
 const SELECTION_SETTLES: Duration = Duration::from_millis(150);
 /// How long the pointer rests on a row or a tile before what isn't known about its item is asked for: long
 /// enough that a pointer crossing the list asks nothing, short enough to be done before the click.
-pub const RESTS_FOR: Duration = Duration::from_millis(120);
+pub const RESTS_FOR: Duration = Duration::from_millis(60);
 /// Answers are applied at most once in this long: a frame.
 const FRAME: Duration = Duration::from_millis(16);
 /// "Changing now" goes away this long after the last change (ten seconds, and a little more).
@@ -186,9 +186,19 @@ impl Aware {
         self.look(entries, Lane::Quiet, cx);
     }
 
-    /// Something on screen shows these now: finds out what isn't known about them at once.
-    pub fn look_now(&mut self, entries: &[FileEntry], cx: &mut Context<Self>) {
-        self.look(entries, Lane::Now, cx);
+    /// Something on screen shows these now: finds out what isn't known about them at once. Says whether
+    /// anything was left to ask.
+    pub fn look_now(&mut self, entries: &[FileEntry], cx: &mut Context<Self>) -> bool {
+        self.look(entries, Lane::Now, cx)
+    }
+
+    /// Whether something asked about `entry` is still being found out (a look at it hasn't finished).
+    pub fn settling(&self, entry: &FileEntry) -> bool {
+        [&self.quiet, &self.now].into_iter().flatten().any(|run| {
+            !run.done.load(Ordering::SeqCst)
+                && !run.stop.load(Ordering::SeqCst)
+                && run.asked.iter().any(|(path, _)| path.eq_ignore_ascii_case(&entry.path))
+        })
     }
 
     /// What was being found out is no longer wanted (a menu closed): stops asking.
@@ -246,6 +256,22 @@ impl Aware {
         }
     }
 
+    /// Whether the run on `lane` is still going and was asked about one of `entries`.
+    fn finding_out(&self, lane: Lane, entries: &[FileEntry]) -> bool {
+        let run = match lane {
+            Lane::Quiet => &self.quiet,
+            Lane::Now => &self.now,
+        };
+        run.as_ref().is_some_and(|run| {
+            !run.done.load(Ordering::SeqCst)
+                && !run.stop.load(Ordering::SeqCst)
+                && entries
+                    .iter()
+                    .take(MOST_TO_LOOK_AT)
+                    .any(|entry| run.asked.iter().any(|(path, _)| path.eq_ignore_ascii_case(&entry.path)))
+        })
+    }
+
     /// The drives a look may ask about.
     fn roots(cx: &App) -> Option<Roots> {
         let explorer = explorer::try_explorer(cx)?;
@@ -258,7 +284,8 @@ impl Aware {
         ))
     }
 
-    fn look(&mut self, entries: &[FileEntry], lane: Lane, cx: &mut Context<Self>) {
+    /// Asks about what isn't known of `entries` on `lane`; whether there was anything to ask.
+    fn look(&mut self, entries: &[FileEntry], lane: Lane, cx: &mut Context<Self>) -> bool {
         let now = Instant::now();
         // What to ask is worked out before the last run of this lane is stopped, so a second look at what that
         // run is still finding out asks nothing; what it hadn't answered is let go of by the stop, and is asked
@@ -275,6 +302,12 @@ impl Aware {
                 }
             }
         }
+        // A look at what this lane is already finding out leaves that run alone: stopping it would throw away
+        // what it was about to answer (the pointer came back to the same row; a menu opened on the row it was
+        // resting on).
+        if planned.is_empty() && self.finding_out(lane, entries) {
+            return false;
+        }
         self.stop(lane);
         let mut asks = Vec::new();
         for (entry, want) in planned {
@@ -282,7 +315,7 @@ impl Aware {
             asks.push(Ask { path: entry.path.clone(), dir: entry.dir, size: entry.size, want });
         }
         if asks.is_empty() {
-            return;
+            return false;
         }
         let run = Run {
             stop: Arc::new(AtomicBool::new(false)),
@@ -322,6 +355,7 @@ impl Aware {
             done.store(true, Ordering::SeqCst);
         })
         .detach();
+        true
     }
 
     /// The selection of the active tab changed: look at it once it has stayed the same for a moment.

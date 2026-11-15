@@ -416,7 +416,7 @@ impl FileList {
             .flex_1()
             .min_w_0()
             .child(mark)
-            .tooltip(move |window, cx| tooltip(name_tip.clone(), window, cx));
+            .tooltip(move |window, cx| tooltip_under(name_tip.clone(), window, cx));
         name_cell = match self.rename.as_ref().filter(|_| renaming) {
             Some(rename) => name_cell.child(self.rename_input(rename, cx)),
             None => name_cell.child(div().min_w_0().truncate().child(isolate(entry.name.clone()))),
@@ -520,7 +520,7 @@ impl FileList {
                             .text_size(theme::size::XS)
                             .text_color(t.muted_foreground)
                             .child(isolate(place))
-                            .tooltip(move |window, cx| tooltip(full.clone(), window, cx)),
+                            .tooltip(move |window, cx| tooltip_under(full.clone(), window, cx)),
                     )
                 }
                 Track::Column { id, width } => fill.child(match id {
@@ -865,7 +865,7 @@ fn taken_cell(i: usize, width: Pixels, media: &MediaCells, t: &Tokens) -> AnyEle
     match media.taken_title.clone().filter(|_| !media.taken.is_empty()) {
         Some(title) => {
             let title: SharedString = title.into();
-            cell.tooltip(move |window, cx| tooltip(title.clone(), window, cx))
+            cell.tooltip(move |window, cx| tooltip_under(title.clone(), window, cx))
                 .test_support()
                 .into_any_element()
         }
@@ -888,7 +888,7 @@ fn said_cell(id: (&'static str, usize), width: Pixels, text: String, t: &Tokens)
     }
     let title: SharedString = text.clone().into();
     cell.child(isolate(text))
-        .tooltip(move |window, cx| tooltip(title.clone(), window, cx))
+        .tooltip(move |window, cx| tooltip_under(title.clone(), window, cx))
         .test_support()
         .into_any_element()
 }
@@ -916,7 +916,7 @@ fn date_cell(i: usize, width: Pixels, text: String, full: SharedString, hot: boo
             )
         })
         .child(div().min_w_0().truncate().child(text))
-        .tooltip(move |window, cx| tooltip(full.clone(), window, cx))
+        .tooltip(move |window, cx| tooltip_under(full.clone(), window, cx))
         .into_any_element()
 }
 

@@ -192,6 +192,35 @@ pub fn pieces(s: &Summary, deep: &Deep) -> Vec<Piece> {
     out
 }
 
+/// [`pieces`], starting at the selection when `brief` and something is selected: where the dock's end is tight,
+/// what is selected is said, and how much the folder holds is not.
+pub fn pieces_in(s: &Summary, deep: &Deep, brief: bool) -> Vec<Piece> {
+    let mut out = pieces(s, deep);
+    if brief && s.selected > 0 {
+        if let Some(Piece::Text(head)) = out.first_mut() {
+            let selected = t!("{count} selected", count = format_count(s.selected));
+            if let Some(from) = head.find(selected.as_ref()).and_then(|at| head.get(at..)) {
+                *head = from.to_string().into();
+            }
+        }
+    }
+    out
+}
+
+/// The pieces as one line.
+pub fn words(pieces: &[Piece]) -> SharedString {
+    pieces
+        .iter()
+        .map(|piece| match piece {
+            Piece::Text(text) => text.to_string(),
+            Piece::Size(bytes) => format_size(*bytes),
+            Piece::Inside(files) => inside_words(*files).to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join(" · ")
+        .into()
+}
+
 /// The dock's start words: [`counts`], with what `deep` knows.
 pub fn counts_deep(s: &Summary, deep: &Deep) -> SharedString {
     if *deep == Deep::default() {

@@ -43,10 +43,12 @@ pub fn matches(nodes: &[Node], query: &str) -> Vec<Found> {
     let mut found: Vec<Found> = kept
         .into_iter()
         .filter_map(|(entry, path)| {
-            let by_label = fuzzy_score(query, &entry.label, false).map(|score| score + 2.0);
+            // Letters close together only: a menu's rows are short, and letters scattered across one ("pass" in
+            // "In place (still opens normally)") are not what was meant.
+            let by_label = fuzzy_score(query, &entry.label, true).map(|score| score + 2.0);
             let by_path = path
                 .as_ref()
-                .and_then(|path| fuzzy_score(query, &format!("{path} {}", entry.label), false));
+                .and_then(|path| fuzzy_score(query, &format!("{path} {}", entry.label), true));
             let score = match (by_label, by_path) {
                 (Some(a), Some(b)) => a.max(b),
                 (a, b) => a.or(b)?,

@@ -534,3 +534,60 @@ fn without_aware_the_bar_says_what_it_says_today_and_has_no_chip(cx: &mut TestAp
     });
     assert_eq!(found, (true, false));
 }
+
+/// Puts the bar in the dock with `side` pixels at each end beside the island, as the window tells it.
+fn beside(win: &mut Win, side: f32) {
+    let bar = win.bar.clone();
+    win.visual.update(|_, cx| {
+        bar.read(cx).beside().set(side);
+        bar.update(cx, |_, cx| cx.notify());
+    });
+    win.visual.run_until_parked();
+}
+
+fn bounds(win: &mut Win, id: &'static str) -> Option<Bounds<Pixels>> {
+    win.visual.update(|window, cx| {
+        window.render_frame(cx);
+        window.try_find(id).map(|element| element.bounds())
+    })
+}
+
+#[gpui_kit::test]
+fn beside_the_island_the_words_fold_to_two_lines_then_to_none_and_the_chip_to_its_picture(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut win = window(cx);
+    go(&mut win, "C:\\a");
+    with_explorer(&mut win, |e, cx| e.select_only(Some("C:\\a\\one.txt"), cx));
+    for _ in 0..3 {
+        win.visual.update(|_, cx| core_bridge::emit(cx, CoreEvent::DirChanged("C:\\a".into())));
+    }
+    win.visual.run_until_parked();
+
+    // Wide ends: the whole sentence on one line, and the chip's words.
+    beside(&mut win, 400.);
+    assert!(has(&mut win, "3 items · 1 selected · 100 B"));
+    let one_line = bounds(&mut win, "status-counts").expect("the words").size.height;
+    let whole = bounds(&mut win, "status-insight").expect("the chip").size.width;
+
+    // Tight ends: the words start at the selection, on two lines no wider than the end; the chip says less.
+    beside(&mut win, 100.);
+    assert!(has(&mut win, "1 selected · 100 B"), "the words start at the selection");
+    let counts = bounds(&mut win, "status-counts").expect("the words");
+    assert!(counts.size.height > one_line, "two lines: {counts:?} over {one_line:?}");
+    assert!(counts.size.width <= px(100.), "{counts:?}");
+    let short = bounds(&mut win, "status-insight").expect("the chip").size.width;
+    assert!(short < whole, "fewer words: {short:?} < {whole:?}");
+    assert!(has(&mut win, "Changing now"), "a screen reader is told the same");
+
+    // Less still: the chip is its picture alone.
+    beside(&mut win, 60.);
+    let picture = bounds(&mut win, "status-insight").expect("the chip").size.width;
+    assert!(picture < short, "{picture:?} < {short:?}");
+    assert!(has(&mut win, "Changing now"));
+
+    // No room for a word: none is drawn, and the end is gone.
+    beside(&mut win, 40.);
+    let counts = bounds(&mut win, "status-counts");
+    assert!(counts.is_none_or(|counts| counts.size.width == px(0.)), "{counts:?}");
+    assert!(bounds(&mut win, "status-insight").is_none(), "no chip without room");
+}

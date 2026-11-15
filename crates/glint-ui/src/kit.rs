@@ -30,7 +30,7 @@ use gpui_kit::component::{h_flex, v_flex};
 pub mod prelude {
     pub use super::{
         align_row, back_icon, capacity_bar, col, drive_icon, forward_icon, free_of, icon, isolate, kind_icon,
-        known_icon, loading_sweep, row, row_start, space, tooltip, Logical, Placeholder,
+        known_icon, loading_sweep, row, row_start, space, tooltip, tooltip_under, Logical, Placeholder,
     };
     pub use super::{h_resizable, resizable_panel};
     pub use super::{
@@ -56,6 +56,25 @@ pub use gpui_kit::assets::IconName;
 /// Buttons take `.tooltip(text)` directly.
 pub fn tooltip(text: SharedString, window: &mut Window, cx: &mut App) -> gpui_kit::AnyView {
     gpui_kit::component::tooltip::Tooltip::new(text).build(window, cx)
+}
+
+/// The tooltip of something a menu opens over (a row of the list, a tile): [`tooltip`], and nothing while a menu
+/// is on screen or about to be. GPUI asks for a tooltip half a second after the pointer came to rest, and the
+/// pointer rests where the right-click was: without this the row's name opens over the menu's rows.
+pub fn tooltip_under(text: SharedString, window: &mut Window, cx: &mut App) -> gpui_kit::AnyView {
+    if crate::components::menus::showing(cx) {
+        return cx.new(|_| NoTooltip).into();
+    }
+    tooltip(text, window, cx)
+}
+
+/// A tooltip that draws nothing.
+struct NoTooltip;
+
+impl gpui_kit::Render for NoTooltip {
+    fn render(&mut self, _: &mut Window, _: &mut gpui_kit::Context<Self>) -> impl gpui_kit::IntoElement {
+        gpui_kit::div()
+    }
 }
 
 /// A known folder's icon, as the sidebar, This PC and the address bar draw it (`KNOWN_ICONS`).

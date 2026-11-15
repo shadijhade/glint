@@ -439,7 +439,7 @@ fn tile(frame: &Rc<Frame>, i: usize, entry: &FileEntry, cx: &App) -> impl IntoEl
                             .get(i)
                             .map(|entry| tooltip_text(&tip_frame, entry))
                             .unwrap_or_default();
-                        crate::kit::tooltip(text, window, cx)
+                        crate::kit::tooltip_under(text, window, cx)
                     })
                 })
                 // The picture comes toward the eye under the pointer, and gives under a press (not with Windows'
