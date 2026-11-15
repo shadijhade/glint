@@ -15,7 +15,7 @@ use std::rc::Rc;
 // ---- Reading a menu --------------------------------------------------------------------------------------
 
 /// A menu as one line per node: items by label, submenus as `label>`, the strip as `[a|b]`, a line as `-`.
-fn labels(nodes: &[Node]) -> Vec<String> {
+pub(super) fn labels(nodes: &[Node]) -> Vec<String> {
     nodes
         .iter()
         .map(|node| match node {
@@ -23,6 +23,7 @@ fn labels(nodes: &[Node]) -> Vec<String> {
             Node::Menu { label, .. } => format!("{label}>"),
             Node::Heading(h) => format!("# {h}"),
             Node::Separator => "-".into(),
+            Node::Head(head) => format!("<{}>", head.title),
             Node::Strip(entries) => format!(
                 "[{}]",
                 entries
@@ -36,7 +37,7 @@ fn labels(nodes: &[Node]) -> Vec<String> {
 }
 
 /// The row with this label, anywhere in the menu (the strip and submenus included).
-fn find<'a>(nodes: &'a [Node], label: &str) -> Option<&'a Entry> {
+pub(super) fn find<'a>(nodes: &'a [Node], label: &str) -> Option<&'a Entry> {
     nodes.iter().find_map(|node| match node {
         Node::Item(e) if e.label == label => Some(e),
         Node::Strip(entries) => entries.iter().find(|e| e.label == label),
@@ -46,7 +47,7 @@ fn find<'a>(nodes: &'a [Node], label: &str) -> Option<&'a Entry> {
 }
 
 /// The items of the submenu called `label`.
-fn submenu<'a>(nodes: &'a [Node], label: &str) -> &'a [Node] {
+pub(super) fn submenu<'a>(nodes: &'a [Node], label: &str) -> &'a [Node] {
     nodes
         .iter()
         .find_map(|node| match node {
@@ -57,7 +58,7 @@ fn submenu<'a>(nodes: &'a [Node], label: &str) -> &'a [Node] {
 }
 
 /// Asserts that `wanted` appear in `got` in that order (other lines may lie between).
-fn in_order(got: &[String], wanted: &[&str]) {
+pub(super) fn in_order(got: &[String], wanted: &[&str]) {
     let mut at = 0;
     for want in wanted {
         match got[at..].iter().position(|g| g == want) {
@@ -67,29 +68,29 @@ fn in_order(got: &[String], wanted: &[&str]) {
     }
 }
 
-fn text(name: &str) -> FileEntry {
+pub(super) fn text(name: &str) -> FileEntry {
     file("C:\\x", name, 100, 0)
 }
 
-fn with_attrs(mut entry: FileEntry, attrs: u32) -> FileEntry {
+pub(super) fn with_attrs(mut entry: FileEntry, attrs: u32) -> FileEntry {
     entry.attrs |= attrs;
     entry
 }
 
-fn english() -> std::sync::MutexGuard<'static, ()> {
+pub(super) fn english() -> std::sync::MutexGuard<'static, ()> {
     let guard = testing::lock();
     testing::set_rtl(false);
     guard
 }
 
-fn ctx() -> ItemCtx {
+pub(super) fn ctx() -> ItemCtx {
     ItemCtx {
         folder: "C:\\x".into(),
         ..ItemCtx::default()
     }
 }
 
-fn an_archive() -> glint_model::entries::InArchive {
+pub(super) fn an_archive() -> glint_model::entries::InArchive {
     glint_model::entries::InArchive {
         path: "C:\\x\\pack.zip".into(),
         outer: "C:\\x\\pack.zip".into(),
@@ -1025,7 +1026,7 @@ fn every_icon_the_menus_draw_is_in_the_embedded_assets() {
 
 /// The window: a list that has the keyboard and records the commands dispatched to it, and the host drawn
 /// after it.
-struct Shell {
+pub(super) struct Shell {
     menus: Entity<MenuHost>,
     list: FocusHandle,
     log: Rc<RefCell<Vec<&'static str>>>,
@@ -1074,16 +1075,16 @@ impl Render for Shell {
     }
 }
 
-struct Ui {
-    visual: VisualTestContext,
-    menus: Entity<MenuHost>,
-    explorer: Entity<explorer::Explorer>,
-    shell: Entity<Shell>,
-    log: Rc<RefCell<Vec<&'static str>>>,
-    events: Rc<RefCell<Vec<MenuEvent>>>,
+pub(super) struct Ui {
+    pub(super) visual: VisualTestContext,
+    pub(super) menus: Entity<MenuHost>,
+    pub(super) explorer: Entity<explorer::Explorer>,
+    pub(super) shell: Entity<Shell>,
+    pub(super) log: Rc<RefCell<Vec<&'static str>>>,
+    pub(super) events: Rc<RefCell<Vec<MenuEvent>>>,
 }
 
-fn disk() -> FakeDisk {
+pub(super) fn disk() -> FakeDisk {
     let disk = FakeDisk::new();
     disk.folder(
         "C:\\x",
@@ -1099,7 +1100,7 @@ fn disk() -> FakeDisk {
     disk
 }
 
-fn open(cx: &mut TestAppContext, disk: &FakeDisk, path: &str) -> Ui {
+pub(super) fn open(cx: &mut TestAppContext, disk: &FakeDisk, path: &str) -> Ui {
     cx.update(testing::init);
     cx.update(|cx| explorer::init_with(cx, disk.source()));
     let explorer = cx.update(|cx| explorer::explorer(cx));
@@ -1136,12 +1137,12 @@ fn open(cx: &mut TestAppContext, disk: &FakeDisk, path: &str) -> Ui {
 }
 
 impl Ui {
-    fn frame(&mut self) {
+    pub(super) fn frame(&mut self) {
         self.visual.run_until_parked();
         self.visual.update(|window, cx| window.render_frame(cx));
     }
 
-    fn select(&mut self, paths: &[&str]) {
+    pub(super) fn select(&mut self, paths: &[&str]) {
         let explorer = self.explorer.clone();
         self.visual.update(|_, cx| {
             explorer.update(cx, |e, cx| {
@@ -1154,7 +1155,7 @@ impl Ui {
     }
 
     /// Asks for the list's menu the way the list's event does.
-    fn open_menu(&mut self, target: Option<&str>, at: Option<Point<Pixels>>, shift: bool) {
+    pub(super) fn open_menu(&mut self, target: Option<&str>, at: Option<Point<Pixels>>, shift: bool) {
         let menus = self.menus.clone();
         self.visual.update(|window, cx| {
             menus.update(cx, |m, cx| m.open_list_menu(0, target, at, shift, window, cx));
@@ -1162,7 +1163,7 @@ impl Ui {
         self.frame();
     }
 
-    fn open_background(&mut self, at: Point<Pixels>) {
+    pub(super) fn open_background(&mut self, at: Point<Pixels>) {
         let menus = self.menus.clone();
         self.visual.update(|window, cx| {
             menus.update(cx, |m, cx| m.open_background_menu(0, Some(at), window, cx));
@@ -1170,7 +1171,7 @@ impl Ui {
         self.frame();
     }
 
-    fn open_folder(&mut self, path: &str, at: Point<Pixels>) {
+    pub(super) fn open_folder(&mut self, path: &str, at: Point<Pixels>) {
         let menus = self.menus.clone();
         self.visual.update(|window, cx| {
             menus.update(cx, |m, cx| m.open_folder_menu(path, at, window, cx));
@@ -1178,32 +1179,32 @@ impl Ui {
         self.frame();
     }
 
-    fn is_open(&mut self) -> bool {
+    pub(super) fn is_open(&mut self) -> bool {
         self.menus.read_with(&self.visual, |m, _| m.is_open())
     }
 
-    fn view(&mut self) -> Entity<MenuView> {
+    pub(super) fn view(&mut self) -> Entity<MenuView> {
         self.menus
             .read_with(&self.visual, |m, _| m.view().cloned())
             .expect("a menu is open")
     }
 
-    fn nodes(&mut self) -> Vec<Node> {
+    pub(super) fn nodes(&mut self) -> Vec<Node> {
         let view = self.view();
         view.read_with(&self.visual, |v, _| v.nodes().to_vec())
     }
 
-    fn selected(&mut self) -> Option<String> {
+    pub(super) fn selected(&mut self) -> Option<String> {
         let view = self.view();
         view.read_with(&self.visual, |v, _| v.selected_label().map(|s| s.to_string()))
     }
 
-    fn depth(&mut self) -> usize {
+    pub(super) fn depth(&mut self) -> usize {
         let view = self.view();
         view.read_with(&self.visual, |v, _| v.depth())
     }
 
-    fn press(&mut self, key: &str) {
+    pub(super) fn press(&mut self, key: &str) {
         self.visual.update(|window, cx| {
             window.render_frame(cx);
             window.press(key, cx);
@@ -1212,7 +1213,7 @@ impl Ui {
     }
 
     /// Clicks the row, submenu or strip button with this label.
-    fn click(&mut self, label: &str) {
+    pub(super) fn click(&mut self, label: &str) {
         let nodes = self.nodes();
         let id: ElementId = nodes
             .iter()
@@ -1234,12 +1235,12 @@ impl Ui {
         self.frame();
     }
 
-    fn logged(&self) -> Vec<&'static str> {
+    pub(super) fn logged(&self) -> Vec<&'static str> {
         self.log.borrow().clone()
     }
 
     /// What the window was asked to do (not the menu appearing and going).
-    fn events(&self) -> Vec<MenuEvent> {
+    pub(super) fn events(&self) -> Vec<MenuEvent> {
         self.events
             .borrow()
             .iter()
@@ -1249,7 +1250,7 @@ impl Ui {
     }
 
     /// Whether the menu covered the window after each change: true when shown, false when closed.
-    fn covers(&self) -> Vec<bool> {
+    pub(super) fn covers(&self) -> Vec<bool> {
         self.events
             .borrow()
             .iter()
@@ -1261,14 +1262,14 @@ impl Ui {
             .collect()
     }
 
-    fn menu_bounds(&mut self, name: &str) -> Bounds<Pixels> {
+    pub(super) fn menu_bounds(&mut self, name: &str) -> Bounds<Pixels> {
         self.visual.update(|window, cx| {
             window.render_frame(cx);
             window.find_by_label(name).bounds()
         })
     }
 
-    fn list_has_keyboard(&mut self) -> bool {
+    pub(super) fn list_has_keyboard(&mut self) -> bool {
         let shell = self.shell.clone();
         self.visual.update(|window, cx| {
             let list = shell.read(cx).list.clone();
@@ -1277,12 +1278,12 @@ impl Ui {
     }
 }
 
-fn at(x: f32, y: f32) -> Point<Pixels> {
+pub(super) fn at(x: f32, y: f32) -> Point<Pixels> {
     point(px(x), px(y))
 }
 
-const ALPHA: &str = "C:\\x\\alpha.txt";
-const DOCS: &str = "C:\\x\\docs";
+pub(super) const ALPHA: &str = "C:\\x\\alpha.txt";
+pub(super) const DOCS: &str = "C:\\x\\docs";
 
 #[gpui_kit::test]
 fn a_right_click_opens_the_item_menu_at_the_pointer_and_escape_closes_it(cx: &mut TestAppContext) {

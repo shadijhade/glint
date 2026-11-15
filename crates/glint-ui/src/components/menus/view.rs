@@ -602,6 +602,8 @@ impl Render for MenuView {
                     .child(isolate(text.clone()))
                     .into_any_element(),
                 Node::Strip(entries) => self.render_strip(i, entries, i + 1 == count, &t, cx),
+                // Card E1 of docs/gpui/aware draws the head.
+                Node::Head(_) => div().into_any_element(),
                 Node::Item(entry) => self.render_row(i, entry, &t, cx),
                 Node::Menu {
                     label, icon, disabled, ..

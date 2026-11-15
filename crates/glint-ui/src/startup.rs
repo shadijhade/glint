@@ -707,6 +707,8 @@ fn quit(cx: &mut App) {
 /// telling the person what it has to say.
 fn start_explorer(cx: &mut App) {
     explorer::init(cx);
+    // What Glint knows about what the pointer rests on and what is selected (docs/gpui/aware).
+    crate::aware::init(cx);
     let explorer = explorer::explorer(cx);
     // Where the known folders are: asked now, so the answer is there when the first folder needs it.
     explorer.update(cx, |explorer, _| explorer.read_ahead_for_start());

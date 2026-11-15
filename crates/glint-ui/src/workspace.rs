@@ -1254,7 +1254,98 @@ impl Workspace {
             // File Explorer's on-demand folders.
             MenuEvent::ShowOnDemand { id, name } => Self::explorer(cx, |e, cx| e.show_on_demand(id, name, cx).detach()),
             MenuEvent::HideOnDemand { id } => Self::explorer(cx, |e, cx| e.hide_on_demand(id, cx).detach()),
+            // What Glint knows (docs/gpui/aware).
+            MenuEvent::Unblock { paths } => Self::unblock(paths.clone(), window, cx),
+            MenuEvent::CopyTextIn { path } => Self::copy_text_in(path.clone(), window, cx),
+            MenuEvent::SendTo { paths, folder, moving } => Self::send_to(paths.clone(), folder.clone(), *moving, cx),
+            MenuEvent::ChooseSendTo { paths, moving } => Self::choose_send_to(paths.clone(), *moving, window, cx),
         }
+    }
+
+    /// "Unblock": takes Windows' "downloaded" mark off the files, and forgets what was known about them.
+    fn unblock(paths: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
+        cx.spawn_in(window, async move |_, cx| {
+            let mut failed = None;
+            for path in &paths {
+                let work = glint_core::xray::remove_ntfs_stream(path.clone(), "Zone.Identifier".to_string());
+                if let Err(reason) = core_bridge::run(work).await.and_then(|inner| inner) {
+                    failed = Some(reason);
+                }
+            }
+            let _ = cx.update(|window, cx| {
+                if let Some(aware) = crate::aware::try_shared(cx) {
+                    aware.update(cx, |aware, _| paths.iter().for_each(|path| aware.forget(path)));
+                }
+                let notice = match failed {
+                    Some(reason) => Notification::error(reason).title(t!("Couldn't unblock it")),
+                    None => Notification::success(t!("Unblocked")),
+                };
+                window.push_notification(notice, cx);
+            });
+        })
+        .detach();
+    }
+
+    /// "Copy the text in it": what Windows reads in the picture, on the clipboard.
+    fn copy_text_in(path: String, window: &mut Window, cx: &mut Context<Self>) {
+        cx.spawn_in(window, async move |_, cx| {
+            let lines = core_bridge::run(glint_core::ocr::ocr_text(path)).await.and_then(|inner| inner);
+            let _ = cx.update(|window, cx| {
+                let notice = match lines {
+                    Ok(lines) if lines.iter().any(|line| !line.trim().is_empty()) => {
+                        cx.write_to_clipboard(ClipboardItem::new_string(lines.join("\r\n")));
+                        Notification::success(t!("Copied the text in the picture"))
+                    }
+                    Ok(_) => Notification::info(t!("Windows found no text in the picture")),
+                    Err(reason) => Notification::error(reason).title(t!("Couldn't read the picture")),
+                };
+                window.push_notification(notice, cx);
+            });
+        })
+        .detach();
+    }
+
+    /// "Move or copy to": the items go to `folder`, and the place is counted for this kind of thing.
+    fn send_to(paths: Vec<String>, folder: String, moving: bool, cx: &mut Context<Self>) {
+        let kinds = Self::kinds_sent(&paths, cx);
+        crate::aware::note_place(cx, &kinds, &folder);
+        Self::explorer(cx, |e, cx| e.drop_files(paths, &folder, moving, cx).detach());
+    }
+
+    /// "Choose a folder…": asks where, then moves or copies there.
+    fn choose_send_to(paths: Vec<String>, moving: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let title = if moving { t!("Move to") } else { t!("Copy to") };
+        let options = pickers::Options::new().title(title.to_string()).owner(pickers::owner_of(window));
+        let picked = pickers::open_folder(options);
+        cx.spawn_in(window, async move |this, cx| {
+            if let Ok(Some(folder)) = picked.await {
+                let _ = this.update(cx, |_, cx| Self::send_to(paths, folder, moving, cx));
+            }
+        })
+        .detach();
+    }
+
+    /// The kinds of thing among `paths`, for counting where each goes: a file's extension, lower case, and ""
+    /// for a folder or a file with none. A path the panes don't show is taken for a file.
+    fn kinds_sent(paths: &[String], cx: &App) -> Vec<String> {
+        let explorer = explorer::explorer(cx);
+        let explorer = explorer.read(cx);
+        let mut kinds: Vec<String> = Vec::new();
+        for path in paths {
+            let shown = (0..2).filter_map(|pane| explorer.pane_tab(pane)).find_map(|tab| tab.rows.iter().find(|e| &e.path == path));
+            let kind = match shown {
+                Some(entry) if entry.dir => String::new(),
+                Some(entry) => entry.ext.clone(),
+                None => {
+                    let name = base_name(path);
+                    name.rfind('.').filter(|dot| *dot > 0).and_then(|dot| name.get(dot + 1..)).unwrap_or("").to_lowercase()
+                }
+            };
+            if !kinds.contains(&kind) {
+                kinds.push(kind);
+            }
+        }
+        kinds
     }
 
     fn on_queue_event(

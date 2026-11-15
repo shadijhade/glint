@@ -34,10 +34,16 @@
 //! first. GPUI has none, so the bar reads the window's width in rems instead: the same breakpoints, measured on the
 //! window rather than on the bar (the bar spans the window's full width).
 
+/// What the dock's end notices about the folder shown.
+pub mod chips;
 pub mod index;
+/// What the selection weighs and holds, in the dock's words.
+pub mod sentence;
 pub(crate) mod summary;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_aware;
 
 use crate::components::file_grid::thumbnail::{self, Thumbnails};
 use crate::components::git;

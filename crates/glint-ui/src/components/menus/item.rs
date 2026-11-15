@@ -50,6 +50,10 @@ pub struct ItemCtx {
     pub editor_name: String,
     /// The lists from [`MenuData`].
     pub data: MenuData,
+    /// What was found out about the one target (docs/gpui/aware): decides the rows that depend on it.
+    pub probed: Option<glint_model::aware::Probed>,
+    /// The folders this kind of thing has gone to before, heaviest first, for "Move or copy to".
+    pub places: Vec<glint_model::aware::Place>,
 }
 
 /// The menu for `targets` (never empty).
