@@ -62,7 +62,7 @@ Glint needs Windows 10 or 11, 64-bit, and nothing else: it draws its own window,
 
 ## What's new
 
-**0.13.0** (November 15, 2026) makes Glint pay attention. The right-click menu and the dock know what you picked, say what is true about it, and put the next step first.
+**0.13.0** (coming soon) makes Glint pay attention. The right-click menu and the dock know what you picked, say what is true about it, and put the next step first.
 
 <img src="screenshots/smart-menu.png" alt="The right-click menu of a downloaded program: its name, that it came from github.com and isn't signed, and under Suggested: Scan with Microsoft Defender, because it came from github.com, and Run in Windows Sandbox, because it isn't signed" width="100%">
 

@@ -367,12 +367,13 @@ const steps = {
     },
 };
 
-/** The README's "What's new" says the day this version came out: the day it was published, whatever was written before. */
+/** The README's "What's new" says the day this version came out: the day it was published, whatever was written before
+ * (a day, or "coming soon" while a release waited). */
 function stampReadme() {
     const published = ghJson("release", "view", tag, "--repo", SLUG, "--json", "publishedAt").publishedAt;
     const day = new Date(published).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
     const text = read("README.md");
-    const dated = text.replace(new RegExp(`(\\*\\*${version.replace(/\./g, "\\.")}\\*\\* \\()[A-Z][a-z]+ \\d{1,2}, \\d{4}(\\))`), `$1${day}$2`);
+    const dated = text.replace(new RegExp(`(\\*\\*${version.replace(/\./g, "\\.")}\\*\\* \\()(?:[A-Z][a-z]+ \\d{1,2}, \\d{4}|coming soon)(\\))`), `$1${day}$2`);
     if (dated === text || git("status", "--porcelain", "README.md")) return;
     writeFileSync(join(root, "README.md"), dated);
     git("add", "README.md");
