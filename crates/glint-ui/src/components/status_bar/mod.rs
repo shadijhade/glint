@@ -47,14 +47,17 @@ mod tests_aware;
 
 use crate::components::file_grid::thumbnail::{self, Thumbnails};
 use crate::components::git;
+use crate::components::viz;
 use crate::explorer::{self, Explorer};
 use crate::kit::prelude::*;
 use crate::{i18n, t, theme};
+use glint_model::entries::FileEntry;
+use glint_model::format::format_size;
 use index::{Index, IndexModel, Source, Volume};
 use std::cell::Cell;
 use std::rc::Rc;
 use summary::{
-    chip_active, chip_title, counts, drives, items, segment_title, stages, thumbs_line, thumbs_stage, thumbs_title,
+    chip_active, chip_title, drives, items, segment_title, stages, thumbs_line, thumbs_stage, thumbs_title,
     Category, Stage, Summary, Thumbs, Work,
 };
 
@@ -68,6 +71,41 @@ const EXTRA_LARGE: f32 = 36.;
 /// How many kinds the popover lists as chips (the TypeScript's top six).
 const CHIPS: usize = 6;
 
+pub use chips::Insight;
+
+/// What the bar tells the window.
+#[derive(Clone, Debug, PartialEq)]
+pub enum StatusBarEvent {
+    /// The chip at the dock's end was pressed: the window shows what it points at (Recent changes for
+    /// `Changing`, Disk usage for `NearlyFull`).
+    Insight(Insight),
+}
+
+/// The last two values of a number that rolls to its new value: where the roll starts, and where it is going.
+#[derive(Clone, Copy, Debug, Default)]
+struct Rolled {
+    to: Option<u64>,
+    from: u64,
+}
+
+/// Where the size and the files inside roll from and to, when each is known.
+type Rolls = (Option<(u64, u64)>, Option<(u64, u64)>);
+
+impl Rolled {
+    /// The number drawn now is `to`: a new one rolls from the one drawn before; none at all forgets the roll.
+    fn step(&mut self, to: Option<u64>) -> Option<(u64, u64)> {
+        let Some(value) = to else {
+            *self = Rolled::default();
+            return None;
+        };
+        if self.to != Some(value) {
+            self.from = self.to.unwrap_or(value);
+            self.to = Some(value);
+        }
+        Some((self.from, value))
+    }
+}
+
 /// The status bar: a GPUI entity the workspace places at the bottom of the window.
 pub struct StatusBar {
     explorer: Entity<Explorer>,
@@ -75,6 +113,17 @@ pub struct StatusBar {
     /// The index's last answer, copied from the model when it changes (so a frame doesn't clone it).
     index_info: Option<Index>,
     summary: Summary,
+    /// The selected entries, while there are between one and `sentence::MOST` of them: what the dock's words look
+    /// into. Empty otherwise (a big selection costs the bar nothing).
+    selected: Vec<FileEntry>,
+    /// The folder shown, when the dock's end may say something about it (empty on This PC, in a search's results,
+    /// in an archive, on a remote…).
+    folder: String,
+    /// The weight of the selection and the files inside it, as last drawn: where their next roll starts.
+    rolled_size: Rolled,
+    rolled_inside: Rolled,
+    /// The chip at the dock's end is a tab stop.
+    insight_focus: FocusHandle,
     /// The selection's counts, kept from one change of the explorer to the next.
     counted: summary::SelectedCount,
     /// The explorer changed since the summary was made.
@@ -96,6 +145,8 @@ pub struct StatusBar {
     beside: Rc<Cell<f32>>,
     _subscriptions: Vec<Subscription>,
 }
+
+impl EventEmitter<StatusBarEvent> for StatusBar {}
 
 impl StatusBar {
     /// Where the window says how wide each end of the bar may be, in pixels, while the commands' island sits
@@ -142,11 +193,20 @@ impl StatusBar {
         if let Some(model) = git::try_shared(cx) {
             subscriptions.push(cx.observe(&model, |_: &mut Self, _, cx| cx.notify()));
         }
+        // What Aware found out about the selection, and the folder's changes: the words and the chip follow.
+        if let Some(aware) = crate::aware::try_shared(cx) {
+            subscriptions.push(cx.observe(&aware, |_: &mut Self, _, cx| cx.notify()));
+        }
         StatusBar {
             explorer,
             index: model,
             index_info: None,
             summary: Summary::default(),
+            selected: Vec::new(),
+            folder: String::new(),
+            rolled_size: Rolled::default(),
+            rolled_inside: Rolled::default(),
+            insight_focus: cx.focus_handle().tab_stop(true),
             counted: summary::SelectedCount::default(),
             dirty: true,
             details_open: false,
@@ -172,6 +232,23 @@ impl StatusBar {
         if summary.tab != self.summary.tab {
             self.details_open = false;
         }
+        // The entries the words look into, and the folder the chip may speak of.
+        (self.selected, self.folder) = match self.explorer.read(cx).active_tab() {
+            Some(tab) => {
+                let chosen = if (1..=sentence::MOST).contains(&summary.selected) {
+                    tab.rows.chosen(&tab.selection).into_iter().cloned().collect()
+                } else {
+                    Vec::new()
+                };
+                let folder = if summary.writable && summary.has_listing && !summary.this_pc && summary.find.is_none() {
+                    tab.path.clone()
+                } else {
+                    String::new()
+                };
+                (chosen, folder)
+            }
+            None => (Vec::new(), String::new()),
+        };
         self.summary = summary;
         self.dirty = false;
     }
@@ -434,10 +511,15 @@ impl Render for StatusBar {
             Wide::of(window)
         };
         let thumbs = self.thumbs_here(cx);
+        // What is known about the selection, and the numbers' rolls from what was drawn before.
+        let deep = self.deep(cx);
+        let size_roll = self.rolled_size.step(deep.bytes);
+        let inside_roll = self.rolled_inside.step(deep.inside);
+        let insight = self.insight(cx);
         let s = &self.summary;
 
-        let left = self.left(s, wide, &t, cx);
-        let right = self.right(s, wide, thumbs.as_ref(), &t, cx);
+        let left = self.left(s, &deep, (size_roll, inside_roll), wide, &t, cx);
+        let right = self.right(s, insight, wide, thumbs.as_ref(), &t, cx);
         // An end never runs under the island: it is cut at its own room. The start's words are at the bar's
         // start edge, the end's against its end edge, whatever is between them.
         let left = div()
@@ -482,10 +564,53 @@ impl Render for StatusBar {
 }
 
 impl StatusBar {
-    /// The counts on the left (`shown`, hidden, selected and the selection's size), and Copy paths when several
-    /// are selected and the window is wide.
-    fn left(&self, s: &Summary, wide: Wide, t: &theme::Tokens, cx: &mut Context<Self>) -> impl IntoElement {
-        let text: SharedString = if s.this_pc { drives(s.drives) } else { counts(s) };
+    /// What is known about the selected entries, from what Aware has found out (nothing without it). Looks up at
+    /// most `sentence::MOST` entries, in memory.
+    fn deep(&self, cx: &App) -> sentence::Deep {
+        let Some(aware) = crate::aware::try_shared(cx) else {
+            return sentence::Deep::default();
+        };
+        let aware = aware.read(cx);
+        sentence::deep(&self.selected, &|entry| aware.probed(entry).cloned())
+    }
+
+    /// What the dock's end has to say about the folder shown, if anything.
+    fn insight(&self, cx: &App) -> Option<Insight> {
+        let aware = crate::aware::try_shared(cx)?.read(cx);
+        let folder = self.folder.as_str();
+        chips::insight(
+            folder,
+            aware.changing(folder),
+            aware.pulse(folder),
+            self.explorer.read(cx).drives(),
+        )
+    }
+
+    /// The counts on the left (`shown`, hidden, selected and the selection's size, with what is known of what
+    /// is inside it), and Copy paths when several are selected and the window is wide. `rolls` are where the
+    /// size and the files inside roll from, once they are known.
+    fn left(
+        &self,
+        s: &Summary,
+        deep: &sentence::Deep,
+        rolls: Rolls,
+        wide: Wide,
+        t: &theme::Tokens,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let text: SharedString = if s.this_pc {
+            drives(s.drives)
+        } else {
+            sentence::counts_deep(s, deep)
+        };
+        // Numbers still growing, or just changed, are drawn rolling: a row of pieces. Else it is one text.
+        let moved = |roll: Option<(u64, u64)>| roll.is_some_and(|(from, to)| from != to);
+        let rolling = !s.this_pc && deep.bytes.is_some() && (!deep.done || moved(rolls.0) || moved(rolls.1));
+        let words: AnyElement = if rolling {
+            self.rolling_words(s, deep, rolls, cx)
+        } else {
+            div().child(text.clone()).into_any_element()
+        };
         // An archive's items, a remote's, a closed folder's and the Recycle Bin's aren't files to look into or
         // rename here.
         let writable = s.writable && !s.this_pc;
@@ -559,7 +684,7 @@ impl StatusBar {
                     .role(Role::Status)
                     .aria_label(text.clone())
                     .test_support()
-                    .child(text),
+                    .child(words),
             )
             .children(xray)
             .children(rename)
@@ -572,6 +697,7 @@ impl StatusBar {
     fn right(
         &self,
         s: &Summary,
+        insight: Option<Insight>,
         wide: Wide,
         thumbs: Option<&Thumbs>,
         t: &theme::Tokens,
@@ -619,6 +745,10 @@ impl StatusBar {
                 .into_any_element()
         };
 
+        // What is happening to the folder, before the work line, where there is room for it.
+        let chip = insight
+            .filter(|_| wide.large && !s.this_pc && s.find.is_none())
+            .map(|insight| self.insight_chip(insight, t, cx));
         Some(
             row_start()
                 .flex_1()
@@ -626,10 +756,99 @@ impl StatusBar {
                 .overflow_hidden()
                 .justify_end()
                 .items_center()
+                .gap(space(1.5))
                 .whitespace_nowrap()
+                .children(chip)
                 .child(content)
                 .into_any_element(),
         )
+    }
+
+    /// The selection's words as pieces, the size and the files inside rolling to their new numbers.
+    fn rolling_words(
+        &self,
+        s: &Summary,
+        deep: &sentence::Deep,
+        rolls: Rolls,
+        cx: &App,
+    ) -> AnyElement {
+        let mut row = row_start().items_center().gap(space(1.));
+        for (i, piece) in sentence::pieces(s, deep).into_iter().enumerate() {
+            if i > 0 {
+                row = row.child(div().child("·"));
+            }
+            row = row.child(match piece {
+                sentence::Piece::Text(text) => div().child(text).into_any_element(),
+                sentence::Piece::Size(bytes) => {
+                    match rolls.0.filter(|(_, to)| *to == bytes && deep.bytes == Some(bytes)) {
+                        Some((from, to)) => viz::roll("status-size", from, to, |value| format_size(value).into(), cx),
+                        None => div().child(format_size(bytes)).into_any_element(),
+                    }
+                }
+                sentence::Piece::Inside(files) => match rolls.1.filter(|(_, to)| *to == files) {
+                    Some((from, to)) => viz::roll("status-inside", from, to, sentence::inside_words, cx),
+                    None => div().child(sentence::inside_words(files)).into_any_element(),
+                },
+            });
+        }
+        row.into_any_element()
+    }
+
+    /// The pill at the dock's end that says what is happening to the folder, or that its drive is nearly full.
+    /// Pressing it (or Enter or Space on it) tells the window.
+    fn insight_chip(&self, insight: Insight, t: &theme::Tokens, cx: &mut Context<Self>) -> AnyElement {
+        let (words, tip, color, fill, hover, mark) = match &insight {
+            Insight::Changing(pulse) => (
+                t!("Changing now"),
+                t!("Files in this folder are changing. Press to see what."),
+                t.foreground,
+                t.accent,
+                t.pressed,
+                viz::spark(pulse, t.primary).flex_none().into_any_element(),
+            ),
+            Insight::NearlyFull(drive) => (
+                t!("{drive} is nearly full", drive = drive),
+                t!("See what takes the space"),
+                t.warning,
+                t.warning.opacity(0.13),
+                t.warning.opacity(0.22),
+                icon(IconName::HardDrive).size_3().flex_none().into_any_element(),
+            ),
+        };
+        let pressed = insight.clone();
+        let keyed = insight;
+        div()
+            .id("status-insight")
+            .role(Role::Button)
+            .aria_label(words.clone())
+            .test_support()
+            .track_focus(&self.insight_focus)
+            .focus(|style| style.bg(t.ring))
+            .flex_none()
+            .h(px(22.))
+            .px(space(2.5))
+            .rounded_full()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(space(1.5))
+            .text_size(theme::size::XXS)
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(color)
+            .bg(fill)
+            .hover(move |style| style.bg(hover))
+            .cursor_pointer()
+            .tooltip(move |window, cx| crate::kit::tooltip(tip.clone(), window, cx))
+            .on_click(cx.listener(move |_, _, _, cx| cx.emit(StatusBarEvent::Insight(pressed.clone()))))
+            .on_key_down(cx.listener(move |_, event: &KeyDownEvent, _, cx| {
+                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                    cx.emit(StatusBarEvent::Insight(keyed.clone()));
+                    cx.stop_propagation();
+                }
+            }))
+            .child(mark)
+            .child(words)
+            .into_any_element()
     }
 
     /// How the active tab's disk usage map was made ("index · mapped 12 GB in 3.2 ms"), while the tab shows it.

@@ -88,15 +88,17 @@ pub use kinds::on_disk;
 pub use spec::{key_text, visible_items, Badge, Command, Entry, Head, HeadPicture, Node, Run, Task, Tone};
 pub use view::{MenuView, MenuViewEvent};
 
+use crate::components::git;
 use crate::core_bridge::{self, Core};
 use crate::explorer::{try_explorer, NavOptions};
 use crate::kit::prelude::*;
-use crate::{i18n, persistence, state, t};
+use crate::{aware, i18n, persistence, state, t};
 use glint_core::host::Manager as _;
-use glint_model::entries::FileEntry;
+use glint_model::aware::{Facts, Pick, Probed, Shape};
+use glint_model::entries::{FileEntry, GitMark};
 use glint_model::paths::{base_name, is_folder_path, is_remote_path, is_root, remote_id_of};
 use gpui_kit::{anchored, deferred, Anchor};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// How long the lists read from glint-core are reused: a menu opened sooner doesn't read them again.
 const FRESH_FOR: Duration = Duration::from_secs(10);
@@ -114,7 +116,23 @@ struct Open {
     pane: usize,
     /// What had the keyboard: the file list, so a chosen command is dispatched to it and the keys return to it.
     focus: Option<FocusHandle>,
+    /// What the items are (what choosing is counted under).
+    shape: Shape,
+    /// The items it is for (none for a folder's menu): the head follows what is found out about the one.
+    targets: Vec<FileEntry>,
     _subscription: Subscription,
+    /// Hears Aware's answers while the menu is open.
+    _aware: Option<Subscription>,
+}
+
+/// A menu ready to be shown.
+struct Shown {
+    nodes: Vec<Node>,
+    at: Point<Pixels>,
+    pane: usize,
+    label: SharedString,
+    shape: Shape,
+    targets: Vec<FileEntry>,
 }
 
 /// The window's menu host, kept where the commands' island can ask it what it would suggest.
@@ -173,10 +191,125 @@ impl MenuHost {
     }
 
     /// The rows Suggested would hold for the selection of `pane`, best first, at most `most`. None for no
-    /// selection, or one of more than 200 items. Card E4 of docs/gpui/aware fills this in.
+    /// selection, or one of more than 200 items.
     pub fn suggestions(&self, pane: usize, most: usize, cx: &App) -> Vec<Suggested> {
-        let _ = (pane, most, cx);
-        Vec::new()
+        let chosen = self.chosen(pane, None, cx);
+        if chosen.is_empty() || chosen.len() > aware::MOST_TO_LOOK_AT {
+            return Vec::new();
+        }
+        let probed = Self::probed_of(&chosen, cx);
+        let mut ctx = self.item_ctx(pane, cx);
+        ctx.probed = probed.clone();
+        let nodes = item_menu(&chosen, &ctx);
+        let facts = aware::facts(cx, &chosen);
+        Self::picks(&nodes, &facts, probed.as_ref(), most, cx)
+            .into_iter()
+            .filter_map(|pick| {
+                let mut entry = smart::row_for(&nodes, &pick.key)?;
+                entry.reason = smart::reason(&pick.why, facts.shape);
+                Some(Suggested {
+                    entry,
+                    key: pick.key,
+                    shape: facts.shape,
+                })
+            })
+            .collect()
+    }
+
+    /// What is known about the one item, if there is one and Aware has it.
+    fn probed_of(chosen: &[FileEntry], cx: &App) -> Option<Probed> {
+        let [entry] = chosen else { return None };
+        aware::try_shared(cx)?.read(cx).probed(entry).cloned()
+    }
+
+    /// The rows to put forward for `facts`: copies of rows `nodes` holds.
+    fn picks(nodes: &[Node], facts: &Facts, probed: Option<&Probed>, most: usize, cx: &App) -> Vec<Pick> {
+        let keys = smart::keys(nodes);
+        let available: Vec<&str> = keys.iter().map(String::as_str).collect();
+        aware::suggest(cx, facts, probed, &available, most)
+    }
+
+    /// `nodes` with their head and Suggested, when the app has its Aware entity and the menu is more than a row or
+    /// two; as they were otherwise.
+    fn dressed(
+        nodes: Vec<Node>,
+        head: impl FnOnce() -> Head,
+        facts: &Facts,
+        probed: Option<&Probed>,
+        cx: &App,
+    ) -> Vec<Node> {
+        if aware::try_shared(cx).is_none() || nodes.len() < 4 {
+            return nodes;
+        }
+        let picks = Self::picks(&nodes, facts, probed, 3, cx);
+        smart::dress(nodes, head(), &picks, facts.shape, Vec::new())
+    }
+
+    /// What the head needs besides the items and the answers: the time, and Git's word for the one item.
+    fn extras(one: Option<&FileEntry>, cx: &App) -> head::Extras {
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis());
+        let git_word = one.and_then(|entry| match git::mark_of(cx, &entry.path) {
+            Some(GitMark::Untracked) => Some(t!("New")),
+            _ if git::has_changes_view(cx, entry) => Some(t!("Changed")),
+            _ => None,
+        });
+        head::Extras {
+            now: i64::try_from(now).unwrap_or(i64::MAX),
+            git: git_word,
+        }
+    }
+
+    /// The item menu for `chosen`, dressed, and what they are.
+    fn item_nodes(chosen: &[FileEntry], ctx: &mut ItemCtx, cx: &mut Context<Self>) -> (Vec<Node>, Shape) {
+        // With one item on screen, what isn't known about it is asked for at once; what is, is used now.
+        let probed = Self::probed_of(chosen, cx);
+        if let (Some(aware), [entry]) = (aware::try_shared(cx), chosen) {
+            aware.update(cx, |aware, cx| aware.look_now(std::slice::from_ref(entry), cx));
+        }
+        ctx.probed = probed.clone();
+        let nodes = item_menu(chosen, ctx);
+        let facts = aware::facts(cx, chosen);
+        let one = match chosen {
+            [only] => Some(only),
+            _ => None,
+        };
+        let head = || head::head_of(chosen, probed.as_ref(), &Self::extras(one, cx));
+        (Self::dressed(nodes, head, &facts, probed.as_ref(), cx), facts.shape)
+    }
+
+    /// The folder's own menu, dressed: its name, how many items it shows and its branch in the head.
+    fn folder_nodes(
+        nodes: Vec<Node>,
+        title: SharedString,
+        items: Option<usize>,
+        branch: Option<SharedString>,
+        cx: &App,
+    ) -> (Vec<Node>, Shape) {
+        let facts = aware::facts(cx, &[]);
+        let head = || head::folder_head(title, items, branch);
+        (Self::dressed(nodes, head, &facts, None, cx), facts.shape)
+    }
+
+    /// A folder's name as the tabs say it, in the language shown.
+    fn folder_title(folder: &str, cx: &App) -> SharedString {
+        let name = try_explorer(cx).map_or_else(|| base_name(folder).to_string(), |e| e.read(cx).tab_name(folder));
+        glint_model::i18n::t(i18n::language(), &name, &[]).into_owned().into()
+    }
+
+    /// The menu closed: what was being found out for it is no longer wanted.
+    fn rest_aware(cx: &mut Context<Self>) {
+        if let Some(aware) = aware::try_shared(cx) {
+            aware.update(cx, |aware, _| aware.rest());
+        }
+    }
+
+    /// Aware found out something: if the menu is for one item, its head says it (nothing else moves).
+    fn follow_answers(&mut self, cx: &mut Context<Self>) {
+        let Some(open) = &self.open else { return };
+        let [entry] = open.targets.as_slice() else { return };
+        let probed = Self::probed_of(&open.targets, cx);
+        let head = head::head_of(&open.targets, probed.as_ref(), &Self::extras(Some(entry), cx));
+        open.view.update(cx, |view, cx| view.set_head(head, cx));
     }
 
     /// Whether a menu is on screen.
@@ -202,6 +335,7 @@ impl MenuHost {
     /// Closes the menu without choosing anything.
     pub fn close(&mut self, cx: &mut Context<Self>) {
         if self.open.take().is_some() {
+            Self::rest_aware(cx);
             cx.emit(MenuEvent::Closed);
             cx.notify();
         }
@@ -279,8 +413,20 @@ impl MenuHost {
         }
         let mut ctx = self.item_ctx(pane, cx);
         ctx.data.read_tags(cx, chosen.iter().map(|e| e.path.as_str()));
-        let nodes = item_menu(&chosen, &ctx);
-        self.show(nodes, at, pane, t!("Item menu"), window, cx);
+        let (nodes, shape) = Self::item_nodes(&chosen, &mut ctx, cx);
+        let label = t!("Item menu");
+        self.show(
+            Shown {
+                nodes,
+                at,
+                pane,
+                label,
+                shape,
+                targets: chosen,
+            },
+            window,
+            cx,
+        );
     }
 
     /// The item menu for `entries` as they are, at `at`: items the tab's rows don't hold, such as the disk usage
@@ -298,8 +444,20 @@ impl MenuHost {
         }
         let mut ctx = self.item_ctx(pane, cx);
         ctx.data.read_tags(cx, entries.iter().map(|e| e.path.as_str()));
-        let nodes = item_menu(&entries, &ctx);
-        self.show(nodes, at, pane, t!("Item menu"), window, cx);
+        let (nodes, shape) = Self::item_nodes(&entries, &mut ctx, cx);
+        let label = t!("Item menu");
+        self.show(
+            Shown {
+                nodes,
+                at,
+                pane,
+                label,
+                shape,
+                targets: entries,
+            },
+            window,
+            cx,
+        );
     }
 
     /// The folder's own menu: right-click on the empty part of the list, the grid, or a folder with nothing
@@ -313,7 +471,7 @@ impl MenuHost {
     ) {
         let at = Self::anchor(at, window);
         let Some(explorer) = try_explorer(cx) else { return };
-        let (folder, view) = {
+        let (folder, view, title, rows, tab_id) = {
             let ex = explorer.read(cx);
             let Some(tab) = ex.pane_tab(pane) else { return };
             let restore_shown = (tab.is_recycle_bin() && !tab.rows.is_empty()).then(|| {
@@ -337,12 +495,29 @@ impl MenuHost {
                     tab: Some(tab.id),
                     restore_shown,
                 },
+                Self::folder_title(&tab.path, cx),
+                tab.rows.len(),
+                tab.id,
             )
         };
         let mut ctx = self.folder_ctx(&folder, cx);
         ctx.view = Some(view);
         let nodes = folder_menu(&folder, true, &ctx);
-        self.show(nodes, at, pane, t!("Folder menu"), window, cx);
+        let branch = git::view_of(cx, tab_id).and_then(|view| view.branch.clone()).map(SharedString::from);
+        let (nodes, shape) = Self::folder_nodes(nodes, title, Some(rows), branch, cx);
+        let label = t!("Folder menu");
+        self.show(
+            Shown {
+                nodes,
+                at,
+                pane,
+                label,
+                shape,
+                targets: Vec::new(),
+            },
+            window,
+            cx,
+        );
     }
 
     /// The menu of a folder that isn't the one shown: a tile of This PC, a place in the sidebar
@@ -351,7 +526,20 @@ impl MenuHost {
         let pane = try_explorer(cx).map_or(0, |e| e.read(cx).active_pane());
         let ctx = self.folder_ctx(folder, cx);
         let nodes = folder_menu(folder, false, &ctx);
-        self.show(nodes, at, pane, t!("Folder menu"), window, cx);
+        let (nodes, shape) = Self::folder_nodes(nodes, Self::folder_title(folder, cx), None, None, cx);
+        let label = t!("Folder menu");
+        self.show(
+            Shown {
+                nodes,
+                at,
+                pane,
+                label,
+                shape,
+                targets: Vec::new(),
+            },
+            window,
+            cx,
+        );
     }
 
     /// Windows' own menu for `paths` (all in one folder) at `at` in the window: File Explorer's "Show more
@@ -512,15 +700,15 @@ impl MenuHost {
     }
 
     /// Shows `nodes` at `at`, taking the keyboard.
-    fn show(
-        &mut self,
-        nodes: Vec<Node>,
-        at: Point<Pixels>,
-        pane: usize,
-        label: SharedString,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn show(&mut self, shown: Shown, window: &mut Window, cx: &mut Context<Self>) {
+        let Shown {
+            nodes,
+            at,
+            pane,
+            label,
+            shape,
+            targets,
+        } = shown;
         if nodes.is_empty() {
             self.close(cx);
             return;
@@ -532,12 +720,17 @@ impl MenuHost {
         let subscription = cx.subscribe_in(&view, window, |this, _, event: &MenuViewEvent, window, cx| {
             this.on_view(event.clone(), window, cx);
         });
+        // What is found out while the menu is open goes into its head, and nowhere else.
+        let watch = aware::try_shared(cx).map(|aware| cx.observe(&aware, |this, _, cx| this.follow_answers(cx)));
         self.open = Some(Open {
             view,
             at,
             pane,
             focus,
+            shape,
+            targets,
             _subscription: subscription,
+            _aware: watch,
         });
         cx.emit(MenuEvent::Shown);
         cx.notify();
@@ -545,10 +738,14 @@ impl MenuHost {
 
     fn on_view(&mut self, event: MenuViewEvent, window: &mut Window, cx: &mut Context<Self>) {
         let Some(open) = self.open.take() else { return };
+        Self::rest_aware(cx);
         cx.emit(MenuEvent::Closed);
         cx.notify();
         match event {
             MenuViewEvent::Chose(run) => {
+                if let Some(key) = run.key() {
+                    aware::note_action(cx, open.shape, &key);
+                }
                 if let Some(focus) = &open.focus {
                     focus.focus(window, cx);
                 }
