@@ -564,7 +564,7 @@ pub static TOOLS: &[Tool] = &[
             "19ce3551153c2fe7ee9fa2f95208310c8f4d3209fedb699e0333faf8913f6736",
             "typst-x86_64-pc-windows-msvc/typst.exe",
         ),
-        used_for: "PDFs from Convert document without LaTeX or Word, and .typ files' previews and Export as PDF",
+        used_for: "Convert document's PDFs: what pandoc writes, typeset without LaTeX or Word",
     },
     Tool {
         id: "restic",
