@@ -442,7 +442,17 @@ fn tile(frame: &Rc<Frame>, i: usize, entry: &FileEntry, cx: &App) -> impl IntoEl
                         crate::kit::tooltip(text, window, cx)
                     })
                 })
-                .child(square)
+                // The picture comes toward the eye under the pointer, and gives under a press (not with Windows'
+                // animation effects off: it would jump).
+                .child(
+                    square
+                        .id(("file-grid-picture", i))
+                        .when(!cx.reduce_motion(), |picture| {
+                            picture
+                                .group_hover(TILE_GROUP, |style| style.paint_scale(theme::motion::LIFT))
+                                .group_active(TILE_GROUP, |style| style.paint_scale(theme::motion::PRESS))
+                        }),
+                )
                 .child(label)
                 .child({
                     let under = div()

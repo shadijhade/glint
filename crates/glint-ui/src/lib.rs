@@ -34,6 +34,8 @@ mod perf;
 pub mod persistence;
 pub mod platform;
 mod selftest;
+/// A pane's view, flown into and out of: opening a folder zooms into it.
+pub mod stage;
 mod startup;
 pub mod state;
 pub mod theme;

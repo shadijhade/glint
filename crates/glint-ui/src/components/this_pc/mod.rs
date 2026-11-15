@@ -159,6 +159,9 @@ pub struct ThisPc {
     _subscriptions: Vec<Subscription>,
 }
 
+/// The hover group of a folder tile: its picture lifts while the pointer is on the tile.
+const FOLDER_GROUP: &str = "this-pc-folder";
+
 impl ThisPc {
     /// This PC for `pane`. It reads the drives and the health the explorer and the drive health model already
     /// hold, and asks the drives for their health if the reading is stale (the TypeScript's `useDriveHealth`).
@@ -268,6 +271,17 @@ impl ThisPc {
         } else {
             self.drives.get(index - known).map(|d| &d.focus)
         }
+    }
+
+    /// Where the tile of the folder or drive at `path` was painted last, if it has one: where a flight into it
+    /// begins and one out of it ends ([`crate::stage`]).
+    pub fn spot_of(&self, path: &str) -> Option<Bounds<Pixels>> {
+        use glint_model::paths::same_path;
+        if let Some(index) = self.known.iter().position(|tile| same_path(&tile.path, path)) {
+            return self.folder_bounds.borrow().get(index).copied();
+        }
+        let index = self.drives.iter().position(|tile| same_path(&tile.path, path))?;
+        self.drive_bounds.borrow().get(index).copied()
     }
 
     /// The path a tile opens, by its index (folders first).
@@ -637,7 +651,19 @@ impl ThisPc {
                     })
                 }),
             )
-            .child(glyph)
+            // The folder's picture comes toward the eye under the pointer, and gives under a press.
+            .group(FOLDER_GROUP)
+            .child(
+                div()
+                    .id(("this-pc-folder-picture", index))
+                    .flex_none()
+                    .when(!cx.reduce_motion(), |picture| {
+                        picture
+                            .group_hover(FOLDER_GROUP, |style| style.paint_scale(theme::motion::LIFT))
+                            .group_active(FOLDER_GROUP, |style| style.paint_scale(theme::motion::PRESS))
+                    })
+                    .child(glyph),
+            )
             .child(
                 div()
                     .min_w_0()
@@ -768,6 +794,7 @@ impl ThisPc {
             .text_color(muted_fg)
             .child(tile.subtitle.clone());
 
+        let lift_group = group.clone();
         div()
             .id(("this-pc-drive", index))
             .group(group)
@@ -820,7 +847,17 @@ impl ThisPc {
                     })
                 }),
             )
-            .child(glyph)
+            .child(
+                div()
+                    .id(("this-pc-drive-picture", index))
+                    .flex_none()
+                    .when(!cx.reduce_motion(), |picture| {
+                        picture
+                            .group_hover(lift_group.clone(), |style| style.paint_scale(theme::motion::LIFT))
+                            .group_active(lift_group, |style| style.paint_scale(theme::motion::PRESS))
+                    })
+                    .child(glyph),
+            )
             .child(
                 col()
                     .flex_1()

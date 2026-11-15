@@ -46,7 +46,7 @@ use crate::components::{palette, settings};
 use crate::explorer::{self, ExplorerEvent};
 use crate::kit::prelude::*;
 use crate::platform::{dragdrop, pickers, secondary};
-use crate::{actions, core_bridge, dialogs, notices, state, t, theme};
+use crate::{actions, core_bridge, dialogs, notices, stage, state, t, theme};
 use glint_core::host::Manager as _;
 use glint_model::entries::FileEntry;
 use glint_model::format::plural;
@@ -54,6 +54,7 @@ use glint_model::paths::{base_name, same_path};
 use glint_model::store::ViewMode;
 use gpui_kit::component::menu::DropdownMenu as _;
 use std::ops::Range;
+use std::rc::Rc;
 
 /// The label glint-core knows the main window by.
 pub const MAIN: &str = "main";
@@ -81,6 +82,29 @@ struct Light {
     from: Option<f32>,
     /// Counts the turns, so each one's fade is its own animation.
     turn: usize,
+}
+
+/// What a pane showed at the last frame: when it changes, the pane's stage flies from the one to the other.
+#[derive(Clone, Debug, PartialEq)]
+struct Showing {
+    tab: explorer::TabId,
+    /// The folder or the search (`Tab::view_key`), and the folder's path.
+    key: String,
+    path: String,
+    find: bool,
+    shown: Option<Shown>,
+    /// Whether the tab had anything to show yet (a tab still opening its first folder has not).
+    ready: bool,
+}
+
+/// A pane's stage (`crate::stage`): what the pane showed last, and the cue for where it went from there.
+#[derive(Default)]
+struct Staged {
+    /// What the stage itself keeps between frames.
+    hand: stage::Stagehand,
+    showing: Option<Showing>,
+    cue: Option<stage::Cue>,
+    cues: u64,
 }
 
 /// What a pane can show: one of each, kept for the window's life so each keeps its scroll and its state.
@@ -160,6 +184,10 @@ pub struct Workspace {
     readmes_found: [ReadmeFound; 2],
     /// What each pane showed at the last look, so a grid going out of sight lets its thumbnails go.
     shown: [Option<Shown>; 2],
+    /// Each pane's stage: what it showed at the last frame and the flight from there.
+    stages: [Staged; 2],
+    /// How many flights into folders and out of them there have been: the light swells with each.
+    flights: usize,
     /// Files dragged over the window from File Explorer and other apps arrive here, as long as it lives
     /// (dropping it takes the window's drop target away). None in tests, which have no Windows window.
     _drop_target: Option<dragdrop::DropTarget>,
@@ -318,6 +346,8 @@ impl Workspace {
             readmes: [None, None],
             readmes_found: [None, None],
             shown: [None, None],
+            stages: Default::default(),
+            flights: 0,
             _drop_target: Self::take_drops(window, cx),
             _subscriptions: subscriptions,
         };
@@ -346,6 +376,18 @@ impl Workspace {
             bars: cx.new(|cx| PaneBars::new(pane, window, cx)),
             head: cx.new(|cx| PaneHead::new(pane, window, cx)),
         };
+        // Where the pane draws an item, for what opens out of one (Quick Look).
+        let (list, grid, page) = (views.list.clone(), views.grid.clone(), views.this_pc.clone());
+        stage::set_spotter(
+            cx,
+            pane,
+            Rc::new(move |path, window, cx| match Self::shown_in(pane, cx) {
+                Some(Shown::List | Shown::Columns) => list.read(cx).spot_of(path, window),
+                Some(Shown::Grid) => grid.read(cx).spot_of(path),
+                Some(Shown::ThisPc) => page.read(cx).spot_of(path),
+                _ => None,
+            }),
+        );
         let mut subscriptions = Vec::new();
         subscriptions.push(cx.subscribe_in(&views.list, window, move |this, _, event, window, cx| {
             this.on_list_event(pane, event, window, cx)
@@ -970,6 +1012,7 @@ impl Workspace {
             FileListEvent::SearchSubfolders { query } => {
                 Self::explorer(cx, |e, cx| e.run_find(query, explorer::Wider::default(), cx).detach())
             }
+            FileListEvent::Limit { inward } => self.bump(pane, *inward, window, cx),
         }
     }
 
@@ -1007,6 +1050,7 @@ impl Workspace {
                 }
             }
             FileGridEvent::OpenMany { paths } => Self::open_many(paths.clone(), window, cx),
+            FileGridEvent::Limit { inward } => self.bump(pane, *inward, window, cx),
         }
     }
 
@@ -1531,7 +1575,21 @@ impl Workspace {
                 )),
             None => layer().child(picture(hue)),
         };
-        lights.opacity(if window.is_window_active() { 1. } else { 0.5 })
+        // The light is behind the files and moves with them, less and later: it swells as a pane flies into a
+        // folder or out of one and settles after the files have (never smaller than the window: it has no edges).
+        let lights = lights.opacity(if window.is_window_active() { 1. } else { 0.5 });
+        if self.flights == 0 {
+            // Nothing has flown yet: the light is at rest (and the window's first frames are not an animation).
+            return lights.into_any_element();
+        }
+        let swell = theme::motion::LIGHT_SWELL;
+        layer()
+            .child(lights.with_animation(
+                ("light-swell", self.flights),
+                Animation::new(theme::motion::DIVE * 3 / 2),
+                move |lights, delta| lights.paint_scale(1. + swell * (delta * std::f32::consts::PI).sin().max(0.)),
+            ))
+            .into_any_element()
     }
 
     /// Glint's mark (the folder with the glint on its corner) at the start of the bar: the installer's logo, drawn
@@ -1623,6 +1681,119 @@ impl Workspace {
         )
     }
 
+    /// What pane `pane` shows, as its stage tells one view from the next.
+    fn showing(pane: usize, cx: &App) -> Option<Showing> {
+        let shown = Self::shown_in(pane, cx)?;
+        let tab = explorer::explorer(cx).read(cx).pane_tab(pane)?;
+        Some(Showing {
+            tab: tab.id,
+            key: tab.view_key(),
+            path: tab.path.clone(),
+            find: tab.find.is_some(),
+            shown: Some(shown),
+            ready: tab.ready,
+        })
+    }
+
+    /// Each pane that shows something else than at the last frame gets its stage's cue: into a folder, out of
+    /// one, or over to somewhere else. Called at the start of a frame, before the views have drawn the new place:
+    /// they still know where they drew the old one's rows.
+    fn cue_stages(&mut self, window: &Window, cx: &App) {
+        for pane in 0..2 {
+            let now = Self::showing(pane, cx);
+            let before = std::mem::replace(&mut self.stages[pane].showing, now.clone());
+            let (Some(before), Some(now)) = (before, now) else {
+                continue;
+            };
+            // Nothing flies from a tab that had nothing to show yet (the window's first folder simply appears).
+            if before == now || !before.ready {
+                continue;
+            }
+            if let Some(plan) = self.plan(pane, &before, &now, window, cx) {
+                self.cue(pane, plan);
+            }
+        }
+    }
+
+    /// Pane `pane`'s stage flies `plan`.
+    fn cue(&mut self, pane: usize, plan: stage::Plan) {
+        crate::perf::say(|| format!("cue pane={pane} plan={}", plan.name()));
+        // The window's light swells with a flight into a folder or out of one.
+        if matches!(plan, stage::Plan::Dive(_) | stage::Plan::Rise(_)) {
+            self.flights += 1;
+        }
+        let staged = &mut self.stages[pane];
+        staged.cues += 1;
+        staged.cue = Some(stage::Cue {
+            serial: staged.cues,
+            plan,
+        });
+    }
+
+    /// [`Self::bump`], for the self-test's tour of how panes move.
+    pub(crate) fn nudge(&mut self, pane: usize, inward: bool, window: &Window, cx: &mut Context<Self>) {
+        self.bump(pane, inward, window, cx);
+    }
+
+    /// The zoom has nowhere to go in pane `pane`: its view gives a little about the pointer and comes back.
+    fn bump(&mut self, pane: usize, inward: bool, window: &Window, cx: &mut Context<Self>) {
+        self.cue(
+            pane,
+            stage::Plan::Bump {
+                inward,
+                pivot: Some(window.mouse_position()),
+            },
+        );
+        cx.notify();
+    }
+
+    /// How pane `pane`'s view gives way, going from what it showed to what it shows now.
+    fn plan(&self, pane: usize, before: &Showing, now: &Showing, window: &Window, cx: &App) -> Option<stage::Plan> {
+        use stage::Plan;
+        let views = self.panes[pane].as_ref()?;
+        if before.tab != now.tab {
+            return Some(Plan::Swap);
+        }
+        if before.key != now.key {
+            if before.find || now.find {
+                return Some(Plan::Swap);
+            }
+            // Into a folder the old view showed (or one inside it): from its row or tile.
+            if let Some(step) = stage::step_toward(&before.path, &now.path) {
+                let spot = match before.shown {
+                    Some(Shown::List | Shown::Columns) => views.list.read(cx).spot_of(&step, window),
+                    Some(Shown::Grid) => views.grid.read(cx).spot_of(&step),
+                    // This PC has a tile for the folder itself (Documents) or for its drive.
+                    Some(Shown::ThisPc) => {
+                        let page = views.this_pc.read(cx);
+                        page.spot_of(&now.path).or_else(|| page.spot_of(&step))
+                    }
+                    _ => None,
+                };
+                return Some(Plan::Dive(spot));
+            }
+            // Out to a folder above: onto the row or tile of the one left, once the new view has placed it.
+            if let Some(step) = stage::step_toward(&now.path, &before.path) {
+                let (list, grid, page) = (views.list.clone(), views.grid.clone(), views.this_pc.clone());
+                let (shown, left) = (now.shown, before.path.clone());
+                let spot: stage::Spot = Rc::new(move |window, cx| match shown {
+                    Some(Shown::List | Shown::Columns) => list.read(cx).spot_of(&step, window),
+                    Some(Shown::Grid) => grid.read(cx).spot_of(&step),
+                    Some(Shown::ThisPc) => {
+                        let page = page.read(cx);
+                        page.spot_of(&left).or_else(|| page.spot_of(&step))
+                    }
+                    _ => None,
+                });
+                return Some(Plan::Rise(Some(spot)));
+            }
+            return Some(Plan::Swap);
+        }
+        // The same place seen another way (the list for the grid, the map). The tiles' sizes are the grid's own
+        // to zoom between.
+        (before.shown != now.shown).then_some(Plan::Swap)
+    }
+
     /// Pane `pane`: the view its tab asks for, and the zone a dragged tab can be dropped on.
     fn pane(&self, pane: usize, cx: &App) -> AnyElement {
         let Some(views) = &self.panes[pane] else {
@@ -1684,6 +1855,8 @@ impl Workspace {
             .child(div().flex_none().child(views.bars.clone()))
             .child(div().flex_none().child(views.compare.clone()))
             .child(div().flex_1().min_h_0().child(view));
+        // On its stage: going into a folder, out of one, or anywhere else flies there.
+        let view = stage::stage(&self.stages[pane].hand, self.stages[pane].cue.clone(), view);
         div()
             .id(("pane", pane))
             .relative()
@@ -1911,6 +2084,7 @@ struct ArchivePropertiesToast;
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let _span = crate::perf::span("workspace");
+        self.cue_stages(window, cx);
         let t = theme::tokens(cx).clone();
         // The window is chrome all over (over Mica, the material with a veil); the sheet lies on it.
         let fill = theme::window_fill(cx);
@@ -2092,7 +2266,17 @@ impl Render for Workspace {
                         .child(self.bar_end(cx))
                 })
             })
-            .child(div().flex_1().min_h_0().child(self.body(&t, cx)))
+            // The window's content stands back while a dialog, the palette or Quick Look is over it.
+            .child({
+                let behind = window.has_active_dialog(cx);
+                div().flex_1().min_h_0().child(self.body(&t, cx)).with_spring(
+                    "workspace-depth",
+                    gpui_kit::SpringAnimation::new(theme::motion::DEPTH_SPRING)
+                        .to(if behind { theme::motion::RECEDE } else { 1. })
+                        .with_epsilon(0.0005),
+                    |body, scale: f32| body.paint_scale(scale),
+                )
+            })
             // Over everything: the copy queue, then any open menu above it.
             .child(self.queue.clone())
             .child(self.menus.clone())
@@ -2393,6 +2577,50 @@ mod tests {
             window.try_find("pane-head-title").is_some()
         });
         assert!(!found, "This PC has its own headings");
+    }
+
+    #[gpui_kit::test]
+    fn a_pane_is_cued_into_a_folder_out_of_it_and_over_to_somewhere_else(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let (mut visual, workspace) = open_workspace_on(cx, false, |disk| {
+            disk.folder("D:\\Else", Vec::new());
+        });
+        // The pane's last cue, once a frame has been drawn of what the explorer holds now.
+        let cue = |visual: &mut VisualTestContext| {
+            visual.run_until_parked();
+            visual.update(|window, cx| {
+                window.render_frame(cx);
+                let cue = workspace.read(cx).stages[0].cue.as_ref();
+                cue.map_or((0, "none"), |cue| (cue.serial, cue.plan.name()))
+            })
+        };
+        let go = |visual: &mut VisualTestContext, path: &str| {
+            let path = path.to_string();
+            visual.update(|_, cx| Workspace::explorer(cx, |e, cx| e.navigate(path, Default::default(), cx)));
+        };
+        let (start, _) = cue(&mut visual);
+        // Into a folder whose row the list drew: from the row.
+        go(&mut visual, "C:\\Work\\src");
+        assert_eq!(cue(&mut visual), (start + 1, "dive"));
+        // The same frame again cues nothing more.
+        assert_eq!(cue(&mut visual), (start + 1, "dive"));
+        // Up: out, onto the row of the folder left.
+        visual.update(|_, cx| Workspace::explorer(cx, |e, cx| e.go_up(cx).detach()));
+        assert_eq!(cue(&mut visual), (start + 2, "rise"));
+        // Somewhere that is neither in the folder nor above it: over to it.
+        go(&mut visual, "D:\\Else");
+        assert_eq!(cue(&mut visual), (start + 3, "swap"));
+        // Into a folder two steps down, whose own row was never on screen: from the row of the step toward it.
+        go(&mut visual, "C:\\Work");
+        assert_eq!(cue(&mut visual), (start + 4, "swap"));
+        go(&mut visual, &format!("C:\\Work\\src\\{DEEP}"));
+        assert_eq!(cue(&mut visual), (start + 5, "dive"));
+        // The same place seen another way gives way where it is.
+        visual.update(|_, cx| Workspace::choose_view(ViewMode::Grid, cx));
+        assert_eq!(cue(&mut visual), (start + 6, "swap"));
+        // The zoom with nowhere to go: the view gives.
+        visual.update(|window, cx| workspace.update(cx, |workspace, cx| workspace.bump(0, true, window, cx)));
+        assert_eq!(cue(&mut visual), (start + 7, "bump"));
     }
 
     #[test]

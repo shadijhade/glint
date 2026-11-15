@@ -213,6 +213,8 @@ pub(crate) struct DialogProps {
     pub(crate) overlay_visible: bool,
     keyboard: bool,
     entrance: DialogEntrance,
+    /// Glint: what the dialog opens out of, in window pixels (see [`Dialog::opens_from`]).
+    opens_from: Option<gpui::Bounds<Pixels>>,
 }
 
 impl Default for DialogProps {
@@ -228,6 +230,7 @@ impl Default for DialogProps {
             close_button: true,
             overlay_closable: true,
             entrance: DialogEntrance::default(),
+            opens_from: None,
         }
     }
 }
@@ -551,6 +554,15 @@ impl Dialog {
         self
     }
 
+    /// Glint: the dialog opens out of `bounds` (window pixels: the row, tile or button it is about) and
+    /// goes back into them when it closes: with [`DialogEntrance::FadeSlide`] its surface is drawn as
+    /// small as `bounds` and on them at first, and grows to where it rests. Paint only: the dialog is laid
+    /// out where it rests from its first frame.
+    pub fn opens_from(mut self, bounds: gpui::Bounds<Pixels>) -> Self {
+        self.props.opens_from = Some(bounds);
+        self
+    }
+
     /// How long the exit transition runs; `Duration::ZERO` closes in one frame.
     ///
     /// Mirrors the entrance: [`DialogEntrance::None`], reduced motion, and a
@@ -674,6 +686,7 @@ impl RenderOnce for Dialog {
         };
         let y = y + layer_offset;
         let entrance = self.props.entrance;
+        let opens_from = self.props.opens_from;
         let motion = cx.theme().motion_tokens();
         let closing = self.motion.is_some_and(|motion| motion.closing);
         let visibility = self
@@ -901,6 +914,7 @@ impl RenderOnce for Dialog {
                                                     window_paddings.top + margin,
                                                 );
                                                 surface.progress = visibility;
+                                                surface.from = opens_from;
                                                 surface.into_any_element()
                                             } else {
                                                 surface.into_any_element()

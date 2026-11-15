@@ -2448,8 +2448,13 @@ impl Interactivity {
 
                             let scroll_offset =
                                 self.clamp_scroll_position(bounds, &style, window, cx);
-                            let result = window.with_element_opacity(style.opacity, |window| {
-                                f(&style, scroll_offset, hitbox, window, cx)
+                            // Glint: the paint transform is told here too, so a cached view
+                            // inside knows what it will be painted under.
+                            let zoom = style.paint_zoom.map(|zoom| zoom.resolve(bounds));
+                            let result = window.with_paint_transform(zoom, |window| {
+                                window.with_element_opacity(style.opacity, |window| {
+                                    f(&style, scroll_offset, hitbox, window, cx)
+                                })
                             });
                             (result, element_state)
                         },
@@ -2597,6 +2602,9 @@ impl Interactivity {
                     tab_group = self.tab_index;
                 }
 
+                // Glint: the element and all it holds, drawn larger, smaller or moved (`paint_zoom`).
+                let zoom = style.paint_zoom.map(|zoom| zoom.resolve(bounds));
+                window.with_paint_transform(zoom, |window| {
                 window.with_element_opacity(style.opacity, |window| {
                     style.paint(bounds, window, cx, |window: &mut Window, cx: &mut App| {
                         window.with_text_style(style.text_style().cloned(), |window| {
@@ -2687,6 +2695,7 @@ impl Interactivity {
                             );
                         });
                     });
+                });
                 });
 
                 ((), element_state)
@@ -3899,6 +3908,13 @@ fn refine_by(
     if rest.opacity != full.opacity {
         let (from, to) = (rest.opacity.unwrap_or(1.), full.opacity.unwrap_or(1.));
         style.opacity = Some(from + (to - from) * amount);
+    }
+    if rest.paint_zoom != full.paint_zoom {
+        let (from, to) = (
+            rest.paint_zoom.unwrap_or_default(),
+            full.paint_zoom.unwrap_or_default(),
+        );
+        style.paint_zoom = Some(from.mix(&to, amount));
     }
 }
 
