@@ -404,6 +404,17 @@ Why this order: wave 1 has no card that reads another's code (the model, the eng
 4. `tests\e2e\run.ps1` (the person quits their own Glint first): 18 of 18 as before, plus the new check `smart-menu` (a zip in the arena: its menu has "Suggested" with "Extract here"; typing "ren" and Enter opens the rename box).
 5. Docs: STANDARDS.md §5.1 gains "Aware" (rules R1 to R9 in the repository's words), VENDOR.md is untouched (nothing in `vendor/` changes), `docs/features.md`, `NEXT_RELEASE.md` and the README's "What's new".
 
+## 9.1 What the real app taught (after wave 4)
+
+Found by driving the built app on a scratch profile, in both themes, from 900 to 1650 px wide; each is in the code and held by a test.
+
+- **A right-click the instant the pointer arrives found nothing known**, so the menu had no Suggested. The menu for one item now waits a breath (40 ms, `LOOK_FIRST`) when something about it is still being found out, and the row under the pointer is looked at after 60 ms of rest (`RESTS_FOR`, was 120).
+- **A second look stopped the first.** `Aware::look` stopped a lane's run even when the second look asked for nothing new; it now leaves a run alone when it is already finding out what is asked for.
+- **Suggested rows from a shelf read "Inspect & check › Scan with Microsoft Defender".** A row lifted from a shelf ("Inspect & check", "Clean up & share") has no prefix; one from a real submenu keeps it.
+- **The dock was cut, not folded**, at the window's usual width: "1 sel", "shown in 3", arrows cut off the folded Tools and View buttons, and the next step folded away first. See STANDARDS, "The dock folds, it is never cut"; the island's side room went from 13 to 10 rem since the words need less.
+- **The row's tooltip opened over the menu.** `kit::tooltip_under`.
+- **The menu jumped while typing** (fewer rows, a shorter menu, re-fitted to the window). It keeps the height it had at rest.
+
 ## 10. Left out, on purpose
 
 - **A custom shader in the vendored GPUI.** The ring is a stroked path with a two-stop gradient whose angle turns: no renderer change to carry forward.

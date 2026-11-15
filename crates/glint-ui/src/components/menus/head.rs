@@ -66,6 +66,14 @@ fn changed(entry: &FileEntry, extras: &Extras) -> Option<SharedString> {
         return None;
     }
     let when = format_date(entry.modified, Some(extras.now), i18n::language());
+    // "Changed today 9:52 PM": the day's word starts a line of its own in a list, and not here.
+    let when = match when.chars().next() {
+        Some(first) if when.starts_with("Today") || when.starts_with("Yesterday") => {
+            let rest = when.get(first.len_utf8()..).unwrap_or("");
+            format!("{}{rest}", first.to_lowercase())
+        }
+        _ => when,
+    };
     (!when.is_empty()).then(|| t!("Changed {when}", when = when))
 }
 

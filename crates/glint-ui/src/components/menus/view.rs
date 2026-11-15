@@ -137,6 +137,9 @@ pub struct MenuView {
     moves: usize,
     /// Which way the last move went: 1 into a submenu (the rows arrive from the end edge), -1 back, 0 none yet.
     slide: i8,
+    /// How tall the menu was drawn when nothing was typed: it keeps that height while typing, so the few rows
+    /// found don't make it jump to another place in the window.
+    rest_height: std::rc::Rc<std::cell::Cell<f32>>,
 }
 
 impl MenuView {
@@ -154,6 +157,7 @@ impl MenuView {
             found_at: 0,
             moves: 0,
             slide: 0,
+            rest_height: Default::default(),
         }
     }
 
@@ -988,6 +992,18 @@ impl Render for MenuView {
             }
         }
         let typing = !self.query.is_empty();
+        // At rest the menu's height is noted as it is painted; while typing it is kept.
+        let noted = self.rest_height.clone();
+        let note_height = (!typing).then(|| {
+            canvas(
+                |_, _, _| (),
+                // The layer is inside the menu's hairline: a pixel at the top and one at the bottom.
+                move |bounds: Bounds<Pixels>, _, _, _| noted.set(f32::from(bounds.size.height) + 2.),
+            )
+            .absolute()
+            .inset_0()
+        });
+        let kept_height = typing.then(|| self.rest_height.get()).filter(|height| *height > 0.);
         self.cur = self.levels.last().and_then(Level::stop);
         let no_nodes: Vec<Node> = Vec::new();
         let (title, nodes) = match self.levels.last() {
@@ -1163,9 +1179,11 @@ impl Render for MenuView {
             .text_color(t.popover_foreground)
             .shadow(theme::elevation::floating(cx))
             .text_start()
+            .when_some(kept_height, |menu, height| menu.min_h(px(height)))
             .children(head)
             .children(filter)
             .child(rows)
+            .children(note_height)
             .with_animation(
                 "menu-enter",
                 Animation::new(theme::motion::FAST).with_easing(theme::motion::enter),

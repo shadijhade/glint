@@ -722,6 +722,33 @@ fn word(
     }
 }
 
+/// A button that opens a menu. With its word it is a [`word`] with the kit's arrow at its end. Folded to its
+/// picture, the kit would size it as a square and cut the arrow off: the picture and a small arrow are its
+/// content instead, and the button is as wide as the two.
+fn menu_word(
+    cx: &App,
+    t: &Tokens,
+    id: &'static str,
+    picture: IconName,
+    label: SharedString,
+    shown: bool,
+    tip: SharedString,
+) -> Button {
+    if shown {
+        return word(cx, t, id, picture, label, true, tip, None).dropdown_caret(true);
+    }
+    ghost(cx, t, id, false, true)
+        .accessibility_label(label)
+        .tooltip(tip)
+        .child(
+            row_start()
+                .items_center()
+                .gap(space(0.5))
+                .child(icon(picture).size_4())
+                .child(icon(IconName::ChevronDown).size_3().opacity(0.6)),
+        )
+}
+
 /// The little arrow beside a button that opens a menu.
 fn arrow(cx: &App, t: &Tokens, id: &'static str, name: SharedString) -> Button {
     ghost(cx, t, id, false, false)
@@ -924,7 +951,7 @@ impl CommandBar {
             group = group.child(
                 self.anchored(
                     "tools",
-                    word(
+                    menu_word(
                         cx,
                         t,
                         "tools",
@@ -932,9 +959,7 @@ impl CommandBar {
                         t!("Tools"),
                         labels,
                         t!("Tools: Terminal, File X-Ray, what's locking, recent changes, duplicate files"),
-                        None,
                     )
-                    .dropdown_caret(true)
                     .on_click(cx.listener(|this, _, window, cx| this.show_tools(window, cx))),
                 ),
             );
@@ -943,7 +968,7 @@ impl CommandBar {
             group = group.child(
                 self.anchored(
                     "tasks",
-                    word(
+                    menu_word(
                         cx,
                         t,
                         "run",
@@ -951,9 +976,7 @@ impl CommandBar {
                         t!("Run"),
                         labels,
                         t!("Run: this project's scripts, recipes and commands, in the terminal under the files"),
-                        None,
                     )
-                    .dropdown_caret(true)
                     .on_click(cx.listener(|this, _, window, cx| this.show_tasks(window, cx))),
                 ),
             );
@@ -1093,7 +1116,10 @@ impl CommandBar {
                 .on_click(cx.listener(|this, _, window, cx| this.dispatch(Box::new(actions::Delete), window, cx))),
             );
         match &self.step {
-            Some(step) if fold < 3 => group.child(divider(t)).child(self.step_button(step, fold, t, cx)),
+            // The next step is what the island is for while something is selected: it keeps its word while
+            // every other button has lost its own, is a picture alone at the fifth fold, and goes only when
+            // the edits themselves go into their menu.
+            Some(step) if fold < MOST => group.child(divider(t)).child(self.step_button(step, fold, t, cx)),
             _ => group,
         }
     }
@@ -1107,7 +1133,7 @@ impl CommandBar {
         let name = keyed("Paste ({0})", &[&actions::Paste]);
         let on_click = cx.listener(|this, _, window, cx| this.dispatch(Box::new(actions::Paste), window, cx));
         match smart::paste_words(&self.clip) {
-            Some(words) if !off && fold < 2 => {
+            Some(words) if !off && fold < 5 => {
                 let keys = keys_of(&actions::Paste).unwrap_or_default();
                 let button = word(
                     cx,
@@ -1154,7 +1180,7 @@ impl CommandBar {
             .icon(icon(icon_name).text_color(t.primary))
             .accessibility_label(entry.label.clone())
             .tooltip(tip)
-            .when(fold < 1, |button| button.label(entry.label.clone()))
+            .when(fold < 5, |button| button.label(entry.label.clone()))
             .on_click(cx.listener(move |this, _, window, cx| {
                 aware::note_action(cx, shape, &key);
                 match run.clone() {
@@ -1408,19 +1434,14 @@ impl CommandBar {
             group = group.child(
                 self.anchored(
                     "view",
-                    ghost(cx, t, "view-menu", false, true)
-                        .icon(IconName::SlidersHorizontal)
-                        .dropdown_caret(true)
-                        .accessibility_label(if fold >= 5 {
+                    {
+                        let name = if fold >= 5 {
                             t!("View: list or grid, hidden items, preview pane, dual pane, compare panes")
                         } else {
                             t!("View: hidden items, preview pane, dual pane, compare panes")
-                        })
-                        .tooltip(if fold >= 5 {
-                            t!("View: list or grid, hidden items, preview pane, dual pane, compare panes")
-                        } else {
-                            t!("View: hidden items, preview pane, dual pane, compare panes")
-                        })
+                        };
+                        menu_word(cx, t, "view-menu", IconName::SlidersHorizontal, name.clone(), false, name)
+                    }
                         .on_click(cx.listener(|this, _, window, cx| this.show_view(window, cx))),
                 ),
             );

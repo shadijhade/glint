@@ -215,20 +215,26 @@ fn looking_ahead_again_stops_the_quiet_run_but_not_the_one_for_now_and_rest_stop
 }
 
 #[gpui_kit::test]
-fn what_a_stopped_run_never_answered_is_asked_again_by_the_look_after_next(cx: &mut TestAppContext) {
+fn a_second_look_at_what_is_being_found_out_leaves_it_alone_and_a_look_elsewhere_ends_it(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let fake = Fake::new();
     let world = world(cx, &fake, &empty_disk(), "C:\\x");
     let entry = a_file("a.bin");
     look_ahead(cx, &world, std::slice::from_ref(&entry));
-    // The pointer comes back to the same row before anything was answered: the first run is stopped, and the
-    // second look asks nothing (it is worked out before the stop).
+    // The pointer comes back to the same row before anything was answered: its run goes on.
     look_ahead(cx, &world, std::slice::from_ref(&entry));
     assert_eq!(fake.asked(), 1);
+    assert!(!fake.stopped(0), "what is being found out is not thrown away");
+    assert!(world.aware.read_with(cx, |aware, _| aware.settling(&entry)));
+    // It moves on to another row: the first run is ended, and the new row is asked about.
+    look_ahead(cx, &world, &[a_file("b.bin")]);
+    assert_eq!(fake.asked(), 2);
     assert!(fake.stopped(0));
+    assert!(!world.aware.read_with(cx, |aware, _| aware.settling(&entry)));
+    // And back: what the first run never answered is asked for again.
     look_ahead(cx, &world, std::slice::from_ref(&entry));
-    assert_eq!(fake.asked(), 2, "nothing was answered, so it is asked for again");
-    assert!(!fake.stopped(1));
+    assert_eq!(fake.asked(), 3, "nothing was answered, so it is asked for again");
+    assert!(fake.stopped(1) && !fake.stopped(2));
 }
 
 #[gpui_kit::test]

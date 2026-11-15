@@ -1161,6 +1161,8 @@ impl Ui {
         self.visual.update(|window, cx| {
             menus.update(cx, |m, cx| m.open_list_menu(0, target, at, shift, window, cx));
         });
+        // A menu for one item may wait a breath for what is being found out about it.
+        self.visual.executor().advance_clock(std::time::Duration::from_millis(60));
         self.frame();
     }
 

@@ -102,6 +102,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// How long the lists read from glint-core are reused: a menu opened sooner doesn't read them again.
 const FRESH_FOR: Duration = Duration::from_secs(10);
+/// How long a menu for one item waits for what is still being found out about it (who has it open, where it
+/// came from, who signed it), so that what it suggests is there from its first frame and never moves. Two or
+/// three frames: nobody sees it, and a menu whose item is already known doesn't wait at all.
+const LOOK_FIRST: Duration = Duration::from_millis(40);
 
 /// A call that would have shown Windows' own menu: the paths and the point (tests).
 #[cfg(test)]
@@ -141,6 +145,11 @@ struct SharedHost(WeakEntity<MenuHost>);
 impl Global for SharedHost {}
 
 /// The window's menu host, once it has been made.
+/// Whether a menu is on screen or about to be: what is under it (a row, a tile) opens no tooltip then.
+pub fn showing(cx: &App) -> bool {
+    host(cx).is_some_and(|host| host.read(cx).is_showing())
+}
+
 pub fn host(cx: &App) -> Option<Entity<MenuHost>> {
     cx.try_global::<SharedHost>().and_then(|shared| shared.0.upgrade())
 }
@@ -162,6 +171,10 @@ pub struct MenuHost {
     data: MenuData,
     sources: Sources,
     read_at: Option<Instant>,
+    /// Counts the menus asked for: one that waited a breath opens only if no other was asked for meanwhile.
+    opening: u64,
+    /// A menu was asked for and waits its breath ([`LOOK_FIRST`]): it is as good as open to what is under it.
+    waiting: bool,
     /// Tests: stands in for Windows' own menu, which can't be shown headless.
     #[cfg(test)]
     pub(crate) shell_calls: std::rc::Rc<std::cell::RefCell<Vec<ShellCall>>>,
@@ -182,6 +195,8 @@ impl MenuHost {
             data: MenuData::default(),
             sources,
             read_at: None,
+            opening: 0,
+            waiting: false,
             #[cfg(test)]
             shell_calls: Default::default(),
         };
@@ -332,6 +347,11 @@ impl MenuHost {
         self.open.is_some()
     }
 
+    /// Whether a menu is on screen or about to be (it waits a breath for what is being found out).
+    pub fn is_showing(&self) -> bool {
+        self.open.is_some() || self.waiting
+    }
+
     /// The menu on screen, for tests and screen-reader checks.
     pub fn view(&self) -> Option<&Entity<MenuView>> {
         self.open.as_ref().map(|o| &o.view)
@@ -349,6 +369,8 @@ impl MenuHost {
 
     /// Closes the menu without choosing anything.
     pub fn close(&mut self, cx: &mut Context<Self>) {
+        self.opening = self.opening.wrapping_add(1);
+        self.waiting = false;
         if self.open.take().is_some() {
             Self::rest_aware(cx);
             cx.emit(MenuEvent::Closed);
@@ -426,6 +448,40 @@ impl MenuHost {
             let paths = chosen.iter().map(|e| e.path.clone()).collect();
             return self.show_windows_menu(paths, at, window, cx);
         }
+        // One item about which something is still being found out: it is asked for at once, and the menu waits
+        // a breath for it ([`LOOK_FIRST`]). What is suggested is decided once, when the menu opens.
+        self.opening = self.opening.wrapping_add(1);
+        if let (Some(aware), [entry]) = (aware::try_shared(cx), chosen.as_slice()) {
+            let asked = aware.update(cx, |aware, cx| aware.look_now(std::slice::from_ref(entry), cx));
+            if asked || aware.read(cx).settling(entry) {
+                let turn = self.opening;
+                self.waiting = true;
+                cx.spawn_in(window, async move |this, cx| {
+                    cx.background_executor().timer(LOOK_FIRST).await;
+                    this.update_in(cx, |this, window, cx| {
+                        if this.opening == turn {
+                            this.waiting = false;
+                            this.open_items(pane, chosen, at, window, cx);
+                        }
+                    })
+                    .ok();
+                })
+                .detach();
+                return;
+            }
+        }
+        self.open_items(pane, chosen, at, window, cx);
+    }
+
+    /// Shows the item menu for `chosen` (never empty) at `at`.
+    fn open_items(
+        &mut self,
+        pane: usize,
+        chosen: Vec<FileEntry>,
+        at: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let mut ctx = self.item_ctx(pane, cx);
         ctx.data.read_tags(cx, chosen.iter().map(|e| e.path.as_str()));
         let (nodes, shape) = Self::item_nodes(&chosen, &mut ctx, cx);
@@ -716,6 +772,9 @@ impl MenuHost {
 
     /// Shows `nodes` at `at`, taking the keyboard.
     fn show(&mut self, shown: Shown, window: &mut Window, cx: &mut Context<Self>) {
+        // A menu that was waiting a breath gives way to this one.
+        self.opening = self.opening.wrapping_add(1);
+        self.waiting = false;
         let Shown {
             nodes,
             at,

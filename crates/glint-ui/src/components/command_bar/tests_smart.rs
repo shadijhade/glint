@@ -447,7 +447,7 @@ fn paste_with_words_is_wider_than_without(cx: &mut TestAppContext) {
 // ---- Folding and the signature -----------------------------------------------------------------------------
 
 #[gpui_kit::test]
-fn the_step_loses_its_label_at_fold_one_and_is_gone_at_fold_three(cx: &mut TestAppContext) {
+fn the_step_keeps_its_word_to_the_fourth_fold_and_stays_as_a_picture_while_the_edits_do(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let mut rig = open(cx, WIDE);
     rig.select(&[ZIP]);
@@ -459,14 +459,19 @@ fn the_step_loses_its_label_at_fold_one_and_is_gone_at_fold_three(cx: &mut TestA
         seen.entry(rig.fold()).or_insert(width);
         width -= 20.;
     }
-    assert!(seen.contains_key(&0) && seen.contains_key(&1) && seen.contains_key(&3), "{seen:?}");
+    assert!(seen.contains_key(&0) && seen.contains_key(&2) && seen.contains_key(&5), "{seen:?}");
     rig.width(seen[&0]);
     let (_, wide) = rig.find("Extract here").expect("the step at fold 0");
-    rig.width(seen[&1]);
-    let (_, narrow) = rig.find("Extract here").expect("the step at fold 1");
-    assert!(narrow.size.width < wide.size.width, "no label at fold 1: {narrow:?} < {wide:?}");
-    rig.width(seen[&3]);
-    assert!(!rig.present("Extract here"), "not drawn at fold 3");
+    rig.width(seen[&2]);
+    let (_, folded) = rig.find("Extract here").expect("the step at fold 2");
+    assert_eq!(folded.size.width, wide.size.width, "it keeps its word while the others lose theirs");
+    rig.width(seen[&5]);
+    let (_, narrow) = rig.find("Extract here").expect("the step at fold 5");
+    assert!(narrow.size.width < wide.size.width, "a picture alone at fold 5: {narrow:?} < {wide:?}");
+    if let Some(most) = seen.get(&MOST) {
+        rig.width(*most);
+        assert!(!rig.present("Extract here"), "gone with the edits at the last fold");
+    }
 }
 
 #[gpui_kit::test]

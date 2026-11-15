@@ -100,6 +100,7 @@ fn host_disk() -> FakeDisk {
         .map(|i| file("C:\\many", &format!("f{i}.txt"), 1, 0))
         .collect();
     disk.folder("C:\\many", many);
+    disk.folder("C:\\apps", vec![file("C:\\apps", "setup.exe", 4_000_000, 0)]);
     disk
 }
 
@@ -556,4 +557,79 @@ fn a_tiles_menu_has_a_head_with_no_count(cx: &mut TestAppContext) {
     let head = rig.head();
     assert_eq!(head.title, "docs");
     assert!(head.line.is_empty(), "{head:?}");
+}
+
+// ---- The breath a menu waits for what is being found out ---------------------------------------------------
+
+const SETUP: &str = "C:\\apps\\setup.exe";
+
+#[gpui_kit::test]
+fn a_menu_waits_a_breath_for_what_is_being_found_out_and_suggests_from_it(cx: &mut TestAppContext) {
+    let _guard = english();
+    let mut rig = rig(cx, "C:\\apps");
+    rig.ui.select(&[SETUP]);
+    // Nothing is known about the program yet: the menu asks at once, and isn't there in the same instant.
+    let menus = rig.ui.menus.clone();
+    rig.ui.visual.update(|window, cx| {
+        menus.update(cx, |m, cx| m.open_list_menu(0, Some(SETUP), Some(at(100., 10.)), false, window, cx));
+    });
+    rig.ui.frame();
+    assert!(!rig.ui.is_open(), "it waits a breath for what is being found out");
+    // What is under it opens no tooltip from now until the menu closes: the pointer rests where the press was.
+    let plain = |window: &mut gpui_kit::Window, cx: &mut gpui_kit::App| {
+        let under = crate::kit::tooltip_under("setup.exe".into(), window, cx).entity_type();
+        under == crate::kit::tooltip("setup.exe".into(), window, cx).entity_type()
+    };
+    assert!(rig.ui.visual.update(|_, cx| super::showing(cx)), "as good as open");
+    assert!(!rig.ui.visual.update(plain), "no tooltip while a menu waits");
+    let call = rig.fake.call_of(SETUP);
+    assert_eq!(rig.fake.calls.borrow()[call].lane, Lane::Now);
+
+    // The answers arrive within the breath, and what the menu suggests is said from them.
+    rig.fake.send(
+        call,
+        SETUP,
+        Part::Origin(glint_model::aware::Origin {
+            host: "github.com".into(),
+            blocked: true,
+        }),
+    );
+    rig.fake.send(call, SETUP, Part::Signer(glint_model::aware::Signer::Unsigned));
+    rig.ui.frame();
+    rig.ui.visual.executor().advance_clock(std::time::Duration::from_millis(60));
+    rig.ui.frame();
+    assert!(rig.ui.is_open());
+    let nodes = rig.ui.nodes();
+    in_order(
+        &labels(&nodes),
+        &["# Suggested", "Scan with Microsoft Defender", "Run in Windows Sandbox", "Open"],
+    );
+    let reason = |label: &str| find(&nodes, label).and_then(|entry| entry.reason.clone());
+    assert_eq!(reason("Scan with Microsoft Defender").as_deref(), Some("It came from github.com"));
+    assert_eq!(reason("Run in Windows Sandbox").as_deref(), Some("It isn't signed"));
+    assert!(find(&nodes, "Unblock").is_some(), "a file marked as downloaded can be unblocked");
+    assert!(!rig.fake.calls.borrow()[call].stop.load(Ordering::SeqCst), "and its run goes on while the menu is open");
+    assert!(!rig.ui.visual.update(plain), "nor while it is open");
+    rig.ui.visual.update(|_, cx| menus.update(cx, |m, cx| m.close(cx)));
+    rig.ui.frame();
+    assert!(!rig.ui.visual.update(|_, cx| super::showing(cx)));
+    assert!(rig.ui.visual.update(plain), "closed, a row says its name again");
+}
+
+#[gpui_kit::test]
+fn a_menu_asked_for_while_another_waits_is_the_one_that_opens(cx: &mut TestAppContext) {
+    let _guard = english();
+    let mut rig = rig(cx, "C:\\x");
+    let menus = rig.ui.menus.clone();
+    // A right-click on a file (which waits a breath), then at once one on the empty part of the list.
+    rig.ui.select(&[ALPHA]);
+    rig.ui.visual.update(|window, cx| {
+        menus.update(cx, |m, cx| m.open_list_menu(0, Some(ALPHA), Some(at(100., 10.)), false, window, cx));
+    });
+    rig.ui.select(&[]);
+    rig.ui.open_background(at(300., 10.));
+    rig.ui.visual.executor().advance_clock(std::time::Duration::from_millis(60));
+    rig.ui.frame();
+    assert!(rig.ui.is_open());
+    assert!(find(&rig.ui.nodes(), "New folder").is_some(), "the folder's menu, not the file's");
 }
