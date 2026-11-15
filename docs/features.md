@@ -1,8 +1,9 @@
 # Glint, feature by feature
 
-Everything Glint does, in detail. The [README](../README.md) has the short tour, how to install it and the benchmarks, and [the release notes](https://github.com/shadijhade/glint/releases) say what changed when. This page describes Glint 0.12.
+Everything Glint does, in detail. The [README](../README.md) has the short tour, how to install it and the benchmarks, and [the release notes](https://github.com/shadijhade/glint/releases) say what changed when. This page describes Glint 0.13.
 
 -   [Browsing](#browsing)
+-   [The menu and the dock](#the-menu-and-the-dock)
 -   [Tabs and two panes](#tabs-and-two-panes)
 -   [Grid view](#grid-view)
 -   [Search](#search): [finding files by name](#finding-files-by-name), [one search for names and contents](#one-search-names-and-what-the-files-hold), [instant search](#instant-search-ntfs-index)
@@ -40,6 +41,24 @@ Everything Glint does, in detail. The [README](../README.md) has the short tour,
 -   **Paste a picture or text as a file.** With no files on the clipboard, `Ctrl+V` (or **Paste**) saves what's there as a new file in the folder: a picture (a screenshot, or one copied in a browser or the Snipping Tool) as *Pasted image* with the date and time, a PNG, and text as *Pasted text*, a UTF-8 .txt. Its name is selected to type a better one, and `Ctrl+Z` takes it back.
 -   **Live.** The open folder refreshes when files change elsewhere.
 -   **More windows.** `Ctrl+N` opens another window on the folder shown.
+
+## The menu and the dock
+
+What Glint finds out about what you point at, and what it does with it. All of it happens on the PC: nothing is sent anywhere, and no model is involved, only rules, counts and what Windows and the files themselves say.
+
+-   **The menu starts with the item.** A right-click menu opens with a card: the item's picture and name, a line of facts (its kind and size, a picture's dimensions, a video's or a song's length, a text file's lines, a PDF's pages, how much a folder holds, when it changed), and badges for what matters: **From github.com** on a download (Windows' own mark of where a file came from), **Not signed** or the signer's name on a program, **3 identical copies** when the same bytes are elsewhere on an indexed drive, **In use by Word** when a program holds it open, **Online only** for a cloud file that isn't on the disk, and **Points to…** on a shortcut.
+-   **Suggested.** Under the card, up to three rows chosen for this kind of thing, each with its reason under it: *Extract here* for an archive, *Scan with Microsoft Defender* (*It came from github.com*) and *Run in Windows Sandbox* (*It isn't signed*) for a program from the web, *Compare* for two files, *Clean up…* for a project folder with build output in it, *Unblock* for a file Windows marked as downloaded. They are copies: the menu's own rows stay where your hand knows them, and nothing moves once the menu is open.
+-   **Type in the menu.** Typing filters every row, the ones in submenus too (shown with the submenu's name before them); `Enter` runs the first, `Backspace` takes a letter back, and the menu keeps its size while you type.
+-   **A greyed row says why.** *Rename* in an archive, *Paste* with nothing to paste, a tool that needs a folder on disk: the reason is the row's tooltip, and what a screen reader adds.
+-   **Move or copy to.** A submenu with the folders this kind of file usually goes to, learned from your own copies and moves, for moving and for copying, each with **Choose a folder…**. A folder that is clearly where the kind goes is under Suggested too: *Move to “Invoices”*, *Where you usually put pdf files*.
+-   **Copy the text in it**, on a picture, reads the text with Windows' own OCR and puts it on the clipboard.
+-   **The dock's next step.** While something is selected, the island at the foot of the window holds the first suggestion as a button with one press; a ring of light turns once round it when the step changes.
+-   **Paste says what it holds.** *Paste 3 files*, or *Move 3 files here* after a cut, with their names and where they come from in its tooltip. With no files on the clipboard it is a plain button.
+-   **The selection, in words.** Beside the island: how many are selected, their size, and what they hold: *4 lines* for text files, *12 pages* for PDFs, *2 min 31 s* for songs and videos, *3 files inside* for a folder, counted through every subfolder. The numbers roll to their value as the counting goes, and rest.
+-   **What is happening to the folder.** **Changing now**, with a small line of how busy it is, while files in the folder are being written (press it for what changed), and **C: is nearly full** when the drive has little room left (press it for the disk usage map).
+-   **The dock folds with the window.** In a narrow window the buttons lose their words, then the words beside the island go to two short lines, then to none; nothing is cut in half.
+-   **It learns what you do, on this PC.** What you choose from a menu, the dock or `Ctrl+K` is counted (in Glint's own settings file, next to your pins), with a half-life of a month, and rises in **Suggested**, in the dock's next step and in `Ctrl+K`. **Settings → History** has **Suggest the next step**, **Learn from what I do** and **Forget what Glint learned**. With suggesting off there is no Suggested and no next step; the card and the dock's words are facts, and stay.
+-   **Free, by design.** Glint looks at an item when the pointer has rested on it for a moment, or once a selection settles, on threads Windows runs in efficiency mode at background priority, and stops when you move on. It doesn't look at files that are only in the cloud, on network or removable drives, or at more than 200 items at once. A menu for one item waits at most 40 ms for what is still being found out, so its suggestions are decided once, with the facts.
 
 ## Tabs and two panes
 
