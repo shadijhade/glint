@@ -230,6 +230,9 @@ pub const SEARCH: &[Entry] = &[
     entry(Page::History, "Save search history", "searches history privacy"),
     entry(Page::History, "Keep up to", "history length limit"),
     entry(Page::History, "Share folder history with zoxide", "zoxide terminal cd jump"),
+    entry(Page::History, "Suggest the next step", "smart suggestions suggested menu dock"),
+    entry(Page::History, "Learn from what I do", "habits learning usual"),
+    entry(Page::History, "Forget what Glint learned", "habits clear reset privacy"),
     // Terminal
     entry(Page::Terminal, "Shell", "powershell cmd bash wsl terminal"),
     entry(Page::Terminal, "Follow the folder shown", "terminal cd follow"),

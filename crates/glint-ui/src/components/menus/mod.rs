@@ -95,7 +95,7 @@ use crate::kit::prelude::*;
 use crate::{aware, i18n, persistence, state, t};
 use glint_core::host::Manager as _;
 use glint_model::aware::{Facts, Pick, Probed, Shape};
-use glint_model::entries::{FileEntry, GitMark};
+use glint_model::entries::{is_archived, is_closed, is_recycled, is_remote, FileEntry, GitMark};
 use glint_model::paths::{base_name, is_folder_path, is_remote_path, is_root, remote_id_of};
 use gpui_kit::{anchored, deferred, Anchor};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -236,14 +236,15 @@ impl MenuHost {
         head: impl FnOnce() -> Head,
         facts: &Facts,
         probed: Option<&Probed>,
+        extra: Vec<Node>,
         cx: &App,
     ) -> Vec<Node> {
         if aware::try_shared(cx).is_none() || nodes.len() < 4 {
             return nodes;
         }
         let picks = Self::picks(&nodes, facts, probed, 3, cx);
-        // G1: the usual place goes in this Vec.
-        smart::dress(nodes, head(), &picks, facts.shape, Vec::new())
+        // `extra` is what isn't a copy of a row but is worth putting forward: the usual place.
+        smart::dress(nodes, head(), &picks, facts.shape, extra)
     }
 
     /// What the head needs besides the items and the answers: the time, and Git's word for the one item.
@@ -268,6 +269,19 @@ impl MenuHost {
             aware.update(cx, |aware, cx| aware.look_now(std::slice::from_ref(entry), cx));
         }
         ctx.probed = probed.clone();
+        // Where this kind of thing has gone before: one extension, or folders only; a mix has no one place.
+        let paths: Vec<String> = chosen.iter().map(|e| e.path.clone()).collect();
+        let ext = glint_model::aware::shared_ext(chosen);
+        let folders_only = chosen.iter().all(|e| e.dir);
+        let movable = !chosen.iter().any(|e| is_archived(e) || is_closed(e) || is_remote(e) || is_recycled(e));
+        ctx.places = match (&ext, folders_only && movable) {
+            (Some(ext), _) if movable => aware::places_for(cx, ext),
+            (None, true) => aware::places_for(cx, ""),
+            _ => Vec::new(),
+        };
+        let usual: Vec<Node> = send_to::usual_row(&paths, &ctx.places, ext.as_deref(), folders_only, &ctx.folder)
+            .into_iter()
+            .collect();
         let nodes = item_menu(chosen, ctx);
         let facts = aware::facts(cx, chosen);
         let one = match chosen {
@@ -275,7 +289,7 @@ impl MenuHost {
             _ => None,
         };
         let head = || head::head_of(chosen, probed.as_ref(), &Self::extras(one, cx));
-        (Self::dressed(nodes, head, &facts, probed.as_ref(), cx), facts.shape)
+        (Self::dressed(nodes, head, &facts, probed.as_ref(), usual, cx), facts.shape)
     }
 
     /// The folder's own menu, dressed: its name, how many items it shows and its branch in the head.
@@ -288,7 +302,7 @@ impl MenuHost {
     ) -> (Vec<Node>, Shape) {
         let facts = aware::facts(cx, &[]);
         let head = || head::folder_head(title, items, branch);
-        (Self::dressed(nodes, head, &facts, None, cx), facts.shape)
+        (Self::dressed(nodes, head, &facts, None, Vec::new(), cx), facts.shape)
     }
 
     /// A folder's name as the tabs say it, in the language shown.

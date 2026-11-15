@@ -109,6 +109,7 @@ pub(super) async fn run_op(this: &WeakEntity<Explorer>, cx: &mut AsyncApp, op: F
             _ => None,
         };
         if let Some((kind, sources, dest)) = queued {
+            this.update(cx, |this, cx| this.note_place(sources.iter().map(String::as_str), &dest, cx)).ok();
             super::queue::queue_in(this, cx, kind, sources, dest).await;
             return Ok(true);
         }
@@ -119,7 +120,35 @@ pub(super) async fn run_op(this: &WeakEntity<Explorer>, cx: &mut AsyncApp, op: F
     Ok(completed)
 }
 
+/// How many of the items copied or moved are looked at to tell their kinds: a big selection is mostly of a kind.
+const KINDS_FROM: usize = 16;
+
 impl Explorer {
+    /// Counts `dest` as where these kinds of thing go (`aware::note_place`): a file's extension, lower case, and
+    /// "" for a folder or a file with none. An item no tab shows (dropped from another program) is taken for a
+    /// file.
+    pub(super) fn note_place<'a>(&self, sources: impl Iterator<Item = &'a str>, dest: &str, cx: &mut Context<Self>) {
+        let mut kinds: Vec<String> = Vec::new();
+        for from in sources.take(KINDS_FROM) {
+            let shown = self.tabs.values().find_map(|tab| tab.rows.iter().find(|entry| entry.path == from));
+            let kind = match shown {
+                Some(entry) if entry.dir => String::new(),
+                Some(entry) => entry.ext.clone(),
+                None => {
+                    let name = base_name(from);
+                    let ext = name.rfind('.').filter(|dot| *dot > 0).and_then(|dot| name.get(dot + 1..));
+                    ext.unwrap_or("").to_lowercase()
+                }
+            };
+            if !kinds.contains(&kind) {
+                kinds.push(kind);
+            }
+        }
+        if !kinds.is_empty() {
+            crate::aware::note_place(cx, &kinds, dest);
+        }
+    }
+
     /// Runs a copy, move, rename, delete, restore, purge or Sync through Windows' file engine, as the TypeScript's
     /// `fileOp` does (Settings can send copies and moves through the copy queue; Undo is offered for what was
     /// done). Resolves `Ok(false)` if the person cancelled in one of Windows' dialogs. No toast of its own: the
@@ -138,6 +167,10 @@ impl Explorer {
             .filter_map(|item| item.to.as_deref().map(|to| (item.from.as_str(), to)))
             .collect();
         let count = done.len();
+        // Where this kind of thing went is counted, for "Move or copy to" (docs/gpui/aware).
+        if let FileOp::Copy { dest, .. } | FileOp::Move { dest, .. } = op {
+            self.note_place(done.iter().map(|(from, _)| *from), dest, cx);
+        }
         if let Some(&(first_from, first_to)) = done.first() {
             let what = plural(count, "item");
             // Taking back a copy recycles it rather than deleting it for good.

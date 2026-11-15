@@ -35,6 +35,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 pub const MOST_TO_LOOK_AT: usize = 200;
 /// How long the selection stays the same before it is looked at.
 const SELECTION_SETTLES: Duration = Duration::from_millis(150);
+/// How long the pointer rests on a row or a tile before what isn't known about its item is asked for: long
+/// enough that a pointer crossing the list asks nothing, short enough to be done before the click.
+pub const RESTS_FOR: Duration = Duration::from_millis(120);
 /// Answers are applied at most once in this long: a frame.
 const FRAME: Duration = Duration::from_millis(16);
 /// "Changing now" goes away this long after the last change (ten seconds, and a little more).
@@ -450,4 +453,16 @@ pub fn places_for(cx: &App, ext: &str) -> Vec<Place> {
 /// Forgets what was learned.
 pub fn forget_habits(cx: &mut App) {
     persistence::update_app(cx, |app| app.habits.forget());
+}
+
+/// The pointer came to rest on `entry` (a row of the list, a tile of the grid): once it has stayed
+/// [`RESTS_FOR`], what isn't known about the item is found out, quietly, so its menu opens knowing it. The view
+/// keeps the task while the pointer stays and drops it when it leaves, which asks nothing. None when the app has
+/// no entity.
+pub fn rest_on(entry: FileEntry, cx: &mut App) -> Option<Task<()>> {
+    let aware = try_shared(cx)?;
+    Some(cx.spawn(async move |cx| {
+        cx.background_executor().timer(RESTS_FOR).await;
+        aware.update(cx, |aware, cx| aware.look_ahead(std::slice::from_ref(&entry), cx));
+    }))
 }

@@ -117,6 +117,7 @@ fn a_file_gets_the_typescripts_items_in_its_order() {
             "Scripts>",
             "Show in File Explorer",
             "-",
+            "Move or copy to>",
             "Tags>",
             "Encrypt…",
             "Compress to>",

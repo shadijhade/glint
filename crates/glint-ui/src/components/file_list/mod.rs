@@ -409,6 +409,8 @@ pub struct FileList {
     /// The scroll was just restored: the focused row is not scrolled to (`restoring`).
     restoring: bool,
     prefetch: Option<Task<()>>,
+    /// The pointer rests on a row: the wait before its item is looked at ahead (`aware::rest_on`).
+    resting: Option<Task<()>>,
     /// This list, for the listeners the window calls back (a drag that leaves the list).
     this: WeakEntity<Self>,
     /// The thumbnail service: the pictures in the icon cell.
@@ -545,6 +547,7 @@ impl FileList {
             saved_top: 0.,
             restoring: false,
             prefetch: None,
+            resting: None,
             this: cx.weak_entity(),
             thumbs,
             viewer,
@@ -1067,6 +1070,19 @@ impl FileList {
     /// press selects only it (but keeps a selection of several until release, so it can be dragged), a
     /// double-click opens, the right button selects it if it isn't and asks for its menu, the middle button
     /// opens a folder in a new tab.
+    /// The pointer came to row `i`, or left it: resting there finds out what isn't known about its item, so its
+    /// menu opens knowing it (docs/gpui/aware). Leaving before the wait is over asks nothing.
+    fn rest_on_row(&mut self, i: usize, hovered: bool, cx: &mut Context<Self>) {
+        self.resting = None;
+        if !hovered {
+            return;
+        }
+        let entry = self.explorer.read(cx).pane_tab(self.pane).and_then(|tab| tab.rows.get(i).cloned());
+        if let Some(entry) = entry {
+            self.resting = crate::aware::rest_on(entry, cx);
+        }
+    }
+
     fn row_down(&mut self, i: usize, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         cx.stop_propagation();
         self.take_focus(window, cx);

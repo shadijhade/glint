@@ -221,6 +221,8 @@ pub struct FileGrid {
     /// The focused item the list was last scrolled to.
     scrolled_to: Option<String>,
     press: Option<Press>,
+    /// The pointer rests on a tile: the wait before its item is looked at ahead (`aware::rest_on`).
+    resting: Option<Task<()>>,
     marquee: Option<Marquee>,
     /// Scrolls the body while a marquee is held at its edge; dropped with the marquee.
     marquee_scroll: Option<Task<()>>,
@@ -296,6 +298,7 @@ impl FileGrid {
             saved_place: None,
             scrolled_to: None,
             press: None,
+            resting: None,
             marquee: None,
             marquee_scroll: None,
             dragging: None,
@@ -495,6 +498,9 @@ impl FileGrid {
         let Some(entry) = rows.get(index) else {
             return;
         };
+        // Resting on a tile finds out what isn't known about its item, so its menu opens knowing it
+        // (docs/gpui/aware); leaving before the wait is over asks nothing.
+        self.resting = if hovered { crate::aware::rest_on(entry.clone(), cx) } else { None };
         let path = entry.path.clone();
         if scrub::scrubbable(entry) {
             if hovered {
