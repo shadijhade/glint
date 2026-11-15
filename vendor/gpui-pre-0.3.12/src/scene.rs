@@ -42,6 +42,8 @@ pub struct Scene {
     pub(crate) paint_operations: Vec<PaintOperation>,
     primitive_bounds: BoundsTree<ScaledPixels>,
     layer_stack: Vec<DrawOrder>,
+    /// Glint: the paint transforms in force, innermost last, each composed with those around it.
+    transforms: Vec<SceneTransform>,
     pub shadows: Vec<Shadow>,
     pub quads: Vec<Quad>,
     pub paths: Vec<Path<ScaledPixels>>,
@@ -58,6 +60,7 @@ impl Scene {
         self.paint_operations.clear();
         self.primitive_bounds.clear();
         self.layer_stack.clear();
+        self.transforms.clear();
         self.paths.clear();
         self.shadows.clear();
         self.quads.clear();
@@ -73,10 +76,54 @@ impl Scene {
     }
 
     pub fn push_layer(&mut self, bounds: Bounds<ScaledPixels>) {
+        let bounds = match self.transforms.last() {
+            Some(transform) => transform.bounds(bounds).intersect(&transform.clip),
+            None => bounds,
+        };
+        self.push_layer_as_is(bounds);
+    }
+
+    /// A layer whose bounds are already where they are drawn (a replay of what an earlier frame painted).
+    fn push_layer_as_is(&mut self, bounds: Bounds<ScaledPixels>) {
         let order = self.primitive_bounds.insert(bounds);
         self.layer_stack.push(order);
         self.paint_operations
             .push(PaintOperation::StartLayer(bounds));
+    }
+
+    /// Glint: everything inserted until the matching [`Scene::pop_transform`] is drawn `scale` times larger and
+    /// moved by `translate` (device pixels: a point `p` lands on `p * scale + translate`), inside any transform
+    /// already in force. `clip` is the content mask where the transform begins, in the coordinates of what is
+    /// around it: nothing transformed is drawn outside it, however far the transform moves it.
+    pub fn push_transform(
+        &mut self,
+        scale: f32,
+        translate: Point<ScaledPixels>,
+        clip: Bounds<ScaledPixels>,
+    ) {
+        let mut transform = SceneTransform {
+            scale,
+            translate,
+            clip,
+        };
+        if let Some(outer) = self.transforms.last() {
+            transform = SceneTransform {
+                scale: outer.scale * scale,
+                translate: outer.point(translate),
+                clip: outer.bounds(clip).intersect(&outer.clip),
+            };
+        }
+        self.transforms.push(transform);
+    }
+
+    /// Ends the transform begun by the last [`Scene::push_transform`].
+    pub fn pop_transform(&mut self) {
+        self.transforms.pop();
+    }
+
+    /// Whether a transform is in force.
+    pub fn is_transformed(&self) -> bool {
+        !self.transforms.is_empty()
     }
 
     pub fn pop_layer(&mut self) {
@@ -86,6 +133,14 @@ impl Scene {
 
     pub fn insert_primitive(&mut self, primitive: impl Into<Primitive>) {
         let mut primitive = primitive.into();
+        if let Some(transform) = self.transforms.last() {
+            primitive.transform(transform);
+        }
+        self.insert_primitive_as_is(primitive);
+    }
+
+    /// A primitive that is already where it is drawn (a replay of what an earlier frame painted).
+    fn insert_primitive_as_is(&mut self, mut primitive: Primitive) {
         let clipped_bounds = primitive
             .bounds()
             .intersect(&primitive.content_mask().bounds);
@@ -141,10 +196,53 @@ impl Scene {
     pub fn replay(&mut self, range: Range<usize>, prev_scene: &Scene) {
         for operation in &prev_scene.paint_operations[range] {
             match operation {
-                PaintOperation::Primitive(primitive) => self.insert_primitive(primitive.clone()),
-                PaintOperation::StartLayer(bounds) => self.push_layer(*bounds),
+                // What a cached view painted is kept as it was drawn, transform and all: a view under a
+                // transform that changed is painted again instead (its cache key holds the transform).
+                PaintOperation::Primitive(primitive) => {
+                    self.insert_primitive_as_is(primitive.clone())
+                }
+                PaintOperation::StartLayer(bounds) => self.push_layer_as_is(*bounds),
                 PaintOperation::EndLayer => self.pop_layer(),
             }
+        }
+    }
+
+    /// Glint: a copy of what the operations in `range` painted, to paint again later with
+    /// [`Scene::paint_snapshot`]. None when the range is not in this scene.
+    pub fn snapshot(&self, range: Range<usize>) -> Option<PaintSnapshot> {
+        let operations = self.paint_operations.get(range)?;
+        Some(PaintSnapshot {
+            operations: operations.into(),
+        })
+    }
+
+    /// Glint: paints a snapshot again, under the transform in force and `opacity` times as opaque.
+    pub fn paint_snapshot(&mut self, snapshot: &PaintSnapshot, opacity: f32) {
+        // Layers opened by the snapshot are closed by it, whatever it holds.
+        let mut open = 0usize;
+        for operation in snapshot.operations.iter() {
+            match operation {
+                PaintOperation::Primitive(primitive) => {
+                    let mut primitive = primitive.clone();
+                    if opacity < 1. {
+                        primitive.fade(opacity);
+                    }
+                    self.insert_primitive(primitive);
+                }
+                PaintOperation::StartLayer(bounds) => {
+                    self.push_layer(*bounds);
+                    open += 1;
+                }
+                PaintOperation::EndLayer => {
+                    if open > 0 {
+                        self.pop_layer();
+                        open -= 1;
+                    }
+                }
+            }
+        }
+        for _ in 0..open {
+            self.pop_layer();
         }
     }
 
@@ -211,10 +309,217 @@ pub(crate) enum PrimitiveKind {
     Surface,
 }
 
+#[derive(Clone)]
 pub(crate) enum PaintOperation {
     Primitive(Primitive),
     StartLayer(Bounds<ScaledPixels>),
     EndLayer,
+}
+
+/// Glint: a uniform scale and a move for everything painted while it is in force
+/// ([`crate::Window::with_paint_transform`]): a point `p` is drawn at `p * scale + translate`. The GPU draws
+/// the scaled quads, shadows, paths and sprites: nothing is laid out or rasterized again, so text is drawn from
+/// the glyphs it already has (soft while it is scaled, sharp again at a scale of one).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PaintTransform {
+    /// How many times larger things are drawn.
+    pub scale: f32,
+    /// Where the window's origin lands.
+    pub translate: Point<Pixels>,
+}
+
+impl Default for PaintTransform {
+    fn default() -> Self {
+        Self::IDENTITY
+    }
+}
+
+impl PaintTransform {
+    /// Everything where it is.
+    pub const IDENTITY: Self = Self {
+        scale: 1.,
+        translate: Point {
+            x: Pixels(0.),
+            y: Pixels(0.),
+        },
+    };
+
+    /// `scale` times larger, `origin` staying where it is.
+    pub fn scale_about(scale: f32, origin: Point<Pixels>) -> Self {
+        Self {
+            scale,
+            translate: Point {
+                x: Pixels(origin.x.0 * (1. - scale)),
+                y: Pixels(origin.y.0 * (1. - scale)),
+            },
+        }
+    }
+
+    /// Moved by `by`.
+    pub fn moved(by: Point<Pixels>) -> Self {
+        Self {
+            scale: 1.,
+            translate: by,
+        }
+    }
+
+    /// This transform, then `after`.
+    pub fn then(self, after: Self) -> Self {
+        Self {
+            scale: self.scale * after.scale,
+            translate: after.apply(self.translate),
+        }
+    }
+
+    /// The transform that undoes this one; None for a scale of nothing.
+    pub fn inverse(self) -> Option<Self> {
+        (self.scale.is_finite() && self.scale.abs() > 1e-6).then(|| Self {
+            scale: 1. / self.scale,
+            translate: Point {
+                x: Pixels(-self.translate.x.0 / self.scale),
+                y: Pixels(-self.translate.y.0 / self.scale),
+            },
+        })
+    }
+
+    /// Where `point` is drawn.
+    pub fn apply(&self, point: Point<Pixels>) -> Point<Pixels> {
+        Point {
+            x: Pixels(point.x.0 * self.scale + self.translate.x.0),
+            y: Pixels(point.y.0 * self.scale + self.translate.y.0),
+        }
+    }
+
+    /// Where `bounds` are drawn.
+    pub fn apply_bounds(&self, bounds: Bounds<Pixels>) -> Bounds<Pixels> {
+        Bounds {
+            origin: self.apply(bounds.origin),
+            size: Size {
+                width: Pixels(bounds.size.width.0 * self.scale),
+                height: Pixels(bounds.size.height.0 * self.scale),
+            },
+        }
+    }
+
+    /// Whether it changes nothing that could be seen.
+    pub fn is_identity(&self) -> bool {
+        (self.scale - 1.).abs() < 1e-4
+            && self.translate.x.0.abs() < 1e-3
+            && self.translate.y.0.abs() < 1e-3
+    }
+
+    /// Whether it can be drawn: a finite scale above nothing and a finite move.
+    pub fn is_drawable(&self) -> bool {
+        self.scale.is_finite()
+            && self.scale > 1e-4
+            && self.translate.x.0.is_finite()
+            && self.translate.y.0.is_finite()
+    }
+
+    /// Its numbers bit for bit, for telling whether two are the very same.
+    pub(crate) fn bits(&self) -> [u32; 3] {
+        [
+            self.scale.to_bits(),
+            self.translate.x.0.to_bits(),
+            self.translate.y.0.to_bits(),
+        ]
+    }
+}
+
+/// Glint: where painting has come to in a frame ([`crate::Window::paint_position`]): two of them name what was
+/// painted between them, for [`crate::Window::snapshot_painted`] once that frame is the one on screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PaintPosition {
+    pub(crate) frame: u64,
+    pub(crate) index: usize,
+}
+
+/// Glint: what a stretch of a frame painted, kept to be painted again (see [`Scene::snapshot`]). Its sprites
+/// name tiles of the atlas as they were: one whose image was dropped since draws nothing, or whatever took
+/// its place, so a snapshot is for the next moments, not for keeping.
+#[derive(Clone)]
+pub struct PaintSnapshot {
+    operations: std::rc::Rc<[PaintOperation]>,
+}
+
+impl PaintSnapshot {
+    /// Whether it holds nothing to paint.
+    pub fn is_empty(&self) -> bool {
+        self.operations.is_empty()
+    }
+}
+
+/// Glint: a uniform scale and a move, in device pixels, with the clip of where it began (in the coordinates
+/// things are drawn in).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SceneTransform {
+    scale: f32,
+    translate: Point<ScaledPixels>,
+    clip: Bounds<ScaledPixels>,
+}
+
+impl SceneTransform {
+    fn point(&self, point: Point<ScaledPixels>) -> Point<ScaledPixels> {
+        Point {
+            x: ScaledPixels(point.x.0 * self.scale + self.translate.x.0),
+            y: ScaledPixels(point.y.0 * self.scale + self.translate.y.0),
+        }
+    }
+
+    fn length(&self, length: ScaledPixels) -> ScaledPixels {
+        ScaledPixels(length.0 * self.scale)
+    }
+
+    fn bounds(&self, bounds: Bounds<ScaledPixels>) -> Bounds<ScaledPixels> {
+        Bounds {
+            origin: self.point(bounds.origin),
+            size: Size {
+                width: self.length(bounds.size.width),
+                height: self.length(bounds.size.height),
+            },
+        }
+    }
+
+    fn mask(&self, mask: ContentMask<ScaledPixels>) -> ContentMask<ScaledPixels> {
+        ContentMask {
+            bounds: self.bounds(mask.bounds).intersect(&self.clip),
+        }
+    }
+
+    fn corners(&self, corners: Corners<ScaledPixels>) -> Corners<ScaledPixels> {
+        Corners {
+            top_left: self.length(corners.top_left),
+            top_right: self.length(corners.top_right),
+            bottom_right: self.length(corners.bottom_right),
+            bottom_left: self.length(corners.bottom_left),
+        }
+    }
+
+    fn edges(&self, edges: Edges<ScaledPixels>) -> Edges<ScaledPixels> {
+        Edges {
+            top: self.length(edges.top),
+            right: self.length(edges.right),
+            bottom: self.length(edges.bottom),
+            left: self.length(edges.left),
+        }
+    }
+
+    /// A sprite's own matrix (a turning icon's) is applied by the shader to the sprite's bounds, which are
+    /// transformed here: the matrix keeps its turn and takes the move that makes the two agree.
+    fn sprite(&self, matrix: TransformationMatrix) -> TransformationMatrix {
+        if matrix == TransformationMatrix::unit() {
+            return matrix;
+        }
+        let [[a, b], [c, d]] = matrix.rotation_scale;
+        let (x, y) = (self.translate.x.0, self.translate.y.0);
+        TransformationMatrix {
+            rotation_scale: matrix.rotation_scale,
+            translation: [
+                self.scale * matrix.translation[0] + x - (a * x + b * y),
+                self.scale * matrix.translation[1] + y - (c * x + d * y),
+            ],
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -232,6 +537,75 @@ pub enum Primitive {
 
 #[expect(missing_docs)]
 impl Primitive {
+    /// Glint: the primitive where `transform` draws it.
+    fn transform(&mut self, transform: &SceneTransform) {
+        match self {
+            Primitive::Shadow(shadow) => {
+                shadow.bounds = transform.bounds(shadow.bounds);
+                shadow.element_bounds = transform.bounds(shadow.element_bounds);
+                shadow.content_mask = transform.mask(shadow.content_mask);
+                shadow.corner_radii = transform.corners(shadow.corner_radii);
+                shadow.element_corner_radii = transform.corners(shadow.element_corner_radii);
+                shadow.blur_radius = transform.length(shadow.blur_radius);
+            }
+            Primitive::Quad(quad) => {
+                quad.bounds = transform.bounds(quad.bounds);
+                quad.content_mask = transform.mask(quad.content_mask);
+                quad.corner_radii = transform.corners(quad.corner_radii);
+                quad.border_widths = transform.edges(quad.border_widths);
+            }
+            Primitive::Path(path) => {
+                path.bounds = transform.bounds(path.bounds);
+                path.content_mask = transform.mask(path.content_mask.clone());
+                for vertex in &mut path.vertices {
+                    vertex.xy_position = transform.point(vertex.xy_position);
+                    vertex.content_mask = transform.mask(vertex.content_mask.clone());
+                }
+            }
+            Primitive::Underline(underline) => {
+                underline.bounds = transform.bounds(underline.bounds);
+                underline.content_mask = transform.mask(underline.content_mask);
+                underline.thickness = transform.length(underline.thickness);
+            }
+            Primitive::MonochromeSprite(sprite) => {
+                sprite.bounds = transform.bounds(sprite.bounds);
+                sprite.content_mask = transform.mask(sprite.content_mask);
+                sprite.transformation = transform.sprite(sprite.transformation);
+            }
+            Primitive::SubpixelSprite(sprite) => {
+                sprite.bounds = transform.bounds(sprite.bounds);
+                sprite.content_mask = transform.mask(sprite.content_mask);
+                sprite.transformation = transform.sprite(sprite.transformation);
+            }
+            Primitive::PolychromeSprite(sprite) => {
+                sprite.bounds = transform.bounds(sprite.bounds);
+                sprite.content_mask = transform.mask(sprite.content_mask);
+                sprite.corner_radii = transform.corners(sprite.corner_radii);
+            }
+            Primitive::Surface(surface) => {
+                surface.bounds = transform.bounds(surface.bounds);
+                surface.content_mask = transform.mask(surface.content_mask.clone());
+            }
+        }
+    }
+
+    /// Glint: the primitive `opacity` times as opaque.
+    fn fade(&mut self, opacity: f32) {
+        match self {
+            Primitive::Shadow(shadow) => shadow.color = shadow.color.opacity(opacity),
+            Primitive::Quad(quad) => {
+                quad.background = quad.background.opacity(opacity);
+                quad.border_color = quad.border_color.opacity(opacity);
+            }
+            Primitive::Path(path) => path.color = path.color.opacity(opacity),
+            Primitive::Underline(underline) => underline.color = underline.color.opacity(opacity),
+            Primitive::MonochromeSprite(sprite) => sprite.color = sprite.color.opacity(opacity),
+            Primitive::SubpixelSprite(sprite) => sprite.color = sprite.color.opacity(opacity),
+            Primitive::PolychromeSprite(sprite) => sprite.opacity *= opacity,
+            Primitive::Surface(_) => {}
+        }
+    }
+
     pub fn bounds(&self) -> &Bounds<ScaledPixels> {
         match self {
             Primitive::Shadow(shadow) => &shadow.bounds,

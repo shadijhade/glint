@@ -106,6 +106,36 @@ pub(crate) fn start(cx: &mut App) {
         .detach();
         return;
     }
+    // `fly:<folder>|<step>,<step>…`: the folder, then each step a moment after the last, left open for a look at how
+    // the pane goes from one place to the next (`crate::stage`). Steps: `in:<n>` opens the n-th folder shown,
+    // `select:<n>` selects the n-th item, `up`, `back`, `forward`, `thispc`, `grid`, `list`, `bigger`, `smaller`,
+    // `bump` (the zoom with nowhere to go), `palette` (Ctrl+K), `look` (Quick Look, and again to close it), `wait`,
+    // `quit`; and the pointer, made up (the real one is left
+    // alone): `point:<x>;<y>` moves it there, `wheel:<lines>` turns the wheel with Ctrl held (3 is a notch toward
+    // bigger), `pinch:<by>` spreads the fingers (0.5 is half as far again). `GLINT_SELFTEST_PAUSE` is the moment,
+    // in milliseconds (1200 unless given).
+    if let Some(rest) = script.strip_prefix("fly:") {
+        let (folder, steps) = rest.split_once('|').unwrap_or((rest, ""));
+        let steps: Vec<String> = steps.split(',').map(|step| step.trim().to_string()).collect();
+        let pause = std::env::var("GLINT_SELFTEST_PAUSE")
+            .ok()
+            .and_then(|ms| ms.parse().ok())
+            .map_or(Duration::from_millis(1200), Duration::from_millis);
+        explorer::explorer(cx).update(cx, |e, cx| e.navigate(folder.to_string(), Default::default(), cx));
+        cx.spawn(async move |cx| {
+            for step in steps {
+                cx.background_executor().timer(pause).await;
+                eprintln!("glint: fly: {step}");
+                if step == "quit" {
+                    cx.update(|cx| cx.quit());
+                    return;
+                }
+                cx.update(|cx| fly_step(&step, cx));
+            }
+        })
+        .detach();
+        return;
+    }
     let Some((name, folder)) = script.split_once(':') else {
         eprintln!("glint: GLINT_SELFTEST: unknown script {script:?}");
         return;
@@ -121,6 +151,86 @@ pub(crate) fn start(cx: &mut App) {
         cx.update(|cx| cx.quit());
     })
     .detach();
+}
+
+/// One step of the `fly` script (see [`start`]).
+fn fly_step(step: &str, cx: &mut App) {
+    use glint_model::store::ViewMode;
+    if let Some((what @ ("point" | "wheel" | "pinch"), by)) = step.split_once(':') {
+        let Some(main) = startup::main_window(cx) else {
+            return;
+        };
+        thread_local! {
+            /// Where the made-up pointer is: the real one may cross the window meanwhile.
+            static POINTER: std::cell::Cell<Point<Pixels>> = const { std::cell::Cell::new(Point { x: px(0.), y: px(0.) }) };
+        }
+        let _ = main.update(cx, |_, window, cx| {
+            let event = match what {
+                "point" => {
+                    let (x, y) = by.split_once(';').unwrap_or((by, "0"));
+                    let at = point(px(x.parse().unwrap_or(0.)), px(y.parse().unwrap_or(0.)));
+                    POINTER.set(at);
+                    PlatformInput::MouseMove(MouseMoveEvent {
+                        position: at,
+                        pressed_button: None,
+                        modifiers: Modifiers::default(),
+                    })
+                }
+                "wheel" => PlatformInput::Scroll(ScrollEvent {
+                    position: POINTER.get(),
+                    delta: ScrollDelta::Lines(point(0., by.parse().unwrap_or(0.))),
+                    modifiers: Modifiers::control(),
+                    ..Default::default()
+                }),
+                _ => PlatformInput::Pinch(PinchEvent {
+                    position: POINTER.get(),
+                    delta: by.parse().unwrap_or(0.),
+                    ..Default::default()
+                }),
+            };
+            window.dispatch_event(event, cx);
+        });
+        return;
+    }
+    if matches!(step, "bump" | "palette" | "look") {
+        if let (Some(main), Some(workspace)) = (startup::main_window(cx), startup::main_workspace(cx)) {
+            let _ = main.update(cx, |_, window, cx| match step {
+                "bump" => workspace.update(cx, |workspace, cx| workspace.nudge(0, true, window, cx)),
+                "look" => crate::components::preview::quick_look::toggle(window, cx),
+                _ => window.dispatch_action(Box::new(actions::CommandPalette), cx),
+            });
+        }
+        return;
+    }
+    explorer::explorer(cx).update(cx, |e, cx| match step.split_once(':') {
+        Some(("select", nth)) => {
+            let nth: usize = nth.parse().unwrap_or(0);
+            let path = e
+                .active_tab()
+                .and_then(|tab| tab.rows.get(nth).map(|entry| entry.path.clone()));
+            e.select_only(path.as_deref(), cx);
+        }
+        Some(("in", nth)) => {
+            let nth: usize = nth.parse().unwrap_or(0);
+            let folder = e
+                .active_tab()
+                .and_then(|tab| tab.rows.iter().filter(|entry| entry.dir).nth(nth).cloned());
+            if let Some(folder) = folder {
+                e.open_entry(&folder, cx).detach();
+            }
+        }
+        _ => match step {
+            "up" => e.go_up(cx).detach(),
+            "back" => e.go_back(cx).detach(),
+            "forward" => e.go_forward(cx).detach(),
+            "thispc" => e.navigate(glint_model::paths::THIS_PC, Default::default(), cx),
+            "grid" => e.set_view(ViewMode::Grid, None, cx),
+            "list" => e.set_view(ViewMode::List, None, cx),
+            "bigger" => e.zoom_grid(1, cx),
+            "smaller" => e.zoom_grid(-1, cx),
+            _ => {}
+        },
+    });
 }
 
 /// The folder's file names, sorted (the log's evidence).

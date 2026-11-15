@@ -174,6 +174,60 @@ pub struct GridTemplate {
     pub min_size: GridTemplateMinSize,
 }
 
+/// Glint: how an element is drawn larger or smaller than it is laid out ([`Style::paint_zoom`]): `scale`
+/// times larger about the point of its box at (`origin_x`, `origin_y`) (in units of the box: 0.5, 0.5 is its
+/// middle), then moved by (`offset_x`, `offset_y`) pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct PaintZoom {
+    /// How many times larger the element is drawn.
+    pub scale: f32,
+    /// The point of the box that stays where it is, across: 0 is its left edge, 1 its right.
+    pub origin_x: f32,
+    /// The point of the box that stays where it is, down: 0 is its top edge, 1 its bottom.
+    pub origin_y: f32,
+    /// Pixels the element is moved to the right, after the scale.
+    pub offset_x: f32,
+    /// Pixels the element is moved down, after the scale.
+    pub offset_y: f32,
+}
+
+impl Default for PaintZoom {
+    fn default() -> Self {
+        Self {
+            scale: 1.,
+            origin_x: 0.5,
+            origin_y: 0.5,
+            offset_x: 0.,
+            offset_y: 0.,
+        }
+    }
+}
+
+impl PaintZoom {
+    /// The transform that draws an element laid out at `bounds` this way.
+    pub fn resolve(&self, bounds: Bounds<Pixels>) -> crate::PaintTransform {
+        let origin = point(
+            bounds.origin.x + bounds.size.width * self.origin_x,
+            bounds.origin.y + bounds.size.height * self.origin_y,
+        );
+        crate::PaintTransform::scale_about(self.scale, origin).then(crate::PaintTransform::moved(
+            point(Pixels(self.offset_x), Pixels(self.offset_y)),
+        ))
+    }
+
+    /// This zoom on its way to `to`, `amount` (0 to 1) of the way there.
+    pub fn mix(&self, to: &Self, amount: f32) -> Self {
+        let between = |from: f32, to: f32| from + (to - from) * amount;
+        Self {
+            scale: between(self.scale, to.scale),
+            origin_x: between(self.origin_x, to.origin_x),
+            origin_y: between(self.origin_y, to.origin_y),
+            offset_x: between(self.offset_x, to.offset_x),
+            offset_y: between(self.offset_y, to.offset_y),
+        }
+    }
+}
+
 /// The CSS styling that can be applied to an element via the `Styled` trait
 #[derive(Clone, Refineable, Debug)]
 #[refineable(Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -300,6 +354,10 @@ pub struct Style {
 
     /// The opacity of this element
     pub opacity: Option<f32>,
+
+    /// Glint: this element and everything in it drawn larger or smaller about a point of its box, and moved
+    /// (see [`PaintZoom`]). Paint only: its layout and its hitbox stay as they are.
+    pub paint_zoom: Option<PaintZoom>,
 
     /// The grid columns of this element
     /// Roughly equivalent to the Tailwind `grid-cols-<number>`
@@ -809,6 +867,7 @@ impl Default for Style {
             text: TextStyleRefinement::default(),
             mouse_cursor: None,
             opacity: None,
+            paint_zoom: None,
             grid_rows: None,
             grid_cols: None,
             grid_location: None,

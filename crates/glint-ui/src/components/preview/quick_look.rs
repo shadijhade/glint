@@ -228,7 +228,18 @@ pub fn open(window: &mut Window, cx: &mut App) {
     cx.set_global(Current(view.downgrade()));
     let maximized = view.read(cx).maximized.clone();
     let focus = view.read(cx).focus.clone();
-    window.open_dialog(cx, move |dialog, window, _cx| {
+    window.open_dialog(cx, move |dialog, window, cx| {
+        // It opens out of the row or tile of what it shows, and goes back into it (the one it shows now: the
+        // arrows move it).
+        let from = explorer::try_explorer(cx).and_then(|explorer| {
+            let explorer = explorer.read(cx);
+            let shown = looked(explorer)?;
+            crate::stage::spot_of(explorer.active_pane().min(1), &shown.path, window, cx)
+        });
+        let dialog = match from {
+            Some(from) => dialog.opens_from(from),
+            None => dialog,
+        };
         let viewport = window.viewport_size();
         let margin = if maximized.get() { MAXIMIZED_MARGIN } else { MARGIN };
         let (cap_w, cap_h) = if maximized.get() {

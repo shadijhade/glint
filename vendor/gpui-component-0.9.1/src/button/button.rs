@@ -737,9 +737,17 @@ impl RenderOnce for Button {
                     .when(interactive, |this| {
                         this.active(|this| {
                             let active_style = style.active(self.outline, cx);
-                            this.bg(active_style.bg)
+                            let this = this
+                                .bg(active_style.bg)
                                 .border_color(active_style.border)
-                                .text_color(active_style.fg)
+                                .text_color(active_style.fg);
+                            // Glint: a button gives under a press (drawn a little small while
+                            // held; paint only, so nothing around it moves).
+                            if cx.reduce_motion() {
+                                this
+                            } else {
+                                this.paint_scale(0.97)
+                            }
                         })
                         .when_some(hover_group, |this, group| {
                             let idle_bg = style.hovered(self.outline, cx).bg.opacity(0.5);

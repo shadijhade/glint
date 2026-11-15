@@ -30,6 +30,9 @@ pub enum DialogEntrance {
     None,
 }
 
+/// Glint: how small a surface is drawn at the start of its entrance.
+const ENTRANCE_POP: f32 = 0.955;
+
 /// Applies presentation travel after Positioner has resolved the resting bounds.
 /// Paint, hit testing, and accessibility follow the same offset.
 pub(super) struct EntranceSurface {
@@ -37,6 +40,8 @@ pub(super) struct EntranceSurface {
     travel: Pixels,
     top_limit: Pixels,
     pub(super) progress: f32,
+    /// Glint: what the dialog opens out of (window pixels), if anything: see `Dialog::opens_from`.
+    pub(super) from: Option<Bounds<Pixels>>,
 }
 
 impl EntranceSurface {
@@ -46,6 +51,7 @@ impl EntranceSurface {
             travel,
             top_limit,
             progress: 0.,
+            from: None,
         }
     }
 }
@@ -99,13 +105,44 @@ impl Element for EntranceSurface {
         &mut self,
         _: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
-        _: Bounds<Pixels>,
+        bounds: Bounds<Pixels>,
         _: &mut (),
         _: &mut (),
         window: &mut Window,
         cx: &mut App,
     ) {
-        self.child.paint(window, cx);
+        // Glint: the surface pops: it is drawn a few percent small at first and grows about its
+        // middle as it arrives (and back as it leaves). Paint only: its layout and what the
+        // pointer hits are where it rests. None under reduced motion, where progress is whole.
+        let progress = self.progress.clamp(0., 1.);
+        let available = (bounds.top() - self.top_limit).max(px(0.));
+        let travel = self.travel.max(px(0.)).min(available);
+        let middle = bounds.center() + point(px(0.), -travel * (1. - progress));
+        let pop = (progress < 1.).then(|| match self.from {
+            // Out of the thing it shows: as small as that thing at first and on it, growing by equal
+            // ratios to where it rests (and back into the thing as it leaves).
+            Some(from) if bounds.size.width > px(0.) && bounds.size.height > px(0.) => {
+                let small = (from.size.width / bounds.size.width)
+                    .max(from.size.height / bounds.size.height)
+                    .clamp(0.04, 1.);
+                let scale = small.powf(1. - progress);
+                let along = if small < 0.999 {
+                    (scale - small) / (1. - small)
+                } else {
+                    progress
+                };
+                let at = from.center() + (middle - from.center()) * along;
+                gpui::PaintTransform {
+                    scale,
+                    translate: point(at.x - middle.x * scale, at.y - middle.y * scale),
+                }
+            }
+            _ => gpui::PaintTransform::scale_about(
+                ENTRANCE_POP + (1. - ENTRANCE_POP) * progress,
+                middle,
+            ),
+        });
+        window.with_paint_transform(pop, |window| self.child.paint(window, cx));
     }
 }
 

@@ -98,9 +98,12 @@ pub(crate) fn dropdown_popup(
         id,
         Animation::new(DROPDOWN_ENTER_DURATION).with_easing(ease_out_cubic),
         move |surface, delta| {
+            // Glint: it pops, growing the last few percent from its top edge (paint only).
             surface
                 .top(px(travel * (1. - delta)))
                 .opacity(delta)
+                .paint_origin(0.5, 0.)
+                .paint_scale(0.955 + 0.045 * delta)
                 .shadow(popover_shadow(ring, delta * delta * delta))
         },
     ))
