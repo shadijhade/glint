@@ -19,6 +19,7 @@
 //! understand (an unknown enum value, a field of the wrong type) costs only that field, which gets its
 //! default; every other field is kept.
 
+use crate::aware::Habits;
 use serde::de::{MapAccess, Visitor};
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -370,6 +371,10 @@ pub struct Settings {
     pub readme_open: bool,
     /// Folder history shared with zoxide, when it's installed.
     pub zoxide: bool,
+    /// Menus and the dock put forward the step that fits what is selected (docs/gpui/aware).
+    pub suggest: bool,
+    /// What the person chooses is counted, on this PC only, to offer the likely step first.
+    pub learn: bool,
 }
 
 impl Default for Settings {
@@ -478,6 +483,8 @@ impl Default for Settings {
             show_readme: true,
             readme_open: false,
             zoxide: false,
+            suggest: true,
+            learn: true,
         }
     }
 }
@@ -722,6 +729,10 @@ pub struct AppState {
     /// empty.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub notices: BTreeMap<String, String>,
+    /// What the person did before: the actions chosen for each kind of thing and where each kind of file went
+    /// (docs/gpui/aware). Not written while empty.
+    #[serde(skip_serializing_if = "Habits::is_empty")]
+    pub habits: Habits,
 }
 
 impl Default for AppState {
@@ -743,6 +754,7 @@ impl Default for AppState {
             folder_views: OrderedMap::new(),
             recent_tags: Vec::new(),
             notices: BTreeMap::new(),
+            habits: Habits::default(),
         }
     }
 }
@@ -843,6 +855,8 @@ lenient_deserialize!(Settings {
     "showReadme" => show_readme,
     "readmeOpen" => readme_open,
     "zoxide" => zoxide,
+    "suggest" => suggest,
+    "learn" => learn,
 });
 /// Kinds of remote connection Glint no longer has: a paired PC's folders ("device"), gone with paired devices in
 /// 0.12. A saved one loads as nothing ([`load_persisted`] drops it); any other kind it doesn't know loads as S3.
@@ -924,6 +938,7 @@ lenient_deserialize!(AppState {
     "folderViews" => folder_views,
     "recentTags" => recent_tags,
     "notices" => notices,
+    "habits" => habits,
 });
 
 /// zustand's saved wrapper around the state.
@@ -1183,7 +1198,7 @@ mod tests {
                 r#""compareSubfolders":false,"compareContents":false,"columns":{{}},"previewWidth":null,"#,
                 r#""dualSplit":null,"gitTrusted":[],"terminalShell":"","terminalHeight":null,"#,
                 r#""terminalFollow":true,"growthDays":7,"showReadme":true,"readmeOpen":false,"#,
-                r#""zoxide":false}}"#
+                r#""zoxide":false,"suggest":true,"learn":true}}"#
             ),
             DEFAULT_EXCLUSIONS
         );

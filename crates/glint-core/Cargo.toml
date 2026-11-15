@@ -17,6 +17,10 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
 notify = "8"
 shadui-index = { path = "../shadui-index" }
+# The aware probes (aware/) answer in glint-model's types, which the window ranks with; and they count a text
+# file's lines with memchr (SIMD), which shadui-index already builds.
+glint-model = { path = "../glint-model" }
+memchr = "2"
 # The File X-Ray's checksums: RustCrypto's SHA-256 (with the CPU's SHA instructions where it has them)
 # and crc32fast, both already in the build (flate2 brings the latter), and BLAKE3, which the duplicate
 # finder hashes content with too (several times SHA-256's speed, with SIMD).

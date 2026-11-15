@@ -29,6 +29,11 @@ pub async fn who_locks(paths: Vec<String>) -> Result<LockReport, String> {
     blocking(move || imp::who_locks(paths)).await
 }
 
+/// [`who_locks`] on the calling thread: for the aware probes, which run on threads of their own.
+pub fn who_locks_now(paths: Vec<String>) -> Result<LockReport, String> {
+    imp::who_locks(paths)
+}
+
 pub async fn stop_locking_process(pid: u32, start_time_low: u32, start_time_high: u32) -> Result<(), String> {
     blocking(move || imp::stop_locking_process(pid, start_time_low, start_time_high)).await
 }
