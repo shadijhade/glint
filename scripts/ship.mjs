@@ -11,6 +11,7 @@
 //   --only <step,…>    just these steps      --from <step>   this step and the ones after it
 //   --draft            stop before publishing: the draft release is there to read and try
 //   --run <id>         take the build from this run of the Release workflow (one started before later commits)
+//   --local            build and sign on this PC instead (npm run release: it asks for the update key's password)
 //   --full             run glint-ui's tests and the end-to-end checks first (they take the mouse and keyboard)
 //   --notes-as-drafted take git-cliff's draft of the notes as they are, when no notes were written
 //   --no-scoop, --no-winget, --no-store   leave that one out
@@ -21,7 +22,7 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { REPO, root, workspaceVersion } from "./lib/project.mjs";
 
@@ -78,6 +79,16 @@ const notes = join(out, "notes.md");
 const manifests = join(out, "package-manifests");
 /** The commit the files in `out` were built from (the build step writes it): what the release's tag is put on. */
 const builtFrom = join(out, "built-from.txt");
+/** Runs of the workflow that built without the update key: not taken again. */
+const unsignedRuns = join(out, "unsigned-runs.txt");
+const UNSIGNED = [
+    "The workflow built Glint but could not sign the update: the repository's TAURI_SIGNING_PRIVATE_KEY secret is empty",
+    "(its runs say HAS_UPDATER_KEY: false), so there is no latest.json and no service signature, and the app couldn't",
+    "install this release by itself. Either",
+    '  - put the key there once:   Get-Content "$HOME\\.tauri\\shadui-ripgrep.key" -Raw | gh secret set TAURI_SIGNING_PRIVATE_KEY',
+    "    then:                     npm run ship",
+    "  - or build and sign here:   npm run ship -- --local     (asks for the key's password)",
+].join("\n");
 const releaseCommit = () => (existsSync(builtFrom) ? readFileSync(builtFrom, "utf8").trim() : git("rev-parse", "HEAD"));
 
 /** The release on GitHub, or undefined: `{ isDraft, assets: [{ name, digest }], targetCommitish }`. */
@@ -170,17 +181,26 @@ const steps = {
     /** The release workflow builds and signs this commit; its files come down into release/vX.Y.Z. */
     async build() {
         if (files().every(existsSync)) return done(`the build's files are in ${out}`);
+        if (flag("--local")) {
+            if (dry) return would("npm run release: build, sign (it asks for the update key's password) and lay out the files here");
+            // The key's path, not the key: release.mjs unlocks it with the password it asks for.
+            const key = process.env.TAURI_SIGNING_PRIVATE_KEY ?? join(process.env.USERPROFILE ?? "", ".tauri", "shadui-ripgrep.key");
+            run("node", ["scripts/release.mjs"], { stdio: "inherit", env: { ...process.env, TAURI_SIGNING_PRIVATE_KEY: key } });
+            writeFileSync(builtFrom, `${git("rev-parse", "HEAD")}\n`);
+            return done(`built and signed here; its files are in ${out}`);
+        }
         const head = git("rev-parse", "HEAD");
+        const unsigned = existsSync(unsignedRuns) ? readFileSync(unsignedRuns, "utf8").split(/\s+/).filter(Boolean) : [];
         const runsOf = () => ghJson("run", "list", "--repo", SLUG, "--workflow", WORKFLOW, "--limit", "20", "--json", "databaseId,headSha,status,conclusion,event").filter((r) => r.headSha === head);
         let build = value("--run")
             ? ghJson("run", "view", value("--run"), "--repo", SLUG, "--json", "databaseId,status,conclusion,headSha")
-            : runsOf().find((r) => r.conclusion === "success" || r.status !== "completed");
+            : runsOf().find((r) => (r.conclusion === "success" || r.status !== "completed") && !unsigned.includes(String(r.databaseId)));
         if (!build) {
             if (dry) return would(`start the Release workflow on master (${head.slice(0, 7)}), wait for it, and download its files`);
             gh("workflow", "run", WORKFLOW, "--repo", SLUG, "--ref", "master");
             for (let i = 0; i < 20 && !build; i++) {
                 await sleep(6);
-                build = runsOf().find((r) => r.status !== "completed");
+                build = runsOf().find((r) => r.status !== "completed" && !unsigned.includes(String(r.databaseId)));
             }
             if (!build) stop("The Release workflow didn't start: look at the repository's Actions page.");
             say(`The Release workflow builds and signs ${tag}: ${REPO}/actions/runs/${build.databaseId} (about three quarters of an hour).`);
@@ -192,10 +212,22 @@ const steps = {
         }
         if (build.conclusion !== "success") stop(`The build failed: gh run view ${build.databaseId} --log-failed says where. Fix it, push, and run npm run ship again.`);
         mkdirSync(out, { recursive: true });
+        // Into a folder of their own first: a build without the update signature is not a release's files.
+        const down = join(out, "from-run");
+        rmSync(down, { recursive: true, force: true });
         for (const name of [`release-${tag}`, `msix-${tag}`]) {
-            const got = tryGh("run", "download", String(build.databaseId), "--repo", SLUG, "--name", name, "--dir", out);
+            const got = tryGh("run", "download", String(build.databaseId), "--repo", SLUG, "--name", name, "--dir", down);
             if (!got.ok && name.startsWith("release-")) stop(`The run has no ${name} artifact:\n${got.err}`);
         }
+        if (!existsSync(join(down, "latest.json")) || !existsSync(join(down, `${setup}.sig`))) {
+            writeFileSync(unsignedRuns, `${[...unsigned, String(build.databaseId)].join("\n")}\n`);
+            stop(`${UNSIGNED}\n\n(What run ${build.databaseId} built is in ${down}: the installer and the Store's package, without those signatures.)`);
+        }
+        for (const name of readdirSync(down)) {
+            rmSync(join(out, name), { recursive: true, force: true });
+            renameSync(join(down, name), join(out, name));
+        }
+        rmSync(down, { recursive: true, force: true });
         writeFileSync(builtFrom, `${build.headSha}
 `);
         done(`run ${build.databaseId} built ${tag} from ${build.headSha.slice(0, 7)}; its files are in ${out}`);
@@ -234,7 +266,10 @@ const steps = {
         // GitHub keeps the old address of "latest" for a moment; a query string gets the new one at once.
         for (let i = 0; i < 30; i++) {
             const answer = await fetch(`${REPO}/releases/latest/download/latest.json?${Date.now()}`).then((r) => (r.ok ? r.json() : undefined), () => undefined);
-            if (answer?.version === version) return done(`${tag} is published, and installed copies are offered it: ${REPO}/releases/tag/${tag}`);
+            if (answer?.version === version) {
+                stampReadme();
+                return done(`${tag} is published, and installed copies are offered it: ${REPO}/releases/tag/${tag}`);
+            }
             await sleep(10);
         }
         stop(`${tag} is published, but ${REPO}/releases/latest/download/latest.json doesn't say ${version} yet.`);
@@ -331,6 +366,20 @@ const steps = {
         done("the Store has the submission: certification, then it publishes by itself (npm run store -- --status)");
     },
 };
+
+/** The README's "What's new" says the day this version came out: the day it was published, whatever was written before. */
+function stampReadme() {
+    const published = ghJson("release", "view", tag, "--repo", SLUG, "--json", "publishedAt").publishedAt;
+    const day = new Date(published).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
+    const text = read("README.md");
+    const dated = text.replace(new RegExp(`(\\*\\*${version.replace(/\./g, "\\.")}\\*\\* \\()[A-Z][a-z]+ \\d{1,2}, \\d{4}(\\))`), `$1${day}$2`);
+    if (dated === text || git("status", "--porcelain", "README.md")) return;
+    writeFileSync(join(root, "README.md"), dated);
+    git("add", "README.md");
+    git("commit", "--quiet", "-m", `docs: ${version} came out on ${day}`);
+    git("push", "--quiet", "origin", "master");
+    done(`the README says ${version} came out on ${day}`);
+}
 
 /** The version released before this one, for "the manifests are X's with…". */
 function lastReleasedBefore() {

@@ -138,7 +138,7 @@ Install the two cargo tools with `cargo install --locked cargo-deny cargo-about`
 | `version` | sets the version in `Cargo.toml`, `package.json` and the bug report's placeholder, drafts `release/vX.Y.Z/notes.md` when there are none, commits `Release vX.Y.Z` and pushes | the notes written (it stops once for you to rewrite the draft; `--notes-as-drafted` takes it as it is) |
 | `build` | starts the release workflow on master, waits for it (about three quarters of an hour), and downloads what it built and signed into `release/vX.Y.Z` | the repository's `TAURI_SIGNING_PRIVATE_KEY` secrets ([above](#1-the-updater-key-needed-for-auto-update)) |
 | `verify` | checks the installer the way the app will before installing it (`verify-update.mjs`), and that `Glint-setup.exe` is the same file | |
-| `release` | creates the draft release on the commit that was built, with the four files and the notes, compares GitHub's copies with the built ones, publishes it as the latest, and waits until installed copies are offered it | `--draft` stops before publishing |
+| `release` | creates the draft release on the commit that was built, with the four files and the notes, compares GitHub's copies with the built ones, publishes it as the latest, waits until installed copies are offered it, and puts the day it came out in the README's *What's new* | `--draft` stops before publishing |
 | `scoop` | puts the new `bucket/glint.json` in [shadijhade/scoop-bucket](https://github.com/shadijhade/scoop-bucket) | |
 | `winget` | `winget validate`, a branch on the fork with the three manifests, and the pull request to microsoft/winget-pkgs | the fork `shadijhade/winget-pkgs` |
 | `store` | packs the Store's MSIX (the workflow's `msix-vX.Y.Z` artifact, else from the released setup program's own files with 7-Zip) and sends it with `npm run store -- --submit`, with `--listing` when the listing's words or screenshots changed since the last release | the Store API set up once ([below](#sending-it-with-npm-run-store)); without it, it says where the package is, for Partner Center |
@@ -150,9 +150,12 @@ npm run ship -- --draft           # up to the draft release: read it and try Gli
 npm run ship -- --only store      # one step (or several: --only scoop,winget); --from release for it and the rest
 npm run ship -- --no-store        # leave one out (--no-scoop, --no-winget)
 npm run ship -- --run 43758944263 # take the build from a run of the workflow started earlier
+npm run ship -- --local           # build and sign here instead of on GitHub (asks for the update key's password)
 ```
 
-**The update key is never needed on this PC.** The workflow holds it as a secret, builds, signs the service and the installer and writes `latest.json`; a run started by hand (which is what `ship` does) makes no release, only the `release-vX.Y.Z` artifact. `ship` takes that, checks it against the public key the app is built with, and makes the release from it. Publishing the release creates its tag, and the workflow, started again by the tag, finds the release made and builds nothing.
+**The update key is never needed on this PC**, once the repository's `TAURI_SIGNING_PRIVATE_KEY` secret holds it. The workflow builds, signs the service and the installer and writes `latest.json`; a run started by hand (which is what `ship` does) makes no release, only the `release-vX.Y.Z` artifact. `ship` takes that, checks it against the public key the app is built with, and makes the release from it. Publishing the release creates its tag, and the workflow, started again by the tag, finds the release made and builds nothing.
+
+A run whose secret is empty (it says `HAS_UPDATER_KEY: false`; the secret was empty from 2026-10-22 until someone set it again) builds everything but the signatures. `ship` doesn't release that: it says how to set the secret, keeps what was built in `release/vX.Y.Z/from-run` to look at, and won't take that run again. `npm run ship -- --local` builds and signs on this PC instead, with `npm run release`, which asks for the key's password.
 
 **Before it:** write what's new in the README (`## What's new`), in `docs/features.md` when a feature is new, and in `crates/glint/msix/listing.json` (`whatsNew`, with the version) for the Store; `ship` says so when the README or the listing still tell about the last release, and goes on.
 
