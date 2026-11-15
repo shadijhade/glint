@@ -210,6 +210,10 @@ function Start-App {
         $errTo = [Environment]::GetEnvironmentVariable('GLINT_E2E_STDERR', 'Process')
         if ($errTo) { $p = Start-Process -FilePath $exe -ArgumentList ('"' + $Folder + '"') -PassThru -RedirectStandardError $errTo }
         else { $p = Start-Process -FilePath $exe -ArgumentList ('"' + $Folder + '"') -PassThru }
+        # Opened now, while the app runs. With a redirected stream, Windows PowerShell 5.1 hands back a process
+        # that holds no handle of its own, and once it has exited its exit code reads as empty: `quit` failed
+        # every run made with GLINT_E2E_STDERR.
+        $null = $p.Handle
     }
     finally { Restore-ChildEnv }
     $script:E2E.Process = $p

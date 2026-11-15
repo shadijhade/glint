@@ -376,7 +376,9 @@ rest their dependencies and the code that used them); C1 2.7 MB (tokio 4.62 to 0
 real bugs, both fixed and committed: a line the content index found showed no line number (an empty label won), and
 the index, started at launch again by A1, answered before it had caught up (a new file wasn't found). `quit` fails:
 closing the window hides it to the tray instead of quitting, and the 0.11.0 build fails the same way on this PC, so it
-isn't from 0.12. The harness's "fresh" profile isn't fully fresh here (the content index's settings, and what its
+isn't from 0.12. (2026-11-15: not reproduced. The same binary quit at once and a fresh build passed 18 of 18, with the
+installed Glint closed; runs logged with `GLINT_E2E_STDERR` had failed `quit` on an empty exit code, a harness bug now
+fixed, and the check now says what it finds when the app stays. See `tests/e2e/README.md`.) The harness's "fresh" profile isn't fully fresh here (the content index's settings, and what its
 processes write to the registry, are shared with the user's own copy). Debug links now hit the PDB limit at times
 (LNK1140): delete `debug\Glint.pdb` and `debug\deps\Glint.pdb`, or link with `-C link-arg=/DEBUG:NONE`.
 
