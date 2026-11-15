@@ -1,6 +1,6 @@
 # Releasing
 
-Glint is built, signed and laid out by `npm run release` on the maintainer's PC, or by the release workflow on GitHub when a `vX.Y.Z` tag is pushed (the only way to get the binaries signed by SignPath). Both make the same files. This page covers what to set up once and what to do for each release.
+Glint is built, signed and laid out by `npm run release` on the maintainer's PC, or by the release workflow on GitHub (started by hand, or by a pushed `vX.Y.Z` tag; the only way to get the binaries signed by SignPath). Both make the same files, and [`npm run ship`](#one-command-npm-run-ship) does a whole release with the second: the checks, the version, the build, the release, Scoop, winget and the Microsoft Store. This page covers what to set up once and what each step is.
 
 The build is the GPUI one: `Glint.exe` (`crates/glint`) and the instant search service (`shadui-index.exe`, `crates/shadui-index`), built together by `cargo build --release -p glint -p shadui-index` into `target/ui/release` (`CARGO_TARGET_DIR` changes the folder), and packed by `makensis` into a plain NSIS setup program ([`crates/glint/installer`](../crates/glint/installer/README.md)). There is no Tauri in the pipeline: no `tauri build`, no bundler, no WebView2 inside the installer. What every installed Glint (v0.9.x, built with Tauri) relies on to update itself is kept as it was; [what stays fixed](#what-stays-fixed-because-installed-copies-update-through-it) lists it.
 
@@ -127,7 +127,40 @@ Four tools help with each release, and `npm run release` skips (with a warning t
 
 Install the two cargo tools with `cargo install --locked cargo-deny cargo-about`, or put the `x86_64-pc-windows-msvc` builds from their GitHub releases on `PATH`. **Until cargo-about has run on this workspace, `THIRD_PARTY_CRATES.md`'s crate list is the old Tauri build's**: run `npm run licenses` and commit it before releasing.
 
-## Every release
+## One command: `npm run ship`
+
+`npm run ship -- 0.14.0` ([`scripts/ship.mjs`](../scripts/ship.mjs)) does a whole release, in order, and stops at the first thing that fails. Every step looks at what is already true and does only what is missing, so after a stop (a failed check, a build that broke, the network) the same command carries on from there.
+
+| Step | What it does | What it needs |
+| :--- | :--- | :--- |
+| `ready` | master, nothing uncommitted, in step with GitHub, a version after the latest release | `gh auth login` |
+| `checks` | `cargo deny check`, the notices (`npm run licenses -- --check`), the signing's own test; with `--full`, glint-ui's tests and the end-to-end checks first | cargo-deny and cargo-about for the first two (skipped with a warning without them) |
+| `version` | sets the version in `Cargo.toml`, `package.json` and the bug report's placeholder, drafts `release/vX.Y.Z/notes.md` when there are none, commits `Release vX.Y.Z` and pushes | the notes written (it stops once for you to rewrite the draft; `--notes-as-drafted` takes it as it is) |
+| `build` | starts the release workflow on master, waits for it (about three quarters of an hour), and downloads what it built and signed into `release/vX.Y.Z` | the repository's `TAURI_SIGNING_PRIVATE_KEY` secrets ([above](#1-the-updater-key-needed-for-auto-update)) |
+| `verify` | checks the installer the way the app will before installing it (`verify-update.mjs`), and that `Glint-setup.exe` is the same file | |
+| `release` | creates the draft release on the commit that was built, with the four files and the notes, compares GitHub's copies with the built ones, publishes it as the latest, and waits until installed copies are offered it | `--draft` stops before publishing |
+| `scoop` | puts the new `bucket/glint.json` in [shadijhade/scoop-bucket](https://github.com/shadijhade/scoop-bucket) | |
+| `winget` | `winget validate`, a branch on the fork with the three manifests, and the pull request to microsoft/winget-pkgs | the fork `shadijhade/winget-pkgs` |
+| `store` | packs the Store's MSIX (the workflow's `msix-vX.Y.Z` artifact, else from the released setup program's own files with 7-Zip) and sends it with `npm run store -- --submit`, with `--listing` when the listing's words or screenshots changed since the last release | the Store API set up once ([below](#sending-it-with-npm-run-store)); without it, it says where the package is, for Partner Center |
+
+```powershell
+npm run ship -- 0.14.0            # everything
+npm run ship -- --dry             # what each step would do, changing nothing
+npm run ship -- --draft           # up to the draft release: read it and try Glint-setup.exe, then run it again
+npm run ship -- --only store      # one step (or several: --only scoop,winget); --from release for it and the rest
+npm run ship -- --no-store        # leave one out (--no-scoop, --no-winget)
+npm run ship -- --run 43758944263 # take the build from a run of the workflow started earlier
+```
+
+**The update key is never needed on this PC.** The workflow holds it as a secret, builds, signs the service and the installer and writes `latest.json`; a run started by hand (which is what `ship` does) makes no release, only the `release-vX.Y.Z` artifact. `ship` takes that, checks it against the public key the app is built with, and makes the release from it. Publishing the release creates its tag, and the workflow, started again by the tag, finds the release made and builds nothing.
+
+**Before it:** write what's new in the README (`## What's new`), in `docs/features.md` when a feature is new, and in `crates/glint/msix/listing.json` (`whatsNew`, with the version) for the Store; `ship` says so when the README or the listing still tell about the last release, and goes on.
+
+**What it doesn't do:** the website ([below](#the-website): deploy it when its words or pictures change), and anything that needs a person: a moderator merges the winget pull request, and the Store certifies the submission.
+
+## Every release, by hand
+
+What `npm run ship` does, step by step, for when a step has to be done by hand.
 
 1.  **Bump the version** to the same `X.Y.Z` in two places:
     -   `Cargo.toml`: `[workspace.package] version`, which the app, the installer and the instant search service share; then `cargo check` to update `Cargo.lock`
@@ -165,7 +198,7 @@ Everything is made and checked, with the throwaway key standing in for the app's
 
 Step 1 and 2 as above, then:
 
-3.  **Try it** (optional): **Actions → Release → Run workflow** on `master` runs every check and builds (and signs) the installer without making a release; its files are in the run's `release-vX.Y.Z` artifact.
+3.  **Try it** (optional): **Actions → Release → Run workflow** on `master` runs every check and builds (and signs) the installer without making a release; its files are in the run's `release-vX.Y.Z` artifact, and the Store's package in `msix-vX.Y.Z`. (`npm run ship` makes its release from exactly such a run.)
 4.  **Tag and push**: `git tag vX.Y.Z` and `git push origin vX.Y.Z`. The workflow checks that the versions and the tag agree, runs the checks, installs NSIS (`choco install nsis`), builds with `cargo build --release -p glint -p shadui-index`, signs `Glint.exe` and the service with SignPath when it's set up (approve the requests there), signs the service's update and packs the installer with `scripts/gpui-installer.mjs`, signs the installer with SignPath, signs the update, and creates a draft release with `Glint-setup.exe`, the `-setup.exe`, its `.sig` and `latest.json`. It doesn't run cargo-deny or cargo-about, so run those here first (`cargo deny check` and `npm run licenses`).
 5.  **Notes**: `npm run notes`, edit `release/vX.Y.Z/notes.md`, and put it on the draft with `gh release edit vX.Y.Z --notes-file release/vX.Y.Z/notes.md`.
 6.  **On GitHub**, as in step 6 above.
