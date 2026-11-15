@@ -50,3 +50,5 @@ pub mod tab_strip;
 pub mod terminal;
 /// This PC: drives and their space (ThisPC.tsx).
 pub mod this_pc;
+/// Small things drawn for the dock: a rolling number, a spark line, the glint's ring (docs/gpui/aware).
+pub mod viz;

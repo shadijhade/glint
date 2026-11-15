@@ -59,8 +59,12 @@
 
 mod facts;
 mod menus;
+/// The island's next step, and Paste's words.
+pub mod smart;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_smart;
 
 pub use facts::{Facts, Folding, Pair, MOST};
 pub use menus::{keyed, keyed_with, keys_of, Pick};

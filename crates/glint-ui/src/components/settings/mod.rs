@@ -52,6 +52,8 @@ mod widgets;
 #[cfg(test)]
 pub(crate) mod tests;
 #[cfg(test)]
+mod tests_aware;
+#[cfg(test)]
 mod tests_general;
 #[cfg(test)]
 mod tests_services;

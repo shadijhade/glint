@@ -18,6 +18,8 @@
 pub mod actions;
 /// Glint's own pictures: folders, pages, chips, and the light behind the window.
 pub mod art;
+/// What Glint knows about what the pointer rests on and what is selected, kept ready (docs/gpui/aware).
+pub mod aware;
 pub mod book_places;
 pub mod components;
 pub mod core_bridge;
