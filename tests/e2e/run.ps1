@@ -13,11 +13,7 @@
   Print the checks and what each proves, and exit.
 
 .PARAMETER Keep
-  Keep the scratch folder (with its log) even when every check passed.
-
-.PARAMETER Restore
-  Put back the user's state files from the newest backup that was never restored (after a run that was killed),
-  and exit. The clipboard is not backed up on disk.
+  Keep the scratch folder (with its log and the run's profile) even when every check passed.
 
 .EXAMPLE
   powershell -STA -File tests\e2e\run.ps1
@@ -27,8 +23,7 @@ param(
     [string]$Exe = (Join-Path $PSScriptRoot '..\..\target\ui\debug\Glint.exe'),
     [string[]]$Only = @(),
     [switch]$List,
-    [switch]$Keep,
-    [switch]$Restore
+    [switch]$Keep
 )
 
 # Windows PowerShell 5.1 in a single-threaded apartment: the clipboard and UI Automation need it.
@@ -37,7 +32,6 @@ if ($PSVersionTable.PSEdition -eq 'Core' -or [Threading.Thread]::CurrentThread.G
     if ($Only.Count) { $forward += '-Only'; $forward += ($Only -join ',') }
     if ($List) { $forward += '-List' }
     if ($Keep) { $forward += '-Keep' }
-    if ($Restore) { $forward += '-Restore' }
     & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" @forward
     exit $LASTEXITCODE
 }
@@ -52,24 +46,11 @@ if ($List) {
     exit 0
 }
 
-if ($Restore) {
-    $root = Get-BackupRoot
-    $dirs = @()
-    if (Test-Path -LiteralPath $root) {
-        $dirs = @(Get-ChildItem -LiteralPath $root -Directory | Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'manifest.json') } | Sort-Object Name -Descending)
-    }
-    if ($dirs.Count -eq 0) { Write-Host 'No unrestored backup found.'; exit 0 }
-    if (@(Test-OtherGlintRunning).Count -gt 0) { Write-Host 'Glint is running; close it first (it would overwrite the files again).'; exit 1 }
-    [void](Restore-UserStateFrom $dirs[0].FullName)
-    Write-Host "Put back the state files saved in $($dirs[0].FullName)."
-    exit 0
-}
-
 foreach ($name in $Only) {
     if (-not ($script:Checks | Where-Object { $_.Name -eq $name })) { Write-Host "No check called '$name' (see -List)."; exit 2 }
 }
 
-# What the user's files look like before, to prove they are the same after.
+# What the user's own Glint files look like before, to prove the run left them alone.
 function Get-FileHashes {
     $h = @{}
     foreach ($f in (Get-UserFiles)) {
@@ -98,8 +79,8 @@ finally {
     $scratch = $script:E2E.Scratch
     Close-Session -Keep:($Keep -or $failed)
     $hashesAfter = Get-FileHashes
-    $restored = $true
-    foreach ($k in $hashesBefore.Keys) { if ($hashesBefore[$k] -ne $hashesAfter[$k]) { $restored = $false; Write-Host "NOT RESTORED: $k" } }
+    $untouched = $true
+    foreach ($k in $hashesBefore.Keys) { if ($hashesBefore[$k] -ne $hashesAfter[$k]) { $untouched = $false; Write-Host "CHANGED: $k" } }
     $stray = @(Test-OtherGlintRunning)
     Write-Host ''
     Write-Host '==== results ===='
@@ -112,11 +93,11 @@ finally {
     $known = @($script:Results | Where-Object { $_.Status -eq 'KNOWN' }).Count
     $fixed = @($script:Results | Where-Object { $_.Status -eq 'FIXED' }).Count
     Write-Host ("{0} passed, {1} failed, {2} skipped, {3} known issues, {4} fixed (unflag)" -f $pass, $fail, $skip, $known, $fixed)
-    Write-Host ("user's state files put back: " + $(if ($restored) { 'yes (hashes match)' } else { 'NO' }))
+    Write-Host ("user's own Glint files untouched: " + $(if ($untouched) { 'yes (hashes match)' } else { 'NO' }))
     Write-Host ("clipboard put back: " + $(if ($script:ClipboardRestored -eq $true) { 'yes (text, files and image kind match)' } elseif ($script:ClipboardRestored -eq $false) { 'NO (it held a format the run cannot copy; see the log)' } else { 'not backed up' }))
     if ($stray.Count -gt 0) { Write-Host "a Glint.exe is still running (pid $($stray[0].Id))" }
     if ($failed -or $Keep) { Write-Host "scratch folder with the log and captures: $scratch" }
     if ($fail -gt 0) { $exit = 1 }
-    if (-not $restored -or $stray.Count -gt 0) { $exit = 4 }
+    if (-not $untouched -or $stray.Count -gt 0) { $exit = 4 }
 }
 exit $exit
