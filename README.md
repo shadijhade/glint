@@ -41,7 +41,7 @@ A native Windows app written in Rust. Free, open source, and no account.
 | Where | What you get |
 | :--- | :--- |
 | **[Microsoft Store](https://apps.microsoft.com/detail/9NQLRJ3HF1C9)** | Signed by Microsoft, so Windows installs it without a warning, even with Smart App Control on. The Store keeps it up to date. |
-| **[Installer](https://github.com/shadijhade/glint/releases/latest/download/Glint-setup.exe)** | Installs for your account in a few seconds, without administrator rights, with ripgrep, fd and pdu inside, and updates itself. Its **Extra tools** page offers instant search and the free tools some features use ([which ones](docs/tools.md)). |
+| **[Installer](https://github.com/shadijhade/glint/releases/latest/download/Glint-setup.exe)** | Installs for your account in a few seconds, without administrator rights, with ripgrep and fd inside, and updates itself. Its **Extra tools** page offers instant search and the free tools some features use ([which ones](docs/tools.md)). |
 | **winget** | The installer's copy, or the Store's (commands below). |
 | **[Scoop](https://scoop.sh/)** | Checked against its hash, no SmartScreen prompt; `scoop update glint` keeps it current. |
 
@@ -62,15 +62,18 @@ Glint needs Windows 10 or 11, 64-bit, and nothing else: it draws its own window,
 
 ## What's new
 
-**0.12.0** (November 14, 2026) adds nothing. It takes out what wasn't worth its weight, does less work for everything that stays, and brings back four things the move to a native window had stopped.
+**0.13.0** (November 15, 2026) makes Glint pay attention. The right-click menu and the dock know what you picked, say what is true about it, and put the next step first.
 
--   **Smaller.** `Glint.exe` is 93 MB, down from 174 MB, and builds 240 fewer crates.
--   **Back again.** **Search inside files instantly** catches up with what changed while Glint was closed, daily and weekly **backups** run on time, **remotes shown in File Explorer** answer it again, and `Ctrl+Alt+G` takes the file dialog in front to the folder shown.
--   **Quiet at rest.** Glint no longer wakes at every refresh of the display when nothing on screen changes, nor while it waits in the tray.
--   **Less work for everything.** Code previews color their first lines at once, an arrow key no longer rebuilds the sidebar, a search your next key replaces stops at once, and busy folders, big copies and searches with many hits all cost less.
--   **Removed:** Mermaid diagrams, the built-in Typst (`.typ` previews and **Export as PDF**), paired devices, and photo, speech and meaning search. Their downloads are deleted from the PC at the first start.
+<img src="screenshots/smart-menu.png" alt="The right-click menu of a downloaded program: its name, that it came from github.com and isn't signed, and under Suggested: Scan with Microsoft Defender, because it came from github.com, and Run in Windows Sandbox, because it isn't signed" width="100%">
 
-[Release notes](https://github.com/shadijhade/glint/releases/tag/v0.12.0) · [Every release](https://github.com/shadijhade/glint/releases) · 0.11 gave Glint [a window of its own](https://github.com/shadijhade/glint/releases/tag/v0.11.0), and 0.10 made it [a native app](https://github.com/shadijhade/glint/releases/tag/v0.10.0).
+-   **A menu that knows the file.** It starts with the item itself: what it is, where a download came from, whether a program is signed, how many identical copies there are, which program has it open. Under that, **Suggested**: *Extract here* for an archive, *Scan with Microsoft Defender* for a download, *Run in Windows Sandbox* for a program nobody signed, each with its reason.
+-   **Type in the menu.** Start typing and only the rows that match stay, the ones in submenus too; `Enter` runs the first. A greyed row says why it's off.
+-   **The dock's next step.** With something selected, the dock offers what you'd likely do next (*Extract here*, *Compare*, *Clean up…*), **Paste** says what it would paste, and the words beside it say what the selection holds: lines, pages, minutes, or everything inside a folder, counted before you ask.
+-   **It learns, on your PC only.** What you choose rises in `Ctrl+K` and in **Suggested**, and **Move or copy to** offers the folder that kind of file usually goes to. Two switches and **Forget what Glint learned** are in Settings.
+-   **Settings, reworked.** Pages with an overview and a search box, suggestions for this PC, and tools that install and update the first time. Seven rarely used tools are gone.
+-   **Windows 10.** Glint 0.10 to 0.12 asked Windows for something only Windows 11 has, and didn't start there. It does again, and every release is now checked for it.
+
+[Release notes](https://github.com/shadijhade/glint/releases/tag/v0.13.0) · [Every release](https://github.com/shadijhade/glint/releases) · 0.12 made Glint [smaller and quieter](https://github.com/shadijhade/glint/releases/tag/v0.12.0), 0.11 gave it [a window of its own](https://github.com/shadijhade/glint/releases/tag/v0.11.0), and 0.10 made it [a native app](https://github.com/shadijhade/glint/releases/tag/v0.10.0).
 
 ## Benchmarks
 
@@ -132,6 +135,16 @@ A tour of what Glint does. **Every feature, in detail: [docs/features.md](docs/f
 -   **List, grid, columns and gallery.** Windows' own thumbnails in five tile sizes, a Columns view (`Ctrl+Shift+9`), **Group by** kind, date, size, type or Git status, and a Gallery of your photos and videos by month.
 
 [More about browsing →](docs/features.md#browsing)
+
+### A menu and a dock that pay attention
+
+-   **The menu starts with the item.** Its picture, name and what is true about it: a download's site, a program's signer (or that it has none), identical copies, the program that has it open, a video's length, a folder's weight.
+-   **Suggested, with the reason.** Up to three rows put first for this kind of thing, and for what you did with it before: *Extract here*, *Scan with Microsoft Defender · It came from github.com*, *Run in Windows Sandbox · It isn't signed*. The menu's own rows never move.
+-   **Type to find a row**, in submenus too, and `Enter` runs the first. A greyed row says why.
+-   **The dock knows the selection.** A next step with one press, **Paste** that says what it holds (*Paste 3 files*), and what the selection weighs: *2 selected · 68 B · 4 lines*, *1 selected · 600 MB · 3 files inside*. It says **Changing now** while the folder is being written to, and when its drive is nearly full.
+-   **Nothing leaves the PC, and nothing waits.** Glint looks while the pointer rests, on threads Windows runs in efficiency mode; what isn't known yet isn't said.
+
+[More about the menu and the dock →](docs/features.md#the-menu-and-the-dock)
 
 ### Search
 
@@ -471,6 +484,7 @@ npm run test:signing
 ## Roadmap
 
 -   [ ] Code-signed installers (the SignPath Foundation invited a new application once Glint is better known)
+-   [x] 0.13: a right-click menu and a dock that know what you picked, and Settings reworked
 -   [x] 0.12: smaller and quieter, with what the move to a native window had stopped running again
 -   [x] 0.11: a window of its own (one bar, tabs in a rail, a dock) and one search for names and contents
 -   [x] 0.10: a native app in Rust and GPUI, with no web view
@@ -522,4 +536,4 @@ Bug reports, ideas and pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING
 
 ## License
 
-MIT, see [LICENSE](LICENSE). The bundled ripgrep, fd and pdu, and the crates that read archives, keep their own licenses; see [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md), and [THIRD_PARTY_CRATES.md](THIRD_PARTY_CRATES.md) for every crate in the app.
+MIT, see [LICENSE](LICENSE). The bundled ripgrep and fd, pdu's engine inside Glint, and the crates that read archives, keep their own licenses; see [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md), and [THIRD_PARTY_CRATES.md](THIRD_PARTY_CRATES.md) for every crate in the app.
