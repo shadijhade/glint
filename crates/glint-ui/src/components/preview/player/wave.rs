@@ -10,6 +10,8 @@ use gpui_kit::{canvas, fill, point, px, size, Bounds, Hsla, IntoElement, Pixels,
 use std::sync::Arc;
 use windows::core::PCWSTR;
 use windows::Win32::Media::MediaFoundation::*;
+// Looked up, not linked (glint-core's mfapi.rs): Windows' N editions have no Media Foundation.
+use glint_core::mfapi::{MFCreateMediaType, MFCreateSourceReaderFromURL, MFShutdown, MFStartup};
 use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
 
 /// Recordings up to this size are decoded for their waveform (`MAX_BYTES`).

@@ -11,6 +11,7 @@
     "store": "node scripts/store.mjs",
     "installer": "node scripts/gpui-installer.mjs",
     "installer-art": "node scripts/installer-art.mjs",
+    "check-imports": "node scripts/check-imports.mjs",
     "test:signing": "node scripts/lib/minisign-compare.test.mjs",
     "test:store": "node scripts/lib/store-submission.test.mjs",
     "site": "npm --prefix site run dev",

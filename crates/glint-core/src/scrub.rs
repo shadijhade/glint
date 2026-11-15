@@ -22,6 +22,8 @@ pub async fn video_frames(path: String, count: u32, width: u32) -> Result<VideoF
 fn frames(path: &str, count: u32, width: u32) -> Result<VideoFrames, String> {
     use windows::core::{GUID, PCWSTR};
     use windows::Win32::Media::MediaFoundation::*;
+    // Looked up, not linked (mfapi.rs): Windows' N editions have no Media Foundation.
+    use crate::mfapi::{MFCreateAttributes, MFCreateMediaType, MFCreateSourceReaderFromURL, MFShutdown, MFStartup};
     use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
     use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
 
