@@ -42,6 +42,7 @@ use crate::components::command_bar::Facts;
 use crate::explorer::{explorer, NavOptions};
 use crate::kit::prelude::*;
 use crate::{core_bridge, persistence, state, t, theme};
+use glint_model::aware::Shape;
 use gpui_kit::{ClipboardItem, HighlightStyle, ScrollStrategy, StyledText, Task, UniformListScrollHandle, WeakEntity};
 use std::future::Future;
 use std::ops::Range;
@@ -293,7 +294,8 @@ impl Palette {
             return;
         };
         window.close_dialog(cx);
-        carry_out(command.run, window, cx);
+        let shape = Shape::of(&self.inputs.chosen_entries);
+        carry_out(command.run, shape, window, cx);
     }
 
     /// One row of the list.
@@ -558,7 +560,7 @@ impl Render for Palette {
 // ---- Doing what was chosen ----------------------------------------------------------------------------
 
 /// Does what a result says. The palette is already closed, so the keyboard is back where it was.
-fn carry_out(run: Run, window: &mut Window, cx: &mut App) {
+fn carry_out(run: Run, shape: Shape, window: &mut Window, cx: &mut App) {
     match run {
         Run::Nothing => {}
         Run::Navigate(path) => {
@@ -579,6 +581,10 @@ fn carry_out(run: Run, window: &mut Window, cx: &mut App) {
         Run::Change(change) => apply(change, cx),
         // What a menu item does, once the palette's layer is gone (a dialog opens over the window).
         Run::Menu(event) => {
+            // It is the same action as the menu's row, so it is counted under the row's key.
+            if let Some(key) = crate::components::menus::Run::Ask(event.clone()).key() {
+                crate::aware::note_action(cx, shape, &key);
+            }
             window.defer(cx, move |window, cx| {
                 crate::workspace::run_menu_command(event, window, cx)
             });
@@ -792,7 +798,30 @@ pub fn read_inputs(cx: &mut App) -> Inputs {
         new_kinds: kinds.iter().map(|kind| (kind.ext.clone(), kind.name.clone())).collect(),
         sending,
         serving,
+        used: habits_used(cx),
     }
+}
+
+/// Every action key kept in the saved habits with its weight over every kind of thing today; empty when learning or
+/// suggesting is off, or nothing is saved.
+fn habits_used(cx: &App) -> std::collections::HashMap<String, f64> {
+    let settings = state::settings(cx);
+    if !settings.learn || !settings.suggest {
+        return Default::default();
+    }
+    let Some(app) = persistence::app(cx) else {
+        return Default::default();
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
+    let today = glint_model::aware::habits::day_of(now);
+    let mut used = std::collections::HashMap::new();
+    for key in app.habits.actions.values().flat_map(|keys| keys.keys()) {
+        used.entry(key.clone())
+            .or_insert_with(|| app.habits.overall_weight(key, today));
+    }
+    used
 }
 
 // ---- Opening it ---------------------------------------------------------------------------------------

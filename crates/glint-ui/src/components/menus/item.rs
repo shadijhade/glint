@@ -12,6 +12,7 @@
 use super::data::MenuData;
 use super::event::{CloudPin, CompressFormat, MediaTool, MenuEvent, PdfTool};
 use super::kinds::*; // includes `on_a_drive`
+use super::send_to;
 use super::spec::{separator, visible_items, when, Command, Entry, Node, Task};
 use crate::explorer::is_disk_image;
 use crate::kit::prelude::*;
@@ -467,7 +468,10 @@ pub fn item_menu(targets: &[FileEntry], c: &ItemCtx) -> Vec<Node> {
             .node(),
         );
     }
-    // G1: "Move or copy to" goes here.
+    // Not in the Recycle Bin's menu (it has its own), and not for what can't be moved or copied from here.
+    if !fixed {
+        m.push(Some(send_to::menu(&paths, &c.places, &c.folder)));
+    }
     if let Some((a, b)) = pair {
         m.push(
             Entry::ask(

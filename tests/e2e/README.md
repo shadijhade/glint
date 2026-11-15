@@ -78,6 +78,7 @@ lines say which.
 | `rename-undo` | Right-click a row, **Rename** from the *Item menu* opens the real rename box, the new name reaches the disk; an Arabic name typed into the box (F2) arrives intact; two presses of Ctrl+Z put both names back |
 | `rename-cancel-focus` | After Escape closes the rename box, Ctrl+L still opens the address box |
 | `rename-enter` | Enter in the rename box commits the name and does nothing else |
+| `smart-menu` | An archive's *Item menu* starts with a head named after it and puts **Extract here** above Open; typing "ren" in the open menu leaves the rows that match, and Enter runs the first (the rename box opens) |
 | `drag-copy` | A real mouse drag of a file onto a folder row copies it into the folder; the original stays, the contents match |
 | `drag-move-shift` | The same drag with Shift held moves it |
 | `drop-from-explorer` | A file dragged out of a real File Explorer window (opened on the scratch folder) onto a folder row of Glint is copied in, and stays in the Explorer folder |

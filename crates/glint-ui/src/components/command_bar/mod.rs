@@ -71,14 +71,18 @@ pub use menus::{keyed, keyed_with, keys_of, Pick};
 
 use crate::actions;
 use crate::components::disk_usage;
-use crate::components::menus::{visible_items, MenuEvent, MenuView, MenuViewEvent, Node, Run, Task as MenuTask};
+use crate::components::menus::{
+    visible_items, MenuEvent, MenuView, MenuViewEvent, Node, Run, Suggested, Task as MenuTask,
+};
 use crate::components::preview;
+use crate::components::viz;
 use crate::core_bridge;
 use crate::explorer::{self, Explorer};
 use crate::kit::prelude::*;
 use crate::theme::{self, Tokens};
-use crate::{i18n, state, t};
+use crate::{aware, i18n, state, t};
 use glint_core::projects::TaskGroup;
+use glint_model::aware::Clip;
 use glint_model::grid::{zoom_tiles, TileSize};
 use glint_model::store::ViewMode;
 use gpui_kit::{anchored, deferred, Anchor, Stateful};
@@ -98,6 +102,8 @@ const ISLAND_PAD: f32 = 1.75;
 /// ([`CommandBar::set_side_room`]): between this and the width at which both sides have their room, the island's
 /// room stays as it is while the sides grow, so a narrower place never has more room for it than a wider one.
 const ISLAND_FIRST: f32 = 30.;
+/// The most items a selection may have for the island to offer a next step (the menus' own limit).
+const MOST_FOR_STEP: usize = 200;
 /// A press that closed a menu is the press of the button that opened it if it comes this soon after.
 const SAME_PRESS: Duration = Duration::from_millis(300);
 
@@ -207,6 +213,14 @@ pub struct CommandBar {
     sizing: bool,
     tasks: Tasks,
     menu: Option<OpenMenu>,
+    /// The next step the menus would put forward for the selection (the island's slot), if there is one.
+    step: Option<Suggested>,
+    /// Counts the steps that arrived, so the ring turns once for each new one.
+    step_turn: u64,
+    /// What is on the clipboard, as the Aware entity last said.
+    clip: Clip,
+    /// Counts the times files arrived on the clipboard, so Paste's ring turns once for each.
+    clip_turn: u64,
     /// The button whose menu a press closed last, and when.
     dismissed: Option<(&'static str, Instant)>,
     _subscriptions: Vec<Subscription>,
@@ -241,6 +255,13 @@ impl CommandBar {
             this.dirty = true;
             cx.notify();
         }));
+        // The clipboard changing, or an answer arriving that may change the next step.
+        if let Some(aware) = aware::try_shared(cx) {
+            subscriptions.push(cx.observe(&aware, |this: &mut Self, _, cx| {
+                this.dirty = true;
+                cx.notify();
+            }));
+        }
         CommandBar {
             explorer,
             sources,
@@ -254,6 +275,10 @@ impl CommandBar {
             sizing: false,
             tasks: Tasks::default(),
             menu: None,
+            step: None,
+            step_turn: 0,
+            clip: Clip::Empty,
+            clip_turn: 0,
             dismissed: None,
             _subscriptions: subscriptions,
         }
@@ -327,6 +352,22 @@ impl CommandBar {
             Facts::read(explorer, mapped, state::settings(cx))
         };
         let wanted = facts.can_run_tasks().then(|| facts.path.clone());
+        let clip = aware::try_shared(cx)
+            .map(|aware| aware.read(cx).clip().clone())
+            .unwrap_or_default();
+        if clip != self.clip && matches!(clip, Clip::Files { .. }) {
+            self.clip_turn += 1;
+        }
+        self.clip = clip;
+        let step = if (1..=MOST_FOR_STEP).contains(&facts.selected) {
+            smart::next_step(cx, self.explorer.read(cx).active_pane())
+        } else {
+            None
+        };
+        if step.as_ref().map(|s| &s.key) != self.step.as_ref().map(|s| &s.key) {
+            self.step_turn += 1;
+        }
+        self.step = step;
         self.facts = facts;
         if wanted != self.tasks.folder {
             self.read_tasks(wanted, cx);
@@ -377,6 +418,12 @@ impl CommandBar {
             self.sizing,
             i18n::is_rtl(),
             (rem * 10.) as u32,
+        )
+            .hash(&mut hasher);
+        // The next step and Paste's words change how much room the island needs.
+        (
+            self.step.as_ref().map(|step| step.entry.label.clone()),
+            smart::paste_words(&self.clip),
         )
             .hash(&mut hasher);
         hasher.finish()
@@ -833,7 +880,7 @@ impl CommandBar {
             );
         if fold < MOST {
             group = group.child(divider(t));
-            group = self.edit_buttons(group, t, cx);
+            group = self.edit_buttons(group, fold, t, cx);
         } else {
             group = group.child(
                 self.anchored(
@@ -917,19 +964,10 @@ impl CommandBar {
     /// Cut, Copy, Paste, the other pane's two, Compare, Rename and Delete. What acts on a selection is there
     /// while there is one: with nothing selected the island holds Paste alone of these, so nothing greyed out
     /// stands between New and the tools.
-    fn edit_buttons(&self, group: Stateful<Div>, t: &Tokens, cx: &mut Context<Self>) -> Stateful<Div> {
+    fn edit_buttons(&self, group: Stateful<Div>, fold: usize, t: &Tokens, cx: &mut Context<Self>) -> Stateful<Div> {
         let f = &self.facts;
         let none = f.selected == 0;
-        let paste = tool(
-            cx,
-            t,
-            "paste",
-            IconName::ClipboardPaste,
-            keyed("Paste ({0})", &[&actions::Paste]),
-            None,
-        )
-        .disabled(!f.in_folder || f.find || f.read_only)
-        .on_click(cx.listener(|this, _, window, cx| this.dispatch(Box::new(actions::Paste), window, cx)));
+        let paste = self.paste_button(fold, t, cx);
         if none {
             return group.child(paste);
         }
@@ -1015,7 +1053,7 @@ impl CommandBar {
                     })),
             );
         }
-        group
+        let group = group
             .child(
                 tool(
                     cx,
@@ -1053,7 +1091,99 @@ impl CommandBar {
                 )
                 .disabled(none || f.read_only)
                 .on_click(cx.listener(|this, _, window, cx| this.dispatch(Box::new(actions::Delete), window, cx))),
-            )
+            );
+        match &self.step {
+            Some(step) if fold < 3 => group.child(divider(t)).child(self.step_button(step, fold, t, cx)),
+            _ => group,
+        }
+    }
+
+    /// Paste. While files are on the clipboard and Paste can be used it says what it would paste ("Paste 3 files")
+    /// and a ring of the glint's light turns once round it; its accessible name stays what it always was, because
+    /// the end-to-end checks press it by that name.
+    fn paste_button(&self, fold: usize, t: &Tokens, cx: &mut Context<Self>) -> AnyElement {
+        let f = &self.facts;
+        let off = !f.in_folder || f.find || f.read_only;
+        let name = keyed("Paste ({0})", &[&actions::Paste]);
+        let on_click = cx.listener(|this, _, window, cx| this.dispatch(Box::new(actions::Paste), window, cx));
+        match smart::paste_words(&self.clip) {
+            Some(words) if !off && fold < 2 => {
+                let keys = keys_of(&actions::Paste).unwrap_or_default();
+                let button = word(
+                    cx,
+                    t,
+                    "paste",
+                    IconName::ClipboardPaste,
+                    words,
+                    true,
+                    smart::paste_tip(&self.clip, &keys),
+                    None,
+                )
+                .accessibility_label(name)
+                .on_click(on_click);
+                div()
+                    .relative()
+                    .flex_none()
+                    .child(button)
+                    .child(viz::glint_ring(
+                        "command-bar-paste",
+                        self.clip_turn,
+                        theme::size::RADIUS,
+                        cx,
+                    ))
+                    .into_any_element()
+            }
+            _ => tool(cx, t, "paste", IconName::ClipboardPaste, name, None)
+                .disabled(off)
+                .on_click(on_click)
+                .into_any_element(),
+        }
+    }
+
+    /// The island's slot for the next step: the first thing the menus would suggest for the selection, with a
+    /// ring of the glint's light that turns once when the step changes.
+    fn step_button(&self, step: &Suggested, fold: usize, t: &Tokens, cx: &mut Context<Self>) -> Div {
+        let entry = &step.entry;
+        let tip = match &entry.reason {
+            Some(reason) => SharedString::from(format!("{} · {reason}", entry.label)),
+            None => entry.label.clone(),
+        };
+        let icon_name = entry.icon.unwrap_or(IconName::Sparkles);
+        let (run, key, shape) = (entry.run.clone(), step.key.clone(), step.shape);
+        let button = ghost(cx, t, "step", false, true)
+            .icon(icon(icon_name).text_color(t.primary))
+            .accessibility_label(entry.label.clone())
+            .tooltip(tip)
+            .when(fold < 1, |button| button.label(entry.label.clone()))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                aware::note_action(cx, shape, &key);
+                match run.clone() {
+                    Run::Command(command) => this.dispatch(command.action(), window, cx),
+                    run => {
+                        if let Some(host) = crate::components::menus::host(cx) {
+                            let at = this
+                                .anchors
+                                .borrow()
+                                .get("step")
+                                .map(|bounds| bounds.origin)
+                                .unwrap_or_default();
+                            let pane = this.explorer.read(cx).active_pane();
+                            host.update(cx, |host, cx| host.run(run, pane, at, window, cx));
+                        }
+                    }
+                }
+            }));
+        div()
+            .relative()
+            .flex_none()
+            .child(button)
+            .child(anchor_probe(&self.anchors, "step"))
+            .child(viz::glint_ring(
+                "command-bar-step",
+                self.step_turn,
+                theme::size::RADIUS,
+                cx,
+            ))
     }
 
     /// "Read-only archive" or "No access": why the rest is greyed out.
