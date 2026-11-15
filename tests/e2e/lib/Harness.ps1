@@ -1,5 +1,5 @@
-# The end-to-end harness: session handling (start the debug Glint.exe on a scratch folder, put everything back
-# afterwards), UI Automation helpers (find controls by their accessible names), real input, and the check runner.
+# The end-to-end harness: session handling (start the debug Glint.exe on a scratch folder with a profile of its own,
+# put the clipboard back afterwards), UI Automation helpers (find controls by their accessible names), real input, and the check runner.
 # Dot-sourced by run.ps1 and dump-ui.ps1. Windows PowerShell 5.1, STA.
 
 Set-StrictMode -Version 2.0
@@ -19,7 +19,8 @@ $script:E2E = @{
     Results    = $null     # logs and captures of failures
     Pid        = 0
     Process    = $null
-    Backup     = $null     # copies of the user's state files
+    Roaming    = $null     # <scratch>\profile\Roaming and \Local: the app's APPDATA and LOCALAPPDATA for the run
+    Local      = $null
     Clipboard  = $null
     Explorer   = [IntPtr]::Zero   # a File Explorer window the run opened (closed again at the end)
     Log        = $null
@@ -39,8 +40,13 @@ function Write-Log {
 
 # ------------------------------------------------------------------------------------------------ user state
 
-# The files the app reads and writes that belong to the user. The run replaces them with nothing (a fresh
-# profile: defaults, no tabs restored, no saved place) and puts the originals back at the end.
+# The run leaves the user's own Glint files alone. Glint finds its data folders through APPDATA and LOCALAPPDATA
+# (glint_core::host::PathResolver), and Start-App points both at the run's own profile in the scratch folder
+# (Set-FreshProfile, Set-ChildEnv). Runs used to move the user's files aside and put them back, which failed under a
+# packaged parent such as Claude Desktop: Windows keeps what such a process writes to AppData in a private layer over
+# the real folder, so deleting the run's copy of state.json uncovered the user's real one, and the app started on
+# the user's settings ("keep running in the tray" on: `quit` failed). These files are only read, before and after
+# the run, to show that it didn't change them.
 function Get-UserFiles {
     $roaming = Join-Path $env:APPDATA 'com.shado.shadui-ripgrep'
     $local = Join-Path $env:LOCALAPPDATA 'com.shado.shadui-ripgrep'
@@ -51,52 +57,13 @@ function Get-UserFiles {
     )
 }
 
-function Get-BackupRoot { return (Join-Path $env:TEMP 'glint-e2e-backups') }
-
-function Backup-UserState {
-    $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-    $dir = Join-Path (Get-BackupRoot) $stamp
-    New-Item -ItemType Directory -Force -Path $dir | Out-Null
-    $entries = @()
-    foreach ($file in (Get-UserFiles)) {
-        $exists = Test-Path -LiteralPath $file
-        if ($exists) { Copy-Item -LiteralPath $file -Destination (Join-Path $dir (Split-Path $file -Leaf)) -Force }
-        $entries += @{ path = $file; existed = $exists }
-    }
-    # The manifest is what `run.ps1 -Restore` reads if this run is killed before it can put things back.
-    ConvertTo-Json -InputObject $entries | Set-Content -LiteralPath (Join-Path $dir 'manifest.json') -Encoding UTF8
-    $script:E2E.Backup = $dir
-
+function Save-Clipboard {
     $script:E2E.Clipboard = New-Object GlintE2E.ClipboardBackup
     $script:E2E.Clipboard.Save()
-    Write-Log ("backed up the user's state to $dir (clipboard: " + $script:E2E.Clipboard.Summary + ')')
+    Write-Log ('saved the clipboard (' + $script:E2E.Clipboard.Summary + ')')
 }
 
-function Restore-UserStateFrom {
-    param([string]$Dir)
-    $manifest = Join-Path $Dir 'manifest.json'
-    if (-not (Test-Path -LiteralPath $manifest)) { return $false }
-    $entries = Get-Content -LiteralPath $manifest -Raw -Encoding UTF8 | ConvertFrom-Json
-    foreach ($entry in @($entries)) {
-        $file = [string]$entry.path
-        $copy = Join-Path $Dir (Split-Path $file -Leaf)
-        if ($entry.existed) {
-            New-Item -ItemType Directory -Force -Path (Split-Path $file) | Out-Null
-            Copy-Item -LiteralPath $copy -Destination $file -Force
-        }
-        elseif (Test-Path -LiteralPath $file) {
-            Remove-Item -LiteralPath $file -Force
-        }
-    }
-    Move-Item -LiteralPath $manifest -Destination (Join-Path $Dir 'restored.json') -Force
-    return $true
-}
-
-function Restore-UserState {
-    if ($script:E2E.Backup) {
-        if (Restore-UserStateFrom $script:E2E.Backup) { Write-Log "put the user's state files back" }
-        $script:E2E.Backup = $null
-    }
+function Restore-Clipboard {
     if ($script:E2E.Clipboard) {
         $script:E2E.Clipboard.Restore()
         $script:ClipboardRestored = $script:E2E.Clipboard.Matches()
@@ -105,17 +72,25 @@ function Restore-UserState {
     }
 }
 
-# A fresh profile for the run: no state.json, no startup hints, and a window.json that puts the window at a
-# known place and size (physical pixels), so the checks' geometry is the same on every run.
+# The run's own profile, in the scratch folder: the app's APPDATA and LOCALAPPDATA (Set-ChildEnv), empty but for a
+# window.json that puts the window at a known place and size (physical pixels), so the checks' geometry is the same
+# on every run. With nothing else there (no state.json, no old app's settings to import) the app starts on its
+# defaults, on any PC.
 function Set-FreshProfile {
     param([int]$Left, [int]$Top, [int]$Width, [int]$Height)
-    foreach ($file in (Get-UserFiles)) {
-        if (Test-Path -LiteralPath $file) { Remove-Item -LiteralPath $file -Force }
-    }
-    $window = Get-UserFiles | Where-Object { $_ -like '*window.json' }
-    New-Item -ItemType Directory -Force -Path (Split-Path $window) | Out-Null
+    $profileDir = Join-Path $script:E2E.Scratch 'profile'
+    $script:E2E.Roaming = Join-Path $profileDir 'Roaming'
+    $script:E2E.Local = Join-Path $profileDir 'Local'
+    $local = Join-Path $script:E2E.Local 'com.shado.shadui-ripgrep'
+    New-Item -ItemType Directory -Force -Path $script:E2E.Roaming, $local | Out-Null
     $json = '{{"left":{0},"top":{1},"right":{2},"bottom":{3},"maximized":false}}' -f $Left, $Top, ($Left + $Width), ($Top + $Height)
-    Set-Content -LiteralPath $window -Value $json -Encoding ASCII
+    Set-Content -LiteralPath (Join-Path $local 'window.json') -Value $json -Encoding ASCII
+}
+
+# A file in the run's profile, as the app names it: Get-ProfileFile Roaming 'state.json'.
+function Get-ProfileFile {
+    param([ValidateSet('Roaming', 'Local')][string]$Which, [string]$Name)
+    return (Join-Path (Join-Path $script:E2E[$Which] 'com.shado.shadui-ripgrep') $Name)
 }
 
 # ------------------------------------------------------------------------------------------------ scratch folder
@@ -180,8 +155,11 @@ function Test-OtherGlintRunning {
 }
 
 function Set-ChildEnv {
-    # The debug app reads these; the run pins them so the names are English and the theme is fixed.
-    $want = @{ GLINT_LANGUAGE = 'en'; GLINT_THEME = 'light'; GLINT_SELFTEST = $null; GLINT_BENCH_START = $null }
+    # The debug app reads these; the run pins them so the names are English and the theme is fixed. APPDATA and
+    # LOCALAPPDATA are the run's own profile (Set-FreshProfile): the app never reads or writes the user's.
+    if (-not $script:E2E.Roaming -or -not $script:E2E.Local) { throw 'the run has no profile of its own (Set-FreshProfile)' }
+    $want = @{ GLINT_LANGUAGE = 'en'; GLINT_THEME = 'light'; GLINT_SELFTEST = $null; GLINT_BENCH_START = $null
+               APPDATA = $script:E2E.Roaming; LOCALAPPDATA = $script:E2E.Local }
     foreach ($key in $want.Keys) {
         $script:E2E.EnvSaved[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
         [Environment]::SetEnvironmentVariable($key, $want[$key], 'Process')
@@ -661,19 +639,8 @@ function Open-Session {
     if ($others.Count -gt 0) {
         throw ("Another Glint.exe is running (pid " + (($others | ForEach-Object { $_.Id }) -join ', ') + '). Close it first: the run needs the app to itself.')
     }
-    # A run that was killed leaves the user's files replaced by the fresh profile and its backup unrestored. Starting
-    # another would back up that fresh profile as if it were the user's, and lose the originals: refuse.
-    $root = Get-BackupRoot
-    if (Test-Path -LiteralPath $root) {
-        foreach ($d in (Get-ChildItem -LiteralPath $root -Directory)) {
-            if (Test-Path -LiteralPath (Join-Path $d.FullName 'manifest.json')) {
-                throw "An earlier run left the user's state files unrestored (backup in $($d.FullName)). Run: powershell -STA -File tests/e2e/run.ps1 -Restore"
-            }
-            if (Test-Path -LiteralPath (Join-Path $d.FullName 'restored.json')) { Remove-Item -LiteralPath $d.FullName -Recurse -Force }
-        }
-    }
     New-Scratch
-    Backup-UserState
+    Save-Clipboard
     Reset-Arena
     $work = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
     $w = [Math]::Min(1100, $work.Width - 60)
@@ -683,13 +650,13 @@ function Open-Session {
     Start-App -Folder $script:E2E.Arena
 }
 
-# Ends it: closes what the run opened, quits the app, puts the user's files and clipboard back, and removes the
-# scratch folder unless something failed (its results are the evidence) or `-Keep` says to keep it.
+# Ends it: closes what the run opened, quits the app, puts the clipboard back, and removes the scratch folder (and
+# the run's profile in it) unless something failed (its results are the evidence) or `-Keep` says to keep it.
 function Close-Session {
     param([switch]$Keep)
     try { Close-OurExplorer } catch { Write-Log "explorer cleanup: $($_.Exception.Message)" }
     try { Stop-App } catch { Write-Log "app cleanup: $($_.Exception.Message)" }
-    try { Restore-UserState } catch { Write-Log "restore: $($_.Exception.Message)" }
+    try { Restore-Clipboard } catch { Write-Log "clipboard: $($_.Exception.Message)" }
     if ($script:E2E.Scratch -and -not $Keep) {
         $script:E2E.Log = $null
         try {

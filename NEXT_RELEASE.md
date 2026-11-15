@@ -53,7 +53,7 @@ promised: the table in M0 decides.
    `debug\incremental` only, and say so. Never delete `E:\glint-gpui-target` itself, and touch nothing in
    `D:\glint-build`, `D:\glint-head`, `D:\glint-target`.
 4. **The user's own Glint.** Before launching anything, check for a running `Glint*` process. A copy the user started
-   is left alone: do not kill it, overwrite its exe or run the e2e harness (it swaps the profile under it). Build to
+   is left alone: do not kill it, overwrite its exe or run the e2e harness (it needs the app to itself). Build to
    another name and wait. Never click the "Instant search has an update" notice's Update button (UAC), and never run
    an uninstaller of a test copy.
 5. **Builds to use.** Size: plain `cargo build --release -p glint -p shadui-index`. Speed: the windowed,
@@ -378,8 +378,11 @@ the index, started at launch again by A1, answered before it had caught up (a ne
 closing the window hides it to the tray instead of quitting, and the 0.11.0 build fails the same way on this PC, so it
 isn't from 0.12. (2026-11-15: not reproduced. The same binary quit at once and a fresh build passed 18 of 18, with the
 installed Glint closed; runs logged with `GLINT_E2E_STDERR` had failed `quit` on an empty exit code, a harness bug now
-fixed, and the check now says what it finds when the app stays. See `tests/e2e/README.md`.) The harness's "fresh" profile isn't fully fresh here (the content index's settings, and what its
-processes write to the registry, are shared with the user's own copy). Debug links now hit the PDB limit at times
+fixed, and the check now says what it finds when the app stays. See `tests/e2e/README.md`.) (2026-11-15, later: it
+came back, and the check said why: the app had started on the user's own settings, tray on. Runs from Claude
+Desktop write AppData through a private layer, so deleting the run's `state.json` uncovered the user's. The run now
+gives the app its own `APPDATA` and `LOCALAPPDATA` in the scratch folder and never touches the user's files; 18 of
+18.) What the app's processes write to the registry is still shared with the user's own copy. Debug links now hit the PDB limit at times
 (LNK1140): delete `debug\Glint.pdb` and `debug\deps\Glint.pdb`, or link with `-C link-arg=/DEBUG:NONE`.
 
 **Done**: A1; B1-B7 (B5 corrected: ast-grep stays for the MCP server); C1-C4 (C2's cold crates; glint-ui at "s" and
