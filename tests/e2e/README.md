@@ -30,7 +30,8 @@ whichever window is in front, and the run takes the foreground for itself. Don't
 open (the run refuses: a second launch would hand its folder to the open one).
 
 The exit code is 0 when no check failed (known issues don't count), 1 when a check failed, 3 when the run could not
-start or was aborted, 4 when something was not put back (see below). The last lines say which.
+start or was aborted, 4 when your own Glint files changed or a `Glint.exe` was left running (see below). The last
+lines say which.
 
 ### Result words
 
@@ -44,11 +45,12 @@ start or was aborted, 4 when something was not put back (see below). The last li
 
 ## What the run does to your PC, and puts back
 
-- **Fresh profile.** It copies `state.json` (`%APPDATA%\com.shado.shadui-ripgrep`), `window.json` and `startup.json`
-  (`%LOCALAPPDATA%\com.shado.shadui-ripgrep`) to `%TEMP%\glint-e2e-backups\<stamp>`, deletes them so the app starts on
-  defaults (English names, light theme: `GLINT_LANGUAGE=en`, `GLINT_THEME=light`, set for the child process only), and
-  writes a `window.json` that places the window at a known size. At the end it puts the originals back and compares
-  SHA-256 hashes before and after: the summary says whether they match.
+- **A profile of its own.** The app is started with `APPDATA` and `LOCALAPPDATA` pointing into the scratch folder
+  (`profile\Roaming` and `profile\Local`; Glint finds its data folders through those two variables), so it starts on
+  its defaults on any PC (no `state.json`, no old app's settings to import; English names and a light theme:
+  `GLINT_LANGUAGE=en`, `GLINT_THEME=light`), with a `window.json` that places the window at a known size, and it
+  writes its state there. Your own `state.json`, `window.json` and `startup.json` are never moved, deleted or
+  written: the run only hashes them (SHA-256) before and after, and the summary says whether they match.
 - **Clipboard.** Its text, file list and picture are saved first and put back at the end (the summary says whether it
   matches). Other formats (private ones) can't be copied through .NET and would be lost; the log lists what the
   clipboard held.
@@ -61,12 +63,10 @@ start or was aborted, 4 when something was not put back (see below). The last li
 - **Windows.** The one File Explorer window it opens is found by its handle and closed again (only that window:
   if Windows put the folder in a tab of a window that was already open, the check skips instead). Glint is asked to
   close, and killed after 8 s if it hangs. If it stops answering the run ends and says so.
-- **If the run is killed** (Ctrl+C in a hard way, power loss) your state files stay replaced by the fresh profile.
-  Run `powershell -STA -File tests\e2e\run.ps1 -Restore` to put the newest unrestored backup back; a new run refuses to
-  start until you do, so it can never back up the fresh profile as if it were yours. The clipboard is only saved in
-  memory.
-- The debug app shares the data folders with the installed Glint (it has its own single-instance name and never
-  touches the Run key), which is why the above matters.
+- **If the run is killed** (Ctrl+C in a hard way, power loss) there is nothing of yours to put back but the clipboard,
+  which is only saved in memory. The scratch folder stays in `%TEMP%`.
+- Started any other way, the debug app shares the data folders with the installed Glint (it has its own
+  single-instance name and never touches the Run key).
 
 ## The checks
 
@@ -139,10 +139,10 @@ A fourth was found by a check that failed one run in four:
 
 ```
 tests/e2e/
-  run.ps1            the runner (-Exe, -Only, -List, -Keep, -Restore)
+  run.ps1            the runner (-Exe, -Only, -List, -Keep)
   dump-ui.ps1        prints the UI tree after some steps: the tool for writing a check
   checks/Checks.ps1  the checks
-  lib/Harness.ps1    session, backup and restore, UI Automation helpers, input, check runner
+  lib/Harness.ps1    session (its own profile, the clipboard), UI Automation helpers, input, check runner
   lib/App.ps1        what knows Glint: names, menus, Reset-App, File Explorer
   lib/Native.cs      SendInput (mouse, keyboard, drag), window focus and placement, captures, clipboard backup
 ```
@@ -167,6 +167,9 @@ tests/e2e/
 - With a redirected stream (`GLINT_E2E_STDERR`), Windows PowerShell 5.1's `Start-Process -PassThru` returns a process
   without a handle, and once it exits its `ExitCode` is empty: `quit` failed every logged run on "with exit code 0"
   until `Start-App` opened the handle at once (`$p.Handle`).
-- On 2026-11-14 `quit` failed every run for hours (closing the window left the process running with no window
-  shown). On 2026-11-15 the same binary quit at once and a fresh build passed 18/18, the installed Glint closed.
-  What held it then isn't known; the check now says what it finds if it happens again.
+- `quit` failed for hours on 2026-11-14 and again on 2026-11-15, and passed in between: closing the window hid it in
+  the tray. The app had started on the user's own settings ("keep running in the tray" on). Runs then moved the
+  user's files aside and put them back, and they ran from Claude Desktop, a packaged app: Windows keeps what a
+  packaged app's processes write to AppData in a private layer over the real folder, so deleting the run's copy of
+  `state.json` uncovered the real one behind it. Whether it did depended on what that layer held from earlier runs.
+  The run has had a profile of its own in the scratch folder since.

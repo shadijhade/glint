@@ -435,7 +435,7 @@ Add-Check 'quit' 'closing the window quits the app cleanly (exit code 0) and it 
         throw "the process didn't exit within 10 s of closing the window: $after; its windows: $windows"
     }
     Assert-Equal $p.ExitCode 0 'with exit code 0'
-    $state = Join-Path $env:APPDATA 'com.shado.shadui-ripgrep\state.json'
+    $state = Get-ProfileFile Roaming 'state.json'
     Assert-True (Test-Path -LiteralPath $state) 'state.json was written on the way out'
     $json = Get-Content -LiteralPath $state -Raw -Encoding UTF8 | ConvertFrom-Json
     Assert-True ($null -ne $json.state.session) 'it holds the session'
