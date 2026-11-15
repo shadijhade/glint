@@ -24,3 +24,11 @@ Known when it shipped, none of it holding the release:
   `testing::init` replaces the process's message window).
 - **Never tried for real:** the start-up note that offers to index every drive (instant search is on here), and a
   tool installed through winget's fallback.
+
+## How a release is made now
+
+`npm run ship -- <x.y.z>` ([docs/releasing.md](docs/releasing.md#one-command-npm-run-ship)): the checks, the version,
+the build and its signatures on GitHub, the release, Scoop, winget and the Microsoft Store. 0.13.0 was the first
+made this way. One thing is left for it to need nobody: the Store API's application and key, made once in Partner
+Center ([how](docs/releasing.md#sending-it-with-npm-run-store)); until then the Store's package is uploaded there
+by hand.
