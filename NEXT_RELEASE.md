@@ -1,11 +1,27 @@
 # Glint: after 0.13
 
-*0.13.0 came out on 2026-11-16 ([its release](https://github.com/shadijhade/glint/releases/tag/v0.13.0)), and
-0.13.1, a fix for its zoom, the same day ([its release](https://github.com/shadijhade/glint/releases/tag/v0.13.1)).
+*0.13.0 came out on 2026-11-16 ([its release](https://github.com/shadijhade/glint/releases/tag/v0.13.0)),
+0.13.1, a fix for its zoom, the same day ([its release](https://github.com/shadijhade/glint/releases/tag/v0.13.1)),
+and 0.13.2, updates that need nobody, that evening ([its release](https://github.com/shadijhade/glint/releases/tag/v0.13.2)).
 Nothing is planned after them yet: this file is where the next release's brief goes.
 The plan for 0.12 that was here is in git history (`git show df1245a:NEXT_RELEASE.md`), the plans for 0.9 to 0.11
 before it (`git show 47c33fa:NEXT_RELEASE.md`), and 0.13's own plan, the menu and the dock that know the selection,
 is [docs/gpui/aware/PLAN.md](docs/gpui/aware/PLAN.md) with its task cards beside it.*
+
+## 0.13.2: updates that need nobody
+
+1884328. Two bugs the user met: a Glint in the tray showed a new version only after a restart (a 12-hour timer
+Windows doesn't run while the PC sleeps, a check that stopped once it found a version, and a notice that faded
+unseen in a hidden window), and Scoop kept listing the old version after an update from the app (only the running
+copy was replaced; this PC had a Scoop copy beside the setup's). Around them, the update flow of
+`crates/glint-ui/src/updater.rs`: hourly looks by the wall clock, a quiet download picked up where it broke off
+(not on a metered connection) and kept across restarts, installing on quit or after a start with Windows that
+nobody opened, Restart to update, Scoop copies updated through Scoop (`updater/scoop.rs`), notices that wait for
+the window, Windows' own notification, and Settings → About's **Install updates automatically**.
+
+Not tried: Windows' own notification from an installed copy, and an update installed silently on quit over a real
+installed Glint (both from the dev build's dry run only: `GLINT_UPDATE_DRY_RUN`). Copies before 0.13.2 install it
+the old way once (Update, then Install).
 
 ## 0.13.1: the zoom
 

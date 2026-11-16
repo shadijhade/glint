@@ -62,6 +62,8 @@ Glint needs Windows 10 or 11, 64-bit, and nothing else: it draws its own window,
 
 ## What's new
 
+**0.13.2** (coming soon) brings updates nobody has to think about. Glint looks for a new version every hour by the clock, so one that lives in the tray finds it without a restart, downloads it in the background (picking up where a broken download stopped, never on a metered connection) and installs it when you quit, or after a start with Windows before you open the window. **Restart to update** in the header does it right away. A copy installed with Scoop updates through Scoop, so Scoop and UniGetUI know the new version too; **Settings → About → Install updates automatically** turns all of it off.
+
 **0.13.1** (November 16, 2026) puts the zoom right. `Ctrl` and the wheel, or a pinch, change how a folder is laid out and never which folder you're in: in from the list to the grid's small tiles and on to bigger ones, out the same way back, each file flying between its row and its tile. In 0.13.0 the same turn opened the folder under the pointer, or went up to the one above. Opening a folder is a small step now, not a flight, and menus and dialogs move less.
 
 **0.13.0** (November 16, 2026) makes Glint pay attention. The right-click menu and the dock know what you picked, say what is true about it, and put the next step first.
@@ -75,7 +77,7 @@ Glint needs Windows 10 or 11, 64-bit, and nothing else: it draws its own window,
 -   **Settings, reworked.** Pages with an overview and a search box, suggestions for this PC, and tools that install and update the first time. Seven rarely used tools are gone.
 -   **Windows 10.** Glint 0.10 to 0.12 asked Windows for something only Windows 11 has, and didn't start there. It does again, and every release is now checked for it.
 
-Release notes: [0.13.1](https://github.com/shadijhade/glint/releases/tag/v0.13.1), [0.13.0](https://github.com/shadijhade/glint/releases/tag/v0.13.0) · [Every release](https://github.com/shadijhade/glint/releases) · 0.12 made Glint [smaller and quieter](https://github.com/shadijhade/glint/releases/tag/v0.12.0), 0.11 gave it [a window of its own](https://github.com/shadijhade/glint/releases/tag/v0.11.0), and 0.10 made it [a native app](https://github.com/shadijhade/glint/releases/tag/v0.10.0).
+Release notes: [0.13.2](https://github.com/shadijhade/glint/releases/tag/v0.13.2), [0.13.1](https://github.com/shadijhade/glint/releases/tag/v0.13.1), [0.13.0](https://github.com/shadijhade/glint/releases/tag/v0.13.0) · [Every release](https://github.com/shadijhade/glint/releases) · 0.12 made Glint [smaller and quieter](https://github.com/shadijhade/glint/releases/tag/v0.12.0), 0.11 gave it [a window of its own](https://github.com/shadijhade/glint/releases/tag/v0.11.0), and 0.10 made it [a native app](https://github.com/shadijhade/glint/releases/tag/v0.10.0).
 
 ## Benchmarks
 
