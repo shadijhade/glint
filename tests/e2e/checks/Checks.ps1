@@ -378,6 +378,47 @@ Add-Check 'command-bar' 'the command bar buttons work: New folder, Copy and Past
     Assert-Eventually { -not (Get-OpenMenu) } 'Escape closes it'
 }
 
+# ------------------------------------------------------------------------------------------------ the zoom
+
+# Turns the wheel with Ctrl held, the pointer on `$El`: a notch at a time (above zero: away from you, the zoom in)
+# until `$Until` holds, four at most. One notch is a step of zoom where Windows scrolls three lines a notch, which
+# is its default; a PC set to fewer needs more of them.
+function Invoke-CtrlWheel {
+    param($El, [int]$Direction, [scriptblock]$Until, [int]$FromStart = -1, $Window)
+    Set-Foreground $Window
+    $pt = Get-Point $El -FromStart $FromStart
+    [GlintE2E.Win]::KeyDown([uint16]0x11)
+    try {
+        for ($i = 0; $i -lt 4; $i++) {
+            [GlintE2E.Win]::Wheel($pt.X, $pt.Y, $Direction)
+            if (Wait-Until -Seconds 0.25 -Cond $Until) { break }
+        }
+    }
+    finally { [GlintE2E.Win]::KeyUp([uint16]0x11) }
+}
+
+Add-Check 'zoom-layout' 'Ctrl and the wheel over a folder change the layout (list, tiles, list) and never open the folder or leave it' {
+    # In, over a folder's row: 0.13.0 opened the folder.
+    Invoke-CtrlWheel (Get-Row 'inbox') 1 { Test-GridLayout } -FromStart 70
+    Assert-Eventually { Test-GridLayout } "a notch in over a folder's row lays the folder out in tiles"
+    Assert-Equal (Get-TabTitle) $script:ArenaLeaf 'the folder is the one it was'
+    Assert-Equal (Get-RowNames) (Get-ArenaNames) 'with everything it holds, in the same order'
+    Start-Sleep -Milliseconds 600   # the wheel's spin ends, and the tiles have landed
+
+    # Out, over the folder's tile at the smallest size: 0.13.0 went to the folder above.
+    Invoke-CtrlWheel (Get-Row 'inbox') -1 { -not (Test-GridLayout) }
+    Assert-Eventually { -not (Test-GridLayout) } 'a notch out from the smallest tiles is the list again'
+    Assert-Equal (Get-TabTitle) $script:ArenaLeaf 'still the same folder'
+    Assert-Equal (Get-RowNames) (Get-ArenaNames) 'and the same items'
+    Start-Sleep -Milliseconds 600
+
+    # Out again: the list is as far out as the zoom goes.
+    Invoke-CtrlWheel (Get-Row 'inbox') -1 { $false } -FromStart 70
+    Start-Sleep -Milliseconds 400
+    Assert-Equal (Get-TabTitle) $script:ArenaLeaf 'out from the list goes nowhere'
+    Assert-True (-not (Test-GridLayout)) 'and the list stays a list'
+}
+
 # ------------------------------------------------------------------------------------------------ dual pane, compare
 
 Add-Check 'dual-pane-compare' 'Ctrl+Shift+D shows two panes, F6 switches, Ctrl+Shift+M marks what differs, both toggle off' {
