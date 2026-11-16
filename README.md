@@ -62,7 +62,7 @@ Glint needs Windows 10 or 11, 64-bit, and nothing else: it draws its own window,
 
 ## What's new
 
-**0.13.1** (coming soon) puts the zoom right. `Ctrl` and the wheel, or a pinch, change how a folder is laid out and never which folder you're in: in from the list to the grid's small tiles and on to bigger ones, out the same way back, each file flying between its row and its tile. In 0.13.0 the same turn opened the folder under the pointer, or went up to the one above. Opening a folder is a small step now, not a flight, and menus and dialogs move less.
+**0.13.1** (November 16, 2026) puts the zoom right. `Ctrl` and the wheel, or a pinch, change how a folder is laid out and never which folder you're in: in from the list to the grid's small tiles and on to bigger ones, out the same way back, each file flying between its row and its tile. In 0.13.0 the same turn opened the folder under the pointer, or went up to the one above. Opening a folder is a small step now, not a flight, and menus and dialogs move less.
 
 **0.13.0** (November 16, 2026) makes Glint pay attention. The right-click menu and the dock know what you picked, say what is true about it, and put the next step first.
 
