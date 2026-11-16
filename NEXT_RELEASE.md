@@ -42,14 +42,21 @@ Known when it shipped, none of it holding the release:
 `npm run ship -- <x.y.z>` ([docs/releasing.md](docs/releasing.md#one-command-npm-run-ship)): the checks, the version,
 the build and its signatures on GitHub, the release, Scoop, winget and the Microsoft Store. 0.13.0 was the first
 made this way, and 0.13.1 the second: built and signed on this PC (`--local`, one password), then the release,
-Scoop and winget by `ship`, and the Store's package put in Partner Center by hand. Two things are left for it to need nobody, each
-done once:
+Scoop and winget by `ship`, and the Store's package put in Partner Center by hand. Two things are left for it
+to need nobody, and one command does both, once: **`npm run ship -- --setup`**
+([docs/releasing.md](docs/releasing.md#a-release-that-needs-nobody)).
 
 - **The update key, where the build is.** The repository's `TAURI_SIGNING_PRIVATE_KEY` secret has been empty
-  since it was made (2026-10-22; every run says `HAS_UPDATER_KEY: false`), so GitHub builds Glint but can't sign
-  the update, and `ship` stops there rather than release something installed copies can't take by themselves.
-  Put the key in the secret (`Get-Content "$HOME\.tauri\shadui-ripgrep.key" -Raw | gh secret set
-  TAURI_SIGNING_PRIVATE_KEY`), or build on this PC with `npm run ship -- --local`, which asks for its password.
-- **The Store API's application and key**, made in Partner Center
-  ([how](docs/releasing.md#sending-it-with-npm-run-store)); until then the Store's package is uploaded there by
-  hand.
+  since it was made (2026-10-22), so GitHub builds Glint but can't sign the update. The setup asks for the key's
+  password, checks key and password here, stores both as secrets, and has GitHub prove it can sign with them (the
+  **Release check** workflow, a minute). Until then `npm run ship -- --local` builds and signs here, and asks for
+  the password every time.
+- **The Store's application.** No Microsoft Entra directory is associated with the Partner Center account yet
+  (seen 2026-11-16), so first, in Partner Center: associate one, add a Microsoft Entra application with the
+  Manager role, and make its key. The setup then asks for its tenant ID, client ID and key, tries them against
+  the Store and stores them; from then on `ship` sends the package through the **Store** workflow. `npm run
+  store` has only ever run against a stand-in (`npm run test:store`): the first real run should be a look
+  (**Actions → Store → Run workflow**, mode *look*), which sends nothing.
+
+Never tried for real, because both wait for those secrets: a build signed on GitHub (what comes down is checked
+the way the app checks it before anything is released), and a submission through the Store's API.

@@ -1,0 +1,39 @@
+name: Release check
+
+# Says whether a release can be made with nobody there (docs/releasing.md, "A release that needs nobody"): whether
+# the update key and its password, as this repository's secrets, sign an update the app accepts, and whether the
+# Microsoft Store takes the Partner Center application's sign-in. GitHub tells nobody whether a secret is empty or
+# what it holds, so this is the only way to know before a release finds out half an hour in.
+#
+# It signs a scrap in a temporary folder, signs in to the Store and reads the app: it changes nothing, and prints
+# no secret. A minute. `npm run ship -- --setup` starts it and reads its answer; so does `npm run ship`.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Actions are pinned to commits: this job holds the signing secrets.
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The check needs Node and nothing from npm.
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+
+      - name: Can GitHub sign updates and reach the Microsoft Store?
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          PARTNER_CENTER_TENANT_ID: ${{ secrets.PARTNER_CENTER_TENANT_ID }}
+          PARTNER_CENTER_CLIENT_ID: ${{ secrets.PARTNER_CENTER_CLIENT_ID }}
+          PARTNER_CENTER_CLIENT_SECRET: ${{ secrets.PARTNER_CENTER_CLIENT_SECRET }}
+        run: node scripts/release-check.mjs

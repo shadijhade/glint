@@ -6,6 +6,9 @@
 // looks at what is already true and does only what is missing, so a run that stopped (a failed check, a build
 // that broke, the network) is continued by running it again.
 //
+// It needs nobody once the repository holds the update key and the Partner Center application as secrets:
+// `npm run ship -- --setup` (scripts/ship-setup.mjs) puts them there, once, and proves they work.
+//
 // Usage: npm run ship -- [<x.y.z>] [options]
 //   <x.y.z>            the version to release; left out, the one in Cargo.toml when it has no release yet
 //   --only <step,…>    just these steps      --from <step>   this step and the ones after it
@@ -17,6 +20,8 @@
 //   --no-scoop, --no-winget, --no-store   leave that one out
 //   --listing          the Store's screenshots and words too (by itself when they changed since the last release)
 //   --dry              say what each step would do, and change nothing
+//   --setup            once: the update key and the Store's application as the repository's secrets, so that a
+//                      release needs nobody (--setup --dry says what is missing; --setup --check asks GitHub)
 //
 // Steps, in order: ready, checks, version, build, verify, release, scoop, winget, store.
 
@@ -24,6 +29,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { KEY_SAYS, STORE_SECRETS, STORE_WORKFLOW, checkOnGitHub, githubState, startWorkflow, waitForRun } from "./lib/hands-off.mjs";
 import { REPO, root, workspaceVersion } from "./lib/project.mjs";
 
 const STEPS = ["ready", "checks", "version", "build", "verify", "release", "scoop", "winget", "store"];
@@ -38,6 +44,11 @@ const args = process.argv.slice(2);
 const flag = (name) => args.includes(name);
 const value = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined);
 const dry = flag("--dry");
+// Once, before the first release that needs nobody: its own script, with what was asked of this one.
+if (flag("--setup")) {
+    const setup = spawnSync(process.execPath, [join(root, "scripts", "ship-setup.mjs"), ...args], { cwd: root, stdio: "inherit" });
+    process.exit(setup.status ?? 1);
+}
 /** Set by a step that ends the run there without failing it (--draft: nothing after a draft is for anyone yet). */
 let paused = false;
 
@@ -62,6 +73,12 @@ const git = (...a) => run("git", a).out;
 const gh = (...a) => run("gh", a).out;
 const ghJson = (...a) => JSON.parse(gh(...a) || "null");
 const tryGh = (...a) => run("gh", a, { allowFailure: true });
+/** gh for scripts/lib/hands-off.mjs: what it printed, or an error with its first words. */
+const ghText = (a, { input } = {}) => {
+    const result = run("gh", a, { allowFailure: true, input });
+    if (!result.ok) throw new Error(`gh ${a.slice(0, 3).join(" ")}: ${(result.err || result.out).split("\n")[0]}`);
+    return result.out;
+};
 /** npm and winget are found through the shell on Windows (npm.cmd, an app alias). */
 const shell = (line, options = {}) => run(line, [], { shell: true, ...options });
 const has = (cmd, cmdArgs) => spawnSync([cmd, ...cmdArgs].join(" "), { cwd: root, encoding: "utf8", shell: true }).status === 0;
@@ -83,14 +100,34 @@ const manifests = join(out, "package-manifests");
 const builtFrom = join(out, "built-from.txt");
 /** Runs of the workflow that built without the update key: not taken again. */
 const unsignedRuns = join(out, "unsigned-runs.txt");
+const HOW_TO_SIGN = [
+    "  - put the key there, once:  npm run ship -- --setup    (asks for the key's password, and proves GitHub signs)",
+    "    then:                     npm run ship",
+    "  - or build and sign here:   npm run ship -- --local    (asks for the key's password, every time)",
+];
 const UNSIGNED = [
     "The workflow built Glint but could not sign the update: the repository's TAURI_SIGNING_PRIVATE_KEY secret is empty",
     "(its runs say HAS_UPDATER_KEY: false), so there is no latest.json and no service signature, and the app couldn't",
     "install this release by itself. Either",
-    '  - put the key there once:   Get-Content "$HOME\\.tauri\\shadui-ripgrep.key" -Raw | gh secret set TAURI_SIGNING_PRIVATE_KEY',
-    "    then:                     npm run ship",
-    "  - or build and sign here:   npm run ship -- --local     (asks for the key's password)",
+    ...HOW_TO_SIGN,
 ].join("\n");
+/** What GitHub is known to be able to do by itself (read once a run): its secrets' names, and the key's and
+ * the Store's state as the last Release check found them. Unknown when it can't be read. */
+let known;
+function handsOff() {
+    if (!known) {
+        try {
+            known = githubState(ghText, SLUG);
+        } catch {
+            known = { secrets: [], key: "unknown", store: "unknown" };
+        }
+    }
+    return known;
+}
+/** Whether this run sends the Store's package from this PC (its own Partner Center application), through the
+ * Store workflow (the repository's), or leaves it for a person. */
+const storeRoute = () =>
+    process.env.PARTNER_CENTER_TENANT_ID && process.env.PARTNER_CENTER_CLIENT_ID ? "here" : STORE_SECRETS.every((name) => handsOff().secrets.includes(name)) ? "workflow" : "nobody";
 const releaseCommit = () => (existsSync(builtFrom) ? readFileSync(builtFrom, "utf8").trim() : git("rev-parse", "HEAD"));
 
 /** The release on GitHub, or undefined: `{ isDraft, assets: [{ name, digest }], targetCommitish }`. */
@@ -121,6 +158,14 @@ const steps = {
         };
         if (latest && !made && !newer(version, latest)) stop(`${version} isn't after the latest release (${latest}): updates never go backwards.`);
         done(`ready to release ${version}${latest ? ` (the latest is ${latest})` : ""}`);
+        // Who this run will need, said now and not half an hour in.
+        const builds = chosen.includes("build") && !files().every(existsSync);
+        if (builds && flag("--local")) say("! You'll be asked for the update key's password, before the build.");
+        else if (builds && handsOff().key === "unknown") say("! Nobody knows yet whether GitHub can sign this build: the build step asks it first (a minute).");
+        else if (builds && handsOff().key !== "ok") say(`! ${KEY_SAYS[handsOff().key]}: the build step stops for it. npm run ship -- --setup puts it right, once.`);
+        if (chosen.includes("store") && !flag("--no-store") && storeRoute() === "nobody") {
+            say("! The Store's package will wait for Partner Center's pages: npm run ship -- --setup sets the Store up, once.");
+        }
     },
 
     /** The crates' checks and the signing's own test; with --full, glint-ui's tests and the end-to-end checks. */
@@ -200,13 +245,23 @@ const steps = {
             : runsOf().find((r) => (r.conclusion === "success" || r.status !== "completed") && !unsigned.includes(String(r.databaseId)));
         if (!build) {
             if (dry) return would(`start the Release workflow on master (${head.slice(0, 7)}), wait for it, and download its files`);
+            // A build GitHub can't sign is half an hour for nothing: when nobody knows, it is asked first.
+            if (handsOff().key === "unknown") {
+                say("Asking GitHub whether it can sign this build (the Release check, a minute)…");
+                try {
+                    known = { ...known, ...(await checkOnGitHub(ghText, SLUG)) };
+                } catch (error) {
+                    say(`! ${error.message} Building anyway: what comes down is checked before anything is released.`);
+                }
+            }
+            if (!["ok", "unknown"].includes(handsOff().key)) stop(`${KEY_SAYS[handsOff().key]}. Either\n${HOW_TO_SIGN.join("\n")}`);
             gh("workflow", "run", WORKFLOW, "--repo", SLUG, "--ref", "master");
             for (let i = 0; i < 20 && !build; i++) {
                 await sleep(6);
                 build = runsOf().find((r) => r.status !== "completed" && !unsigned.includes(String(r.databaseId)));
             }
             if (!build) stop("The Release workflow didn't start: look at the repository's Actions page.");
-            say(`The Release workflow builds and signs ${tag}: ${REPO}/actions/runs/${build.databaseId} (about three quarters of an hour).`);
+            say(`The Release workflow builds and signs ${tag}: ${REPO}/actions/runs/${build.databaseId} (25 minutes while its cache is warm, up to three quarters of an hour).`);
         } else if (dry) return would(`wait for run ${build.databaseId} and download its files`);
         if (build.status !== "completed") say(`Waiting for run ${build.databaseId}: ${REPO}/actions/runs/${build.databaseId}`);
         while (build.status !== "completed") {
@@ -251,7 +306,7 @@ const steps = {
     async release() {
         let made = release();
         if (!made) {
-            if (!existsSync(notes)) stop(`No notes: ${notes}`);
+            if (!existsSync(notes)) return dry ? would(`create the draft release ${tag}, once its notes are written (${notes})`) : stop(`No notes: ${notes}`);
             if (dry) {
                 paused = flag("--draft");
                 return would(`create the draft release ${tag} with ${files().length} files and compare GitHub's copies${paused ? ", and stop there" : ", then publish it"}`);
@@ -355,8 +410,23 @@ const steps = {
     },
 
     /** The Store's package, from the very files the setup program installs, and its submission. */
-    store() {
+    async store() {
         if (flag("--no-store")) return;
+        const listingChanged = flag("--listing") || listingChangedSince(lastReleasedBefore());
+        // No Partner Center application on this PC, and the repository has one: the Store workflow packs the
+        // package from the released setup program, as below, and sends it.
+        if (storeRoute() === "workflow") {
+            const title = `Store: submit ${version}`;
+            const runs = tryGh("run", "list", "--repo", SLUG, "--workflow", STORE_WORKFLOW, "--limit", "30", "--json", "databaseId,displayTitle,status,conclusion");
+            const sent = (runs.ok ? JSON.parse(runs.out || "[]") : []).filter((r) => r.displayTitle === title);
+            if (sent.some((r) => r.conclusion === "success")) return done(`the Store has ${version}: certification, then it publishes by itself (${REPO}/actions/workflows/${STORE_WORKFLOW})`);
+            if (dry) return would(`start the Store workflow for ${version}${listingChanged ? ", with the listing" : ""}, and wait until the Store has taken it`);
+            published();
+            const id = sent.find((r) => r.status !== "completed")?.databaseId ?? (await startWorkflow(ghText, SLUG, STORE_WORKFLOW, { version, mode: "submit", listing: String(Boolean(listingChanged)) }));
+            say(`The Store workflow packs ${tag}'s package and sends it: ${REPO}/actions/runs/${id}`);
+            if ((await waitForRun(ghText, SLUG, id)) !== "success") stop(`The Store workflow didn't send ${version}: gh run view ${id} --log-failed says why. Then: npm run ship -- --only store`);
+            return done("the Store has the submission: certification, then it publishes by itself");
+        }
         const msix = join(out, `Glint_${version}_x64.msix`);
         if (!existsSync(msix)) {
             if (dry) return would(`pack ${msix} from the released setup program's files`);
@@ -370,14 +440,12 @@ const steps = {
             run("node", ["scripts/msix.mjs", "--from", unpacked, "--out", out], { stdio: "inherit" });
             rmSync(unpacked, { recursive: true, force: true });
         }
-        if (!process.env.PARTNER_CENTER_TENANT_ID || !process.env.PARTNER_CENTER_CLIENT_ID) {
+        if (storeRoute() === "nobody") {
             say(`! The Store's package is ${msix}.`);
-            say("  The Store API isn't set up on this PC (docs/releasing.md, \"Sending it with npm run store\": once, in Partner Center),");
+            say("  The Store isn't set up to take it from here (npm run ship -- --setup: once, with a few clicks of yours in Partner Center),");
             say("  so upload it in Partner Center → Glint → Packages, or set it up and run: npm run ship -- --only store");
             return;
         }
-        const before = lastReleasedBefore();
-        const listingChanged = flag("--listing") || (before && !run("git", ["diff", "--quiet", `v${before}`, "HEAD", "--", "crates/glint/msix/listing.json", "screenshots"], { allowFailure: true }).ok);
         if (dry) return would(`npm run store -- --submit${listingChanged ? " --listing" : ""}`);
         run("node", ["scripts/store.mjs", "--submit", "--msix", msix, ...(listingChanged ? ["--listing"] : [])], { stdio: "inherit" });
         done("the Store has the submission: certification, then it publishes by itself (npm run store -- --status)");
@@ -397,6 +465,18 @@ function stampReadme() {
     git("commit", "--quiet", "-m", `docs: ${version} came out on ${day}`);
     git("push", "--quiet", "origin", "master");
     done(`the README says ${version} came out on ${day}`);
+}
+
+/** Whether the Store listing itself (its description, features, screenshots and their captions) changed since
+ * version `before`. What's new is written for every release and isn't the listing: it travels with the package. */
+function listingChangedSince(before) {
+    if (!before) return false;
+    const file = "crates/glint/msix/listing.json";
+    const itself = (text) => JSON.stringify({ ...JSON.parse(text), whatsNew: undefined });
+    const then = run("git", ["show", `v${before}:${file}`], { allowFailure: true });
+    // No listing file then: all of it is new.
+    if (!then.ok || itself(then.out) !== itself(read(file))) return true;
+    return !run("git", ["diff", "--quiet", `v${before}`, "HEAD", "--", "screenshots"], { allowFailure: true }).ok;
 }
 
 /** Scoop and winget send people to the release's files, and a draft's aren't there for anyone yet. */

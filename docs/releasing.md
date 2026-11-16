@@ -52,7 +52,7 @@ Updates are signed with a minisign key pair. The public key is compiled into the
 -   The public half is committed in two places that must hold the same text: `crates/shadui-index/update-pubkey.txt` (the service trusts it) and `PUBLIC_KEY` in `crates/glint-ui/src/updater.rs` (the app does). It's public.
 -   Keep a copy of the private key and its password in a password manager. **If they're lost**, installed copies can't verify new updates: you'd need a new pair, and everyone would have to download the next version by hand once (the app still tells them it exists). **If they leak**, rotate the same way.
 
-The release workflow needs the key's contents and its password as the repository secrets `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (**Settings → Secrets and variables → Actions**). Without them a tag push fails rather than publish a release the app can't install by itself.
+The release workflow needs the key's contents and its password as the repository secrets `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. `npm run ship -- --setup` puts them there and proves GitHub signs with them ([below](#a-release-that-needs-nobody)); by hand they are under **Settings → Secrets and variables → Actions**, where nothing says whether what was pasted is right. Without them a tag push fails rather than publish a release the app can't install by itself.
 
 `npm run release` needs `TAURI_SIGNING_PRIVATE_KEY` set to the key file's path (or its contents), and asks for the password once, before building, unless `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` is set (the variable names are Tauri's, kept so the secrets and habits stay): it unlocks the key right away, so a wrong password or a key that isn't the one for the committed public key stops it then rather than after the build.
 
@@ -136,12 +136,12 @@ Install the two cargo tools with `cargo install --locked cargo-deny cargo-about`
 | `ready` | master, nothing uncommitted, in step with GitHub, a version after the latest release | `gh auth login` |
 | `checks` | `cargo deny check`, the notices (`npm run licenses -- --check`), the signing's own test; with `--full`, glint-ui's tests and the end-to-end checks first | cargo-deny and cargo-about for the first two (skipped with a warning without them) |
 | `version` | sets the version in `Cargo.toml`, `package.json` and the bug report's placeholder, drafts `release/vX.Y.Z/notes.md` when there are none, commits `Release vX.Y.Z` and pushes | the notes written (it stops once for you to rewrite the draft; `--notes-as-drafted` takes it as it is) |
-| `build` | starts the release workflow on master, waits for it (about three quarters of an hour), and downloads what it built and signed into `release/vX.Y.Z` | the repository's `TAURI_SIGNING_PRIVATE_KEY` secrets ([above](#1-the-updater-key-needed-for-auto-update)) |
+| `build` | starts the release workflow on master, waits for it (about 25 minutes while its Rust cache is warm, three quarters of an hour without), and downloads what it built and signed into `release/vX.Y.Z` | the repository's `TAURI_SIGNING_PRIVATE_KEY` secrets (`npm run ship -- --setup`, [below](#a-release-that-needs-nobody)). When nobody knows whether they work, it asks GitHub first (the Release check, a minute) and doesn't start a build GitHub can't sign |
 | `verify` | checks the installer the way the app will before installing it (`verify-update.mjs`), and that `Glint-setup.exe` is the same file | |
 | `release` | creates the draft release on the commit that was built, with the four files and the notes, compares GitHub's copies with the built ones, publishes it as the latest, waits until installed copies are offered it, and puts the day it came out in the README's *What's new* | `--draft` stops the run before publishing: Scoop, winget and the Store wait for the published release |
 | `scoop` | puts the new `bucket/glint.json` in [shadijhade/scoop-bucket](https://github.com/shadijhade/scoop-bucket) | |
 | `winget` | `winget validate`, a branch on the fork with the three manifests, and the pull request to microsoft/winget-pkgs | the fork `shadijhade/winget-pkgs` |
-| `store` | packs the Store's MSIX (the workflow's `msix-vX.Y.Z` artifact, else from the released setup program's own files with 7-Zip) and sends it with `npm run store -- --submit`, with `--listing` when the listing's words or screenshots changed since the last release | the Store API set up once ([below](#sending-it-with-npm-run-store)); without it, it says where the package is, for Partner Center |
+| `store` | sends the Store's package, with `--listing` when the listing itself (description, features, screenshots, captions) changed since the last release. With a Partner Center application on this PC (`PARTNER_CENTER_TENANT_ID` and `PARTNER_CENTER_CLIENT_ID` set) it packs the MSIX (the workflow's `msix-vX.Y.Z` artifact, else from the released setup program's own files with 7-Zip) and runs `npm run store -- --submit`; otherwise, when the repository holds the application, it starts the **Store** workflow, which packs and sends it there | the Partner Center application, set up once ([below](#a-release-that-needs-nobody)); without it, it says where the package is, for Partner Center's pages |
 
 ```powershell
 npm run ship -- 0.14.0            # everything
@@ -151,11 +151,42 @@ npm run ship -- --only store      # one step (or several: --only scoop,winget); 
 npm run ship -- --no-store        # leave one out (--no-scoop, --no-winget)
 npm run ship -- --run 43758944263 # take the build from a run of the workflow started earlier
 npm run ship -- --local           # build and sign here instead of on GitHub (asks for the update key's password)
+npm run ship -- --setup           # once: the update key and the Store's application as the repository's secrets
 ```
 
 **The update key is never needed on this PC**, once the repository's `TAURI_SIGNING_PRIVATE_KEY` secret holds it. The workflow builds, signs the service and the installer and writes `latest.json`; a run started by hand (which is what `ship` does) makes no release, only the `release-vX.Y.Z` artifact. `ship` takes that, checks it against the public key the app is built with, and makes the release from it. Publishing the release creates its tag, and the workflow, started again by the tag, finds the release made and builds nothing.
 
-A run whose secret is empty (it says `HAS_UPDATER_KEY: false`; the secret was empty from 2026-10-22 until someone set it again) builds everything but the signatures. `ship` doesn't release that: it says how to set the secret, keeps what was built in `release/vX.Y.Z/from-run` to look at, and won't take that run again. `npm run ship -- --local` builds and signs on this PC instead, with `npm run release`, which asks for the key's password.
+`ship` says at its start what a run will need from a person (the key's password with `--local`; the Store's package left for Partner Center's pages). When nobody knows whether GitHub can sign (no Release check since the secrets were set), the build step asks it first, and with a key secret that is empty or wrong it stops there, a minute in. A run that built without the key anyway (it says `HAS_UPDATER_KEY: false`) is never released: `ship` keeps what it built in `release/vX.Y.Z/from-run` to look at, and won't take that run again. `npm run ship -- --local` builds and signs on this PC instead, with `npm run release`, which asks for the key's password.
+
+### A release that needs nobody
+
+`npm run ship -- X.Y.Z` runs to its end by itself once two things only the maintainer has are where the release runs, as the repository's Actions secrets. **`npm run ship -- --setup`** ([`scripts/ship-setup.mjs`](../scripts/ship-setup.mjs)) puts them there, once, in a terminal:
+
+```powershell
+npm run ship -- --setup           # asks for what is missing, stores it, and proves it on GitHub
+npm run ship -- --setup --dry     # what is known to be set up and what is missing: asks, starts and changes nothing
+npm run ship -- --setup --check   # asks GitHub what its secrets can do (a minute): changes nothing
+```
+
+1.  **The update key.** It reads the key's file (`%USERPROFILE%\.tauri\shadui-ripgrep.key`, or `--key <file>`), asks for its password without showing it, opens the key with it here and checks it is the key installed copies trust, and only then stores the two as `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. A wrong password or another key stores nothing.
+2.  **The Partner Center application** the Microsoft Store takes submissions from. Making it is a few clicks of yours in Partner Center ([below](#sending-it-with-npm-run-store)); the setup asks for its tenant ID, client ID and key (the key without showing it), tries them against the Store (a sign-in and a read: nothing changes there), and stores them as `PARTNER_CENTER_TENANT_ID`, `PARTNER_CENTER_CLIENT_ID` and `PARTNER_CENTER_CLIENT_SECRET`. Say no there and it sets the key up alone (`--no-store` too); run it again when you have the values.
+3.  **The proof.** It starts the **Release check** workflow ([`release-check.yml`](../.github/workflows/release-check.yml), [`scripts/release-check.mjs`](../scripts/release-check.mjs)), which opens the key with its password, signs a scrap and checks the signature the way the app checks an update, signs in to the Store and reads the app, with the secrets themselves, and says what it found on the run's page. GitHub tells nobody whether a secret is empty or what it holds (the key's secret was empty from 2026-10-22 until this was written, and every run built happily without it), so this is the only way to know before a release finds out. Run it whenever in doubt: **Actions → Release check → Run workflow**, or `--setup --check`.
+
+Each value goes to `gh secret set` on its standard input: it is in no command line, no file and nothing the script prints, and nothing is stored on this PC. GitHub encrypts a secret for the repository: nobody can read it back, and only this repository's workflows, which only its owner can change, use it (their actions are pinned to commits for that reason). The key's file and your password manager stay the copies that matter: a secret can only be replaced, never read.
+
+After it, a release is the one command, from any PC with `gh` signed in, and it asks for nothing:
+
+| When | What happens | Where |
+| :--- | :--- | :--- |
+| at once | the checks, the version's commit, the push | this PC |
+| about 25 minutes | the Release workflow checks, builds, signs the service, packs the installer and signs the update | GitHub |
+| a minute | the files come down and are checked the way the app checks them; the draft release, GitHub's copies compared, published; the README's day | this PC |
+| a minute | Scoop's bucket and the winget pull request | this PC |
+| about 5 minutes | the **Store** workflow ([`store.yml`](../.github/workflows/store.yml)) takes the released setup program, checks its signature, packs the MSIX from its files and submits it | GitHub |
+
+What still takes a person, none of it at a keyboard during the run: the words (the release's notes, the README's *What's new* and the Store's note, written before it), a moderator's merge of the winget pull request, the Store's certification, and a new key for the Partner Center application when the old one expires (Partner Center says when; the Release check says so too: *Microsoft refuses the Partner Center application*).
+
+`npm run test:setup` proves the setup against stand-ins: throwaway keys, a gh that keeps the secrets it is given and runs the real check with them, and a Store that signs one application in. It shows that a wrong password, another key or a refused application stores nothing, and that no secret is ever among gh's arguments or in what is printed.
 
 **Before it:** write what's new in the README (`## What's new`), in `docs/features.md` when a feature is new, and in `crates/glint/msix/listing.json` (`whatsNew`, with the version) for the Store; `ship` says so when the README or the listing still tell about the last release, and goes on.
 
@@ -274,7 +305,11 @@ npm run store -- --discard           # deletes the pending submission
 1.  In Partner Center's **Account settings**, associate a Microsoft Entra directory with the account (Partner Center can make one, free, for an account that has none).
 2.  On the account settings' **Users** page, add a **Microsoft Entra application** (a new one is fine: it only names the script) with the **Manager** role.
 3.  Open the application there and copy its **Tenant ID** and **Client ID**, then **Add new key** and copy the key: it is shown once.
-4.  Set `PARTNER_CENTER_TENANT_ID` and `PARTNER_CENTER_CLIENT_ID` for your account (they aren't secrets; `setx` keeps them). Keep the key in a password manager: `npm run store` asks for it without showing it, or takes it from `PARTNER_CENTER_CLIENT_SECRET` for that run. A key expires (Partner Center says when) and a new one is made the same way.
+4.  **`npm run ship -- --setup`** ([above](#a-release-that-needs-nobody)) asks for the three, tries them against the Store and stores them as the repository's secrets, where `npm run ship` and the **Store** workflow use them. To use `npm run store` from this PC as well, set `PARTNER_CENTER_TENANT_ID` and `PARTNER_CENTER_CLIENT_ID` for your account (they aren't secrets; `setx` keeps them): it asks for the key without showing it, or takes it from `PARTNER_CENTER_CLIENT_SECRET` for that run. Keep the key in a password manager. A key expires (Partner Center says when) and a new one is made the same way, then `npm run ship -- --setup` again.
+
+The pages, as Partner Center has them (2026-11): **Account settings → Tenants** (`https://partner.microsoft.com/dashboard/account/v3/tenantmanagement`) has *Create Microsoft Entra ID* and *Associate Microsoft Entra ID*; **Account settings → User management** (`…/usermanagement`) asks you to sign in with that directory's account before it shows users and applications.
+
+**The Store workflow** ([`store.yml`](../.github/workflows/store.yml)) does on GitHub what `npm run ship`'s store step does on a PC, for a version that is released: **Actions → Store → Run workflow** with the version. Its mode is *look* unless told otherwise: it packs the package from the released setup program, keeps it as the run's artifact (`store-vX.Y.Z`) and says what a submission would change, sending nothing. *submit* sends it; *draft*, *commit*, *status* and *discard* are `npm run store`'s. Without the secrets it ends after packing, with the package for Partner Center's pages.
 
 The key acts for the whole Partner Center account, as a Manager: it is never committed, and the script sends it only to Microsoft's sign-in. The API doesn't work for an app that uses mandatory updates or has never had a submission (the first one is made in Partner Center, [above](#as-an-msix-package)). `npm run test:store` runs the script against a stand-in for the Store that checks every request against the API's pages.
 

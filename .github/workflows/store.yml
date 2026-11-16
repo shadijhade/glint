@@ -1,0 +1,134 @@
+name: Store
+# The run's name says what it was asked: npm run ship looks for "Store: submit x.y.z" to know a version was sent.
+run-name: "Store: ${{ inputs.mode }} ${{ inputs.version }}"
+
+# Sends a released version of Glint to the Microsoft Store (docs/releasing.md, "The Microsoft Store"). It takes
+# the release's own setup program, checks it is the one the update key signed, packs the Store's package from the
+# very files it installs (as `npm run ship` does on a PC), and hands it to scripts/store.mjs with the Partner
+# Center application in this repository's secrets. `npm run ship` starts it when the PC it runs on has no
+# application of its own; a person can too, from the Actions page.
+#
+# "look" (the default) packs the package, keeps it as the run's artifact and says what a submission would change:
+# it sends nothing. Without the secrets every mode ends there, with the package for Partner Center's pages.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "The released version (x.y.z)"
+        required: true
+        type: string
+      mode:
+        description: "look says what would change; submit sends it for certification"
+        type: choice
+        default: look
+        options:
+          - look
+          - submit
+          - draft
+          - commit
+          - status
+          - discard
+      listing:
+        description: "The listing's screenshots and words too"
+        type: boolean
+        default: false
+      replace_pending:
+        description: "Delete a submission that is pending first (draft, submit)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# One submission at a time: the Store has one pending submission for an app.
+concurrency:
+  group: store
+  cancel-in-progress: false
+
+jobs:
+  store:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      # Inputs reach the scripts as variables, never as text inside a script.
+      VERSION: ${{ inputs.version }}
+      MODE: ${{ inputs.mode }}
+      # Only whether they are set: the application's key stays in the step that signs in.
+      HAS_STORE: ${{ secrets.PARTNER_CENTER_TENANT_ID != '' && secrets.PARTNER_CENTER_CLIENT_ID != '' && secrets.PARTNER_CENTER_CLIENT_SECRET != '' }}
+      PACKS: ${{ inputs.mode == 'look' || inputs.mode == 'submit' || inputs.mode == 'draft' }}
+    steps:
+      - name: The version is a version
+        shell: pwsh
+        run: if ($env:VERSION -notmatch '^\d+\.\d+\.\d+$') { throw "version must be x.y.z, not '$env:VERSION'" }
+
+      # The release's own commit: its scripts, its listing words (crates/glint/msix/listing.json) and its version.
+      # Actions are pinned to commits: this job holds the Partner Center application's key.
+      - name: Checkout the release's commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: v${{ inputs.version }}
+
+      # The scripts need Node and nothing from npm.
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+
+      - name: Pack the Store's package from the released setup program
+        if: env.PACKS == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          $tree = node -e "import('./scripts/lib/project.mjs').then((p) => console.log(p.workspaceVersion()))"
+          if ($tree -ne $env:VERSION) { throw "The tag v$env:VERSION holds version $tree" }
+          $work = "$env:RUNNER_TEMP\store"
+          New-Item -ItemType Directory -Path $work -Force | Out-Null
+          $setup = "Glint_$($env:VERSION)_x64-setup.exe"
+          gh release download "v$env:VERSION" --repo $env:GITHUB_REPOSITORY --pattern $setup --pattern latest.json --dir $work
+          # The release's files as the app checks them before installing: signed with the update key, for this version.
+          node scripts/verify-update.mjs "$work\latest.json" "$work\$setup"
+          # The setup program is a 7-Zip archive of what it installs: Glint.exe, the instant search service and the
+          # service's update signature go into the package byte for byte, and no key is needed here.
+          7z x "$work\$setup" "-o$work\files" -y -bso0 -bsp0
+          node scripts/msix.mjs --from "$work\files" --out "$work\msix"
+          Get-ChildItem "$work\msix\*.msix" | ForEach-Object {
+            "{0}: {1:n0} bytes, SHA-256 {2}" -f $_.Name, $_.Length, (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+          }
+
+      - name: Keep the package
+        if: env.PACKS == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: store-v${{ inputs.version }}
+          path: ${{ runner.temp }}/store/msix/*.msix
+          if-no-files-found: error
+
+      - name: Without the Partner Center application, the package waits for a person
+        if: env.HAS_STORE != 'true'
+        shell: pwsh
+        run: |
+          Write-Host "::warning title=The Microsoft Store::The Partner Center application isn't in this repository's secrets (npm run ship -- --setup). Nothing was sent: the package is this run's artifact, for Partner Center's Packages page."
+          # Asked to send, and couldn't.
+          if ($env:MODE -ne "look") { exit 1 }
+
+      - name: The Microsoft Store
+        if: env.HAS_STORE == 'true'
+        shell: pwsh
+        env:
+          PARTNER_CENTER_TENANT_ID: ${{ secrets.PARTNER_CENTER_TENANT_ID }}
+          PARTNER_CENTER_CLIENT_ID: ${{ secrets.PARTNER_CENTER_CLIENT_ID }}
+          PARTNER_CENTER_CLIENT_SECRET: ${{ secrets.PARTNER_CENTER_CLIENT_SECRET }}
+          LISTING: ${{ inputs.listing }}
+          REPLACE_PENDING: ${{ inputs.replace_pending }}
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          $options = @()
+          if ($env:MODE -ne "look") { $options += "--$env:MODE" }
+          if ($env:LISTING -eq "true") { $options += "--listing" }
+          if ($env:REPLACE_PENDING -eq "true" -and $env:MODE -in @("draft", "submit")) { $options += "--replace-pending" }
+          $msix = Get-ChildItem "$env:RUNNER_TEMP\store\msix\*.msix" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($msix) { $options += @("--msix", $msix.FullName) }
+          node scripts/store.mjs @options
