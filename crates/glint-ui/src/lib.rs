@@ -75,6 +75,12 @@ pub fn run() -> i32 {
     app.run(move |cx| {
         glint_core::startup::mark("gpui running");
         gpui_kit::init(cx);
+        // The setup program's copy takes the app identity its Start menu and desktop shortcuts carry (installer.nsi's
+        // SetLnkAppUserModelId), before any window: the taskbar groups every window with the pinned shortcut however
+        // Glint was started (with Windows, from File Explorer, by an update), and Windows' own notifications work.
+        if glint_core::installed_by_setup() || updater::dry_run().is_some() {
+            cx.set_app_identity(glint_core::host::IDENTIFIER, "Glint");
+        }
         glint_core::startup::mark("kit");
         state::init(cx);
         // The saved state, its settings first: the theme and the language read them.

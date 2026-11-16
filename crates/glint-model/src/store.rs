@@ -375,6 +375,9 @@ pub struct Settings {
     pub suggest: bool,
     /// What the person chooses is counted, on this PC only, to offer the likely step first.
     pub learn: bool,
+    /// Updates download in the background and install on quitting Glint or after a start with Windows (Settings →
+    /// About); off, Glint only says a new version is out.
+    pub auto_update: bool,
 }
 
 impl Default for Settings {
@@ -485,6 +488,7 @@ impl Default for Settings {
             zoxide: false,
             suggest: true,
             learn: true,
+            auto_update: true,
         }
     }
 }
@@ -857,6 +861,7 @@ lenient_deserialize!(Settings {
     "zoxide" => zoxide,
     "suggest" => suggest,
     "learn" => learn,
+    "autoUpdate" => auto_update,
 });
 /// Kinds of remote connection Glint no longer has: a paired PC's folders ("device"), gone with paired devices in
 /// 0.12. A saved one loads as nothing ([`load_persisted`] drops it); any other kind it doesn't know loads as S3.
@@ -1198,7 +1203,7 @@ mod tests {
                 r#""compareSubfolders":false,"compareContents":false,"columns":{{}},"previewWidth":null,"#,
                 r#""dualSplit":null,"gitTrusted":[],"terminalShell":"","terminalHeight":null,"#,
                 r#""terminalFollow":true,"growthDays":7,"showReadme":true,"readmeOpen":false,"#,
-                r#""zoxide":false,"suggest":true,"learn":true}}"#
+                r#""zoxide":false,"suggest":true,"learn":true,"autoUpdate":true}}"#
             ),
             DEFAULT_EXCLUSIONS
         );

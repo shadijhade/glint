@@ -251,6 +251,7 @@ pub const SEARCH: &[Entry] = &[
     entry(Page::Agents, "AI agents", "mcp claude copilot agent ai"),
     entry(Page::Tools, "Tools", "ffmpeg pandoc restic rclone 7-zip pdfcpu exiftool install update programs"),
     entry(Page::About, "About", "version updates help diagnostics export import settings file shortcuts"),
+    entry(Page::About, "Install updates automatically", "update upgrade new version background restart scoop"),
 ];
 
 /// What search found: each entry whose name or words have every word typed at the start of one of theirs, the

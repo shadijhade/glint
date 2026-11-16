@@ -275,6 +275,8 @@ impl Workspace {
             if window.is_window_active() {
                 theme::motion::sync_with_windows(cx);
             }
+            // Someone is looking: the updater hears it, and notices that waited while the window was hidden show.
+            crate::updater::window_active(window, cx);
             // The light behind the window dims while another window is in front.
             cx.notify();
         }));

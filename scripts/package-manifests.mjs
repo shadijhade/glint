@@ -96,8 +96,8 @@ ${footer("defaultLocale")}`,
 
 // Scoop: extracts the NSIS setup with 7-Zip instead of running it, which also lays out the installer's own
 // files ($PLUGINSDIR, NSIS's plug-in folder, and the 0.9 setups' $TEMP, WebView2's bootstrapper), so they're deleted. Without the setup's
-// uninstall.exe the app knows it didn't come from the installer and leaves updating to `scoop update`
-// (installed_by_setup in crates/glint-core/src/lib.rs).
+// uninstall.exe the app knows it didn't come from the installer, and updates through Scoop: `scoop update glint`
+// once it has quit, then it starts again (crates/glint-ui/src/updater/scoop.rs), so Scoop's record stays right.
 // Uninstalling it (not updating: Scoop's $cmd tells them apart) does what the setup's uninstaller does.
 //
 // File Explorer's entries: a Scoop copy adds them running Glint through the app's `current` link, which
@@ -174,7 +174,7 @@ const scoop = {
     homepage: REPO,
     license: "MIT",
     notes: [
-        "Update with 'scoop update glint'; the app links to new versions but doesn't install them itself.",
+        "Glint updates itself through Scoop when you quit it (Settings > About), or run 'scoop update glint'.",
         "Instant search, opening folders from File Explorer and starting with Windows, once turned on in Settings, are taken out by 'scoop uninstall' too.",
     ],
     architecture: {

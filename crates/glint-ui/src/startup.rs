@@ -75,7 +75,7 @@ pub(crate) fn start(cx: &mut App, request: launch::Request) {
     crate::components::disk_usage::init(cx);
     // Early, before the saved state is first written: the updater tells a first start after an update by it. (A
     // secondary window's stays idle; see `Updater::start`.)
-    start_updater(cx);
+    start_updater(cx, request.tray);
     // Git's status for the folders shown, and File Explorer's on-demand folders the menus offer to hide.
     crate::components::git::init(cx);
     explorer::explorer(cx).update(cx, |e, cx| e.refresh_on_demand(cx).detach());
@@ -302,7 +302,7 @@ fn place_secondary_window(window: &secondary::SecondaryWindow) {
 
 /// Out of the tray, or from behind other windows: shown as it was kept (maximized, the first time, if it
 /// was) and brought forward. Only from outside GPUI's callbacks: the tray's window procedure, a posted job.
-fn reveal_main() {
+pub(crate) fn reveal_main() {
     if let Some(hwnd) = main_hwnd() {
         window_state::show_hwnd(hwnd);
     }
@@ -443,19 +443,36 @@ fn ask_quit_for_update(cx: &mut App, go: Box<dyn FnOnce(&mut App)>) {
     }
 }
 
-/// Glint keeps itself up to date (never the Store copy or a debug build): latest.json checked at start and every 12
-/// hours, the setup's signature checked before it runs; what it says goes to the main window.
-fn start_updater(cx: &mut App) {
+/// Glint keeps itself up to date (never the Store copy or a debug build): latest.json checked at start and every
+/// hour by the clock, the setup's signature checked before it runs, downloaded and installed by itself as Settings →
+/// About says (`in_tray`: a start with Windows, where an update installs before anyone opens the window); what it
+/// says goes to the main window, and installing on the way out happens as Glint quits.
+fn start_updater(cx: &mut App, in_tray: bool) {
     let hooks = crate::updater::Hooks {
         confirm_quit: Rc::new(confirm_quit_for_update),
         quit: Rc::new(quit),
+        // A restart nobody asked for waits for these.
+        busy: Rc::new(|cx| copying(cx) || crate::dialogs::compare_files::unsaved(cx)),
     };
     let source = crate::updater::http_source(glint_core::tools::install_tls_provider);
-    let updater = crate::updater::init(cx, source, hooks);
+    let auto = state::settings(cx).auto_update;
+    let updater = crate::updater::init(cx, source, hooks, in_tray, auto);
     cx.subscribe(&updater, |_, event, cx| {
         if let Some(main) = main_window(cx) {
             let _ = main.update(cx, |_, window, cx| crate::updater::show(event, window, cx));
         }
+    })
+    .detach();
+    // Settings → About's switch, whenever the settings change.
+    let following = updater.clone();
+    cx.observe_global::<state::UiState>(move |cx| {
+        let auto = state::settings(cx).auto_update;
+        following.update(cx, |updater, cx| updater.set_auto(auto, cx));
+    })
+    .detach();
+    cx.on_app_quit(|cx| {
+        crate::updater::on_quit(cx);
+        async {}
     })
     .detach();
 }
