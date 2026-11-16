@@ -6,6 +6,16 @@ The plan for 0.12 that was here is in git history (`git show df1245a:NEXT_RELEAS
 before it (`git show 47c33fa:NEXT_RELEASE.md`), and 0.13's own plan, the menu and the dock that know the selection,
 is [docs/gpui/aware/PLAN.md](docs/gpui/aware/PLAN.md) with its task cards beside it.*
 
+## 0.13.1: the zoom
+
+One fix on top of 0.13.0 (cb669ef, made on the other PC). `Ctrl` and the wheel, or a pinch, opened the folder under
+the pointer and went up to the one above; that was never what the zoom was for. It changes the layout now, as one
+ladder (the list, then the grid's tiles from the smallest to the biggest), and never the folder. The rest of the
+motion is quieter: opening a folder is a small step, not a flight. `tests/e2e`'s `zoom-layout` holds it with the
+real wheel.
+
+Not tried: a pinch on a real touchpad (made-up events only).
+
 ## Left over from 0.13
 
 Known when it shipped, none of it holding the release:
