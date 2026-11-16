@@ -153,14 +153,20 @@ if (!flag("--no-key") && state.key !== "ok") {
     if (await goOn("   Go on?")) {
         const text = readFileSync(file, "utf8").trim();
         const fromVariable = process.env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD;
+        const asks = isEncryptedKey(text) && fromVariable === undefined;
+        if (asks && !interactive) fail("The key has a password and there is no terminal to ask in: set TAURI_SIGNING_PRIVATE_KEY_PASSWORD.");
+        // Here first: a wrong password or another key stops before anything is stored. A password typed wrong
+        // (or not typed: Enter alone) is asked for again, three times in all.
+        const TRIES = 3;
         let password = "";
-        if (isEncryptedKey(text)) {
-            if (fromVariable !== undefined) password = fromVariable;
-            else if (interactive) password = askHidden("   Password of the update key");
-            else fail("The key has a password and there is no terminal to ask in: set TAURI_SIGNING_PRIVATE_KEY_PASSWORD.");
+        let here;
+        for (let attempt = 1; ; attempt++) {
+            if (asks) password = askHidden("   Password of the update key (it shows as stars)");
+            else password = fromVariable ?? "";
+            here = await keyState({ key: text, password, publicKey: updatePubkey() });
+            if (here.state !== "locked" || !asks || attempt === TRIES) break;
+            say(`   ✗ ${password ? "That password doesn't open the key" : "Nothing was typed, and the key has a password"}: once more (${TRIES - attempt} of ${TRIES} left).`);
         }
-        // Here first: a wrong password or another key stops before anything is stored.
-        const here = await keyState({ key: text, password, publicKey: updatePubkey() });
         if (here.state !== "ok") fail(`Nothing was stored: ${here.detail}.`);
         done("the password opens the key, and it is the key installed copies trust");
         putSecret(KEY_SECRETS[0], text);
