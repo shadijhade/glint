@@ -42,21 +42,25 @@ Known when it shipped, none of it holding the release:
 `npm run ship -- <x.y.z>` ([docs/releasing.md](docs/releasing.md#one-command-npm-run-ship)): the checks, the version,
 the build and its signatures on GitHub, the release, Scoop, winget and the Microsoft Store. 0.13.0 was the first
 made this way, and 0.13.1 the second: built and signed on this PC (`--local`, one password), then the release,
-Scoop and winget by `ship`, and the Store's package put in Partner Center by hand. Two things are left for it
-to need nobody, and one command does both, once: **`npm run ship -- --setup`**
-([docs/releasing.md](docs/releasing.md#a-release-that-needs-nobody)).
+Scoop and winget by `ship`, and the Store's package put in Partner Center by hand.
 
-- **The update key, where the build is.** The repository's `TAURI_SIGNING_PRIVATE_KEY` secret has been empty
-  since it was made (2026-10-22), so GitHub builds Glint but can't sign the update. The setup asks for the key's
-  password, checks key and password here, stores both as secrets, and has GitHub prove it can sign with them (the
-  **Release check** workflow, a minute). Until then `npm run ship -- --local` builds and signs here, and asks for
-  the password every time.
+**Since 2026-11-16 the build needs nobody.** The update key and its password are the repository's secrets, put
+there by `npm run ship -- --setup` ([docs/releasing.md](docs/releasing.md#a-release-that-needs-nobody)), which
+checked them here first. The **Release check** workflow proved GitHub signs with them, and a try run of the
+Release workflow built and signed 0.13.1 there in 22 minutes: its update signature and its service's signature
+hold here, checked the way the app checks them. So `npm run ship -- <x.y.z>` asks for no password, from any PC
+with `gh` signed in, and `--local` stays for a build on this PC.
+
+One thing is left for a release to need nobody at all, once:
+
 - **The Store's application.** No Microsoft Entra directory is associated with the Partner Center account yet
   (seen 2026-11-16), so first, in Partner Center: associate one, add a Microsoft Entra application with the
-  Manager role, and make its key. The setup then asks for its tenant ID, client ID and key, tries them against
-  the Store and stores them; from then on `ship` sends the package through the **Store** workflow. `npm run
-  store` has only ever run against a stand-in (`npm run test:store`): the first real run should be a look
-  (**Actions → Store → Run workflow**, mode *look*), which sends nothing.
+  Manager role, and make its key. `npm run ship -- --setup` then asks for its tenant ID, client ID and key, tries
+  them against the Store and stores them; from then on `ship` sends the package through the **Store** workflow.
+  Until then the package is uploaded in Partner Center's pages. `npm run store` has only ever run against a
+  stand-in (`npm run test:store`): the first real run should be a look (**Actions → Store → Run workflow**, mode
+  *look*), which sends nothing. The workflow itself was tried without the application: it packed 0.13.1's
+  package from the released setup program, the same programs as the one packed here.
 
-Never tried for real, because both wait for those secrets: a build signed on GitHub (what comes down is checked
-the way the app checks it before anything is released), and a submission through the Store's API.
+Never tried for real: a submission through the Store's API, and a release made from a build signed on GitHub
+(the try run's files were checked, not released; `ship` checks every build the same way before it publishes).
