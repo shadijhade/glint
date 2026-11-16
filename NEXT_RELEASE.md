@@ -1,14 +1,15 @@
 # Glint: after 0.13
 
-*0.13.0 came out on 2026-11-16 ([its release](https://github.com/shadijhade/glint/releases/tag/v0.13.0)). Nothing
-is planned after it yet: this file is where the next release's brief goes.
+*0.13.0 came out on 2026-11-16 ([its release](https://github.com/shadijhade/glint/releases/tag/v0.13.0)), and
+0.13.1, a fix for its zoom, the same day ([its release](https://github.com/shadijhade/glint/releases/tag/v0.13.1)).
+Nothing is planned after them yet: this file is where the next release's brief goes.
 The plan for 0.12 that was here is in git history (`git show df1245a:NEXT_RELEASE.md`), the plans for 0.9 to 0.11
 before it (`git show 47c33fa:NEXT_RELEASE.md`), and 0.13's own plan, the menu and the dock that know the selection,
 is [docs/gpui/aware/PLAN.md](docs/gpui/aware/PLAN.md) with its task cards beside it.*
 
 ## 0.13.1: the zoom
 
-One fix on top of 0.13.0 (cb669ef, made on the other PC). `Ctrl` and the wheel, or a pinch, opened the folder under
+Out on 2026-11-16, a few hours after 0.13.0: one fix on top of it (cb669ef, made on the other PC). `Ctrl` and the wheel, or a pinch, opened the folder under
 the pointer and went up to the one above; that was never what the zoom was for. It changes the layout now, as one
 ladder (the list, then the grid's tiles from the smallest to the biggest), and never the folder. The rest of the
 motion is quieter: opening a folder is a small step, not a flight. `tests/e2e`'s `zoom-layout` holds it with the
@@ -40,8 +41,8 @@ Known when it shipped, none of it holding the release:
 
 `npm run ship -- <x.y.z>` ([docs/releasing.md](docs/releasing.md#one-command-npm-run-ship)): the checks, the version,
 the build and its signatures on GitHub, the release, Scoop, winget and the Microsoft Store. 0.13.0 was the first
-made this way: built and signed on this PC (`--local`, one password), then the release, Scoop and winget by
-`ship`, and the Store's package put in Partner Center by hand. Two things are left for it to need nobody, each
+made this way, and 0.13.1 the second: built and signed on this PC (`--local`, one password), then the release,
+Scoop and winget by `ship`, and the Store's package put in Partner Center by hand. Two things are left for it to need nobody, each
 done once:
 
 - **The update key, where the build is.** The repository's `TAURI_SIGNING_PRIVATE_KEY` secret has been empty
