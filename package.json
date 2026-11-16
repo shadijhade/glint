@@ -15,6 +15,7 @@
     "check-imports": "node scripts/check-imports.mjs",
     "test:signing": "node scripts/lib/minisign-compare.test.mjs",
     "test:store": "node scripts/lib/store-submission.test.mjs",
+    "test:setup": "node scripts/lib/hands-off.test.mjs",
     "site": "npm --prefix site run dev",
     "bench": "node scripts/bench.mjs"
   }
