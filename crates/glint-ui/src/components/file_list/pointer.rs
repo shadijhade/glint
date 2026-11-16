@@ -11,7 +11,7 @@ use super::{DragFromArchive, FileList, FileListEvent, Press, ROW_HEIGHT};
 use crate::explorer::Rows;
 use crate::kit::prelude::*;
 use crate::t;
-use glint_model::entries::{is_archive_file, is_archived, is_recycled, FileEntry};
+use glint_model::entries::{is_archived, is_recycled, FileEntry};
 use glint_model::grid::{marquee_hits, Point as ContentPoint};
 use std::cell::Cell;
 use std::collections::HashSet;
@@ -125,9 +125,10 @@ fn start_drag(_: &App, paths: Vec<String>, copy_only: bool) -> Dragging {
 
 impl FileList {
     /// The zoom, by the wheel (with Ctrl) or a pinch: `delta` in the wheel's measure (above zero toward the
-    /// eye), the pointer at `at`. A list has one size, so a notch goes straight through: into the folder (or
-    /// archive) whose row is under the pointer, or out to the folder above. Nothing while the tab is on its way
-    /// somewhere; where there is nowhere to go the pane's stage gives a little ([`FileListEvent::Limit`]).
+    /// eye), the pointer at `at`. It changes how the folder is laid out, never which folder it is: a notch in is
+    /// the grid at its smallest tiles ([`FileListEvent::ZoomIn`]), with the item under the pointer where it was.
+    /// The list is as far out as the zoom goes, and columns have one size: there the pane's stage gives a
+    /// little, once a spin ([`FileListEvent::Limit`]). Nothing while a name is being typed.
     pub(super) fn zoom_by(&mut self, delta: f32, at: Point<Pixels>, window: &Window, cx: &mut Context<Self>) {
         let turn = self.wheel.turn(delta, Instant::now());
         if turn.steps == 0 {
@@ -137,29 +138,14 @@ impl FileList {
         let Some(tab) = self.explorer.read(cx).pane_tab(self.pane) else {
             return;
         };
-        if tab.loading || tab.renaming.is_some() {
+        if tab.renaming.is_some() {
             return;
         }
-        if inward {
-            let row = ROW_HEIGHT.to_pixels(window.rem_size());
-            let line = self.content_point(at).y / f32::from(row).max(1.);
-            // The line is whole and not negative before it is a line's number.
-            let folder = (line >= 0.)
-                .then(|| layout_rows::row_of_line(&self.frame.rows, line.floor() as usize))
-                .flatten()
-                .and_then(|index| self.frame.rows.get(index))
-                .filter(|entry| (entry.dir || is_archive_file(entry)) && !is_recycled(entry))
-                .cloned();
-            match folder {
-                Some(folder) => self
-                    .explorer
-                    .update(cx, |explorer, cx| explorer.open_entry(&folder, cx).detach()),
-                None => cx.emit(FileListEvent::Limit { inward }),
-            }
-        } else if tab.find.is_some() || tab.is_this_pc() {
+        if inward && tab.view == crate::explorer::ViewMode::List {
+            let anchor = self.anchor_at(Some(at), window);
+            cx.emit(FileListEvent::ZoomIn { anchor });
+        } else if !std::mem::replace(&mut self.wheel.said, true) {
             cx.emit(FileListEvent::Limit { inward });
-        } else {
-            self.explorer.update(cx, |explorer, cx| explorer.go_up(cx).detach());
         }
     }
 

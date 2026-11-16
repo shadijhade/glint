@@ -1357,9 +1357,7 @@ fn events_of(env: &mut Env) -> Rc<RefCell<Vec<FileGridEvent>>> {
 }
 
 #[gpui_kit::test]
-fn past_the_biggest_tiles_the_zoom_goes_into_the_folder_under_the_pointer_in_a_spin_of_its_own(
-    cx: &mut TestAppContext,
-) {
+fn the_zoom_ends_at_the_biggest_tiles_and_never_goes_into_the_folder_under_the_pointer(cx: &mut TestAppContext) {
     use glint_model::grid::TileSize;
     let _guard = testing::lock();
     let mut env = env(cx, &disk(0), plain());
@@ -1369,8 +1367,8 @@ fn past_the_biggest_tiles_the_zoom_goes_into_the_folder_under_the_pointer_in_a_s
     env.act(GridLarger);
     env.act(GridLarger);
     assert_eq!(env.tile_size(), TileSize::XLarge);
-    // A spin over the folder's tile: a notch to the biggest, and the next notch of the same spin stops there (the
-    // pane is told to give, once), so nobody lands in a folder by turning the wheel too far.
+    // A spin over the folder's tile: a notch to the biggest, and there the zoom ends. The pane is told to give,
+    // once a spin; the folder under the pointer is not gone into, however far the wheel turns.
     zoom_over(&mut env, 0, 3.);
     assert_eq!(env.tile_size(), TileSize::Huge);
     zoom_over(&mut env, 0, 3.);
@@ -1381,50 +1379,69 @@ fn past_the_biggest_tiles_the_zoom_goes_into_the_folder_under_the_pointer_in_a_s
         "{} events",
         events.borrow().len()
     );
-    // A spin that begins at the biggest (the other way and back is one) goes on into the folder.
+    // Another spin (the other way and back is one) says so again, and goes nowhere either.
     zoom_over(&mut env, 0, -3.);
     assert_eq!(env.tile_size(), TileSize::XLarge);
-    env.act(GridLarger);
-    zoom_over(&mut env, 0, -3.);
-    env.act(GridLarger);
-    assert_eq!(env.tile_size(), TileSize::Huge);
     zoom_over(&mut env, 0, 3.);
-    env.settle(|env| env.path() == "C:\\x\\docs");
-    // The folder gone into is seen from afar: its tiles are the smallest, and the same spin goes on to bigger.
-    assert_eq!(env.tile_size(), TileSize::Small);
     zoom_over(&mut env, 0, 3.);
-    assert_eq!(env.tile_size(), TileSize::Medium);
-    assert_eq!(env.path(), "C:\\x\\docs");
-    // At the biggest again, over a file's tile, there is nothing to go into.
-    env.act(GridLarger);
-    env.act(GridLarger);
-    env.act(GridLarger);
-    assert_eq!(env.tile_size(), TileSize::Huge);
-    events.borrow_mut().clear();
-    zoom_over(&mut env, 0, -3.);
-    env.act(GridLarger);
-    zoom_over(&mut env, 0, 3.);
-    assert_eq!(env.path(), "C:\\x\\docs");
-    assert!(matches!(
-        events.borrow().as_slice(),
-        [FileGridEvent::Limit { inward: true }]
-    ));
+    assert_eq!((env.path().as_str(), env.tile_size()), ("C:\\x", TileSize::Huge));
+    assert_eq!(events.borrow().len(), 2);
 }
 
 #[gpui_kit::test]
-fn past_the_smallest_tiles_the_zoom_goes_out_to_the_folder_above(cx: &mut TestAppContext) {
+fn past_the_smallest_tiles_the_zoom_asks_for_the_list(cx: &mut TestAppContext) {
     use glint_model::grid::TileSize;
     let _guard = testing::lock();
     let mut env = env(cx, &disk(0), plain());
-    env.go("C:\\x\\docs");
+    let events = events_of(&mut env);
     env.click(0);
     env.act(GridSmaller);
     assert_eq!(env.tile_size(), TileSize::Small);
-    // The spin begins at the smallest size: out to the folder above, seen from nearest (the biggest tiles), so a
-    // notch back in is the folder just left.
-    zoom_over(&mut env, 0, -3.);
-    env.settle(|env| env.path() == "C:\\x");
-    assert_eq!(env.tile_size(), TileSize::Huge);
+    // A notch out over a file's tile: the list is asked for, with that item where the pointer is. The folder
+    // and the tiles' size are as they were (a notch back in is these tiles again).
+    zoom_over(&mut env, 2, -3.);
+    assert_eq!((env.path().as_str(), env.tile_size()), ("C:\\x", TileSize::Small));
+    assert!(
+        matches!(
+            events.borrow().as_slice(),
+            [FileGridEvent::ZoomOut { anchor: Some((path, Some(_))) }] if path == "C:\\x\\b.txt"
+        ),
+        "{:?}",
+        events.borrow()
+    );
+}
+
+#[gpui_kit::test]
+fn a_tiles_picture_is_where_it_is_drawn_and_the_list_is_asked_to_show_what_the_grid_did(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut env = env(cx, &disk(3), plain());
+    env.frame();
+    let drawn = env.visual.update(|window, cx| {
+        window.render_frame(cx);
+        window.find(("file-grid-picture", 2usize)).bounds()
+    });
+    let grid = env.grid.clone();
+    let picture = env
+        .visual
+        .update(|_, cx| grid.read(cx).picture_of("C:\\x\\b.txt"))
+        .expect("the tile is drawn");
+    // Where a row's picture flies from is the square the tile's picture is drawn in.
+    let near = |a: Pixels, b: Pixels| (f32::from(a) - f32::from(b)).abs() < 1.5;
+    assert!(
+        near(picture.origin.x, drawn.origin.x) && near(picture.origin.y, drawn.origin.y),
+        "{picture:?} against {drawn:?}"
+    );
+    assert!(
+        near(picture.size.width, drawn.size.width) && near(picture.size.height, drawn.size.height),
+        "{picture:?} against {drawn:?}"
+    );
+    assert_eq!(
+        env.visual.update(|_, cx| grid.read(cx).picture_of("C:\\x\\nothing")),
+        None
+    );
+    // With no pointer on a tile, the first tile on screen is what the next view shows first.
+    let anchor = env.visual.update(|_, cx| grid.read(cx).anchor_at(None));
+    assert_eq!(anchor, Some(("C:\\x\\docs".to_string(), None)));
 }
 
 #[gpui_kit::test]

@@ -2016,21 +2016,29 @@ impl Ui {
 }
 
 #[gpui_kit::test]
-fn ctrl_and_the_wheel_go_into_the_folder_under_the_pointer_and_out_again(cx: &mut TestAppContext) {
+fn ctrl_and_the_wheel_ask_for_the_grid_and_never_change_the_folder(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let mut ui = open(cx, &small_disk(), "C:\\x");
-    let (docs, alpha) = (ui.middle_of(0), ui.middle_of(1));
-    // A notch toward you over a folder's row: into the folder.
+    let docs = ui.middle_of(0);
+    let list = ui.list.clone();
+    let top = ui.visual.update(|_, cx| list.read(cx).area.get().origin.y);
+    // A notch toward you over a folder's row: the grid is asked for, with that row where the pointer is. The
+    // folder is the same one (the zoom lays it out another way; it goes nowhere).
     ui.zoom_at(docs, 3.);
-    assert_eq!(ui.path(), "C:\\x\\docs");
-    // A notch back: out to the folder above, wherever the pointer is.
+    assert_eq!(ui.path(), "C:\\x");
+    assert_eq!(
+        ui.events(),
+        [FileListEvent::ZoomIn {
+            anchor: Some(("C:\\x\\docs".to_string(), Some(f32::from(docs.y - top))))
+        }]
+    );
+    // A notch back: the list is as far out as the zoom goes, and says so once a spin.
+    ui.events.borrow_mut().clear();
+    ui.zoom_at(docs, -3.);
     ui.zoom_at(docs, -3.);
     assert_eq!(ui.path(), "C:\\x");
-    assert!(ui.events().is_empty(), "{:?}", ui.events());
-    // Over a file there is nothing to go into: the folder stays, and the pane is told to give.
-    ui.zoom_at(alpha, 3.);
-    assert_eq!(ui.path(), "C:\\x");
-    assert_eq!(ui.events(), [FileListEvent::Limit { inward: true }]);
+    assert_eq!(ui.events(), [FileListEvent::Limit { inward: false }]);
+    ui.events.borrow_mut().clear();
     // Without Ctrl the wheel scrolls, as ever.
     ui.visual.update(|window, cx| {
         window.dispatch_event(
@@ -2045,10 +2053,11 @@ fn ctrl_and_the_wheel_go_into_the_folder_under_the_pointer_and_out_again(cx: &mu
     });
     ui.frame();
     assert_eq!(ui.path(), "C:\\x");
+    assert!(ui.events().is_empty(), "{:?}", ui.events());
 }
 
 #[gpui_kit::test]
-fn a_touchpads_pinch_goes_into_the_folder_under_it_and_out_again(cx: &mut TestAppContext) {
+fn a_touchpads_pinch_asks_for_the_grid_once_the_fingers_are_a_notch_apart(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let mut ui = open(cx, &small_disk(), "C:\\x");
     let docs = ui.middle_of(0);
@@ -2069,13 +2078,62 @@ fn a_touchpads_pinch_goes_into_the_folder_under_it_and_out_again(cx: &mut TestAp
     };
     // The fingers a little apart: not yet a notch.
     pinch(&mut ui, 0.1);
-    assert_eq!(ui.path(), "C:\\x");
-    // Half as far again in all: into the folder.
+    assert!(ui.events().is_empty(), "{:?}", ui.events());
+    // Half as far again in all: the grid is asked for, on the row under the fingers.
     pinch(&mut ui, 0.4);
-    assert_eq!(ui.path(), "C:\\x\\docs");
-    // Together again: out.
+    assert!(
+        matches!(
+            ui.events().as_slice(),
+            [FileListEvent::ZoomIn { anchor: Some((path, Some(_))) }] if path == "C:\\x\\docs"
+        ),
+        "{:?}",
+        ui.events()
+    );
+    // Together again: the list has nowhere further out to go.
     pinch(&mut ui, -0.4);
+    assert_eq!(ui.events().last(), Some(&FileListEvent::Limit { inward: false }));
     assert_eq!(ui.path(), "C:\\x");
+}
+
+#[gpui_kit::test]
+fn a_rows_picture_is_where_it_is_drawn_and_the_grid_is_asked_to_show_what_the_list_did(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut ui = open(cx, &small_disk(), "C:\\x");
+    let (row, rem) = ui.visual.update(|window, cx| {
+        window.render_frame(cx);
+        (window.find(("file-row", 2usize)).bounds(), window.rem_size())
+    });
+    let list = ui.list.clone();
+    let picture = ui
+        .visual
+        .update(|_, cx| list.read(cx).picture_of("C:\\x\\berry.png", rem))
+        .expect("the row is drawn");
+    // A square in the middle of its row's height, a little in from the row's start.
+    assert!(picture.size.width == picture.size.height && picture.size.width > px(12.));
+    assert!(
+        (f32::from(picture.center().y) - f32::from(row.center().y)).abs() < 1.5,
+        "{picture:?} in {row:?}"
+    );
+    assert!(
+        picture.left() >= row.left() && picture.right() < row.left() + px(60.),
+        "{picture:?} in {row:?}"
+    );
+    assert_eq!(
+        ui.visual
+            .update(|_, cx| list.read(cx).picture_of("C:\\x\\nothing.txt", rem)),
+        None
+    );
+    // With no pointer on a row, the first row on screen is what the next view shows first.
+    let anchor = ui.visual.update(|window, cx| list.read(cx).anchor_at(None, window));
+    assert_eq!(anchor, Some(("C:\\x\\docs".to_string(), None)));
+    // The grid gave way to the list on an item: the list is told, and takes it on its next frame.
+    ui.visual.update(|_, cx| {
+        list.update(cx, |list, cx| {
+            list.arrive(Some(("C:\\x\\berry.png".to_string(), None)), None, cx)
+        })
+    });
+    ui.frame();
+    assert!(ui.visual.update(|_, cx| list.read(cx).landing.is_none()));
 }
 
 #[gpui_kit::test]

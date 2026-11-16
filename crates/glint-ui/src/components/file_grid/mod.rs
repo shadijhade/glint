@@ -125,9 +125,10 @@ pub enum FileGridEvent {
     DragStart { paths: Vec<String>, from_archive: bool },
     /// Enter on more than ten files: ask "Open N files?", then `Explorer::open_file` each.
     OpenMany { paths: Vec<String> },
-    /// The zoom has nowhere to go: the tiles are at their biggest (or smallest) in the spin that brought them
-    /// there, or there is no folder under the pointer to go into, or none above to go out to. The pane's stage
-    /// gives a little, to say so.
+    /// The zoom (Ctrl+wheel, a pinch) went out past the smallest tiles: the folder is shown as the list, with
+    /// the item the pointer was over (`anchor`) where it was.
+    ZoomOut { anchor: Option<crate::stage::Anchor> },
+    /// The zoom has nowhere to go: the tiles are at their biggest. The pane's stage gives a little, to say so.
     Limit { inward: bool },
 }
 
@@ -212,8 +213,10 @@ pub struct FileGrid {
     zoom_cue: Option<crate::stage::Cue>,
     zoomed_to: Option<glint_model::grid::TileSize>,
     zooms: u64,
-    /// The zoom has gone through to another folder: the tab, the folder, the size its tiles land at, and when.
-    landing: Option<(TabId, String, glint_model::grid::TileSize, Instant)>,
+    /// The list gave way to the grid: the item to show where the list had it, taken by the next frame.
+    landing: Option<crate::stage::Anchor>,
+    /// And the tiles on their way from their rows, while that lasts.
+    morph: Option<crate::stage::Morph>,
     /// The tab and view whose scroll position was restored last.
     placed_for: Option<(TabId, String)>,
     /// The last place saved for it, so it is saved when it changes.
@@ -262,11 +265,6 @@ impl FileGrid {
                     this.stop_pointer();
                     cx.notify();
                 }
-                // The zoom went through to another folder, and its listing is in: the tiles are at the far end of
-                // their sizes there (before the frame that draws it, so it is drawn so from the first).
-                if let ExplorerEvent::ListingChanged { tab, same: false } = event {
-                    this.land_zoom(*tab, cx);
-                }
             }),
         ];
         // Git's marks arrived or changed: the pills on the tiles, and the faded ignored ones, are drawn again.
@@ -294,6 +292,7 @@ impl FileGrid {
             zoomed_to: None,
             zooms: 0,
             landing: None,
+            morph: None,
             placed_for: None,
             saved_place: None,
             scrolled_to: None,
@@ -338,6 +337,59 @@ impl FileGrid {
         let height = (metrics.row_height - 2. * metrics.inset).max(1.);
         let spot = Bounds::new(point(px(left), px(top)), size(px(width), px(height))).intersect(&body);
         (!spot.is_empty()).then_some(spot)
+    }
+
+    /// Where the picture of `path`'s tile is drawn, among the tiles drawn last: on screen or not (a tile further
+    /// down is where it would be). Where a row's picture flies from when the grid gives way to the list.
+    pub fn picture_of(&self, path: &str) -> Option<Bounds<Pixels>> {
+        let (metrics, rows) = (self.metrics?, self.drawn.as_ref()?);
+        let at = rows.position_of(path)?;
+        let cols = metrics.cols.max(1);
+        let (row, col) = (at / cols, at % cols);
+        let body = self.body.get();
+        let side = self.thumb;
+        // The picture is in the middle of its cell, across (from the body's start edge: its right in Arabic).
+        let along = metrics.pad + (col as f32 + 0.5) * metrics.col_w - side / 2.;
+        let left = if i18n::is_rtl() {
+            f32::from(body.origin.x) + metrics.content_w - along - side
+        } else {
+            f32::from(body.origin.x) + along
+        };
+        let top = f32::from(body.origin.y) + row as f32 * metrics.row_height + tile::picture_top(metrics.rem)
+            - self.scroll_top();
+        Some(Bounds::new(point(px(left), px(top)), size(px(side), px(side))))
+    }
+
+    /// The item the zoom is over, and how far below the tiles' top the pointer is: the tile under `at`, or with
+    /// no pointer (or none on a tile) the first tile on screen, which goes at the top. What the list is asked to
+    /// show in the same place.
+    pub fn anchor_at(&self, at: Option<Point<Pixels>>) -> Option<crate::stage::Anchor> {
+        let (metrics, rows) = (self.metrics?, self.drawn.as_ref()?);
+        let under = at.and_then(|at| Some((self.tile_at(at, rows.len())?, at)));
+        let (index, under) = match under {
+            Some((index, at)) => (index, Some(f32::from(at.y - self.body.get().origin.y))),
+            // The scroll is not negative and a row's height is above zero: the row's number is whole.
+            None => (
+                (self.scroll_top() / metrics.row_height.max(1.)).floor() as usize * metrics.cols.max(1),
+                None,
+            ),
+        };
+        Some((rows.get(index)?.path.clone(), under))
+    }
+
+    /// The list has given way to the grid, in the same folder: `anchor` is shown where the list had it, and
+    /// each tile flies from its row (`morph`; none under reduced motion).
+    pub fn arrive(
+        &mut self,
+        anchor: Option<crate::stage::Anchor>,
+        morph: Option<crate::stage::Morph>,
+        cx: &mut Context<Self>,
+    ) {
+        self.landing = anchor;
+        self.morph = morph;
+        // The tiles arrive at the size they have: only a size that changes while they are shown is zoomed to.
+        self.zoomed_to = None;
+        cx.notify();
     }
 
     /// The grid's focus: give it to the grid when its pane takes the keyboard (`window.focus(&grid.focus_handle(), cx)`).
@@ -500,7 +552,11 @@ impl FileGrid {
         };
         // Resting on a tile finds out what isn't known about its item, so its menu opens knowing it
         // (docs/gpui/aware); leaving before the wait is over asks nothing.
-        self.resting = if hovered { crate::aware::rest_on(entry.clone(), cx) } else { None };
+        self.resting = if hovered {
+            crate::aware::rest_on(entry.clone(), cx)
+        } else {
+            None
+        };
         let path = entry.path.clone();
         if scrub::scrubbable(entry) {
             if hovered {
@@ -736,8 +792,8 @@ impl FileGrid {
         }
     }
 
-    /// Ctrl+wheel over the grid: bigger tiles (wheel up, away from you, as in Explorer) or smaller ones, and on
-    /// through the folders where the sizes end ([`Self::zoom_by`]).
+    /// Ctrl+wheel over the grid: bigger tiles (wheel up, away from you, as in Explorer) or smaller ones, and out
+    /// to the list past the smallest ([`Self::zoom_by`]).
     fn ctrl_wheel(&mut self, event: &ScrollEvent, cx: &mut Context<Self>) {
         self.zoom_by(crate::stage::Notches::of_wheel(&event.delta), event.position, cx);
     }
@@ -748,90 +804,28 @@ impl FileGrid {
     }
 
     /// The zoom, by the wheel or a pinch: `delta` in the wheel's measure (above zero for bigger), the pointer at
-    /// `at`. Tiles go a size bigger or smaller a notch. Where the sizes end the zoom goes on: past the biggest,
-    /// into the folder under the pointer; past the smallest, out to the folder above (see
-    /// [`crate::stage::Notches`] for why not in the spin that got there).
+    /// `at`. It changes how the folder is laid out, never which folder it is: tiles go a size bigger or smaller
+    /// a notch, and a notch out past the smallest is the list ([`FileGridEvent::ZoomOut`]), with the item under
+    /// the pointer where it was. At the biggest the pane's stage gives a little, once a spin
+    /// ([`FileGridEvent::Limit`]).
     fn zoom_by(&mut self, delta: f32, at: Point<Pixels>, cx: &mut Context<Self>) {
         // Tiles move to other rows as they zoom, which would make the rename box anew.
         if self.is_renaming() {
             return;
         }
-        let size = state::settings(cx).tile_size;
-        let ends = |inward: bool| zoom_tiles(size.as_str(), if inward { 1 } else { -1 }) == size;
         let turn = self.wheel.turn(delta, Instant::now());
-        if turn.fresh {
-            self.wheel.through = ends(delta > 0.0);
-        }
         if turn.steps == 0 {
             return;
         }
+        let size = state::settings(cx).tile_size;
         let inward = turn.steps > 0;
-        if !ends(inward) {
+        if zoom_tiles(size.as_str(), turn.steps) != size {
             self.zoom(turn.steps, cx);
-        } else if self.wheel.through {
-            self.zoom_through(inward, at, cx);
+        } else if !inward {
+            let anchor = self.anchor_at(Some(at));
+            cx.emit(FileGridEvent::ZoomOut { anchor });
         } else if !std::mem::replace(&mut self.wheel.said, true) {
             cx.emit(FileGridEvent::Limit { inward });
-        }
-    }
-
-    /// The zoom past the tiles' sizes: into the folder (or archive) whose tile is under `at`, or out to the folder
-    /// above. Nothing while the tab is on its way somewhere; the stage gives a little where there is nowhere to go.
-    ///
-    /// The sizes go on through the folders as one ladder: a folder gone into is seen from afar, at the smallest
-    /// tiles, and the folder come out to from nearest, at the biggest. So a notch the other way is the way back,
-    /// and each folder takes the same turns of the wheel.
-    fn zoom_through(&mut self, inward: bool, at: Point<Pixels>, cx: &mut Context<Self>) {
-        use glint_model::grid::TILE_SIZES;
-        let Some(tab) = self.explorer.read(cx).pane_tab(self.pane) else {
-            return;
-        };
-        if tab.loading {
-            return;
-        }
-        let far_end = if inward { TILE_SIZES.first() } else { TILE_SIZES.last() }.map(|spec| spec.size);
-        let lands = |path: String| far_end.map(|size| (tab.id, path, size, Instant::now()));
-        if inward {
-            let folder = self
-                .tile_at(at, tab.rows.len())
-                .and_then(|index| tab.rows.get(index))
-                .filter(|entry| (entry.dir || is_archive_file(entry)) && !is_recycled(entry))
-                .cloned();
-            match folder {
-                Some(folder) => {
-                    self.landing = lands(folder.path.clone());
-                    self.open(&folder, cx);
-                }
-                None => cx.emit(FileGridEvent::Limit { inward }),
-            }
-        } else if tab.find.is_some() || tab.is_this_pc() {
-            cx.emit(FileGridEvent::Limit { inward });
-        } else {
-            self.landing = lands(glint_model::paths::parent_path(&tab.path));
-            self.explorer.update(cx, |explorer, cx| explorer.go_up(cx).detach());
-        }
-    }
-
-    /// Tab `tab` shows another folder: if it is the one the zoom went through to (and it got there soon), the
-    /// tiles take the size they land at.
-    fn land_zoom(&mut self, tab: TabId, cx: &mut Context<Self>) {
-        /// A folder that takes longer than this to open is not where the zoom was going any more.
-        const LANDS_WITHIN: Duration = Duration::from_secs(10);
-        let Some((for_tab, path, size, since)) = self.landing.take() else {
-            return;
-        };
-        if for_tab != tab {
-            // Another tab's folder: the zoom is still on its way.
-            self.landing = Some((for_tab, path, size, since));
-            return;
-        }
-        let there = self
-            .explorer
-            .read(cx)
-            .tab(tab)
-            .is_some_and(|tab| glint_model::paths::same_path(&tab.path, &path));
-        if there && since.elapsed() <= LANDS_WITHIN && state::settings(cx).tile_size != size {
-            state::update(cx, |settings| settings.tile_size = size);
         }
     }
 
@@ -1372,6 +1366,24 @@ impl Render for FileGrid {
 
         // The focused item stays in view as the keyboard moves it.
         let focus = selection.focus().map(str::to_string);
+        // The list gave way to the grid. Where the grid was left already shows the item the zoom was over: it
+        // stays there, so going to the list and back comes back to the same place. Otherwise that item's row
+        // goes under the pointer, where the list had it (the first one the list showed, with no pointer: to the
+        // top), as near as the grid's ends allow.
+        if let Some((path, under)) = self.landing.take() {
+            if let Some(at) = rows.position_of(&path) {
+                let row_top = (at / cols) as f32 * layout.row_height;
+                let shown_at = row_top - self.scroll_top();
+                if shown_at < 0.0 || shown_at + layout.row_height > body_height {
+                    let top = under.map_or(row_top, |y| row_top + layout.row_height / 2.0 - y);
+                    self.set_scroll_top(wanted_top(top));
+                }
+                // The zoom keeps what the pointer is on in view, not what the keyboard is on.
+                if under.is_some() {
+                    self.scrolled_to = focus.clone();
+                }
+            }
+        }
         if focus != self.scrolled_to {
             if let Ok(row) = usize::try_from(focus_row()) {
                 self.scroll_to_row(row / cols);
@@ -1391,7 +1403,18 @@ impl Render for FileGrid {
         // ended (or left the window) lights nothing, whatever was last seen.
         let drop_over = self.drop_over.clone().filter(|_| cx.has_active_drag());
         let peeks = self.peeks.read(self.explorer.read(cx));
+        // The tiles on their way from the list's rows: drawn again each frame until they are in.
+        let morph = self.morph.take().and_then(|morph| {
+            let along = morph.progress(cx.background_executor().now())?;
+            Some((morph, along))
+        });
+        if let Some((flying, _)) = &morph {
+            self.morph = Some(flying.clone());
+            window.request_animation_frame();
+        }
         let frame = Rc::new(tile::Frame {
+            morph,
+            rem,
             peeks,
             rows: rows.clone(),
             selection: selection.clone(),

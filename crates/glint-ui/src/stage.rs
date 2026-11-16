@@ -1,17 +1,21 @@
-//! The stage: a pane's view, flown into and out of.
+//! The stage: how a pane's view gives way to the next.
 //!
-//! Opening a folder flies into it: what was on screen grows about the folder's row or tile and clears, while the
-//! folder's own files, which begin as small as the tile and where it was, grow to fill the pane. Going up flies
-//! back out, onto the tile of the folder left. The tiles' sizes change the same way (the old size grows into the
-//! new one about the pointer), and anything else a pane goes to (another tab, a search, the list for the grid)
-//! comes forward as the old view gives way. So a folder is somewhere you go into, not a list that is replaced.
+//! The zoom (Ctrl and the wheel, a pinch) changes how a folder is laid out, never which folder it is: from the
+//! list a notch in is the grid at its smallest tiles, then bigger tiles; a notch out is the way back. Between
+//! the list and the grid every item flies from where the one drew it to where the other does (its picture out
+//! of its row onto its tile, and back), so the eye keeps hold of each file. The tiles' sizes grow into each
+//! other about the pointer.
+//!
+//! Everything else is quiet. Opening a folder is a small step toward it (the view grows a little about the
+//! folder's row or tile as the folder's files come up), going up a small step back, and another tab or a search
+//! comes forward as the old view gives way where it is.
 //!
 //! **How.** Nothing is laid out twice and nothing is drawn to a picture. The view that leaves is what the last
 //! frame painted for it, kept as a list ([`Window::snapshot_painted`]) and painted again on its way out; the view
 //! that arrives is laid out once, where it will rest, and takes the pointer and the keys from its first frame.
 //! Both are drawn under a paint transform ([`Window::with_paint_transform`], Glint's addition to the vendored
-//! GPUI): the GPU places and sizes their quads and glyphs, at the cost of drawing them. One camera moves both,
-//! so the folder's tile and the folder's files are the same place seen from nearer.
+//! GPUI): the GPU places and sizes their quads and glyphs, at the cost of drawing them. An item on its way
+//! between the list and the grid is the arriving view's own, painted under a transform of its own ([`flown`]).
 //!
 //! **Who says what.** The workspace sees what each pane shows change and gives its stage a [`Cue`] with a
 //! [`Plan`]; the stage works the plan out against its own bounds when it paints ([`Plan::flight`]) and flies it.
@@ -23,10 +27,8 @@ use std::ops::Range;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-/// The most a flight into a folder magnifies: a small tile is not flown into from a mile off.
-const DEEPEST: f32 = 4.5;
-/// The least: a row as wide as the pane is still gone into.
-const SHALLOWEST: f32 = 2.2;
+/// How much a view grows as its pane goes into a folder (and shrinks coming out): a step, not a flight.
+const STEP: f32 = 1.06;
 /// How much a view gives when it goes somewhere unrelated, and when there is nowhere to go.
 const NUDGE: f32 = 1.035;
 
@@ -126,12 +128,15 @@ pub type Spot = Rc<dyn Fn(&Window, &App) -> Option<Bounds<Pixels>>>;
 #[derive(Clone)]
 pub enum Plan {
     /// Into a folder (or an archive, or a drive): its row or tile was drawn here in the view that leaves. None
-    /// when it wasn't on screen: the flight is from the middle.
+    /// when it wasn't on screen: the step is about the middle.
     Dive(Option<Bounds<Pixels>>),
     /// Out to a folder above: the spot says where the folder left is drawn there.
     Rise(Option<Spot>),
     /// Somewhere unrelated, or the same place seen another way: the old view gives way where it is.
     Swap,
+    /// The same items laid out another way (the list for the grid): the old view clears where it is while the
+    /// new one's items fly to their places from where the old one drew them (the view flies them: [`Morph`]).
+    Morph,
     /// The same things `ratio` times larger (smaller, under one), about the pointer if it is over them.
     Resize { ratio: f32, pivot: Option<Point<Pixels>> },
     /// Nowhere to go: the view gives a little (`inward`: toward the eye, as if to go in) and comes back.
@@ -146,6 +151,7 @@ impl Plan {
             Plan::Dive(None) => "dive from the middle",
             Plan::Rise(_) => "rise",
             Plan::Swap => "swap",
+            Plan::Morph => "morph",
             Plan::Resize { .. } => "resize",
             Plan::Bump { .. } => "bump",
         }
@@ -154,13 +160,6 @@ impl Plan {
     /// Whether the view that was there is shown on its way out.
     fn leaves(&self) -> bool {
         !matches!(self, Plan::Bump { .. })
-    }
-
-    /// How far a flight to or from `spot` magnifies: until the spot would fill the stage, within limits.
-    fn depth(stage: Bounds<Pixels>, spot: Bounds<Pixels>) -> f32 {
-        let across = stage.size.width / spot.size.width.max(px(1.));
-        let down = stage.size.height / spot.size.height.max(px(1.));
-        across.min(down).clamp(SHALLOWEST, DEEPEST)
     }
 
     /// The flight this plan asks for on a stage drawn at `stage`. Called while the stage paints: the view that
@@ -172,33 +171,46 @@ impl Plan {
         let inside = |at: Point<Pixels>| Some(at).filter(|at| stage.contains(at));
         match self {
             Plan::Dive(spot) => {
-                let spot = spot.and_then(on_stage);
+                // About the folder gone into: the step is toward it.
+                let about = spot.and_then(on_stage).map_or(middle, |spot| spot.center());
                 Flight {
-                    scale: spot.map_or(SHALLOWEST, |spot| Self::depth(stage, spot)),
-                    from: spot.map_or(middle, |spot| spot.center()),
-                    to: middle,
+                    scale: STEP,
+                    from: about,
+                    to: about,
                     duration: theme::motion::DIVE,
-                    // What is left grows soft as it grows: it clears early.
-                    gone_by: 0.55,
-                    here_by: 0.6,
-                    dim: 0.25,
+                    gone_by: 0.6,
+                    here_by: 0.7,
+                    dim: 0.35,
                     bump: false,
                 }
             }
             Plan::Rise(spot) => {
+                // About the folder left, where the view that arrives draws it.
                 let spot = spot.as_ref().and_then(|spot| spot(window, cx)).and_then(on_stage);
+                let about = spot.map_or(middle, |spot| spot.center());
                 Flight {
-                    scale: 1. / spot.map_or(SHALLOWEST, |spot| Self::depth(stage, spot)),
-                    from: middle,
-                    to: spot.map_or(middle, |spot| spot.center()),
+                    scale: 1. / STEP,
+                    from: about,
+                    to: about,
                     duration: theme::motion::DIVE,
-                    // The folder left is seen all the way onto its tile.
-                    gone_by: 0.8,
-                    here_by: 0.55,
-                    dim: 0.25,
+                    gone_by: 0.6,
+                    here_by: 0.7,
+                    dim: 0.35,
                     bump: false,
                 }
             }
+            // Neither view moves: the old one clears over the new one, whose items are on their way.
+            Plan::Morph => Flight {
+                scale: 1.,
+                from: middle,
+                to: middle,
+                duration: theme::motion::MORPH,
+                // The old view is out of the way before the items are half way: they are what is watched.
+                gone_by: 0.4,
+                here_by: 0.01,
+                dim: 1.,
+                bump: false,
+            },
             Plan::Swap => Flight {
                 scale: NUDGE,
                 from: middle,
@@ -423,6 +435,158 @@ impl Element for Stage {
 /// something out of an item: Quick Look grows out of the file it shows.
 pub type Spotter = Rc<dyn Fn(&str, &Window, &App) -> Option<Bounds<Pixels>>>;
 
+/// What a view that takes over from another is asked to show in the same place, so the zoom stays on what it
+/// was over: an item, and how far below the top of the view's rows the pointer was on it (pixels; its middle
+/// goes there). With no pointer on an item, the first one the old view showed: it goes at the top.
+pub type Anchor = (String, Option<f32>);
+
+/// Where a view drew the picture of a path's item, on screen or not.
+type Pictures = Rc<dyn Fn(&str, &App) -> Option<Bounds<Pixels>>>;
+
+/// The items of a view on their way from where another view drew them: the list has given way to the grid (or
+/// the grid to the list), and each item's picture flies from its row to its tile. The view that arrives keeps
+/// one while it lasts and draws its items through [`flown`].
+#[derive(Clone)]
+pub struct Morph {
+    /// Where the view that left drew an item's picture (off screen too: where it would have been).
+    from: Pictures,
+    began: Instant,
+    /// What `from` said, by path: the view that left doesn't change, and asking it reads its rows.
+    asked: Rc<std::cell::RefCell<std::collections::HashMap<String, Option<Bounds<Pixels>>>>>,
+}
+
+impl Morph {
+    /// A morph that begins at `now`, from where `from` says each item was.
+    pub fn new(from: impl Fn(&str, &App) -> Option<Bounds<Pixels>> + 'static, now: Instant) -> Self {
+        Self {
+            from: Rc::new(from),
+            began: now,
+            asked: Rc::default(),
+        }
+    }
+
+    /// How far along it is at `now` (0 to 1, eased), or None once it is over.
+    pub fn progress(&self, now: Instant) -> Option<f32> {
+        let gone = now.saturating_duration_since(self.began).as_secs_f32();
+        let t = gone / (theme::motion::MORPH.as_secs_f32() * slowed()).max(0.001);
+        (t < 1.).then(|| theme::motion::glide(t))
+    }
+
+    /// Where the view that left drew the picture of `path`.
+    pub fn from(&self, path: &str, cx: &App) -> Option<Bounds<Pixels>> {
+        if let Some(known) = self.asked.borrow().get(path) {
+            return *known;
+        }
+        let spot = (self.from)(path, cx);
+        self.asked.borrow_mut().insert(path.to_string(), spot);
+        spot
+    }
+}
+
+/// An element painted on its way to where it is laid out. See [`flown`].
+pub struct Flown {
+    child: AnyElement,
+    from: Bounds<Pixels>,
+    picture: Option<(Pixels, Pixels)>,
+    progress: f32,
+}
+
+/// `child` painted on its way from `from` to its place: at `progress` 0 its picture is drawn over `from` (as
+/// small, or as large), at 1 the child is where it is laid out, as it is. The picture is the square `picture`
+/// says (how far below the child's top it starts, and its side; centered across), or the whole child. Paint
+/// only: the child is laid out once, where it rests, and is clicked there throughout.
+pub fn flown(child: impl IntoElement, from: Bounds<Pixels>, picture: Option<(Pixels, Pixels)>, progress: f32) -> Flown {
+    Flown {
+        child: child.into_any_element(),
+        from,
+        picture,
+        progress,
+    }
+}
+
+impl Flown {
+    /// The transform a child laid out at `bounds` is painted under. Nothing comes from further off than
+    /// `reach`: an item far down the list arrives from the edge, not from a mile below it.
+    fn transform(&self, bounds: Bounds<Pixels>, reach: Pixels) -> PaintTransform {
+        let picture = self.picture.map_or(bounds, |(top, side)| {
+            Bounds::new(
+                point(bounds.center().x - side / 2., bounds.top() + top),
+                size(side, side),
+            )
+        });
+        let left = 1. - self.progress.clamp(0., 1.);
+        let (to, from) = (picture.center(), self.from.center());
+        let off = |from: Pixels, to: Pixels| (from - to).clamp(-reach, reach) * left;
+        let small = (self.from.size.height / picture.size.height.max(px(1.))).clamp(0.05, 20.);
+        // The size goes by equal ratios in equal times, as a zoom does.
+        let scale = small.powf(left);
+        let at = point(to.x + off(from.x, to.x), to.y + off(from.y, to.y));
+        PaintTransform {
+            scale,
+            translate: point(at.x - to.x * scale, at.y - to.y * scale),
+        }
+    }
+}
+
+impl IntoElement for Flown {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl Element for Flown {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        // It is its child's box.
+        (self.child.request_layout(window, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self::PrepaintState {
+        self.child.prepaint(window, cx);
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut Self::RequestLayoutState,
+        _: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let transform = self.transform(bounds, window.viewport_size().height);
+        let child = &mut self.child;
+        window.with_paint_transform(Some(transform), |window| child.paint(window, cx));
+    }
+}
+
 /// Each pane's spotter, once its views are made.
 #[derive(Default)]
 struct Spotters([Option<Spotter>; 2]);
@@ -450,19 +614,14 @@ const SPIN_ENDS_AFTER: Duration = Duration::from_millis(400);
 /// How far apart the fingers go for a pinch to count as a notch: half as far again.
 const PINCH_NOTCH: f32 = 1.5;
 
-/// Counts the wheel's turning (with Ctrl) and a pinch's spreading into notches of zoom.
-///
-/// The zoom doesn't end with the tiles' sizes: past the biggest it goes on into the folder under the pointer,
-/// and past the smallest out to the folder above, so one gesture goes from a drive down to a file's folder and
-/// back. A spin that brings the tiles to their biggest stops there, though (the stage gives a little, to say
-/// so): going through takes a spin of its own, so nobody lands in a folder by turning the wheel too far.
+/// Counts the wheel's turning (with Ctrl) and a pinch's spreading into notches of zoom: from the list to the
+/// grid's smallest tiles, on to its biggest, and back. Where the zoom ends (the list going out, the biggest
+/// tiles going in) the stage gives a little, once a spin.
 #[derive(Default)]
 pub struct Notches {
     turned: f32,
     last: Option<(Instant, bool)>,
-    /// Whether the spin under way began with the sizes already at their end, and so goes on through folders.
-    pub through: bool,
-    /// Whether the spin under way has said that the sizes end here.
+    /// Whether the spin under way has said that the zoom ends here.
     pub said: bool,
 }
 
@@ -596,6 +755,64 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn an_item_flies_from_where_the_old_view_drew_it_to_where_it_is_laid_out() {
+        // A tile's cell at (300, 200), 100 wide; its picture a 64 px square 11 px down, centered across. The
+        // row's picture it comes from: a 20 px square at (12, 500).
+        let cell = Bounds::new(point(px(300.), px(200.)), size(px(100.), px(130.)));
+        let picture = Bounds::new(point(px(318.), px(211.)), size(px(64.), px(64.)));
+        let from = Bounds::new(point(px(12.), px(500.)), size(px(20.), px(20.)));
+        let at = |progress: f32| flown(div(), from, Some((px(11.), px(64.))), progress).transform(cell, px(2000.));
+        // At the start the tile's picture is drawn over the row's, as small.
+        let start = at(0.).apply_bounds(picture);
+        assert!(near(start.origin, from.origin), "{start:?}");
+        assert!((f32::from(start.size.width) - 20.).abs() < 0.01, "{start:?}");
+        // At the end the tile is where it is laid out, as it is.
+        assert!(at(1.).is_identity(), "{:?}", at(1.));
+        // On the way it is between the two, in place and in size.
+        let middle = at(0.5).apply_bounds(picture);
+        assert!(middle.size.width > px(20.) && middle.size.width < px(64.));
+        assert!(middle.center().x > from.center().x && middle.center().x < picture.center().x);
+        // Nothing comes from further off than the reach: a row a mile down the list arrives from the edge.
+        let far = Bounds::new(point(px(12.), px(90_000.)), size(px(20.), px(20.)));
+        let begun = flown(div(), far, None, 0.)
+            .transform(picture, px(800.))
+            .apply_bounds(picture);
+        assert!(
+            (f32::from(begun.center().y) - (f32::from(picture.center().y) + 800.)).abs() < 0.01,
+            "{begun:?}"
+        );
+    }
+
+    #[test]
+    fn a_morph_clears_the_old_view_where_it_is_over_the_new_one() {
+        let flight = Flight {
+            scale: 1.,
+            from: point(px(400.), px(300.)),
+            to: point(px(400.), px(300.)),
+            gone_by: 0.5,
+            here_by: 0.01,
+            dim: 1.,
+            ..a_flight(1.)
+        };
+        for step in 0..=10 {
+            let moment = flight.at(step as f32 / 10.);
+            // The new view is in its place and wholly there throughout: its items do the moving.
+            assert!(moment.arriving.0.is_identity() && (moment.arriving.1 - 1.).abs() < 1e-3);
+            if let Some((leaving, _)) = moment.leaving {
+                assert!(leaving.is_identity());
+            }
+        }
+        assert!(flight.at(0.6).leaving.is_none(), "the old view has cleared by then");
+        // It is over in its time, and eased.
+        let morph = Morph::new(|_, _| None, Instant::now());
+        let began = morph.began;
+        assert_eq!(morph.progress(began), Some(0.));
+        let along = morph.progress(began + theme::motion::MORPH / 2).expect("half way");
+        assert!(along > 0.5 && along < 1., "{along}");
+        assert_eq!(morph.progress(began + theme::motion::MORPH), None);
     }
 
     #[test]

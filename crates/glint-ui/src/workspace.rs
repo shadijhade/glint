@@ -186,8 +186,8 @@ pub struct Workspace {
     shown: [Option<Shown>; 2],
     /// Each pane's stage: what it showed at the last frame and the flight from there.
     stages: [Staged; 2],
-    /// How many flights into folders and out of them there have been: the light swells with each.
-    flights: usize,
+    /// Where the zoom asked each pane's next view to be (the item it was over), until the frame that brings it.
+    anchors: [Option<stage::Anchor>; 2],
     /// Files dragged over the window from File Explorer and other apps arrive here, as long as it lives
     /// (dropping it takes the window's drop target away). None in tests, which have no Windows window.
     _drop_target: Option<dragdrop::DropTarget>,
@@ -348,7 +348,7 @@ impl Workspace {
             readmes_found: [None, None],
             shown: [None, None],
             stages: Default::default(),
-            flights: 0,
+            anchors: [None, None],
             _drop_target: Self::take_drops(window, cx),
             _subscriptions: subscriptions,
         };
@@ -853,7 +853,8 @@ impl Workspace {
             }
             // What fills the drive: the folder's disk usage map, as the island's button shows it.
             StatusBarEvent::Insight(Insight::NearlyFull(_)) => {
-                self.command_bar.update(cx, |bar, cx| bar.dispatch(Box::new(actions::DiskUsage), window, cx));
+                self.command_bar
+                    .update(cx, |bar, cx| bar.dispatch(Box::new(actions::DiskUsage), window, cx));
             }
         }
     }
@@ -1030,6 +1031,7 @@ impl Workspace {
             FileListEvent::SearchSubfolders { query } => {
                 Self::explorer(cx, |e, cx| e.run_find(query, explorer::Wider::default(), cx).detach())
             }
+            FileListEvent::ZoomIn { anchor } => self.zoom_view(pane, true, anchor.clone(), cx),
             FileListEvent::Limit { inward } => self.bump(pane, *inward, window, cx),
         }
     }
@@ -1068,6 +1070,7 @@ impl Workspace {
                 }
             }
             FileGridEvent::OpenMany { paths } => Self::open_many(paths.clone(), window, cx),
+            FileGridEvent::ZoomOut { anchor } => self.zoom_view(pane, false, anchor.clone(), cx),
             FileGridEvent::Limit { inward } => self.bump(pane, *inward, window, cx),
         }
     }
@@ -1313,7 +1316,9 @@ impl Workspace {
     /// "Copy the text in it": what Windows reads in the picture, on the clipboard.
     fn copy_text_in(path: String, window: &mut Window, cx: &mut Context<Self>) {
         cx.spawn_in(window, async move |_, cx| {
-            let lines = core_bridge::run(glint_core::ocr::ocr_text(path)).await.and_then(|inner| inner);
+            let lines = core_bridge::run(glint_core::ocr::ocr_text(path))
+                .await
+                .and_then(|inner| inner);
             let _ = cx.update(|window, cx| {
                 let notice = match lines {
                     Ok(lines) if lines.iter().any(|line| !line.trim().is_empty()) => {
@@ -1337,7 +1342,9 @@ impl Workspace {
     /// "Choose a folder…": asks where, then moves or copies there.
     fn choose_send_to(paths: Vec<String>, moving: bool, window: &mut Window, cx: &mut Context<Self>) {
         let title = if moving { t!("Move to") } else { t!("Copy to") };
-        let options = pickers::Options::new().title(title.to_string()).owner(pickers::owner_of(window));
+        let options = pickers::Options::new()
+            .title(title.to_string())
+            .owner(pickers::owner_of(window));
         let picked = pickers::open_folder(options);
         cx.spawn_in(window, async move |this, cx| {
             if let Ok(Some(folder)) = picked.await {
@@ -1650,21 +1657,7 @@ impl Workspace {
                 )),
             None => layer().child(picture(hue)),
         };
-        // The light is behind the files and moves with them, less and later: it swells as a pane flies into a
-        // folder or out of one and settles after the files have (never smaller than the window: it has no edges).
-        let lights = lights.opacity(if window.is_window_active() { 1. } else { 0.5 });
-        if self.flights == 0 {
-            // Nothing has flown yet: the light is at rest (and the window's first frames are not an animation).
-            return lights.into_any_element();
-        }
-        let swell = theme::motion::LIGHT_SWELL;
-        layer()
-            .child(lights.with_animation(
-                ("light-swell", self.flights),
-                Animation::new(theme::motion::DIVE * 3 / 2),
-                move |lights, delta| lights.paint_scale(1. + swell * (delta * std::f32::consts::PI).sin().max(0.)),
-            ))
-            .into_any_element()
+        lights.opacity(if window.is_window_active() { 1. } else { 0.5 })
     }
 
     /// Glint's mark (the folder with the glint on its corner) at the start of the bar: the installer's logo, drawn
@@ -1771,12 +1764,14 @@ impl Workspace {
     }
 
     /// Each pane that shows something else than at the last frame gets its stage's cue: into a folder, out of
-    /// one, or over to somewhere else. Called at the start of a frame, before the views have drawn the new place:
-    /// they still know where they drew the old one's rows.
-    fn cue_stages(&mut self, window: &Window, cx: &App) {
+    /// one, the list for the grid, or over to somewhere else. Called at the start of a frame, before the views
+    /// have drawn the new place: they still know where they drew the old one's rows.
+    fn cue_stages(&mut self, window: &Window, cx: &mut Context<Self>) {
         for pane in 0..2 {
             let now = Self::showing(pane, cx);
             let before = std::mem::replace(&mut self.stages[pane].showing, now.clone());
+            // Where the zoom asked the next view to be: for the view this frame brings, or nobody.
+            let anchor = self.anchors[pane].take();
             let (Some(before), Some(now)) = (before, now) else {
                 continue;
             };
@@ -1785,18 +1780,65 @@ impl Workspace {
                 continue;
             }
             if let Some(plan) = self.plan(pane, &before, &now, window, cx) {
+                if matches!(plan, stage::Plan::Morph) {
+                    self.morph(pane, now.shown == Some(Shown::Grid), anchor, window, cx);
+                }
                 self.cue(pane, plan);
             }
         }
     }
 
+    /// Pane `pane`'s list has given way to its grid (`to_grid`) or its grid to its list, in the same folder: the
+    /// view that arrives shows the same items (`anchor`: the one the zoom was over and how far down the view it
+    /// was; else the first one the old view showed), and flies each from where the old view drew it.
+    fn morph(
+        &mut self,
+        pane: usize,
+        to_grid: bool,
+        anchor: Option<stage::Anchor>,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(views) = &self.panes[pane] else {
+            return;
+        };
+        let (list, grid) = (views.list.clone(), views.grid.clone());
+        // Under reduced motion the place is kept and nothing flies.
+        let flies = !cx.reduce_motion();
+        let now = cx.background_executor().now();
+        if to_grid {
+            let anchor = anchor.or_else(|| list.read(cx).anchor_at(None, window));
+            let (from, rem) = (list.clone(), window.rem_size());
+            let morph = flies.then(|| stage::Morph::new(move |path, cx| from.read(cx).picture_of(path, rem), now));
+            grid.update(cx, |grid, cx| grid.arrive(anchor, morph, cx));
+        } else {
+            let anchor = anchor.or_else(|| grid.read(cx).anchor_at(None));
+            let from = grid.clone();
+            let morph = flies.then(|| stage::Morph::new(move |path, cx| from.read(cx).picture_of(path), now));
+            list.update(cx, |list, cx| list.arrive(anchor, morph, cx));
+        }
+    }
+
+    /// The zoom in pane `pane` goes from the list to the grid's smallest tiles (`to_grid`) or from those back to
+    /// the list: the tab's view changes, and the view that comes is asked to show `anchor` where it was.
+    fn zoom_view(&mut self, pane: usize, to_grid: bool, anchor: Option<stage::Anchor>, cx: &mut Context<Self>) {
+        let tab = explorer::explorer(cx).read(cx).pane_tab_id(pane);
+        self.anchors[pane] = anchor;
+        if to_grid {
+            // The grid begins where the list leaves off: a notch back is the list again.
+            if let Some(smallest) = glint_model::grid::TILE_SIZES.first().map(|spec| spec.size) {
+                if state::settings(cx).tile_size != smallest {
+                    state::update(cx, |settings| settings.tile_size = smallest);
+                }
+            }
+        }
+        let view = if to_grid { ViewMode::Grid } else { ViewMode::List };
+        Self::explorer(cx, |e, cx| e.set_view(view, Some(tab), cx));
+    }
+
     /// Pane `pane`'s stage flies `plan`.
     fn cue(&mut self, pane: usize, plan: stage::Plan) {
         crate::perf::say(|| format!("cue pane={pane} plan={}", plan.name()));
-        // The window's light swells with a flight into a folder or out of one.
-        if matches!(plan, stage::Plan::Dive(_) | stage::Plan::Rise(_)) {
-            self.flights += 1;
-        }
         let staged = &mut self.stages[pane];
         staged.cues += 1;
         staged.cue = Some(stage::Cue {
@@ -1864,9 +1906,14 @@ impl Workspace {
             }
             return Some(Plan::Swap);
         }
-        // The same place seen another way (the list for the grid, the map). The tiles' sizes are the grid's own
-        // to zoom between.
-        (before.shown != now.shown).then_some(Plan::Swap)
+        // The same place seen another way. Between the list and the grid its items fly from the one's places to
+        // the other's; the map and the columns give way where they are. The tiles' sizes are the grid's own to
+        // zoom between.
+        match (before.shown, now.shown) {
+            (before, now) if before == now => None,
+            (Some(Shown::List), Some(Shown::Grid)) | (Some(Shown::Grid), Some(Shown::List)) => Some(Plan::Morph),
+            _ => Some(Plan::Swap),
+        }
     }
 
     /// Pane `pane`: the view its tab asks for, and the zone a dragged tab can be dropped on.
@@ -2690,12 +2737,66 @@ mod tests {
         assert_eq!(cue(&mut visual), (start + 4, "swap"));
         go(&mut visual, &format!("C:\\Work\\src\\{DEEP}"));
         assert_eq!(cue(&mut visual), (start + 5, "dive"));
-        // The same place seen another way gives way where it is.
+        // The same place laid out another way: its items go from the list's rows to the grid's tiles.
         visual.update(|_, cx| Workspace::choose_view(ViewMode::Grid, cx));
-        assert_eq!(cue(&mut visual), (start + 6, "swap"));
+        assert_eq!(cue(&mut visual), (start + 6, "morph"));
         // The zoom with nowhere to go: the view gives.
         visual.update(|window, cx| workspace.update(cx, |workspace, cx| workspace.bump(0, true, window, cx)));
         assert_eq!(cue(&mut visual), (start + 7, "bump"));
+    }
+
+    #[gpui_kit::test]
+    fn the_zoom_goes_from_the_list_to_the_grids_tiles_and_back_and_the_folder_stays(cx: &mut TestAppContext) {
+        use glint_model::grid::TileSize;
+        use gpui_kit::InputEvent as _;
+        let _guard = testing::lock();
+        let (mut visual, workspace) = open_workspace(cx, false);
+        // What the pane shows, the tiles' size and the folder, once a frame has been drawn.
+        let state = |visual: &mut VisualTestContext| {
+            visual.run_until_parked();
+            visual.update(|window, cx| {
+                window.render_frame(cx);
+                let path = explorer::explorer(cx).read(cx).current_path().to_string();
+                (Workspace::shown_in(0, cx), state::settings(cx).tile_size, path)
+            })
+        };
+        // The wheel turned with Ctrl held over the middle of what `id` names: three lines is a notch.
+        let zoom = |visual: &mut VisualTestContext, over: (&'static str, usize), lines: f32| {
+            visual.run_until_parked();
+            visual.update(|window, cx| {
+                window.render_frame(cx);
+                let position = window.find(over).bounds().center();
+                let turn = ScrollEvent {
+                    position,
+                    delta: ScrollDelta::Lines(point(0., lines)),
+                    modifiers: Modifiers::control(),
+                    ..Default::default()
+                };
+                window.dispatch_event(turn.to_platform_input(), cx);
+            });
+        };
+        visual.update(|_, cx| state::update(cx, |settings| settings.tile_size = TileSize::Large));
+        let (shown, _, folder) = state(&mut visual);
+        assert_eq!(shown, Some(Shown::List));
+        // A notch in over a folder's row: the same folder as tiles, at their smallest (not the folder's inside).
+        zoom(&mut visual, ("file-row", 0), 3.);
+        assert_eq!(state(&mut visual), (Some(Shown::Grid), TileSize::Small, folder.clone()));
+        let cue = visual.update(|_, cx| workspace.read(cx).stages[0].cue.as_ref().map(|cue| cue.plan.name()));
+        assert_eq!(cue, Some("morph"));
+        // On in: bigger tiles.
+        zoom(&mut visual, ("file-grid-tile", 0), 3.);
+        assert_eq!(
+            state(&mut visual),
+            (Some(Shown::Grid), TileSize::Medium, folder.clone())
+        );
+        // Back out: smaller tiles, then the list again, in the folder it began in.
+        zoom(&mut visual, ("file-grid-tile", 0), -3.);
+        assert_eq!(state(&mut visual), (Some(Shown::Grid), TileSize::Small, folder.clone()));
+        zoom(&mut visual, ("file-grid-tile", 0), -3.);
+        assert_eq!(state(&mut visual), (Some(Shown::List), TileSize::Small, folder.clone()));
+        // The list is as far out as it goes.
+        zoom(&mut visual, ("file-row", 0), -3.);
+        assert_eq!(state(&mut visual), (Some(Shown::List), TileSize::Small, folder));
     }
 
     #[test]

@@ -31,7 +31,7 @@ pub enum DialogEntrance {
 }
 
 /// Glint: how small a surface is drawn at the start of its entrance.
-const ENTRANCE_POP: f32 = 0.955;
+const ENTRANCE_POP: f32 = 0.97;
 
 /// Applies presentation travel after Positioner has resolved the resting bounds.
 /// Paint, hit testing, and accessibility follow the same offset.

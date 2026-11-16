@@ -129,8 +129,11 @@ pub enum FileListEvent {
     ShowProperties { path: String },
     /// "Search subfolders too" under a filter that matched nothing: `runFind(query)`.
     SearchSubfolders { query: String },
-    /// The zoom (Ctrl+wheel, a pinch) has nowhere to go: no folder under the pointer to go into, or none above
-    /// to go out to. The pane's stage gives a little, to say so.
+    /// The zoom (Ctrl+wheel, a pinch) went in: the folder is shown as the grid, at its smallest tiles, with the
+    /// item the pointer was over (`anchor`) where it was.
+    ZoomIn { anchor: Option<crate::stage::Anchor> },
+    /// The zoom has nowhere to go: the list is as far out as it gets (or its tab is in columns, which have one
+    /// size). The pane's stage gives a little, to say so.
     Limit { inward: bool },
 }
 
@@ -299,6 +302,8 @@ pub(crate) struct Frame {
     pub scale: f32,
     /// What the folders read ahead hold (the one under the pointer, the one the keyboard is on): their rows say it.
     pub peeks: Rc<Vec<Peek>>,
+    /// The grid has just given way to the list: each row's picture is on its way from its tile, this far along.
+    pub morph: Option<(crate::stage::Morph, f32)>,
 }
 
 /// What a folder's row says of the folder before it is opened: it was read ahead when the pointer came to rest on
@@ -427,6 +432,10 @@ pub struct FileList {
     area: Rc<Cell<Bounds<Pixels>>>,
     /// The Ctrl+wheel and pinch zoom's count (`zoom_by`).
     wheel: crate::stage::Notches,
+    /// The grid gave way to the list: the item to show where the grid had it, taken by the next frame.
+    landing: Option<crate::stage::Anchor>,
+    /// And the rows' pictures on their way from their tiles, while that lasts.
+    morph: Option<crate::stage::Morph>,
     /// A press or a marquee is under way: the window-level mouse listeners act.
     tracking: Rc<Cell<bool>>,
     /// A rectangle being dragged over the empty part.
@@ -538,6 +547,7 @@ impl FileList {
                 box_px: 16.,
                 scale: 1.,
                 peeks: Rc::new(Vec::new()),
+                morph: None,
             }),
             width: Rc::new(Cell::new(0.)),
             resizing: None,
@@ -556,6 +566,8 @@ impl FileList {
             asked: None,
             area: Rc::new(Cell::new(Bounds::default())),
             wheel: crate::stage::Notches::default(),
+            landing: None,
+            morph: None,
             tracking: Rc::new(Cell::new(false)),
             marquee: None,
             dragging: Arc::new(HashSet::new()),
@@ -589,6 +601,58 @@ impl FileList {
         };
         let spot = Bounds::new(point(left, top), size(width, row)).intersect(&area);
         (!spot.is_empty()).then_some(spot)
+    }
+
+    /// Where the picture of `path`'s row is drawn, among the rows drawn last: on screen or not (a row further
+    /// down is where it would be). Where a tile's picture flies from when the list gives way to the grid.
+    pub fn picture_of(&self, path: &str, rem: Pixels) -> Option<Bounds<Pixels>> {
+        let rows = &self.frame.rows;
+        let at = rows.position_of(path)?;
+        let area = self.area.get();
+        let row = ROW_HEIGHT.to_pixels(rem);
+        let side = px(self.frame.box_px);
+        let top = area.origin.y + row * layout_rows::line_of_row(rows, at) as f32 - px(self.scroll_top());
+        let left = if crate::i18n::is_rtl() {
+            area.right() - cells::PICTURE_AT - side
+        } else {
+            area.origin.x + cells::PICTURE_AT
+        };
+        Some(Bounds::new(point(left, top + (row - side) / 2.), size(side, side)))
+    }
+
+    /// The item the zoom is over, and how far below the rows' top the pointer is: the row under `at`, or with
+    /// no pointer (or none on a row) the first row on screen, which goes at the top. What the grid is asked to
+    /// show in the same place.
+    pub fn anchor_at(&self, at: Option<Point<Pixels>>, window: &Window) -> Option<crate::stage::Anchor> {
+        let rows = &self.frame.rows;
+        let row = f32::from(ROW_HEIGHT.to_pixels(window.rem_size())).max(1.);
+        let area = self.area.get();
+        let top = self.scroll_top();
+        // The line is whole and not negative before it is a line's number.
+        let line_at = |y: f32| (y >= 0.).then(|| (y / row).floor() as usize);
+        let path_on = |line: usize| Some(rows.get(layout_rows::row_of_line(rows, line)?)?.path.clone());
+        let under = at.filter(|at| area.contains(at)).and_then(|at| {
+            let y = f32::from(at.y - area.origin.y);
+            Some((path_on(line_at(y + top)?)?, Some(y)))
+        });
+        // A group's header is no row: the first row at or below the top of the view.
+        under.or_else(|| {
+            let first = line_at(top)?;
+            Some(((first..first + 3).find_map(path_on)?, None))
+        })
+    }
+
+    /// The grid has given way to the list, in the same folder: `anchor` is shown where the grid had it, and
+    /// each row's picture flies from its tile (`morph`; none under reduced motion).
+    pub fn arrive(
+        &mut self,
+        anchor: Option<crate::stage::Anchor>,
+        morph: Option<crate::stage::Morph>,
+        cx: &mut Context<Self>,
+    ) {
+        self.landing = anchor;
+        self.morph = morph;
+        cx.notify();
     }
 
     /// Gives the list the keyboard (F6 to this pane, a new folder opening).
@@ -729,6 +793,25 @@ impl FileList {
             self.shown.focus = focus_path.map(|path| (path.to_string(), index));
         }
         let focus_index = self.shown.focus.as_ref().and_then(|(_, index)| *index);
+
+        // The grid gave way to the list. Where the list was left already shows the item the zoom was over: it
+        // stays there, so going to the grid and back comes back to the same place. Otherwise that item goes
+        // under the pointer, where the grid had it (the first one the grid showed, with no pointer: to the top),
+        // as near as the list's ends allow, which the list sees to.
+        if let Some((path, under)) = self.landing.take() {
+            if let Some(index) = view.rows.position_of(&path) {
+                let row = f32::from(ROW_HEIGHT.to_pixels(window.rem_size()));
+                let line = layout_rows::line_of_row(&view.rows, index) as f32;
+                let scrolled = -f32::from(self.scroll.0.borrow().base_handle.offset().y);
+                let shown_at = line * row - scrolled;
+                if shown_at < 0. || shown_at + row > f32::from(self.area.get().size.height) {
+                    let top = under.map_or(line * row, |y| (line + 0.5) * row - y).max(0.);
+                    self.scroll.0.borrow().base_handle.set_offset(point(px(0.), px(-top)));
+                }
+                // The zoom keeps what the pointer is on in view, not what the keyboard is on.
+                self.restoring |= under.is_some();
+            }
+        }
 
         // Scrolls the focused row into view when it moves; on the frame the scroll was restored, it stays
         // where it was left (the web's `restoring`, which only the first effect after mounting honoured).
@@ -1077,7 +1160,11 @@ impl FileList {
         if !hovered {
             return;
         }
-        let entry = self.explorer.read(cx).pane_tab(self.pane).and_then(|tab| tab.rows.get(i).cloned());
+        let entry = self
+            .explorer
+            .read(cx)
+            .pane_tab(self.pane)
+            .and_then(|tab| tab.rows.get(i).cloned());
         if let Some(entry) = entry {
             self.resting = crate::aware::rest_on(entry, cx);
         }
@@ -1313,7 +1400,17 @@ impl Render for FileList {
         let folder_drop = drop_at == Some(DropAt::Folder);
         let thumbnails = state::settings(cx).list_thumbnails;
         let peeks = self.peeks.read(explorer);
+        // The rows' pictures on their way from the grid's tiles: drawn again each frame until they are in.
+        let morph = self.morph.take().and_then(|morph| {
+            let along = morph.progress(cx.background_executor().now())?;
+            Some((morph, along))
+        });
+        if let Some((flying, _)) = &morph {
+            self.morph = Some(flying.clone());
+            window.request_animation_frame();
+        }
         let frame = Rc::new(Frame {
+            morph,
             rows: view.rows.clone(),
             selected: view.selection.clone(),
             focus_path: view.selection.focus().map(str::to_string),

@@ -26,6 +26,8 @@ use std::collections::HashMap;
 pub const ROW_HEIGHT: Rems = rems(2.);
 /// The air between a line's edge and its highlight, at the sides.
 const INSET: Pixels = px(6.);
+/// How far into its line a row's picture starts: past the inset, the highlight's border and its padding.
+pub(super) const PICTURE_AT: Pixels = px(12.);
 /// An item modified within the last hour gets a dot in its date.
 const HOT_FOR_MS: i64 = 3_600_000;
 /// A size bar only shows where it says something: 40% of the biggest here or more.
@@ -404,6 +406,15 @@ impl FileList {
                 Some(known) => crate::art::known_folder(known, px(frame.box_px), cx).into_any_element(),
                 None => crate::art::kind(kind, px(frame.box_px), cx).into_any_element(),
             },
+        };
+        // The grid has just given way to the list: the picture is on its way from its tile.
+        let flying = frame
+            .morph
+            .as_ref()
+            .and_then(|(morph, along)| Some((morph.from(&entry.path, cx)?, *along)));
+        let mark = match flying {
+            Some((from, along)) => crate::stage::flown(mark, from, None, along).into_any_element(),
+            None => mark,
         };
         let name_tip: SharedString = if tracked.ignored {
             git::name_tooltip(&entry.name, true)
