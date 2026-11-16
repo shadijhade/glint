@@ -361,7 +361,7 @@ Agents that show apps (MCP Apps) draw `folder_sizes` and `largest_files` as a ma
 | `Ctrl+Shift+F` | Search this folder and below: names, and inside the files |
 | `Ctrl+Shift+2` / `Ctrl+Shift+6` / `Ctrl+Shift+9` | Grid view (thumbnails) / list view / columns view |
 | `Ctrl+=` / `Ctrl+-` · `Ctrl`+wheel | In the grid: bigger / smaller tiles (`Ctrl+0`: medium) |
-| `Ctrl`+wheel · pinch | Zoom through folders: into the one under the pointer, and out to the one above (in the grid, past the biggest and smallest tiles) |
+| `Ctrl`+wheel · pinch | Zoom the folder's layout: in from the list to the grid's smallest tiles and on to bigger ones, out the same way back |
 | `Arrows`, `Home`, `End`, `PageUp/Down` | Move: in the grid, `Left` and `Right` too (`Shift` extends the selection, `Ctrl` moves without selecting) |
 | `Ctrl+Space` | Add the focused item to the selection, or take it out |
 | Letters | Jump to the next name starting with them |

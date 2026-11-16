@@ -93,22 +93,23 @@ pub mod motion {
     pub const BASE: Duration = Duration::from_millis(170);
     /// Big surfaces: dialogs, sheets sliding in.
     pub const SLOW: Duration = Duration::from_millis(240);
-    /// A flight into a folder or out of one (`crate::stage`): long enough to see where you went, and the folder is
-    /// usable from its first frame.
-    pub const DIVE: Duration = Duration::from_millis(280);
+    /// The step into a folder or out of one (`crate::stage`): over before it is noticed as a wait, and the folder
+    /// is usable from its first frame.
+    pub const DIVE: Duration = Duration::from_millis(190);
+    /// The list giving way to the grid and back (`crate::stage::Morph`): long enough for the eye to follow an
+    /// item from its row to its tile.
+    pub const MORPH: Duration = Duration::from_millis(340);
 
     /// How much larger a picture is drawn while the pointer is on what it stands for (a tile's thumbnail, a
     /// drive's icon): it comes toward the eye. Paint only (`paint_scale`): nothing is laid out again.
-    pub const LIFT: f32 = 1.06;
+    pub const LIFT: f32 = 1.04;
     /// And while it is pressed: it gives under the finger.
     pub const PRESS: f32 = 0.97;
     /// How much smaller the window's content is drawn while a dialog, the palette or Quick Look is over it: it
     /// stands back, and what is in front is plainly in front.
-    pub const RECEDE: f32 = 0.978;
+    pub const RECEDE: f32 = 0.988;
     /// How much smaller something that pops in (a menu, a dialog) starts.
-    pub const POP: f32 = 0.955;
-    /// How much the window's light swells as a pane flies into a folder or out of one.
-    pub const LIGHT_SWELL: f32 = 0.06;
+    pub const POP: f32 = 0.97;
 
     /// The spring the window's content stands back and comes forward on: quick, and it doesn't swing.
     pub const DEPTH_SPRING: gpui_kit::SpringConfig = gpui_kit::SpringConfig::new(420., 38., 1.);

@@ -82,6 +82,10 @@ pub(super) struct Frame {
     pub rename: Option<super::rename::RenameView>,
     /// What the folders read ahead hold (the one under the pointer, the one the keyboard is on): their tiles say it.
     pub peeks: Rc<Vec<crate::components::file_list::Peek>>,
+    /// The window's rem, pixels.
+    pub rem: f32,
+    /// The list has just given way to the grid: each tile is on its way from its row, this far along.
+    pub morph: Option<(crate::stage::Morph, f32)>,
 }
 
 /// The name tiles are a hover group under: what shows only while the pointer is on a tile asks it.
@@ -248,7 +252,7 @@ fn show_thumbnails(frame: &Frame, items: Range<usize>, cx: &mut App) {
 }
 
 /// One tile (`renderTile`).
-fn tile(frame: &Rc<Frame>, i: usize, entry: &FileEntry, cx: &App) -> impl IntoElement {
+fn tile(frame: &Rc<Frame>, i: usize, entry: &FileEntry, cx: &App) -> AnyElement {
     let t = &frame.tokens;
     let selected = frame.selection.contains(&entry.path);
     let focused = frame.focus.as_deref() == Some(entry.path.as_str());
@@ -377,7 +381,7 @@ fn tile(frame: &Rc<Frame>, i: usize, entry: &FileEntry, cx: &App) -> impl IntoEl
     };
     let renaming = renaming.is_some();
 
-    div()
+    let cell = div()
         // A cell of the row's grid; the tile inside is inset by 2 px (`m-0.5`).
         .w(px(frame.col_w))
         .h_full()
@@ -447,6 +451,7 @@ fn tile(frame: &Rc<Frame>, i: usize, entry: &FileEntry, cx: &App) -> impl IntoEl
                 .child(
                     square
                         .id(("file-grid-picture", i))
+                        .test_support()
                         .when(!cx.reduce_motion(), |picture| {
                             picture
                                 .group_hover(TILE_GROUP, |style| style.paint_scale(theme::motion::LIFT))
@@ -482,7 +487,26 @@ fn tile(frame: &Rc<Frame>, i: usize, entry: &FileEntry, cx: &App) -> impl IntoEl
                         None => under.child(line).into_any_element(),
                     }
                 }),
-        )
+        );
+    // The list has just given way to the grid: the tile is on its way from its row, its picture out of the
+    // row's.
+    let flying = frame
+        .morph
+        .as_ref()
+        .and_then(|(morph, along)| Some((morph.from(&entry.path, cx)?, *along)));
+    match flying {
+        Some((from, along)) => {
+            let picture = (px(picture_top(frame.rem)), px(thumb));
+            crate::stage::flown(cell, from, Some(picture), along).into_any_element()
+        }
+        None => cell.into_any_element(),
+    }
+}
+
+/// How far below its cell's top a tile's picture starts, in pixels: the cell's inset, the tile's border and its
+/// padding.
+pub(super) fn picture_top(rem: f32) -> f32 {
+    rem * 0.625 + 1.
 }
 
 /// How dim a tile is drawn, if at all: hidden and cut items, and the ones `.gitignore` leaves out, are dim, as Explorer does (`opacity-55`); the ones being

@@ -103,7 +103,7 @@ pub(crate) fn dropdown_popup(
                 .top(px(travel * (1. - delta)))
                 .opacity(delta)
                 .paint_origin(0.5, 0.)
-                .paint_scale(0.955 + 0.045 * delta)
+                .paint_scale(0.97 + 0.03 * delta)
                 .shadow(popover_shadow(ring, delta * delta * delta))
         },
     ))
