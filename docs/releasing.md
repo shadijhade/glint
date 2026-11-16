@@ -136,7 +136,7 @@ Install the two cargo tools with `cargo install --locked cargo-deny cargo-about`
 | `ready` | master, nothing uncommitted, in step with GitHub, a version after the latest release | `gh auth login` |
 | `checks` | `cargo deny check`, the notices (`npm run licenses -- --check`), the signing's own test; with `--full`, glint-ui's tests and the end-to-end checks first | cargo-deny and cargo-about for the first two (skipped with a warning without them: the build on GitHub runs both in any case, a `--local` build only when they are installed) |
 | `version` | sets the version in `Cargo.toml`, `package.json` and the bug report's placeholder, drafts `release/vX.Y.Z/notes.md` when there are none, commits `Release vX.Y.Z` and pushes | the notes written (it stops once for you to rewrite the draft; `--notes-as-drafted` takes it as it is) |
-| `build` | starts the release workflow on master, waits for it (about 25 minutes while its Rust cache is warm, three quarters of an hour without), and downloads what it built and signed into `release/vX.Y.Z` | the repository's `TAURI_SIGNING_PRIVATE_KEY` secrets (`npm run ship -- --setup`, [below](#a-release-that-needs-nobody)). When nobody knows whether they work, it asks GitHub first (the Release check, a minute) and doesn't start a build GitHub can't sign |
+| `build` | starts the release workflow on master, waits for it (about 20 minutes while its Rust cache is warm, three quarters of an hour without), and downloads what it built and signed into `release/vX.Y.Z` | the repository's `TAURI_SIGNING_PRIVATE_KEY` secrets (`npm run ship -- --setup`, [below](#a-release-that-needs-nobody)). When nobody knows whether they work, it asks GitHub first (the Release check, a minute) and doesn't start a build GitHub can't sign |
 | `verify` | checks the installer the way the app will before installing it (`verify-update.mjs`), and that `Glint-setup.exe` is the same file | |
 | `release` | creates the draft release on the commit that was built, with the four files and the notes, compares GitHub's copies with the built ones, publishes it as the latest, waits until installed copies are offered it, and puts the day it came out in the README's *What's new* | `--draft` stops the run before publishing: Scoop, winget and the Store wait for the published release |
 | `scoop` | puts the new `bucket/glint.json` in [shadijhade/scoop-bucket](https://github.com/shadijhade/scoop-bucket) | |
@@ -179,7 +179,7 @@ After it, a release is the one command, from any PC with `gh` signed in, and it 
 | When | What happens | Where |
 | :--- | :--- | :--- |
 | at once | the checks, the version's commit, the push | this PC |
-| about 25 minutes | the Release workflow checks, builds, signs the service, packs the installer and signs the update | GitHub |
+| about 20 minutes | the Release workflow runs the crates' checks, clippy and the tests, builds, signs the service, packs the installer and signs the update | GitHub |
 | a minute | the files come down and are checked the way the app checks them; the draft release, GitHub's copies compared, published; the README's day | this PC |
 | a minute | Scoop's bucket and the winget pull request | this PC |
 | about 5 minutes | the **Store** workflow ([`store.yml`](../.github/workflows/store.yml)) takes the released setup program, checks its signature, packs the MSIX from its files and submits it | GitHub |
