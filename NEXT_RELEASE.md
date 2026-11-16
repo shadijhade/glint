@@ -1,8 +1,7 @@
 # Glint: after 0.13
 
-*0.13.0 is finished: its code, tests, docs and Store listing are done, and `npm run ship` releases it once the
-update key can sign it ([below](#how-a-release-is-made-now)). Nothing is planned after it yet: this file is where
-the next release's brief goes.
+*0.13.0 came out on 2026-11-16 ([its release](https://github.com/shadijhade/glint/releases/tag/v0.13.0)). Nothing
+is planned after it yet: this file is where the next release's brief goes.
 The plan for 0.12 that was here is in git history (`git show df1245a:NEXT_RELEASE.md`), the plans for 0.9 to 0.11
 before it (`git show 47c33fa:NEXT_RELEASE.md`), and 0.13's own plan, the menu and the dock that know the selection,
 is [docs/gpui/aware/PLAN.md](docs/gpui/aware/PLAN.md) with its task cards beside it.*
@@ -30,8 +29,10 @@ Known when it shipped, none of it holding the release:
 ## How a release is made now
 
 `npm run ship -- <x.y.z>` ([docs/releasing.md](docs/releasing.md#one-command-npm-run-ship)): the checks, the version,
-the build and its signatures on GitHub, the release, Scoop, winget and the Microsoft Store. 0.13.0 is the first
-made this way. Two things are left for it to need nobody, each done once:
+the build and its signatures on GitHub, the release, Scoop, winget and the Microsoft Store. 0.13.0 was the first
+made this way: built and signed on this PC (`--local`, one password), then the release, Scoop and winget by
+`ship`, and the Store's package put in Partner Center by hand. Two things are left for it to need nobody, each
+done once:
 
 - **The update key, where the build is.** The repository's `TAURI_SIGNING_PRIVATE_KEY` secret has been empty
   since it was made (2026-10-22; every run says `HAS_UPDATER_KEY: false`), so GitHub builds Glint but can't sign
