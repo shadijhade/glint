@@ -169,5 +169,7 @@ Var OldDesktopShortcut
     ${If} $0 == 0
       ExecShellWait "runas" "$INSTDIR\shadui-index.exe" "uninstall" SW_HIDE
     ${EndIf}
+    ; The name Windows shows on Glint's own notifications (the app writes it when it first shows one).
+    DeleteRegKey HKCU "Software\Classes\AppUserModelId\${BUNDLEID}"
   ${EndIf}
 !macroend

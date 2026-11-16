@@ -61,6 +61,7 @@ commit_preprocessors = [
     { pattern = '^(\w+)\(thumbnails\)', replace = '${1}(Thumbnails)' },
     { pattern = '^(\w+)\(tools\)', replace = '${1}(Tools)' },
     { pattern = '^(\w+)\(ui\)', replace = '${1}(Look_and_feel)' },
+    { pattern = '^(\w+)\(updates\)', replace = '${1}(Updates)' },
     { pattern = '^(\w+)\(usage\)', replace = '${1}(Disk_usage)' },
     { pattern = '^(\w+)\(views\)', replace = '${1}(Views)' },
     { pattern = '^(\w+)\(xray\)', replace = '${1}(X-Ray)' },

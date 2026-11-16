@@ -1,10 +1,11 @@
 //! Settings → About: Glint's name and version, updates, the shortcuts sheet, diagnostics, the settings file and
 //! Reset (the About section, `UpdateRow` and `copyDiagnostics` of SettingsView.tsx).
 //!
-//! **Updates** are `crate::updater`'s model (feature `updater` until the coordinator integrates it): the row
-//! shows "Check for updates" with how the last check went, or "Version X is available" with What's new and
-//! Install (a percent while it downloads), as `UpdateRow` did. It reads the shared model lazily, so a Settings
-//! opened before the model exists (tests) draws the check and waits.
+//! **Updates** are `crate::updater`'s model: the row shows "Check for updates" with how the last check went (and
+//! when it was), or the newer version with What's new and its button: Install (a percent while it downloads),
+//! Restart now once it has come in by itself, Update for a copy Scoop installed. Below it, Install updates
+//! automatically (the setting the model follows). It reads the shared model lazily, so a Settings opened before
+//! the model exists (tests) draws the check and waits.
 
 use super::backend::Backend;
 use super::transfer::Transfer;
@@ -117,7 +118,7 @@ impl About {
                 t,
             );
         };
-        let (policy, status, install, available, error) = {
+        let (policy, status, install, available, error, quiet, checked) = {
             let model = model.read(cx);
             (
                 model.policy(),
@@ -125,8 +126,11 @@ impl About {
                 model.install_state().clone(),
                 model.available().cloned(),
                 model.install_error().map(str::to_string),
+                model.fetching_quietly(),
+                model.last_checked(),
             )
         };
+        let auto = state::settings(cx).auto_update;
         if self.store || policy == Policy::Store {
             return hint_only(t!("The Microsoft Store keeps Glint up to date"));
         }
@@ -134,11 +138,43 @@ impl About {
             return hint_only(t!("Updates are off in a debug build"));
         }
         if let Some(available) = available {
+            let version = available.version.clone();
+            let is_out = t!("Version {version} is available", version = version.clone());
             let installable = available.installer.is_some() && policy == Policy::SelfUpdating;
-            let base = if installable {
-                t!("Installing it restarts the app")
-            } else {
-                t!("Download the installer from GitHub")
+            let restarts = t!("Installing it restarts the app");
+            let downloading = match install.percent() {
+                Some(percent) => t!("Downloading {percent}%", percent = percent),
+                None => t!("Downloading…"),
+            };
+            let (title, base, label) = match &install {
+                _ if policy == Policy::Scoop => (
+                    is_out,
+                    t!("Glint updates through Scoop, then starts again"),
+                    if install == Install::Launching {
+                        t!("Updating…")
+                    } else {
+                        t!("Update")
+                    },
+                ),
+                Install::Ready if installable => (
+                    t!("Version {version} is ready to install", version = version.clone()),
+                    if auto {
+                        t!("It installs when you quit Glint, or restart now")
+                    } else {
+                        t!("Restart Glint to install it")
+                    },
+                    t!("Restart now"),
+                ),
+                Install::Downloading { .. } if quiet => (
+                    t!("Version {version} is coming in", version = version.clone()),
+                    t!("It installs when you quit Glint"),
+                    downloading,
+                ),
+                Install::Downloading { .. } => (is_out, restarts, downloading),
+                Install::Verifying => (is_out, restarts, t!("Checking…")),
+                Install::Launching => (is_out, restarts, t!("Installing…")),
+                _ if installable => (is_out, restarts, t!("Install")),
+                _ => (is_out, t!("Download the installer from GitHub"), t!("Download")),
             };
             // A failed install is said plainly; otherwise the notes, when the release has words for them.
             let hint: SharedString = match (&error, available.notes.as_deref().and_then(updater::notes_text)) {
@@ -147,20 +183,10 @@ impl About {
                 (None, None) => base,
             };
             let working = install.working();
-            let label = match &install {
-                Install::Downloading { .. } => match install.percent() {
-                    Some(percent) => t!("Downloading {percent}%", percent = percent),
-                    None => t!("Downloading…"),
-                },
-                Install::Verifying => t!("Checking…"),
-                Install::Launching => t!("Installing…"),
-                Install::Ready | Install::None if installable => t!("Install"),
-                Install::Ready | Install::None => t!("Download"),
-            };
             let url = available.url.clone();
             let install_model = model.clone();
             return widgets::setting_row(
-                t!("Version {version} is available", version = available.version.clone()),
+                title,
                 Some(hint),
                 vec![
                     widgets::quiet_button("about-whats-new", t!("What's new"))
@@ -179,7 +205,10 @@ impl About {
         let hint: Option<SharedString> = match &status {
             Status::Idle | Status::Store | Status::Off => None,
             Status::Checking => Some(t!("Checking…")),
-            Status::Latest => Some(t!("You have the latest version")),
+            Status::Latest => Some(match checked {
+                Some(checked) => format!("{} · {}", t!("You have the latest version"), checked_ago(checked)).into(),
+                None => t!("You have the latest version"),
+            }),
             Status::Failed(reason) if updater::looks_offline(reason) => {
                 Some(t!("Couldn't reach GitHub to check. Are you online?"))
             }
@@ -198,6 +227,43 @@ impl About {
             ],
             t,
         )
+    }
+
+    /// Install updates automatically, for the copies that install them (the setup program's, Scoop's).
+    fn auto_row(&self, t: &theme::Tokens, cx: &mut Context<Self>) -> Option<AnyElement> {
+        // Before the model exists (a window made without the app's start-up) the setting shows as it is.
+        let policy = self.updater.as_ref().map(|model| model.read(cx).policy());
+        if self.store || policy.is_some_and(|policy| !policy.installs()) {
+            return None;
+        }
+        let hint = if policy == Some(Policy::Scoop) {
+            t!("Scoop updates Glint when you quit it, or when it starts with Windows")
+        } else {
+            t!("New versions download in the background and install when you quit Glint, or when it starts with Windows")
+        };
+        Some(
+            widgets::switch_row(
+                "auto-update",
+                t!("Install updates automatically"),
+                Some(hint),
+                state::settings(cx).auto_update,
+                false,
+                |on, _, cx| state::update(cx, |settings| settings.auto_update = on),
+                t,
+            )
+            .into_any_element(),
+        )
+    }
+}
+
+/// "checked just now", "checked 5 min ago": when the last look was, by the clock.
+fn checked_ago(checked: std::time::SystemTime) -> SharedString {
+    let seconds = checked.elapsed().map(|ago| ago.as_secs()).unwrap_or(0);
+    match seconds {
+        0..60 => t!("checked just now"),
+        60..3600 => t!("checked {minutes} min ago", minutes = seconds / 60),
+        3600..86_400 => t!("checked {hours} h ago", hours = seconds / 3600),
+        _ => t!("checked {days} d ago", days = seconds / 86_400),
     }
 }
 
@@ -286,6 +352,7 @@ impl Render for About {
                 .into_any_element(),
         );
         rows.push(self.update_row(&t, cx));
+        rows.extend(self.auto_row(&t, cx));
         rows.push(
             widgets::setting_row(
                 t!("Keyboard shortcuts"),

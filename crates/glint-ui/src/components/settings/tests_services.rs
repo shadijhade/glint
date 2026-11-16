@@ -439,8 +439,9 @@ fn about_checks_for_updates_and_says_how_it_went(cx: &mut TestAppContext) {
     assert_eq!(hint_of(&mut visual, "Updates"), None);
     // Nothing newer: it says so, and the button is there to ask again.
     click(&mut visual, "settings-button-about-update");
+    // ... and when it last looked.
     settle(&mut visual, |cx| {
-        hint_of(cx, "Updates").as_deref() == Some("You have the latest version")
+        hint_of(cx, "Updates").as_deref() == Some("You have the latest version · checked just now")
     });
     assert_ne!(
         visual.update(|window, cx| {
@@ -517,6 +518,68 @@ fn about_says_plainly_when_an_update_was_refused(cx: &mut TestAppContext) {
         label_of(&mut visual, "settings-button-about-install").as_deref(),
         Some("Install")
     );
+}
+
+#[gpui_kit::test]
+fn about_says_an_update_came_in_by_itself_and_restarts_into_it(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let fake = Arc::new(Fake::new());
+    let (mut visual, view) = open_settings(cx, &fake, None);
+    let rig = visual.update(|_, cx| {
+        let rig = crate::updater::tests::build_auto_rig(cx, crate::updater::Policy::SelfUpdating, "0.9.5");
+        crate::updater::set_shared(cx, rig.updater.clone());
+        rig
+    });
+    rig.fake.serve("0.99.0", crate::updater::tests::SIG_GOOD);
+    go_to(&mut visual, "about");
+    // The switch is there (on by default), under the updates row.
+    assert!(
+        label_of(&mut visual, "settings-switch-auto-update").is_some()
+            || has(&mut visual, "Install updates automatically")
+    );
+    reveal(&mut visual, &view, "settings-button-about-update");
+    click(&mut visual, "settings-button-about-update");
+    settle(&mut visual, |cx| has(cx, "Version 0.99.0 is ready to install"));
+    assert_eq!(
+        hint_of(&mut visual, "Version 0.99.0 is ready to install").as_deref(),
+        Some("It installs when you quit Glint, or restart now")
+    );
+    assert_eq!(
+        label_of(&mut visual, "settings-button-about-install").as_deref(),
+        Some("Restart now")
+    );
+    click(&mut visual, "settings-button-about-install");
+    settle(&mut visual, |_| *rig.quit.borrow() == 1);
+    // Turned off from here, the setting says so.
+    click(&mut visual, "settings-switch-auto-update");
+    assert!(!visual.update(|_, cx| crate::state::settings(cx).auto_update));
+}
+
+#[gpui_kit::test]
+fn about_offers_a_scoop_copy_its_update_through_scoop(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let fake = Arc::new(Fake::new());
+    let (mut visual, view) = open_settings(cx, &fake, None);
+    let rig = visual.update(|_, cx| {
+        let rig = crate::updater::tests::build_auto_rig(cx, crate::updater::Policy::Scoop, "0.9.5");
+        crate::updater::set_shared(cx, rig.updater.clone());
+        rig
+    });
+    rig.fake.serve("0.99.0", crate::updater::tests::SIG_GOOD);
+    go_to(&mut visual, "about");
+    reveal(&mut visual, &view, "settings-button-about-update");
+    click(&mut visual, "settings-button-about-update");
+    settle(&mut visual, |cx| has(cx, "Version 0.99.0 is available"));
+    assert_eq!(
+        hint_of(&mut visual, "Version 0.99.0 is available").as_deref(),
+        Some("Glint updates through Scoop, then starts again")
+    );
+    assert_eq!(
+        label_of(&mut visual, "settings-button-about-install").as_deref(),
+        Some("Update")
+    );
+    click(&mut visual, "settings-button-about-install");
+    settle(&mut visual, |_| *rig.quit.borrow() == 1);
 }
 
 /// About in a copy that never updates itself: the reason, and no check.

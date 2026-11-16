@@ -88,6 +88,9 @@ windows = { workspace = true, features = [
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
     "Win32_Graphics_Imaging",
+    # The updater: other Glint processes on the way out (a process snapshot), and whether the connection is metered.
+    "Win32_System_Diagnostics_ToolHelp",
+    "Networking_Connectivity",
 ] }
 
 # Headless window tests (gpui-kit's test module) need gpui-kit's test-support feature. It is a dev-dependency
