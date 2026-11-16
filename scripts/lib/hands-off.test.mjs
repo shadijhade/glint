@@ -7,6 +7,9 @@
 // wrong one stores nothing, and what is stored is what the check then signs and signs in with.
 //
 // Usage: node scripts/lib/hands-off.test.mjs      (npm run test:setup)
+// What this can't show is a person typing: it has no terminal, so the setup takes its values from variables.
+// scripts/dev/setup-rehearsal/rehearse.mjs is the same rehearsal in a real terminal, with a helper typing the
+// answers into the console: run it there after changing how the setup asks (scripts/lib/ask.mjs).
 // The keys are the throwaway ones of scripts/lib/test-vectors (nothing trusts them). A scrypt run takes a second
 // or two and a gigabyte of memory, and there are several.
 
@@ -185,44 +188,10 @@ await check("a workflow that is started is found as the run that wasn't there be
 
 // ---- A whole rehearsal of the setup ---------------------------------------------------------------------------------
 
-// A gh for the setup script: it keeps its world in a file, takes secrets on its standard input, and its "Release
-// check" is the real scripts/release-check.mjs run with the secrets it holds, as the workflow runs it on GitHub.
-const ghProgram = join(work, "gh-stand-in.mjs");
-writeFileSync(
-    ghProgram,
-    `import { spawnSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
-const file = process.env.GLINT_FAKE_GH;
-const world = JSON.parse(readFileSync(file, "utf8"));
-const args = process.argv.slice(2);
-const line = args.join(" ");
-const save = () => writeFileSync(file, JSON.stringify(world));
-if (line === "auth status") process.exit(0);
-else if (line.startsWith("secret list")) console.log(JSON.stringify(world.secrets.map(({ name, updatedAt }) => ({ name, updatedAt }))));
-else if (line.startsWith("secret set")) {
-    const value = readFileSync(0, "utf8");
-    world.calls.push({ args, value });
-    world.secrets = world.secrets.filter((s) => s.name !== args[2]).concat({ name: args[2], updatedAt: new Date().toISOString(), value });
-    save();
-} else if (line.startsWith("secret delete")) {
-    world.calls.push({ args });
-    world.secrets = world.secrets.filter((s) => s.name !== args[2]);
-    save();
-} else if (line.startsWith("run list")) console.log(JSON.stringify(world.runs.map(({ log, ...run }) => run)));
-else if (line.startsWith("workflow run")) {
-    const held = Object.fromEntries(world.secrets.map((s) => [s.name, s.value ?? ""]));
-    const env = { ...process.env, TAURI_SIGNING_PRIVATE_KEY: "", TAURI_SIGNING_PRIVATE_KEY_PASSWORD: "", PARTNER_CENTER_TENANT_ID: "", PARTNER_CENTER_CLIENT_ID: "", PARTNER_CENTER_CLIENT_SECRET: "", ...held };
-    const ran = spawnSync(process.execPath, ["scripts/release-check.mjs"], { cwd: process.env.GLINT_ROOT, env, encoding: "utf8" });
-    world.runs.unshift({ databaseId: 500 + world.runs.length, status: "completed", conclusion: ran.status === 0 ? "success" : "failure", createdAt: new Date().toISOString(), log: ran.stdout });
-    save();
-} else if (line.startsWith("run view") && line.includes("--log")) console.log(world.runs.find((r) => String(r.databaseId) === args[2]).log);
-else if (line.startsWith("run view")) console.log(JSON.stringify(world.runs.find((r) => String(r.databaseId) === args[2])));
-else {
-    console.error("the stand-in gh doesn't know: " + line);
-    process.exit(1);
-}
-`,
-);
+// A gh for the setup script (scripts/dev/setup-rehearsal/gh-stand-in.mjs): it keeps its world in a file, takes
+// secrets on its standard input, and its "Release check" is the real scripts/release-check.mjs run with the
+// secrets it holds, as the workflow runs it on GitHub.
+const ghProgram = join(root, "scripts", "dev", "setup-rehearsal", "gh-stand-in.mjs");
 
 /** Runs the setup against a world (a file) and returns how it ended, what it printed and the world after. */
 function setup(worldFile, args, env = {}) {
