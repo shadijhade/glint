@@ -38,6 +38,8 @@ const args = process.argv.slice(2);
 const flag = (name) => args.includes(name);
 const value = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined);
 const dry = flag("--dry");
+/** Set by a step that ends the run there without failing it (--draft: nothing after a draft is for anyone yet). */
+let paused = false;
 
 class Stop extends Error {}
 const stop = (message) => {
@@ -166,9 +168,10 @@ const steps = {
         }
         if (!read("README.md").includes(`**${version}**`)) say(`! The README's "What's new" doesn't name ${version}: it still tells about the last release.`);
         if (JSON.parse(read("crates/glint/msix/listing.json")).whatsNew?.version !== version) say(`! crates/glint/msix/listing.json's whatsNew is for another version: the Store keeps its old note.`);
-        if (git("status", "--porcelain")) {
+        const versioned = ["Cargo.toml", "Cargo.lock", "package.json", "package-lock.json", ".github/ISSUE_TEMPLATE/bug_report.yml"];
+        if (git("status", "--porcelain", "--", ...versioned)) {
             if (dry) return would(`commit "Release ${tag}" and push`);
-            git("add", "Cargo.toml", "Cargo.lock", "package.json", "package-lock.json", ".github/ISSUE_TEMPLATE/bug_report.yml");
+            git("add", ...versioned);
             git("commit", "--quiet", "-m", `Release ${tag}`);
         }
         if (git("rev-list", "--count", "origin/master..HEAD") !== "0") {
@@ -236,6 +239,7 @@ const steps = {
     /** What came down is what the app will accept: the signature, the version it is bound to, the two names. */
     verify() {
         const missing = files().filter((path) => !existsSync(path));
+        if (missing.length && dry) return would("check the signature, the version it is bound to and the two names of what was built");
         if (missing.length) stop(`Not built yet: ${missing.join(", ")}`);
         say(run("node", ["scripts/verify-update.mjs", join(out, "latest.json"), join(out, setup)]).out);
         if (sha256(join(out, "Glint-setup.exe")) !== sha256(join(out, setup))) stop("Glint-setup.exe isn't the same file as the versioned setup.");
@@ -248,7 +252,10 @@ const steps = {
         let made = release();
         if (!made) {
             if (!existsSync(notes)) stop(`No notes: ${notes}`);
-            if (dry) return would(`create the draft release ${tag} with ${files().length} files, compare GitHub's copies, and publish it`);
+            if (dry) {
+                paused = flag("--draft");
+                return would(`create the draft release ${tag} with ${files().length} files and compare GitHub's copies${paused ? ", and stop there" : ", then publish it"}`);
+            }
             gh("release", "create", tag, ...files(), "--repo", SLUG, "--draft", "--target", releaseCommit(), "--title", `Glint ${tag}`, "--notes-file", notes);
             made = release();
         }
@@ -259,7 +266,10 @@ const steps = {
             if (asset.digest && asset.digest !== `sha256:${sha256(path)}`) stop(`GitHub's ${name} isn't the file that was built (${asset.digest}).`);
         }
         if (made.isDraft) {
-            if (flag("--draft")) return done(`${tag} is a draft: read it, try Glint-setup.exe, then npm run ship again without --draft. ${REPO}/releases`);
+            if (flag("--draft")) {
+                paused = true;
+                return done(`${tag} is a draft: read it, try Glint-setup.exe, then npm run ship again without --draft. ${REPO}/releases`);
+            }
             if (dry) return would(`publish ${tag} as the latest release`);
             gh("release", "edit", tag, "--repo", SLUG, "--draft=false", "--latest");
         }
@@ -278,11 +288,13 @@ const steps = {
     /** The Scoop bucket's manifest, replaced by this release's. */
     scoop() {
         if (flag("--no-scoop")) return;
-        const ours = readFileSync(join(manifests, "scoop", "glint.json"), "utf8");
+        const ours = join(manifests, "scoop", "glint.json");
+        if (!existsSync(ours)) return dry ? would(`put bucket/glint.json ${version} in ${BUCKET}, once it is built`) : stop(`Not built yet: ${ours}`);
         const theirs = ghJson("api", `repos/${BUCKET}/contents/bucket/glint.json`);
         if (JSON.parse(Buffer.from(theirs.content, "base64").toString("utf8")).version === version) return done(`Scoop's bucket has ${version}`);
         if (dry) return would(`put bucket/glint.json ${version} in ${BUCKET}`);
-        const body = JSON.stringify({ message: `glint: Update to version ${version}`, content: Buffer.from(ours.replace(/\r\n/g, "\n")).toString("base64"), sha: theirs.sha });
+        published();
+        const body = JSON.stringify({ message: `glint: Update to version ${version}`, content: Buffer.from(readFileSync(ours, "utf8").replace(/\r\n/g, "\n")).toString("base64"), sha: theirs.sha });
         run("gh", ["api", "--method", "PUT", `repos/${BUCKET}/contents/bucket/glint.json`, "--input", "-"], { input: body });
         done(`Scoop's bucket has ${version}: scoop update glint`);
     },
@@ -294,11 +306,13 @@ const steps = {
         const open = ghJson("pr", "list", "--repo", WINGET, "--author", "@me", "--state", "all", "--search", `"${title}" in:title`, "--json", "number,title,state,url").find((pr) => pr.title === title);
         if (open) return done(`winget: ${open.url} (${open.state.toLowerCase()})`);
         const folder = join(manifests, "winget", "manifests", "s", "shadijhade", "Glint", version);
+        if (!existsSync(folder)) return dry ? would(`the pull request "${title}" to ${WINGET}, once it is built`) : stop(`Not built yet: ${folder}`);
         const yaml = readdirSync(folder).filter((name) => name.endsWith(".yaml"));
         if (yaml.length !== 3) stop(`${folder} should hold three manifests.`);
         const validated = has("winget", ["validate", "--manifest", `"${folder}"`]);
         if (!validated) stop(`winget validate refuses the manifests in ${folder} (or winget isn't here).`);
         if (dry) return would(`branch ${PACKAGE}-${version} on ${WINGET_FORK} with ${yaml.length} manifests, and the pull request to ${WINGET}`);
+        published();
         // The fork's master is brought up to date, and the branch is one commit on it.
         gh("repo", "sync", WINGET_FORK, "--source", WINGET, "--branch", "master");
         const base = ghJson("api", `repos/${WINGET_FORK}/git/ref/heads/master`).object.sha;
@@ -382,6 +396,12 @@ function stampReadme() {
     done(`the README says ${version} came out on ${day}`);
 }
 
+/** Scoop and winget send people to the release's files, and a draft's aren't there for anyone yet. */
+function published() {
+    const made = release();
+    if (!made || made.isDraft) stop(`${tag} isn't published yet, so nobody could download what this would point at: npm run ship -- --from release`);
+}
+
 /** The version released before this one, for "the manifests are X's with…". */
 function lastReleasedBefore() {
     const all = ghJson("release", "list", "--repo", SLUG, "--exclude-drafts", "--limit", "30", "--json", "tagName").map((r) => r.tagName.replace(/^v/, ""));
@@ -399,8 +419,10 @@ try {
     for (const name of chosen) {
         console.log(`\n— ${name} —`);
         await steps[name]();
+        if (paused) break;
     }
-    console.log(`\n✓ ${dry ? "Nothing was changed." : `Glint ${version}: ${chosen.join(", ")} done.`}`);
+    const ran = paused ? chosen.slice(0, chosen.findIndex((name) => name === "release") + 1) : chosen;
+    console.log(`\n✓ ${dry ? "Nothing was changed." : `Glint ${version}: ${ran.join(", ")} done${paused ? "; the rest waits for the release to be published" : ""}.`}`);
 } catch (error) {
     if (!(error instanceof Stop)) throw error;
     console.error(`\n✗ ${error.message}`);
