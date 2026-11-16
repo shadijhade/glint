@@ -261,7 +261,7 @@ const steps = {
                 build = runsOf().find((r) => r.status !== "completed" && !unsigned.includes(String(r.databaseId)));
             }
             if (!build) stop("The Release workflow didn't start: look at the repository's Actions page.");
-            say(`The Release workflow builds and signs ${tag}: ${REPO}/actions/runs/${build.databaseId} (25 minutes while its cache is warm, up to three quarters of an hour).`);
+            say(`The Release workflow builds and signs ${tag}: ${REPO}/actions/runs/${build.databaseId} (about 20 minutes while its cache is warm, up to three quarters of an hour).`);
         } else if (dry) return would(`wait for run ${build.databaseId} and download its files`);
         if (build.status !== "completed") say(`Waiting for run ${build.databaseId}: ${REPO}/actions/runs/${build.databaseId}`);
         while (build.status !== "completed") {
