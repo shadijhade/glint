@@ -313,8 +313,11 @@ const steps = {
         if (!validated) stop(`winget validate refuses the manifests in ${folder} (or winget isn't here).`);
         if (dry) return would(`branch ${PACKAGE}-${version} on ${WINGET_FORK} with ${yaml.length} manifests, and the pull request to ${WINGET}`);
         published();
-        // The fork's master is brought up to date, and the branch is one commit on it.
-        gh("repo", "sync", WINGET_FORK, "--source", WINGET, "--branch", "master");
+        // The fork's master is brought up to date when gh may (upstream's changes to its workflows need the token's
+        // `workflow` scope: gh auth refresh -s workflow), and the branch is one commit on it. From an older master
+        // the pull request is the same three files.
+        const synced = tryGh("repo", "sync", WINGET_FORK, "--source", WINGET, "--branch", "master");
+        if (!synced.ok) say(`! The fork's master stays where it is (${synced.err.split("\n")[0]}); the branch starts from there.`);
         const base = ghJson("api", `repos/${WINGET_FORK}/git/ref/heads/master`).object.sha;
         const baseTree = ghJson("api", `repos/${WINGET_FORK}/git/commits/${base}`).tree.sha;
         const api = (path, body) => JSON.parse(run("gh", ["api", "--method", "POST", `repos/${WINGET_FORK}/${path}`, "--input", "-"], { input: JSON.stringify(body) }).out);
