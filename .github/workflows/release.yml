@@ -63,6 +63,42 @@ jobs:
         with:
           workspaces: ". -> target/ui"
 
+      # The crates' checks, as `npm run release` runs them on a PC that has the two tools: no known vulnerability
+      # and licenses that can ship (cargo-deny, deny.toml), and THIRD_PARTY_CRATES.md, which the installer carries,
+      # current (cargo-about). Here they run for every build, whatever the PC that asked for it has installed.
+      # The tools are the programs of their own releases, each pinned by its SHA-256.
+      - name: Install cargo-deny and cargo-about
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          $tools = "$env:RUNNER_TEMP\crate-tools"
+          New-Item -ItemType Directory -Path $tools -Force | Out-Null
+          $pinned = @(
+            @{ Repo = "EmbarkStudios/cargo-deny"; Tag = "0.20.2"; Sha256 = "975a22143262fd27476d19ee00c7af67978426e40e1dee94eed6bbade1cf87dc" },
+            @{ Repo = "EmbarkStudios/cargo-about"; Tag = "0.9.3"; Sha256 = "9e2942533ef1c592c4a70bdb384cae1550a3f5fc9ae40379b6662e3d2f16fe02" }
+          )
+          foreach ($tool in $pinned) {
+            $name = "$(Split-Path $tool.Repo -Leaf)-$($tool.Tag)-x86_64-pc-windows-msvc"
+            gh release download $tool.Tag --repo $tool.Repo --pattern "$name.tar.gz" --dir $tools
+            $got = (Get-FileHash "$tools\$name.tar.gz" -Algorithm SHA256).Hash.ToLower()
+            if ($got -ne $tool.Sha256) { throw "$name.tar.gz isn't the file that was pinned: its SHA-256 is $got" }
+            # Windows' own tar: Git's reads C:\ as the name of a remote host.
+            & "$env:SystemRoot\System32\tar.exe" -xzf "$tools\$name.tar.gz" -C $tools
+            if (-not (Test-Path "$tools\$name\$(Split-Path $tool.Repo -Leaf).exe")) { throw "$name.tar.gz doesn't hold the program" }
+            Add-Content $env:GITHUB_PATH "$tools\$name"
+          }
+
+      - name: The crates' checks
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          cargo deny --version
+          cargo about --version
+          cargo deny check
+          node scripts/licenses.mjs --check
+
       # makensis packs the installer (scripts/gpui-installer.mjs finds it in Program Files (x86)\NSIS).
       - name: Install NSIS
         shell: pwsh
