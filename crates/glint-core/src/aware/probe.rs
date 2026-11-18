@@ -53,6 +53,18 @@ pub fn probe(asks: Vec<Ask>, lane: Lane, stop: Arc<AtomicBool>, out: Channel<Ans
         if want.opens_with {
             job(lane, &stop, &out, &path, file::opens_with, Part::OpensWith);
         }
+        if !want.sums.is_empty() {
+            // Quiet, and only up to the cap: a file is read for this because somebody pointed at it.
+            let (stopped, sums) = (stop.clone(), want.sums);
+            job(
+                lane,
+                &stop,
+                &out,
+                &path,
+                move |p| file::sums(p, sums, glint_model::aware::HASH_CAP, &stopped),
+                Part::Sums,
+            );
+        }
         if want.extracted {
             job(lane, &stop, &out, &path, file::extracted, Part::Extracted);
         }
@@ -247,6 +259,37 @@ mod tests {
         let folder = dir.join("pack").to_string_lossy().into_owned();
         assert_eq!(wait_for(&seen, 1)[0].part, Part::Extracted(Some(folder)));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_asked_for_its_checksums_sends_them_and_a_stopped_or_missing_one_sends_none() {
+        use glint_model::aware::{Sums, SumsWant};
+        let dir = scratch("sums");
+        let file = dir.join("abc.txt");
+        let _ = std::fs::write(&file, b"abc");
+        let want = Want { sums: SumsWant { sha256: true, blake3: true, ..SumsWant::default() }, ..Want::default() };
+        let (out, seen) = collector();
+        probe(vec![ask(&file, want)], Lane::Quiet, Arc::new(AtomicBool::new(false)), out);
+        let got = wait_for(&seen, 1);
+        assert_eq!(got.len(), 1);
+        assert_eq!(
+            got[0].part,
+            Part::Sums(Sums {
+                sha256: Some("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad".into()),
+                blake3: Some("6437b3ac38465133ffb63b75273a8db548c558465d79db03fd359c6cd5bd9d85".into()),
+                ..Sums::default()
+            })
+        );
+        let (out, seen) = collector();
+        probe(vec![ask(&file, want)], Lane::Quiet, Arc::new(AtomicBool::new(true)), out);
+        probe(vec![ask(&dir.join("gone.txt"), want)], Lane::Quiet, Arc::new(AtomicBool::new(false)), out_none());
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(seen.lock().unwrap_or_else(|e| e.into_inner()).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn out_none() -> Channel<Answer> {
+        collector().0
     }
 
     #[test]

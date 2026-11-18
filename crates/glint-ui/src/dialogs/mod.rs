@@ -26,6 +26,8 @@ pub mod backup;
 pub mod batch_rename;
 /// Scanning files with Microsoft Defender (CheckDialog.tsx).
 pub mod check;
+/// Checking the files a checksum file lists (a toast with what doesn't match).
+pub mod check_sums;
 /// Cleaning up a drive or folder (CleanupDialog.tsx).
 pub mod cleanup;
 /// Connecting a cloud through rclone (CloudSetup.tsx).

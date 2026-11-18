@@ -1123,6 +1123,7 @@ impl Workspace {
             MenuEvent::Timeline { folder } => dialogs::timeline::open(window, cx, folder.clone()),
             MenuEvent::Cleanup { folder } => dialogs::cleanup::open(window, cx, folder),
             MenuEvent::XRay { path } => dialogs::xray::open(window, cx, path.clone()),
+            MenuEvent::CheckSums { path } => dialogs::check_sums::open(window, cx, path.clone()),
             MenuEvent::Defender { paths } => dialogs::check::open(window, cx, paths.clone()),
             MenuEvent::Rule { folder } => dialogs::rules::open(window, cx, Some(folder.clone())),
             MenuEvent::CompressInPlace { paths } => dialogs::compress_in_place::open(window, cx, paths.clone()),

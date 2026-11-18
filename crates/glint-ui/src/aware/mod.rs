@@ -22,7 +22,9 @@ use crate::kit::prelude::*;
 use crate::{persistence, state};
 use glint_core::aware::{Answer, Ask, Lane};
 use glint_model::aware::habits::day_of;
-use glint_model::aware::{rank, shared_ext, Clip, Facts, Habits, Pick, Place, Probed, Shape, Want};
+use glint_model::aware::{
+    rank, shared_ext, Clip, CopiedHash, Facts, Habits, Pick, Place, Probed, Shape, SumsWant, Want, HASH_CAP,
+};
 use glint_model::entries::{is_archived, is_closed, is_recycled, is_remote, FileEntry};
 use model::{Cache, Roots};
 use pulse::Pulses;
@@ -114,6 +116,8 @@ pub struct Aware {
     quiet: Option<Run>,
     now: Option<Run>,
     clip: Clip,
+    /// The checksum on the clipboard, when the text there is one.
+    copied: Option<CopiedHash>,
     /// The last clipboard count read, so the same one is not read twice.
     clip_seen: Option<u32>,
     pulses: Pulses,
@@ -184,6 +188,7 @@ impl Aware {
             quiet: None,
             now: None,
             clip: Clip::Empty,
+            copied: None,
             clip_seen: None,
             pulses: Pulses::default(),
             settle: None,
@@ -239,9 +244,16 @@ impl Aware {
         if !self.settling(entry) {
             return true;
         }
-        let asked = self.pending(Lane::Quiet, &entry.path).and(self.pending(Lane::Now, &entry.path));
+        // A file's checksums are a long read, made quietly: nothing waits for them.
+        let mut asked = self.pending(Lane::Quiet, &entry.path).and(self.pending(Lane::Now, &entry.path));
+        asked.sums = SumsWant::default();
         let counting = asked.inside && !self.probed(entry).and_then(|probed| probed.inside).is_some_and(|inside| inside.done);
         !counting && self.cache.unanswered(entry, asked).is_empty()
+    }
+
+    /// The checksum on the clipboard, when the text there is one: a selected or hovered file is compared with it.
+    pub fn copied(&self) -> Option<&CopiedHash> {
+        self.copied.as_ref()
     }
 
     /// What is on the clipboard.
@@ -352,17 +364,28 @@ impl Aware {
         // looked for only when there is one item to say them about (a selected or hovered file), never for
         // each of a selection of two hundred.
         let one = entries.len() == 1;
+        // A file is compared with a checksum on the clipboard on the quiet lane, and only for one item of a
+        // size worth reading for it ([`HASH_CAP`]).
+        let sums = match (&self.copied, one, lane) {
+            (Some(copied), true, Lane::Quiet) => copied.sums_wanted(),
+            _ => SumsWant::default(),
+        };
+        let mut hashing = false;
         if let Some(roots) = Self::roots(cx) {
             for entry in entries.iter().take(MOST_TO_LOOK_AT) {
                 if !roots.fixed(&entry.path) {
                     continue;
                 }
-                let mut want = self.cache.plan(entry, now);
+                let readable = !entry.dir && entry.size <= HASH_CAP;
+                let mut want = self.cache.plan(entry, now, if readable { sums } else { SumsWant::default() });
                 want.twins &= one;
                 if lane == Lane::Now {
                     // What the quiet lane was asked and hasn't answered yet is wanted now: asked again here, it
                     // goes first. A run for now that is going on about the item has it all already.
-                    let late = self.cache.unanswered(entry, self.pending(Lane::Quiet, &entry.path));
+                    let quiet = self.pending(Lane::Quiet, &entry.path);
+                    // Checksums stay with the quiet lane, which goes on reading while the menu opens.
+                    hashing |= !quiet.sums.is_empty();
+                    let late = self.cache.unanswered(entry, Want { sums: SumsWant::default(), ..quiet });
                     let late = if self.pending(Lane::Now, &entry.path).is_empty() { late } else { Want::default() };
                     if !late.is_empty() {
                         promoted = true;
@@ -383,7 +406,7 @@ impl Aware {
         self.stop(lane);
         // The quiet run's unanswered parts are being asked on the other lane now; if it was about nothing else,
         // it is ended, so a folder isn't walked twice.
-        if promoted && self.quiet_is_only_about(entries) {
+        if promoted && !hashing && self.quiet_is_only_about(entries) {
             self.stop(Lane::Quiet);
         }
         let mut asks = Vec::new();

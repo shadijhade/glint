@@ -837,6 +837,15 @@ pub fn item_menu(targets: &[FileEntry], c: &ItemCtx) -> Vec<Node> {
                 )
                 .node()
             }),
+            // A checksum file (`.sha256`, `.sha512`, `.b3sum`): the files it lists are checked against it.
+            one.filter(|e| !e.dir && !fixed && glint_core::checksums::is_sums_file(&e.name)).and_then(|e| {
+                Entry::ask(
+                    t!("Check files in this folder"),
+                    IconName::FileCheck,
+                    MenuEvent::CheckSums { path: e.path.clone() },
+                )
+                .node()
+            }),
             one.filter(|e| e.dir && !fixed).and_then(|e| {
                 Entry::ask(
                     t!("Recent changes"),

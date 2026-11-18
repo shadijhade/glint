@@ -7,7 +7,7 @@ use super::Aware;
 use crate::core_bridge::{self, Core};
 use crate::kit::prelude::*;
 use glint_core::host::Manager as _;
-use glint_model::aware::Clip;
+use glint_model::aware::{copied_hash, Clip, CopiedHash};
 use glint_model::paths::{base_name, parent_path};
 use std::time::Duration;
 
@@ -39,9 +39,17 @@ pub(super) fn watch(cx: &mut Context<Aware>) -> Task<()> {
         let clip = reading.await;
         let gone = this
             .update(cx, |this, cx| {
-                if this.clip != clip {
-                    this.clip = clip;
+                // Text that is a checksum: whatever is selected is compared with it from now on.
+                let copied = if clip == Clip::Text { copied_hash_of(cx) } else { None };
+                let changed = this.clip != clip || this.copied != copied;
+                let looks = copied.is_some() && this.copied != copied;
+                this.clip = clip;
+                this.copied = copied;
+                if changed {
                     cx.notify();
+                }
+                if looks {
+                    this.look_at_selection(cx);
                 }
             })
             .is_err();
@@ -69,6 +77,15 @@ pub(super) fn read(cx: &mut App) -> Task<Clip> {
             }
         }
         cx.update(|cx| from_system(cx))
+    })
+}
+
+/// The checksum the clipboard's text is, if it is one.
+fn copied_hash_of(cx: &App) -> Option<CopiedHash> {
+    let item = cx.read_from_clipboard()?;
+    item.entries.iter().find_map(|entry| match entry {
+        ClipboardEntry::String(string) => copied_hash(string.text()),
+        _ => None,
     })
 }
 

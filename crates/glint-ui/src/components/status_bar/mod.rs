@@ -604,7 +604,7 @@ impl StatusBar {
             return sentence::Deep::default();
         };
         let aware = aware.read(cx);
-        sentence::deep(&self.selected, &|entry| aware.probed(entry).cloned())
+        sentence::deep_with(&self.selected, &|entry| aware.probed(entry).cloned(), aware.copied())
     }
 
     /// What the dock's end has to say about the folder shown, if anything.

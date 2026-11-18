@@ -32,11 +32,15 @@ struct Call {
 struct Fake {
     calls: Rc<RefCell<Vec<Call>>>,
     senders: Rc<RefCell<Vec<async_channel::Sender<Answer>>>>,
+    /// What the fake clipboard holds, and its change count.
+    clip: Rc<RefCell<Clip>>,
+    seq: Rc<std::cell::Cell<u32>>,
 }
 
 impl Fake {
     fn sources(&self) -> aware::Sources {
         let (calls, senders) = (self.calls.clone(), self.senders.clone());
+        let (clip, seq) = (self.clip.clone(), self.seq.clone());
         aware::Sources {
             probe: Rc::new(move |asks: Vec<Ask>, lane, stop| {
                 calls.borrow_mut().push(Call {
@@ -48,8 +52,8 @@ impl Fake {
                 senders.borrow_mut().push(sender);
                 receiver
             }),
-            clip_seq: Rc::new(|| 0),
-            clip: Rc::new(|_| gpui_kit::Task::ready(Clip::Empty)),
+            clip_seq: Rc::new(move || seq.get()),
+            clip: Rc::new(move |_| gpui_kit::Task::ready(clip.borrow().clone())),
             today: Rc::new(|| 20_000),
         }
     }
@@ -110,6 +114,11 @@ static RIGS: AtomicUsize = AtomicUsize::new(0);
 fn rig(cx: &mut TestAppContext, path: &str) -> Rig {
     let disk = host_disk();
     disk.set_drives(vec![drive("C:\\")]);
+    rig_on(cx, disk, path)
+}
+
+/// [`rig`] on a disk of the test's own.
+fn rig_on(cx: &mut TestAppContext, disk: FakeDisk, path: &str) -> Rig {
     let ui = open(cx, &disk, path);
     let task = ui.explorer.update(cx, |e, cx| e.refresh_drives(cx));
     cx.foreground_executor().block_test(task);
@@ -160,6 +169,7 @@ impl Rig {
 }
 
 const PACK: &str = "C:\\x\\pack.zip";
+const BETA: &str = "C:\\x\\beta.md";
 
 fn heading(nodes: &[Node]) -> Option<usize> {
     nodes.iter().position(|node| matches!(node, Node::Heading(h) if h == "Suggested"))
@@ -223,6 +233,68 @@ fn an_archive_that_was_extracted_suggests_its_folder_first_and_says_so_in_its_he
         })
         .collect();
     assert_eq!(&rows[..2], ["Open extracted folder", "Extract here"], "{:?}", labels(&nodes));
+}
+
+#[gpui_kit::test]
+fn a_file_is_said_to_match_or_not_match_the_checksum_copied_and_the_head_follows_the_answer(cx: &mut TestAppContext) {
+    let _guard = english();
+    let mut rig = rig(cx, "C:\\x");
+    rig.ui.visual.update(|window, _| window.activate_window());
+    let sha = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    // The page's checksum is copied; the file the person is on is looked at for it.
+    rig.ui.visual.update(|_, cx| cx.write_to_clipboard(ClipboardItem::new_string(sha.to_string())));
+    *rig.fake.clip.borrow_mut() = Clip::Text;
+    rig.fake.seq.set(1);
+    rig.ui.visual.executor().advance_clock(std::time::Duration::from_millis(800));
+    rig.ui.frame();
+    let entry = file("C:\\x", "alpha.txt", 100, 0);
+    rig.ui.visual.update(|_, cx| {
+        aware::shared(cx).update(cx, |aware, cx| aware.look_ahead(std::slice::from_ref(&entry), cx));
+    });
+    let call = rig.fake.call_of(ALPHA);
+    let made = |sha256: &str| {
+        Part::Sums(glint_model::aware::Sums {
+            sha256: Some(sha256.into()),
+            blake3: Some("0".repeat(64)),
+            ..Default::default()
+        })
+    };
+    rig.fake.send(call, ALPHA, made(sha));
+    rig.ui.frame();
+    rig.opened_on(ALPHA);
+    let labels_of = |rig: &mut Rig| rig.head().badges.iter().map(|b| (b.label.to_string(), b.tone)).collect::<Vec<_>>();
+    assert!(labels_of(&mut rig).contains(&("Matches copied SHA-256".to_string(), Tone::Good)), "{:?}", rig.head());
+    rig.ui.press("escape");
+
+    // Another file, whose checksums are other ones.
+    let other = file("C:\\x", "beta.md", 3000, 0);
+    rig.ui.visual.update(|_, cx| {
+        aware::shared(cx).update(cx, |aware, cx| aware.look_ahead(std::slice::from_ref(&other), cx));
+    });
+    let call = rig.fake.call_of(BETA);
+    rig.fake.send(call, BETA, made(&"1".repeat(64)));
+    rig.ui.frame();
+    rig.opened_on(BETA);
+    assert!(labels_of(&mut rig).contains(&("Checksum mismatch".to_string(), Tone::Warn)), "{:?}", rig.head());
+}
+
+#[gpui_kit::test]
+fn a_checksum_file_suggests_checking_the_files_it_lists_and_choosing_it_asks_for_the_check(cx: &mut TestAppContext) {
+    let _guard = english();
+    let disk = host_disk();
+    disk.folder("C:\\sums", vec![file("C:\\sums", "pack.sha256", 200, 0), file("C:\\sums", "pack.md5", 100, 0)]);
+    disk.set_drives(vec![drive("C:\\")]);
+    let mut rig = rig_on(cx, disk, "C:\\sums");
+    rig.opened_on("C:\\sums\\pack.sha256");
+    let nodes = rig.ui.nodes();
+    let at_top = heading(&nodes).expect("a Suggested section");
+    assert!(matches!(&nodes[at_top + 1], Node::Item(e) if e.label == "Check files in this folder" && e.smart), "{:?}", labels(&nodes));
+    let run = find(&nodes, "Check files in this folder").expect("the row").run.clone();
+    assert_eq!(run, Run::Ask(MenuEvent::CheckSums { path: "C:\\sums\\pack.sha256".into() }));
+    rig.ui.press("escape");
+    // An MD5 file can't be checked here, so nothing is offered for it.
+    rig.opened_on("C:\\sums\\pack.md5");
+    assert!(find(&rig.ui.nodes(), "Check files in this folder").is_none(), "{:?}", labels(&rig.ui.nodes()));
 }
 
 #[gpui_kit::test]

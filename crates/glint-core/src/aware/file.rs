@@ -5,6 +5,7 @@
 //! file that isn't on the disk: the probe doesn't ask them to.
 
 use super::{Media, Origin, Signer, Text};
+use glint_model::aware::{Sums, SumsWant};
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::Path;
@@ -53,6 +54,12 @@ pub fn signer(path: &str) -> Option<Signer> {
         "unsigned" => Some(Signer::Unsigned),
         _ => None,
     }
+}
+
+/// The checksums `want` asks for, made of the file at `path` in one pass; `most` is the biggest file read. None
+/// when it can't be read, is bigger, or `stop` was set while it was read.
+pub fn sums(path: &str, want: SumsWant, most: u64, stop: &AtomicBool) -> Option<Sums> {
+    crate::checksums::digest(Path::new(path), want, Some(most), stop)
 }
 
 /// The folder an archive at `path` was extracted to: the one beside it that has its name (`foo.zip` and `foo`; for

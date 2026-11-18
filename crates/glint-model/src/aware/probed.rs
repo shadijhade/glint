@@ -3,6 +3,8 @@
 //! Every field of [`Probed`] is an `Option`: `None` means "not known yet", and what isn't known is never shown
 //! (docs/gpui/aware/PLAN.md, R1). [`Want`] names the parts to ask for; [`Part`] is one answer.
 
+use super::hash::{Sums, SumsWant};
+
 /// What has been found out about one file or folder so far.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Probed {
@@ -29,6 +31,8 @@ pub struct Probed {
     /// For an archive: the folder beside it that has its name, where it was extracted to; `Some(None)` when
     /// there is none.
     pub extracted: Option<Option<String>>,
+    /// The checksums made of it, to compare with one copied from a download page (only what was asked for).
+    pub sums: Option<Sums>,
 }
 
 /// One answer about a file or folder.
@@ -45,6 +49,7 @@ pub enum Part {
     Target(String),
     OpensWith(String),
     Extracted(Option<String>),
+    Sums(Sums),
 }
 
 /// Where a downloaded file came from (its Mark of the Web).
@@ -112,6 +117,7 @@ pub struct Want {
     pub target: bool,
     pub opens_with: bool,
     pub extracted: bool,
+    pub sums: SumsWant,
 }
 
 impl Probed {
@@ -129,6 +135,7 @@ impl Probed {
             Part::Target(target) => self.target = Some(target),
             Part::OpensWith(app) => self.opens_with = Some(app),
             Part::Extracted(folder) => self.extracted = Some(folder),
+            Part::Sums(made) => self.sums.get_or_insert_with(Sums::default).merge(made),
         }
     }
 }
@@ -148,6 +155,7 @@ impl Want {
             target: self.target && have.target.is_none(),
             opens_with: self.opens_with && have.opens_with.is_none(),
             extracted: self.extracted && have.extracted.is_none(),
+            sums: self.sums.minus(have.sums.as_ref()),
         }
     }
 
@@ -165,6 +173,7 @@ impl Want {
             target: self.target && !asked.target,
             opens_with: self.opens_with && !asked.opens_with,
             extracted: self.extracted && !asked.extracted,
+            sums: self.sums.without(asked.sums),
         }
     }
 
@@ -182,6 +191,7 @@ impl Want {
             target: self.target || other.target,
             opens_with: self.opens_with || other.opens_with,
             extracted: self.extracted || other.extracted,
+            sums: self.sums.and(other.sums),
         }
     }
 
@@ -208,6 +218,7 @@ mod tests {
             target: true,
             opens_with: true,
             extracted: true,
+            sums: SumsWant { sha256: true, sha512: true, blake3: true },
         }
     }
 
