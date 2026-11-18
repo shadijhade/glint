@@ -283,12 +283,9 @@ impl Simulation {
 /// A file's name split into the part the rules work on and its extension (`splitStemExt`): folders have no
 /// extension, and a dot at the very start (".gitignore") starts the name rather than an extension.
 pub fn split_stem_ext(name: &str, dir: bool) -> (&str, &str) {
-    if dir {
-        return (name, "");
-    }
-    match name.rfind('.') {
-        Some(dot) if dot > 0 => (&name[..dot], &name[dot + 1..]),
-        _ => (name, ""),
+    match glint_model::paths::extension_start(name, dir) {
+        Some(dot) => (&name[..dot], &name[dot + 1..]),
+        None => (name, ""),
     }
 }
 
@@ -1777,6 +1774,7 @@ mod tests {
     #[test]
     fn stems_and_extensions_split_as_the_typescript_did() {
         assert_eq!(split_stem_ext("report.final.pdf", false), ("report.final", "pdf"));
+        assert_eq!(split_stem_ext("backup.tar.gz", false), ("backup", "tar.gz"));
         assert_eq!(split_stem_ext("Makefile", false), ("Makefile", ""));
         // A leading dot starts the name; a folder has no extension.
         assert_eq!(split_stem_ext(".gitignore", false), (".gitignore", ""));

@@ -7,6 +7,7 @@ use super::fake::*;
 use super::*;
 use crate::testing;
 use glint_model::columns::ColumnId;
+use glint_model::entries::{Sort, SortKey};
 use gpui_kit::{AppContext as _, Entity, TestAppContext};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -1137,6 +1138,122 @@ fn escape_cancels_renaming_and_f2_on_several_items_opens_the_batch_rename(cx: &m
     h.run(cx, |e, cx| e.begin_rename(Some("C:\\a\\two.txt"), cx));
     assert_eq!(h.renaming(cx).as_deref(), Some("C:\\a\\two.txt"));
     assert_eq!(h.selected(cx), ["two.txt"]);
+}
+
+/// Tab (or Shift+Tab) in the rename box of `renaming` with `typed` in it.
+fn step(h: &Harness, cx: &mut TestAppContext, typed: &str, forward: bool) -> bool {
+    h.task(cx, |e, cx| {
+        let tab = e.active_tab_id();
+        e.step_rename_in(tab, typed, forward, cx)
+    })
+}
+
+#[gpui_kit::test]
+fn tab_renames_and_opens_the_box_on_the_next_item_and_shift_tab_on_the_previous(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let h = harness(cx);
+    assert!(h.go(cx, "C:\\a"));
+    h.run(cx, |e, cx| e.begin_rename(Some("C:\\a\\one.txt"), cx));
+    assert!(step(&h, cx, "uno.txt", true));
+    assert!(h.disk.exists("C:\\a\\uno.txt") && !h.disk.exists("C:\\a\\one.txt"));
+    // The next item is the one that followed it before the rename moved it down the list.
+    assert_eq!(h.renaming(cx).as_deref(), Some("C:\\a\\two.txt"));
+    assert_eq!(h.selected(cx), ["two.txt"]);
+    assert!(!h.read(cx, |e| e.rename_busy(e.active_tab_id())));
+
+    // Shift+Tab with the name as it was: nothing to rename, and the box goes to the item before.
+    let ops = h.disk.ops().len();
+    assert!(step(&h, cx, "two.txt", false));
+    assert_eq!(h.disk.ops().len(), ops);
+    assert_eq!(h.renaming(cx).as_deref(), Some("C:\\a\\sub"));
+    // At the first item Shift+Tab closes the box; at the last, Tab does.
+    assert!(step(&h, cx, "sub", false));
+    assert_eq!(h.renaming(cx), None);
+    h.run(cx, |e, cx| e.begin_rename(Some("C:\\a\\تقرير.pdf"), cx));
+    assert!(step(&h, cx, "تقرير.pdf", true));
+    assert_eq!(h.renaming(cx), None);
+}
+
+#[gpui_kit::test]
+fn tab_goes_by_the_order_the_list_shows_sorted_and_filtered(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let h = harness(cx);
+    assert!(h.go(cx, "C:\\a"));
+    h.run(cx, |e, cx| e.begin_rename(Some("C:\\a\\two.txt"), cx));
+    // Sorted by name the file after two.txt is the Arabic one; sorted the other way it is one.txt.
+    h.run(cx, |e, cx| {
+        e.set_sort(
+            Sort {
+                key: SortKey::Name,
+                desc: true,
+            },
+            cx,
+        )
+    });
+    assert!(step(&h, cx, "two.txt", true));
+    assert_eq!(h.renaming(cx).as_deref(), Some("C:\\a\\one.txt"));
+    h.run(cx, |e, cx| {
+        e.set_sort(
+            Sort {
+                key: SortKey::Name,
+                desc: false,
+            },
+            cx,
+        )
+    });
+    // Filtered to the names with an x, the Arabic one is not shown: two.txt is the last.
+    h.run(cx, |e, cx| e.set_filter("x", None, cx));
+    h.run(cx, |e, cx| e.begin_rename(Some("C:\\a\\one.txt"), cx));
+    assert!(step(&h, cx, "one.txt", true));
+    assert_eq!(h.renaming(cx).as_deref(), Some("C:\\a\\two.txt"));
+    assert!(step(&h, cx, "two.txt", true));
+    assert_eq!(h.renaming(cx), None);
+}
+
+#[gpui_kit::test]
+fn a_tab_rename_that_fails_stays_in_place_and_does_not_move_on(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let h = harness(cx);
+    assert!(h.go(cx, "C:\\a"));
+    h.run(cx, |e, cx| e.begin_rename(Some("C:\\a\\one.txt"), cx));
+    // A name that is taken, and one Windows can't have.
+    assert!(!step(&h, cx, "two.txt", true));
+    assert!(h.said().iter().any(|n| matches!(
+        n,
+        OpNotice::Failed { what: Failing::Rename { name }, .. } if name == "one.txt"
+    )));
+    assert_eq!(h.renaming(cx).as_deref(), Some("C:\\a\\one.txt"));
+    assert!(
+        !h.read(cx, |e| e.rename_busy(e.active_tab_id())),
+        "it can be tried again"
+    );
+    assert!(!step(&h, cx, "a/b", true));
+    assert!(h.said().contains(&OpNotice::InvalidName));
+    assert_eq!(h.renaming(cx).as_deref(), Some("C:\\a\\one.txt"));
+    assert!(h.disk.exists("C:\\a\\one.txt"));
+    // Fixed, it goes through and moves on.
+    assert!(step(&h, cx, "uno.txt", true));
+    assert_eq!(h.renaming(cx).as_deref(), Some("C:\\a\\two.txt"));
+}
+
+#[gpui_kit::test]
+fn escape_while_a_tab_rename_runs_leaves_the_box_closed(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let h = harness(cx);
+    assert!(h.go(cx, "C:\\a"));
+    h.run(cx, |e, cx| e.begin_rename(Some("C:\\a\\one.txt"), cx));
+    let task = h.explorer.update(cx, |e, cx| {
+        let tab = e.active_tab_id();
+        e.step_rename_in(tab, "uno.txt", true, cx)
+    });
+    // Enter or Tab again while it runs does nothing.
+    assert!(h.read(cx, |e| e.rename_busy(e.active_tab_id())));
+    assert!(!h.task(cx, |e, cx| e.commit_rename("other.txt", cx)));
+    h.explorer.update(cx, |e, cx| e.cancel_rename(cx));
+    cx.foreground_executor().block_test(task);
+    cx.run_until_parked();
+    assert!(h.disk.exists("C:\\a\\uno.txt"));
+    assert_eq!(h.renaming(cx), None);
 }
 
 #[gpui_kit::test]

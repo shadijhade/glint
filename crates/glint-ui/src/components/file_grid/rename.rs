@@ -2,7 +2,7 @@
 //! place of the tile's name).
 //!
 //! It holds the name with everything but the extension selected, as File Explorer does. Enter (or leaving the
-//! box: a click elsewhere) renames, Escape cancels, and a character no Windows name can hold is refused with the
+//! box: a click elsewhere) renames, Tab and Shift+Tab rename and go on to the next or previous tile, Escape cancels, and a character no Windows name can hold is refused with the
 //! hint. Committing is the explorer's rename part ([`Explorer::commit_rename_in`]): this only says what was
 //! typed. The box is a small multi-line editor, so a long name wraps over the tile's two lines as its label
 //! does; Enter still commits, and Shift+Enter adds nothing (a name has no line breaks).
@@ -13,7 +13,9 @@
 use super::tile::Handler;
 use super::{keys, FileGrid};
 use crate::actions::{OpenInNewTab, OpenItem, Properties, Rename};
-use crate::components::file_list::selection_end;
+use crate::components::file_list::{
+    ensure_rename_keys_bound, selection_end, RenameNext, RenamePrevious, RENAME_CONTEXT,
+};
 use crate::kit::prelude::*;
 use crate::kit::{Textarea, TextareaState};
 use crate::{t, theme};
@@ -36,11 +38,14 @@ pub(super) struct RenameView {
     pub state: Entity<TextareaState>,
     /// Enter (or a click elsewhere) says `true`, Escape `false`.
     pub on_finish: Handler<bool>,
+    /// Tab says `true` (the next tile), Shift+Tab `false` (the previous).
+    pub on_step: Handler<bool>,
 }
 
 impl FileGrid {
     /// Opens the rename box for `path`, with its name typed in and selected without the extension.
     fn start_rename(&mut self, path: &str, name: &str, dir: bool, window: &mut Window, cx: &mut Context<Self>) {
+        ensure_rename_keys_bound(cx);
         let text = name.to_string();
         // Two lines at most, like the label it replaces: a longer name scrolls inside the box.
         let state = cx.new(|cx| {
@@ -97,20 +102,34 @@ impl FileGrid {
     /// Enter or leaving the box renames to what is typed; Escape cancels. Says it once, to the explorer's
     /// rename part, which closes the box (`Tab::renaming`) whatever comes of it.
     pub(super) fn finish_rename(&mut self, commit: bool, cx: &mut Context<Self>) {
+        let tab = self.explorer.read(cx).pane_tab_id(self.pane);
+        let busy = self.explorer.read(cx).rename_busy(tab);
         let Some(rename) = self.rename.as_mut() else { return };
-        if rename.done {
+        if rename.done || busy {
             return;
         }
         rename.done = true;
         // Pasted text can hold line breaks too.
         let name = without_line_breaks(&rename.state.read(cx).value());
-        let tab = self.explorer.read(cx).pane_tab_id(self.pane);
         self.explorer.update(cx, |explorer, cx| {
             if commit {
                 explorer.commit_rename_in(tab, &name, cx).detach();
             } else {
                 explorer.cancel_rename_in(tab, cx);
             }
+        });
+    }
+
+    /// Tab (`forward`) or Shift+Tab: renames to what is typed and opens the box on the next or previous tile, in
+    /// the order the grid shows. When the rename fails the box stays, with its error (the explorer's rename part).
+    pub(super) fn step_rename(&mut self, forward: bool, cx: &mut Context<Self>) {
+        let Some(rename) = self.rename.as_ref().filter(|rename| !rename.done) else {
+            return;
+        };
+        let name = without_line_breaks(&rename.state.read(cx).value());
+        let tab = self.explorer.read(cx).pane_tab_id(self.pane);
+        self.explorer.update(cx, |explorer, cx| {
+            explorer.step_rename_in(tab, &name, forward, cx).detach()
         });
     }
 
@@ -143,6 +162,7 @@ impl FileGrid {
             path: rename.path.clone(),
             state: rename.state.clone(),
             on_finish: super::handler(cx, |this, commit: &bool, _, cx| this.finish_rename(*commit, cx)),
+            on_step: super::handler(cx, |this, forward: &bool, _, cx| this.step_rename(*forward, cx)),
         })
     }
 
@@ -178,7 +198,9 @@ fn drop_line_breaks(input: &Entity<TextareaState>, window: &mut Window, cx: &mut
 /// characters handled.
 pub(super) fn box_element(view: &RenameView, t: &theme::Tokens) -> AnyElement {
     let (commit, cancel) = (view.on_finish.clone(), view.on_finish.clone());
+    let (next, previous) = (view.on_step.clone(), view.on_step.clone());
     div()
+        .key_context(RENAME_CONTEXT)
         .id("file-grid-rename")
         .test_support()
         .mt(space(1.5))
@@ -204,6 +226,8 @@ pub(super) fn box_element(view: &RenameView, t: &theme::Tokens) -> AnyElement {
         .on_action(|_: &OpenInNewTab, _, _| {})
         .on_action(|_: &Rename, _, _| {})
         .on_action(|_: &Properties, _, _| {})
+        .on_action(move |_: &RenameNext, window, cx| next(&true, window, cx))
+        .on_action(move |_: &RenamePrevious, window, cx| previous(&false, window, cx))
         .capture_key_down(move |event: &KeyDownEvent, window, cx| {
             let keystroke = &event.keystroke;
             if keystroke.key == "escape" {

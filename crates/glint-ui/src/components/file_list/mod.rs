@@ -52,7 +52,10 @@ mod typeahead;
 
 pub use cells::{drop_path, lock_reason, size_of, ROW_HEIGHT};
 pub use layout::relative_to;
-pub use rename::{selection_end, INVALID_NAME_CHARS};
+pub use rename::{
+    ensure_bound as ensure_rename_keys_bound, selection_end, RenameNext, RenamePrevious, BOX_CONTEXT as RENAME_CONTEXT,
+    INVALID_NAME_CHARS,
+};
 
 use crate::actions;
 use crate::components::file_grid::thumbnail::{self, Thumbnails};
