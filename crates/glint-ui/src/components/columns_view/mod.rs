@@ -18,6 +18,12 @@
 //! - **It needs nothing else**: it reads the pane's tab (path, rows, focus) and the show-hidden setting, lists the
 //!   two folders itself through glint-core (a second [`CoreSource`], made from the `Core` global), and opens
 //!   things through the explorer in the pane's tab. It emits no events.
+//! - **Pointer**: a right-click on a row opens the item menu for it (`MenuHost::open_entries_menu`, which takes
+//!   items the tab's rows don't hold), and on the empty part of a column the menu of its folder; a middle-click on
+//!   a folder or an archive opens it in a new tab, as in the list; a press that moves 6 px drags the item out of
+//!   the window, and files dropped on a column go into its folder, or into the folder row under the pointer
+//!   (copied, or moved with Shift), as in the list. Resting the pointer on a row finds out what isn't known
+//!   about its item, so its menu opens knowing it.
 //! - **Keyboard**: each side column is a tab stop. Up, Down, Home, End, PageUp and PageDown move its cursor;
 //!   Enter or Space opens the row under it; Left goes to the folder above (as the TypeScript's global handler);
 //!   Right opens the row under the cursor if it is a folder.
@@ -31,17 +37,30 @@
 //! - The side columns' rows are named with their column ("name, in the folder above") so a name that appears in
 //!   two columns, or in the list, can be told apart; the full path is the description.
 //! - The listing is filtered again when "show hidden" changes rather than listed again.
+//! - The last column, for a file, is its inspector: the thumbnail, the facts the menu's head says (type, size,
+//!   size in pixels, length, lines, pages) as they are found out, and the badges the menu would show.
 
 #[cfg(test)]
 mod tests;
 
+use crate::components::file_grid::thumbnail::{self, Thumbnails};
+use crate::components::file_list::drop_path;
+use crate::components::file_list::pointer::{start_drag, DRAG_AFTER};
+use crate::components::menus::head::{head_of, Extras};
+use crate::components::menus::{self, Tone};
 use crate::explorer::{explorer, CoreSource, Explorer, Fut, ListFailure, Listed, NavOptions, Source, Tab, ViewMode};
 use crate::kit::prelude::*;
-use crate::{i18n, state, t, theme};
-use glint_model::entries::{is_hidden, FileEntry};
-use glint_model::format::{format_count, format_size};
-use glint_model::paths::{base_name, is_folder_path, is_root, parent_path, same_path, THIS_PC};
+use crate::platform::dragdrop::{Answer, DropEffect, Under};
+use crate::{aware, drops, i18n, state, t, theme};
+use glint_model::entries::{is_archive_file, is_archived, is_hidden, is_recycled, FileEntry};
+use glint_model::file_types::kind_of;
+use glint_model::format::format_count;
+use glint_model::paths::{
+    base_name, droppable, in_archive_path, is_folder_path, is_recycle_bin, is_remote_path, is_root, parent_path,
+    same_path, THIS_PC,
+};
 use gpui_kit::{ScrollStrategy, UniformListScrollHandle};
+use std::cell::Cell;
 use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -53,6 +72,28 @@ pub type Lister = Rc<dyn Fn(&str) -> Fut<Result<Listed, ListFailure>>>;
 const PARENT_WIDTH: f32 = 14.;
 const NEXT_WIDTH: f32 = 16.;
 
+/// The inspector's thumbnail square, in CSS pixels.
+const THUMB: f32 = 96.;
+
+/// The row the pointer rests on: the wait before its item is looked at ahead (`aware::rest_on`).
+type Resting = Option<Task<()>>;
+
+/// A press on a row that may turn into dragging the item out of the window.
+struct Press {
+    which: Which,
+    index: usize,
+    at: Point<Pixels>,
+}
+
+/// Where a drop of files would land.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum DropOver {
+    /// The column's own folder (the empty part, or a row that is not a folder).
+    Column(Which),
+    /// A folder row of a column.
+    Row(Which, usize),
+}
+
 /// The folder above a tab's path, or none at This PC and at a root (`ParentColumn`'s `parent`).
 pub fn parent_of(path: &str) -> Option<String> {
     if path == THIS_PC || is_root(path) {
@@ -63,7 +104,7 @@ pub fn parent_of(path: &str) -> Option<String> {
 }
 
 /// Which side column.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Which {
     Parent,
     Next,
@@ -83,6 +124,8 @@ struct Side {
     /// The row the keyboard is on.
     cursor: usize,
     focus: FocusHandle,
+    /// Where the list was when files were last dragged over it: what a drop is placed by.
+    list_at: Bounds<Pixels>,
 }
 
 impl Side {
@@ -95,6 +138,7 @@ impl Side {
             scroll: UniformListScrollHandle::new(),
             cursor: 0,
             focus: cx.focus_handle().tab_stop(true),
+            list_at: Bounds::default(),
         }
     }
 
@@ -126,6 +170,19 @@ pub struct ColumnsView {
     /// The list's focused item: what the last column shows (`NextColumn`'s `entry`).
     focused: Option<FileEntry>,
     show_hidden: bool,
+    /// A press on a row that may become a drag out of the window.
+    press: Option<Press>,
+    /// Whether a press is under way: the window-level listeners painted each frame do nothing otherwise.
+    tracking: Rc<Cell<bool>>,
+    /// Where files dragged over the columns would land (lit while they are over it).
+    drop_over: Option<DropOver>,
+    /// The pointer resting on a row finds out what isn't known about its item.
+    resting: Resting,
+    /// The thumbnail service, and the file whose thumbnail the inspector asked it for.
+    thumbs: Entity<Thumbnails>,
+    thumb_of: Option<(String, i64)>,
+    /// Redraws when a picture or an answer about the inspector's file arrives (kept only while a file shows).
+    _inspector_watch: Vec<Subscription>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -166,6 +223,13 @@ impl ColumnsView {
             tab_path: String::new(),
             focused: None,
             show_hidden: state::settings(cx).show_hidden,
+            press: None,
+            tracking: Rc::new(Cell::new(false)),
+            drop_over: None,
+            resting: None,
+            thumbs: thumbnail::thumbnails(cx),
+            thumb_of: None,
+            _inspector_watch: Vec::new(),
             _subscriptions: subscriptions,
         };
         this.sync(cx);
@@ -215,12 +279,21 @@ impl ColumnsView {
     /// of what the list had read ahead), kept those listings, and freed them on the UI thread when the next
     /// folder opened: 12 ms for a folder of 100,000 items, in each pane.
     fn rest(&mut self, cx: &mut Context<Self>) {
-        if self.tab_path.is_empty() && self.parent.path.is_none() && self.next.path.is_none() && self.focused.is_none()
+        if self.tab_path.is_empty()
+            && self.parent.path.is_none()
+            && self.next.path.is_none()
+            && self.focused.is_none()
+            && self.press.is_none()
         {
             return;
         }
         self.tab_path.clear();
         self.focused = None;
+        self.leave_inspector(cx);
+        self.press = None;
+        self.tracking.set(false);
+        self.drop_over = None;
+        self.resting = None;
         for which in [Which::Parent, Which::Next] {
             let side = self.side_mut(which);
             side.path = None;
@@ -286,11 +359,54 @@ impl ColumnsView {
         };
         if !same {
             self.focused = focused;
+            self.watch_inspector(cx);
             changed = true;
         }
         if changed {
             cx.notify();
         }
+    }
+
+    /// The last column shows a file: what isn't known about it is found out at once (it is on screen), and a
+    /// picture or an answer that arrives redraws it. A folder or nothing there lets all that go.
+    fn watch_inspector(&mut self, cx: &mut Context<Self>) {
+        let Some(entry) = self.focused.clone().filter(|entry| !entry.dir) else {
+            self.leave_inspector(cx);
+            return;
+        };
+        if let Some(aware) = aware::try_shared(cx) {
+            aware.update(cx, |aware, cx| aware.look_now(std::slice::from_ref(&entry), cx));
+            if self._inspector_watch.is_empty() {
+                self._inspector_watch.push(cx.observe(&aware, |_, _, cx| cx.notify()));
+            }
+        }
+        if self._inspector_watch.len() < 2 {
+            self._inspector_watch.push(cx.observe(&self.thumbs, |_, _, cx| cx.notify()));
+        }
+    }
+
+    /// No file in the last column: its thumbnail isn't wanted, and nothing more is heard from the sources.
+    fn leave_inspector(&mut self, cx: &mut Context<Self>) {
+        self._inspector_watch.clear();
+        if self.thumb_of.take().is_some() {
+            let viewer = cx.entity_id();
+            self.thumbs.update(cx, |thumbs, cx| thumbs.release(viewer, cx));
+        }
+    }
+
+    /// Asks for the inspector file's thumbnail, once per version of the file (at the window's scale).
+    fn ask_for_thumbnail(&mut self, window: &Window, cx: &mut Context<Self>) {
+        let Some(entry) = self.focused.clone().filter(|entry| !entry.dir) else {
+            return;
+        };
+        let key = (entry.path.clone(), entry.modified);
+        if self.thumb_of.as_ref() == Some(&key) {
+            return;
+        }
+        let wants: Vec<_> = thumbnail::Want::for_entry(&entry, THUMB, window.scale_factor()).into_iter().collect();
+        let viewer = cx.entity_id();
+        self.thumbs.update(cx, |thumbs, cx| thumbs.show(viewer, "columns-inspector", wants, cx));
+        self.thumb_of = Some(key);
     }
 
     /// Lists `path` into a side column in the background (`useListing`): the column is empty until it arrives, a
@@ -362,6 +478,212 @@ impl ColumnsView {
                 options = options.selecting(select);
             }
             explorer.navigate(target, options, cx);
+        });
+    }
+
+    // ---- The pointer ------------------------------------------------------------------------------------
+
+    /// The pointer came to a row, or left it: resting there finds out what isn't known about its item, so its
+    /// menu opens knowing it (docs/gpui/aware). Leaving before the wait is over asks nothing.
+    fn rest_on_row(&mut self, which: Which, index: usize, hovered: bool, cx: &mut Context<Self>) {
+        self.resting = None;
+        if hovered {
+            if let Some(entry) = self.side(which).entry(index).cloned() {
+                self.resting = aware::rest_on(entry, cx);
+            }
+        }
+    }
+
+    /// The right button on a row: the item's menu, the way the disk usage map asks for the menu of an item the
+    /// tab's rows don't hold.
+    fn row_menu(&mut self, which: Which, index: usize, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        cx.stop_propagation();
+        let side = self.side_mut(which);
+        side.cursor = index;
+        side.focus.focus(window, cx);
+        let Some(entry) = self.side(which).entry(index).cloned() else {
+            return;
+        };
+        let (pane, Some(host)) = (self.pane, menus::host(cx)) else {
+            return;
+        };
+        explorer(cx).update(cx, |explorer, cx| explorer.focus_pane(pane, cx));
+        host.update(cx, |menus, cx| menus.open_entries_menu(pane, vec![entry], at, window, cx));
+    }
+
+    /// The right button on the empty part of a column: the menu of the folder it lists.
+    fn column_menu(&mut self, which: Which, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        cx.stop_propagation();
+        let Some(folder) = self.side(which).path.clone().filter(|path| is_folder_path(path)) else {
+            return;
+        };
+        let Some(host) = menus::host(cx) else {
+            return;
+        };
+        host.update(cx, |menus, cx| menus.open_folder_menu(&folder, at, window, cx));
+    }
+
+    /// The middle button on a row: a folder or an archive opens in a new tab, as in the list.
+    fn row_in_new_tab(&mut self, which: Which, index: usize, cx: &mut Context<Self>) {
+        cx.stop_propagation();
+        let Some(entry) = self.side(which).entry(index) else {
+            return;
+        };
+        if (entry.dir || is_archive_file(entry)) && !is_recycled(entry) {
+            let path = entry.path.clone();
+            explorer(cx).update(cx, |explorer, cx| explorer.open_in_new_tab(&path, cx));
+        }
+    }
+
+    /// The left button went down on a row: it may be the start of a drag out of the window.
+    fn row_pressed(&mut self, which: Which, index: usize, at: Point<Pixels>) {
+        self.press = Some(Press { which, index, at });
+        self.tracking.set(true);
+    }
+
+    /// The pointer moved while a press is tracked: far enough, and the pressed item is dragged out of the window
+    /// (into File Explorer, the desktop, a mail). What is in an archive or in the Recycle Bin isn't: the list
+    /// extracts the first, and Restore is for the second.
+    fn pointer_moved(&mut self, event: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(press) = &self.press else {
+            self.tracking.set(false);
+            return;
+        };
+        if event.pressed_button != Some(MouseButton::Left) {
+            self.pointer_released();
+            return;
+        }
+        let (dx, dy) = (f32::from(event.position.x - press.at.x), f32::from(event.position.y - press.at.y));
+        if dx.hypot(dy) < DRAG_AFTER {
+            return;
+        }
+        let (which, index) = (press.which, press.index);
+        self.pointer_released();
+        let Some(entry) = self.side(which).entry(index) else {
+            return;
+        };
+        if is_archived(entry) || is_recycled(entry) {
+            return;
+        }
+        let ended = start_drag(cx, vec![entry.path.clone()], false);
+        cx.spawn_in(window, async move |this, cx| {
+            let result = ended.await;
+            this.update_in(cx, |this, window, cx| match result {
+                // Moved away: what the columns list is out of date.
+                Ok(effect) if effect == "move" || effect == "none" => {
+                    for which in [Which::Parent, Which::Next] {
+                        let path = this.side(which).path.clone();
+                        this.load(which, path, cx);
+                    }
+                }
+                Ok(_) => {}
+                Err(reason) => {
+                    window.push_notification(Notification::error(reason).title(t!("Couldn't drag these items")), cx)
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// No press is under way any more (the button went up, anywhere).
+    fn pointer_released(&mut self) {
+        self.press = None;
+        self.tracking.set(false);
+    }
+
+    /// Where a drop of `dragged` at `at` would go in the column whose list is at `list` (window pixels): a folder
+    /// row under the pointer takes it, else the folder the column lists. With the folder it goes into. None where
+    /// nothing can be dropped (what the list refuses: a read-only place, where the files already are).
+    fn drop_target(
+        &self,
+        which: Which,
+        at: Point<Pixels>,
+        list: Bounds<Pixels>,
+        dragged: &[String],
+        window: &Window,
+    ) -> Option<(DropOver, String)> {
+        let side = self.side(which);
+        let height = f32::from(space(7.).to_pixels(window.rem_size()));
+        let scrolled = -f32::from(side.scroll.0.borrow().base_handle.offset().y);
+        let line = (f32::from(at.y - list.origin.y) + scrolled) / height;
+        let row = (line >= 0.).then_some(line as usize);
+        let over_folder = row.and_then(|row| side.entry(row).and_then(drop_path).map(|path| (row, path.to_string())));
+        let (place, dest) = match over_folder {
+            Some((row, path)) => (DropOver::Row(which, row), path),
+            None => {
+                let folder = side.path.clone().filter(|path| is_folder_path(path))?;
+                (DropOver::Column(which), folder)
+            }
+        };
+        if is_remote_path(&dest) || in_archive_path(&dest) {
+            return None;
+        }
+        // Where they all are already, or into one of them: nothing to do there.
+        if !is_recycle_bin(&dest) && droppable(dragged, &dest).is_empty() {
+            return None;
+        }
+        Some((place, dest))
+    }
+
+    /// What a folder is called on the dragged picture, with the words for copying and moving into it.
+    fn drop_words(&self, dest: &str, cx: &App) -> Under {
+        let name = explorer(cx).read(cx).tab_name(dest);
+        Under {
+            name: glint_model::i18n::translate(i18n::language(), &name).to_string(),
+            copy: t!("Copy to %1").to_string(),
+            moves: t!("Move to %1").to_string(),
+            always_move: is_recycle_bin(dest),
+        }
+    }
+
+    /// Files are dragged over the window (every listener hears every move): when the pointer is over this column's
+    /// list, says what a drop there would do, and lights the place.
+    fn files_over(&mut self, which: Which, event: &DragMoveEvent<ExternalPaths>, window: &Window, cx: &mut Context<Self>) {
+        self.side_mut(which).list_at = event.bounds;
+        let found = if event.bounds.contains(&event.event.position) {
+            let dragged = drops::paths(event.drag(cx));
+            self.drop_target(which, event.event.position, event.bounds, &dragged, window)
+        } else {
+            None
+        };
+        if let Some((_, dest)) = &found {
+            drops::answer(cx, Answer::Accept(self.drop_words(dest, cx)));
+        }
+        let place = found.map(|(place, _)| place);
+        // Only this column's own light is put out: the other column answers for itself.
+        let mine = matches!(&self.drop_over, Some(DropOver::Column(w) | DropOver::Row(w, _)) if *w == which);
+        if (place.is_some() || mine) && self.drop_over != place {
+            self.drop_over = place;
+            cx.notify();
+        }
+    }
+
+    /// Files were dropped on a column: copied into the folder under the pointer, or moved with Shift (as the drag's
+    /// picture said); on the Recycle Bin, recycled.
+    fn files_dropped(
+        &mut self,
+        which: Which,
+        dropped: &ExternalPaths,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.drop_over = None;
+        cx.notify();
+        let moves = match drops::effect(cx) {
+            DropEffect::None => return,
+            DropEffect::Move => true,
+            DropEffect::Copy | DropEffect::Link => false,
+        };
+        let paths = drops::paths(dropped);
+        let list = self.side(which).list_at;
+        let Some((_, dest)) = self.drop_target(which, window.mouse_position(), list, &paths, window) else {
+            return;
+        };
+        let pane = self.pane;
+        explorer(cx).update(cx, |explorer, cx| {
+            explorer.focus_pane(pane, cx);
+            explorer.drop_files(paths, &dest, moves, cx).detach();
         });
     }
 
@@ -438,6 +760,7 @@ impl ColumnsView {
                 let entry = side.entry(index)?;
                 let current = which == Which::Parent && same_path(&entry.path, &self.tab_path);
                 let under_cursor = has_keyboard && side.cursor == index;
+                let lit = self.drop_over == Some(DropOver::Row(which, index));
                 let name = entry.name.clone();
                 let label = match which {
                     Which::Parent => t!("{name}, in the folder above", name = name),
@@ -477,12 +800,32 @@ impl ColumnsView {
                         .when(current, |row| {
                             row.bg(primary.opacity(0.15)).font_weight(FontWeight::MEDIUM)
                         })
+                        .when(lit, |row| row.bg(primary.opacity(0.3)).border_color(primary))
                         .when(!entry.dir, |row| row.text_color(muted))
                         .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                             let side = this.side_mut(which);
                             side.cursor = index;
                             side.focus.focus(window, cx);
                             this.open_row(which, index, cx);
+                        }))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, event: &MouseDownEvent, _, _| {
+                                this.row_pressed(which, index, event.position)
+                            }),
+                        )
+                        .on_mouse_down(
+                            MouseButton::Right,
+                            cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                                this.row_menu(which, index, event.position, window, cx)
+                            }),
+                        )
+                        .on_mouse_down(
+                            MouseButton::Middle,
+                            cx.listener(move |this, _: &MouseDownEvent, _, cx| this.row_in_new_tab(which, index, cx)),
+                        )
+                        .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                            this.rest_on_row(which, index, *hovered, cx)
                         }))
                         .child(glyph)
                         .child(div().min_w_0().flex_1().truncate().child(isolate(name)))
@@ -521,6 +864,23 @@ impl ColumnsView {
         .track_scroll(&scroll)
         .size_full();
         let focus = side.focus.clone();
+        let (ring, lit) = (theme::tokens(cx).ring, self.drop_over == Some(DropOver::Column(which)));
+        // Files dragged over the list, and dropped on it: the folder under the pointer takes them, else the column's.
+        let drop_id = match which {
+            Which::Parent => "columns-parent-drop",
+            Which::Next => "columns-next-drop",
+        };
+        let list = div()
+            .id(drop_id)
+            .test_support()
+            .size_full()
+            .on_drag_move::<ExternalPaths>(cx.listener(move |this, event: &DragMoveEvent<ExternalPaths>, window, cx| {
+                this.files_over(which, event, window, cx)
+            }))
+            .on_drop::<ExternalPaths>(cx.listener(move |this, dropped: &ExternalPaths, window, cx| {
+                this.files_dropped(which, dropped, window, cx)
+            }))
+            .child(list);
         div()
             .id(id)
             .role(Role::ListBox)
@@ -531,6 +891,14 @@ impl ColumnsView {
             .on_key_down(
                 cx.listener(move |this, event: &KeyDownEvent, window, cx| this.on_key(which, event, window, cx)),
             )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                    this.column_menu(which, event.position, window, cx)
+                }),
+            )
+            .border_1()
+            .border_color(if lit { ring } else { gpui_kit::transparent_black() })
             .relative()
             .min_h_0()
             .flex_1()
@@ -607,7 +975,7 @@ impl ColumnsView {
         )
     }
 
-    fn next_column(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    fn next_column(&mut self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let t = theme::tokens(cx).clone();
         let label = t!("What's in the focused folder");
         let body: AnyElement = match self.focused.clone() {
@@ -642,26 +1010,7 @@ impl ColumnsView {
                     .when(!empty, |column| column.child(list))
                     .into_any_element()
             }
-            Some(entry) => col()
-                .id("columns-file")
-                .role(Role::Group)
-                .aria_label(t!("{name}, details", name = entry.name.clone()))
-                .test_support()
-                .gap(space(1.))
-                .p(space(3.))
-                .text_size(theme::size::XS)
-                .text_color(t.muted_foreground)
-                .child(
-                    div()
-                        .truncate()
-                        .text_size(theme::size::SM)
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(t.foreground)
-                        .child(isolate(entry.name)),
-                )
-                .child(div().child(format_size(entry.size)))
-                .child(div().child(t!("Space shows it full size; Alt+P the preview pane.")))
-                .into_any_element(),
+            Some(entry) => self.inspector(entry, window, cx),
             None => div()
                 .id("columns-hint")
                 .role(Role::Status)
@@ -680,17 +1029,133 @@ impl ColumnsView {
     }
 }
 
+impl ColumnsView {
+    /// The last column for a file: its thumbnail, what is known about it (the menu's head says it: type, size, size
+    /// in pixels, length, lines, pages, each once it is found out), the badges the menu would show, and the keys.
+    fn inspector(&mut self, entry: FileEntry, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let t = theme::tokens(cx).clone();
+        let look = self.thumbs.read(cx).look(&entry, THUMB, window.scale_factor());
+        let probed = aware::try_shared(cx).and_then(|aware| aware.read(cx).probed(&entry).cloned());
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| i64::try_from(since.as_millis()).unwrap_or(i64::MAX));
+        // No checksum verdict: a mismatch is said only in the right-click menu's head, never in passing.
+        let head = head_of(std::slice::from_ref(&entry), probed.as_ref(), &Extras { now, git: None, checksum: None });
+        let badges = head.badges.iter().take(3).enumerate().map(|(ix, badge)| {
+            let (fg, bg) = match badge.tone {
+                Tone::Plain => (t.foreground, t.accent),
+                Tone::Warn => (t.warning, t.warning.opacity(0.13)),
+                Tone::Good => (t.success, t.success.opacity(0.13)),
+            };
+            let pill = row_start()
+                .id(("columns-file-badge", ix))
+                .role(Role::Label)
+                .aria_label(badge.label.clone())
+                .test_support()
+                .flex_none()
+                .h(px(20.))
+                .px(space(2.))
+                .gap(space(1.))
+                .rounded_full()
+                .bg(bg)
+                .text_color(fg)
+                .text_size(theme::size::XXS)
+                .font_weight(FontWeight::MEDIUM)
+                .child(icon(badge.icon).size(px(11.)).flex_none())
+                .child(div().whitespace_nowrap().child(isolate(badge.label.clone())));
+            match badge.tip.clone() {
+                Some(tip) => pill.tooltip(move |window, cx| crate::kit::tooltip_under(tip.clone(), window, cx)),
+                None => pill,
+            }
+        });
+        let picture = thumbnail::thumbnail_square(&look, kind_of(&entry), THUMB, 56., false, cx);
+        col()
+            .id("columns-file")
+            .role(Role::Group)
+            .aria_label(t!("{name}, details", name = entry.name.clone()))
+            .test_support()
+            .gap(space(1.))
+            .p(space(3.))
+            .text_size(theme::size::XS)
+            .text_color(t.muted_foreground)
+            .child(
+                div()
+                    .id("columns-file-picture")
+                    .role(Role::Image)
+                    .aria_label(entry.name.clone())
+                    .test_support()
+                    .flex()
+                    .justify_center()
+                    .pb(space(2.))
+                    .child(picture),
+            )
+            .child(
+                div()
+                    .truncate()
+                    .text_size(theme::size::SM)
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(t.foreground)
+                    .child(isolate(entry.name.clone())),
+            )
+            .child(
+                div()
+                    .id("columns-file-facts")
+                    .role(Role::Label)
+                    .aria_label(head.line.clone())
+                    .test_support()
+                    .child(isolate(head.line.clone())),
+            )
+            .child(
+                row_start()
+                    .flex_wrap()
+                    .gap(space(1.))
+                    .py(space(1.))
+                    .children(badges)
+                    .children(head.changed.clone().map(|changed| div().child(isolate(changed)))),
+            )
+            .child(div().child(t!("Space shows it full size; Alt+P the preview pane.")))
+            .into_any_element()
+    }
+}
+
 impl Render for ColumnsView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        for image in self.thumbs.update(cx, |thumbs, _| thumbs.take_evicted()) {
+            window.drop_image(image).ok();
+        }
+        self.ask_for_thumbnail(window, cx);
         let parent = self.parent_column(cx);
-        let next = self.next_column(cx);
+        let next = self.next_column(window, cx);
         let center = div().h_full().min_w_0().flex_1().children(self.center.clone());
+        // Window-level listeners for a press that may become a drag out; they do nothing unless one is under way.
+        let (view, tracking) = (cx.entity().downgrade(), self.tracking.clone());
+        let taps = gpui_kit::canvas(
+            |bounds, _, _| bounds,
+            move |_, _, window, _| {
+                let (moved, moving) = (view.clone(), tracking.clone());
+                window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                    if phase == DispatchPhase::Bubble && moving.get() {
+                        moved.update(cx, |this, cx| this.pointer_moved(event, window, cx)).ok();
+                    }
+                });
+                let (released, pressing) = (view.clone(), tracking.clone());
+                window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
+                    if phase == DispatchPhase::Capture && pressing.get() && event.button == MouseButton::Left {
+                        released.update(cx, |this, _| this.pointer_released()).ok();
+                    }
+                });
+            },
+        )
+        .absolute()
+        .inset_0();
         row_start()
             .id("columns-view")
+            .relative()
             .size_full()
             .min_w_0()
             .items_stretch()
             .text_start()
+            .child(taps)
             .children(parent)
             .child(center)
             .child(next)

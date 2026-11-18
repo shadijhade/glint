@@ -22,7 +22,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// A press that moves this far (pixels) with the button down is a drag (`Math.hypot(…) >= 6`).
-const DRAG_AFTER: f32 = 6.;
+pub(crate) const DRAG_AFTER: f32 = 6.;
 /// A marquee shows only once the pointer has moved this far on either axis (`< 4` on both: nothing yet).
 const MARQUEE_AFTER: f32 = 4.;
 /// How often the list scrolls while the pointer is held at its edge (`setInterval(…, 30)`).
@@ -97,12 +97,12 @@ impl Tracker {
 }
 
 /// The future of a drag that ends when the shell's drag loop does.
-type Dragging = Pin<Box<dyn Future<Output = Result<String, String>>>>;
+pub(crate) type Dragging = Pin<Box<dyn Future<Output = Result<String, String>>>>;
 
 /// Starts dragging `paths` out of the window (`startDrag`). `platform::dragdrop` posts the modal loop to the
 /// window's message pump itself.
 #[cfg(not(test))]
-fn start_drag(cx: &App, paths: Vec<String>, copy_only: bool) -> Dragging {
+pub(crate) fn start_drag(cx: &App, paths: Vec<String>, copy_only: bool) -> Dragging {
     Box::pin(crate::platform::dragdrop::drag_out(
         cx,
         crate::workspace::MAIN,
@@ -114,11 +114,11 @@ fn start_drag(cx: &App, paths: Vec<String>, copy_only: bool) -> Dragging {
 thread_local! {
     /// Tests only: the drags that were started, in place of the shell's drag loop.
     #[cfg(test)]
-    pub(super) static STARTED: std::cell::RefCell<Vec<(Vec<String>, bool)>> = const { std::cell::RefCell::new(Vec::new()) };
+    pub(crate) static STARTED: std::cell::RefCell<Vec<(Vec<String>, bool)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 #[cfg(test)]
-fn start_drag(_: &App, paths: Vec<String>, copy_only: bool) -> Dragging {
+pub(crate) fn start_drag(_: &App, paths: Vec<String>, copy_only: bool) -> Dragging {
     STARTED.with(|started| started.borrow_mut().push((paths, copy_only)));
     Box::pin(async { Ok("copy".to_string()) })
 }
