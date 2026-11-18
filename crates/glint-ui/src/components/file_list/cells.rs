@@ -14,8 +14,8 @@ use glint_model::columns::ColumnId;
 use glint_model::entries::{
     attr, cloud_state, is_archived, is_closed, is_hidden, is_locked, is_recycled, CloudState, FileEntry,
 };
-use glint_model::file_types::{kind_of, type_label};
-use glint_model::format::{format_count, format_date, format_full_date, format_size};
+use glint_model::file_types::{kind_of, push_type_label, type_label};
+use glint_model::format::{format_count, format_date_shared, format_full_date, format_size};
 use glint_model::groups::GroupHeader;
 use glint_model::paths::parent_path;
 use gpui_kit::{HighlightStyle, StyledText};
@@ -371,26 +371,22 @@ impl FileList {
         let dragged = frame.dragging.contains(&entry.path);
         let dropping = frame.drop_row.as_deref() == Some(entry.path.as_str());
         let kind = kind_of(entry);
-        let type_text = type_label(entry);
-        let date_text = format_date(entry.modified, None, i18n::language());
-        // The date's title: the full date and time ("Deleted …" in the Recycle Bin).
-        let full_date: SharedString = if frame.recycled {
-            t!("Deleted {date}", date = format_full_date(entry.modified))
-        } else {
-            format_full_date(entry.modified).into()
-        };
+        // The date is the cache's own text, shared (the frame read the clock once); its full form, a tooltip's,
+        // is made when the tooltip is shown.
+        let date_text: SharedString = format_date_shared(entry.modified, frame.now, i18n::language()).into();
         let size_text = size_words(entry, size, frame.measuring);
-        // What was read of the item: its tags (the dots), and what it says of itself while a column of that is
-        // shown. Both are empty until read, as the web's were.
-        let (tags, media) = {
+        // What was read of the item: its tags (the dots, borrowed from what was read), and what it says of itself
+        // while a column of that is shown. Both are empty until read, as the web's were.
+        let (tag_dots, media) = {
             let facts = self.facts.read(cx);
-            let tags = facts.tags_of(&frame.facts_key, &entry.path).unwrap_or(&[]).to_vec();
+            let tags = facts.tags_of(&frame.facts_key, &entry.path).unwrap_or(&[]);
+            let dots = tag_dots(("file-list-tags", i), tags, cx).map(IntoElement::into_any_element);
             let media = if frame.media == Media::None {
                 MediaCells::default()
             } else {
                 media_cells(entry, facts.media_of(&frame.facts_key, entry))
             };
-            (tags, media)
+            (dots, media)
         };
 
         // The name: its icon (a picture's or a video's own small image once it is in), then the name, or the box
@@ -416,21 +412,27 @@ impl FileList {
             Some((from, along)) => crate::stage::flown(mark, from, None, along).into_any_element(),
             None => mark,
         };
-        let name_tip: SharedString = if tracked.ignored {
-            git::name_tooltip(&entry.name, true)
-        } else {
-            isolate(entry.name.clone())
-        };
+        // The name as drawn, which is also its tooltip's text (so one string serves both); the two lines of an
+        // ignored item's tooltip are made when it is shown.
+        let name_text = isolate(entry.name.clone());
+        let ignored_name = tracked.ignored.then(|| entry.name.clone());
+        let name_tip = name_text.clone();
         let mut name_cell = row_start()
             .id(("file-list-name", i))
             .gap(space(2.))
             .flex_1()
             .min_w_0()
             .child(mark)
-            .tooltip(move |window, cx| tooltip_under(name_tip.clone(), window, cx));
+            .tooltip(move |window, cx| {
+                let tip = match &ignored_name {
+                    Some(name) => git::name_tooltip(name, true),
+                    None => name_tip.clone(),
+                };
+                tooltip_under(tip, window, cx)
+            });
         name_cell = match self.rename.as_ref().filter(|_| renaming) {
             Some(rename) => name_cell.child(self.rename_input(rename, cx)),
-            None => name_cell.child(div().min_w_0().truncate().child(isolate(entry.name.clone()))),
+            None => name_cell.child(div().min_w_0().truncate().child(name_text)),
         };
         // How the item differs from its namesake in the other pane (compare panes), then Git's pill.
         let diff = frame.diffs.as_ref().and_then(|diffs| diffs.status(entry));
@@ -445,7 +447,7 @@ impl FileList {
         if let Some(badge) = &tracked.badge {
             name_cell = name_cell.child(git::row::badge_element(("file-list-git", i), &entry.name, badge, cx));
         }
-        if let Some(dots) = tag_dots(("file-list-tags", i), &tags, cx) {
+        if let Some(dots) = tag_dots {
             name_cell = name_cell.child(dots);
         }
         if let Some(state) = cloud_state(entry) {
@@ -535,8 +537,10 @@ impl FileList {
                     )
                 }
                 Track::Column { id, width } => fill.child(match id {
-                    ColumnId::Modified => date_cell(i, width, date_text.clone(), full_date.clone(), hot, t),
-                    ColumnId::Type => text_cell(width, type_text.clone(), false, t),
+                    ColumnId::Modified => {
+                        date_cell(i, width, date_text.clone(), (entry.modified, frame.recycled), hot, t)
+                    }
+                    ColumnId::Type => text_cell(width, type_label(entry), false, t),
                     // What photos, videos and songs say about themselves (media.ts's facts), empty until read.
                     ColumnId::Taken => taken_cell(i, width, &media, t),
                     ColumnId::Dimensions => text_cell(width, media.dimensions.clone(), false, t),
@@ -608,7 +612,7 @@ impl FileList {
             .id(("file-row", i))
             .role(Role::ListBoxOption)
             .aria_label(entry.name.clone())
-            .aria_description(with_media(describe(&type_text, &size_text, &date_text), &media))
+            .aria_description(describe_row(entry, &size_text, &date_text, &media))
             .aria_selected(selected)
             .aria_position_in_set(i + 1)
             .aria_size_of_set(frame.rows.len())
@@ -745,30 +749,39 @@ pub(super) fn where_track<E: Styled>(cell: E) -> E {
     cell
 }
 
-/// "Document, 12 KB, Today 9:31 PM": what a row says besides its name, for a screen reader.
-fn describe(kind: &str, size: &str, date: &str) -> String {
-    [kind, size, date]
-        .into_iter()
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-/// What the row's description says besides its kind, size and date: what its file says of itself, in the columns
-/// of that (a screen reader hears them as the cells are drawn: the web read them out of the cells).
-fn with_media(described: String, media: &MediaCells) -> String {
-    [
-        described.as_str(),
+/// "Document, 12 KB, Today 9:31 PM": what a row says besides its name, for a screen reader: its kind, size and
+/// date, then what its file says of itself, in the columns of that (a screen reader hears them as the cells are
+/// drawn: the web read them out of the cells). Written into one string, as it is made for every visible row on
+/// every frame.
+fn describe_row(entry: &FileEntry, size: &str, date: &str, media: &MediaCells) -> SharedString {
+    let mut out = String::with_capacity(64);
+    push_type_label(entry, &mut out);
+    for part in [
+        size,
+        date,
         media.taken.as_str(),
         media.dimensions.as_str(),
         media.duration.as_str(),
         media.artist.as_str(),
         media.album.as_str(),
-    ]
-    .into_iter()
-    .filter(|part| !part.is_empty())
-    .collect::<Vec<_>>()
-    .join(", ")
+    ] {
+        if !part.is_empty() {
+            if !out.is_empty() {
+                out.push_str(", ");
+            }
+            out.push_str(part);
+        }
+    }
+    out.into()
+}
+
+/// The date's title: the full date and time ("Deleted …" in the Recycle Bin).
+fn full_date_title(modified: i64, recycled: bool) -> SharedString {
+    if recycled {
+        t!("Deleted {date}", date = format_full_date(modified))
+    } else {
+        format_full_date(modified).into()
+    }
 }
 
 /// A line that matched a search, with the matches marked. The matches' places are byte offsets into the text
@@ -905,7 +918,8 @@ fn said_cell(id: (&'static str, usize), width: Pixels, text: String, t: &Tokens)
 }
 
 /// The date: small and muted, with a green dot when it changed in the last hour. Its tooltip is the full date.
-fn date_cell(i: usize, width: Pixels, text: String, full: SharedString, hot: bool, t: &Tokens) -> AnyElement {
+/// The tooltip is made when it is shown, from `title` (modified, recycled).
+fn date_cell(i: usize, width: Pixels, text: SharedString, title: (i64, bool), hot: bool, t: &Tokens) -> AnyElement {
     row_start()
         .id(("file-list-date", i))
         .w(width)
@@ -927,7 +941,7 @@ fn date_cell(i: usize, width: Pixels, text: String, full: SharedString, hot: boo
             )
         })
         .child(div().min_w_0().truncate().child(text))
-        .tooltip(move |window, cx| tooltip_under(full.clone(), window, cx))
+        .tooltip(move |window, cx| tooltip_under(full_date_title(title.0, title.1), window, cx))
         .into_any_element()
 }
 
@@ -1055,7 +1069,8 @@ mod tests {
     #[test]
     fn what_a_file_says_of_itself_is_added_to_its_rows_description() {
         let plain = MediaCells::default();
-        assert_eq!(with_media("TXT file, 1 B".to_string(), &plain), "TXT file, 1 B");
+        let txt = file("C:\\x", "a.txt", 1, 0);
+        assert_eq!(describe_row(&txt, "1 B", "", &plain), "TXT file, 1 B");
         let said = MediaCells {
             taken: "Mar 3".into(),
             dimensions: "10 × 20".into(),
@@ -1063,9 +1078,10 @@ mod tests {
             artist: "Nour".into(),
             ..MediaCells::default()
         };
+        let mp3 = file("C:\\x", "a.mp3", 3_000_000, 0);
         assert_eq!(
-            with_media("MP3 file, 3 MB".to_string(), &said),
-            "MP3 file, 3 MB, Mar 3, 10 × 20, 3:05, Nour"
+            describe_row(&mp3, "3 MB", "", &said),
+            "MP3 audio, 3 MB, Mar 3, 10 × 20, 3:05, Nour"
         );
     }
 
@@ -1082,14 +1098,26 @@ mod tests {
 
     #[test]
     fn a_row_is_described_by_what_it_has() {
+        let none = MediaCells::default();
         assert_eq!(
-            describe("PDF file", "12 KB", "Today 9:31 PM"),
-            "PDF file, 12 KB, Today 9:31 PM"
+            describe_row(&file("C:\\x", "a.pdf", 12_000, 0), "12 KB", "Today 9:31 PM", &none),
+            "PDF document, 12 KB, Today 9:31 PM"
         );
         assert_eq!(
-            describe("File folder", "", "Today 9:31 PM"),
+            describe_row(&folder("C:\\x", "docs"), "", "Today 9:31 PM", &none),
             "File folder, Today 9:31 PM"
         );
-        assert_eq!(describe("", "", ""), "");
+        assert_eq!(describe_row(&folder("C:\\x", "docs"), "", "", &none), "File folder");
+    }
+
+    #[test]
+    fn the_date_titles_are_made_for_the_tooltip_only() {
+        assert_eq!(full_date_title(0, false), "");
+        let ms = 1_700_000_000_000;
+        assert_eq!(full_date_title(ms, false).as_ref(), format_full_date(ms));
+        assert!(
+            full_date_title(ms, true).starts_with("Deleted "),
+            "the Recycle Bin's title says so"
+        );
     }
 }
