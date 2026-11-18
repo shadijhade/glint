@@ -11,7 +11,6 @@
 //! | `LANGUAGE_BY_EXT`, `languageFor`             | [`language_for`], [`LANGUAGE_NAMES`]                           |
 //! | the wrap, encoding and copy buttons          | the toolbar at the top corner                                  |
 //! | `ENCODINGS`, `encodingName`, `encodingMenu`  | [`ENCODINGS`], [`encoding_name`], the encoding menu            |
-//! | `NCDU_EXPORT` and its banner                 | [`is_ncdu_export`], the banner above the text                  |
 //! | a binary file                                | a [`HexPreview`] in its place (Windows' own previewer is the frame's) |
 //! | `Waiting`, `Centered`, `BigIcon`             | [`waiting`], [`note_centered`], [`big_icon`] (the other previewers use them) |
 //!
@@ -168,29 +167,6 @@ pub fn encoding_name(label: &str) -> String {
         .find(|(l, _)| l.eq_ignore_ascii_case(label))
         .map(|(_, name)| (*name).to_string())
         .unwrap_or_else(|| label.to_string())
-}
-
-// ---- ncdu exports -----------------------------------------------------------------------------------------
-
-/// The start of an ncdu export (`ncdu -o`): `[1,` its minor version, then its metadata naming the program
-/// (`NCDU_EXPORT`, `/^\uFEFF?\s*\[\s*1\s*,\s*\d+\s*,\s*\{\s*"progname"/`, written out).
-pub fn is_ncdu_export(text: &str) -> bool {
-    fn after<'a>(text: &'a str, literal: &str) -> Option<&'a str> {
-        text.trim_start_matches(char::is_whitespace).strip_prefix(literal)
-    }
-    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
-    let Some(rest) = after(text, "[") else { return false };
-    let Some(rest) = after(rest, "1") else { return false };
-    let Some(rest) = after(rest, ",") else { return false };
-    let rest = rest.trim_start_matches(char::is_whitespace);
-    let digits = rest.chars().take_while(char::is_ascii_digit).count();
-    if digits == 0 {
-        return false;
-    }
-    let Some(rest) = rest.get(digits..) else { return false };
-    let Some(rest) = after(rest, ",") else { return false };
-    let Some(rest) = after(rest, "{") else { return false };
-    after(rest, "\"progname\"").is_some()
 }
 
 // ---- What the previewers share ----------------------------------------------------------------------------
@@ -477,8 +453,6 @@ struct Shown {
     encoding: Option<String>,
     /// Whether that was a guess.
     guessed: bool,
-    /// An ncdu export: its folders can be browsed.
-    ncdu: bool,
 }
 
 /// The encoding menu while it is open.
@@ -717,7 +691,6 @@ impl TextPreview {
         editor.update(cx, |editor, cx| editor.set_readonly(true, cx));
         Shown {
             editor,
-            ncdu: !is_archived_path(&self.path) && is_ncdu_export(&read.text),
             full_text: read.text.into(),
             truncated: read.truncated,
             cut,
@@ -877,44 +850,6 @@ impl TextPreview {
             .child(copy_button)
     }
 
-    /// The banner over an ncdu export: its folders can be browsed (`NCDU_EXPORT`).
-    fn ncdu_banner(&self, t: &theme::Tokens, cx: &mut Context<Self>) -> impl IntoElement {
-        row_start()
-            .id("text-ncdu")
-            .role(Role::Group)
-            .aria_label(t!("An ncdu export: its folders and their sizes can be browsed."))
-            .test_support()
-            .items_center()
-            .gap(space(3.))
-            .px(space(4.))
-            .py(space(2.))
-            .border_b_1()
-            .border_color(t.border)
-            .text_size(theme::size::XS)
-            .text_color(t.muted_foreground)
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .child(t!("An ncdu export: its folders and their sizes can be browsed.")),
-            )
-            .child(
-                Button::new("text-ncdu-open")
-                    .outline()
-                    .small()
-                    .icon(IconName::FolderOpen)
-                    .label(t!("Open like a folder"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        let path = this.path.clone();
-                        if let Some(handle) = cx.try_global::<crate::explorer::ExplorerHandle>() {
-                            handle
-                                .0
-                                .clone()
-                                .update(cx, |explorer, cx| explorer.go_to(&path, cx).detach());
-                        }
-                    })),
-            )
-    }
 }
 
 impl Render for TextPreview {
@@ -948,7 +883,6 @@ impl Render for TextPreview {
                 col()
                     .size_full()
                     .min_h_0()
-                    .children(shown.ncdu.then(|| self.ncdu_banner(&t, cx)))
                     .child(
                         div()
                             .relative()
@@ -1109,19 +1043,6 @@ mod tests {
         assert_eq!(encoding_name("UTF-16LE"), "Unicode (UTF-16)");
         assert_eq!(encoding_name("x-unknown"), "x-unknown");
         assert_eq!(ENCODINGS.len(), 22);
-    }
-
-    #[test]
-    fn an_ncdu_export_is_told_by_its_first_bytes() {
-        assert!(is_ncdu_export(
-            r#"[1,2,{"progname":"ncdu","progver":"2.3"},[{"name":"/"}]]"#
-        ));
-        assert!(is_ncdu_export("\u{feff}  [ 1 , 0 , { \"progname\" : \"ncdu\" }"));
-        assert!(!is_ncdu_export(r#"[2,0,{"progname":"ncdu"}]"#));
-        assert!(!is_ncdu_export(r#"[1,{"progname":"ncdu"}]"#));
-        assert!(!is_ncdu_export(r#"[1,2,{"name":"x"}]"#));
-        assert!(!is_ncdu_export(r#"{"a":1}"#));
-        assert!(!is_ncdu_export(""));
     }
 
     #[test]

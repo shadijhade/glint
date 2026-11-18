@@ -2,15 +2,15 @@
 //! [`OpNotice`]s as notifications (with an Undo button where one is offered), the slow-work notice and the
 //! taskbar button while an operation runs ([`BusyEvent`]), the questions asked before acting ([`Ask`]), and
 //! what archive work says ([`ArchiveNotice`]): its progress with a Stop button, what it skipped, what it made;
-//! what the menus' other actions say ([`ActionNotice`]) and an export's progress ([`ExportNotice`]).
+//! what the menus' other actions say ([`ActionNotice`]).
 //!
 //! The workspace calls these from its subscription to the explorer, with the main window at hand. The one
 //! exception is [`service_update`]: start-up calls it once, after the first folders are open.
 
 use crate::components::settings::{Backend as _, CoreBackend, Fut as SettingsFut, IndexInfo};
 use crate::explorer::{
-    self, ActionFailure, ActionNotice, ArchiveFailure, ArchiveNotice, Ask, BusyEvent, Doing, ExportNotice,
-    ExportProgress, Failing, FindNotice, OpNotice, OtherPane, PinState, QueueKind, SkippedVerb, Subject, UndoId,
+    self, ActionFailure, ActionNotice, ArchiveFailure, ArchiveNotice, Ask, BusyEvent, Doing, Failing,
+    FindNotice, OpNotice, OtherPane, PinState, QueueKind, SkippedVerb, Subject, UndoId,
     Working,
 };
 use crate::kit::prelude::*;
@@ -705,8 +705,6 @@ fn remove_after<T: 'static>(after: Duration, window: &mut Window, cx: &mut App) 
 struct SandboxToast;
 /// "Took … out of Recent" (2.5 s).
 struct RecentToast;
-/// An export's progress, keyed by its job.
-struct ExportToast;
 
 /// What the menus' other actions say: opening, Windows Sandbox, the desktop background, Recent, what's kept
 /// on this device, File Explorer's on-demand folders, scripts.
@@ -806,92 +804,6 @@ pub fn action(notice: &ActionNotice, window: &mut Window, cx: &mut App) {
             .title(t!("Couldn't find the script “{name}”", name = name_of(path))),
     };
     window.push_notification(note, cx);
-}
-
-/// The export notice: "Exporting “Data”… 40%" or "… 1,200 items", with Stop.
-fn exporting(id: u64, name: &str, done: u64, total: u64) -> Notification {
-    let message = match ExportNotice::progress(done, total) {
-        ExportProgress::Percent(percent) => {
-            t!(
-                "Exporting “{name}”… {percent}%",
-                name = name.to_string(),
-                percent = percent
-            )
-        }
-        ExportProgress::Items(done) => t!(
-            "Exporting “{name}”… {count} items",
-            name = name.to_string(),
-            count = format_count(usize::try_from(done).unwrap_or(usize::MAX))
-        ),
-        ExportProgress::Starting => t!("Exporting “{name}”…", name = name.to_string()),
-    };
-    Notification::info(message)
-        .id1::<ExportToast>(id as usize)
-        .autohide(false)
-        .action(move |_, _, _| {
-            Button::new(("stop-export", id as usize))
-                .label(t!("Stop"))
-                .on_click(move |_, _, cx| {
-                    explorer::explorer(cx).update(cx, |e, _| e.stop_archive_work(id));
-                })
-        })
-}
-
-/// An export's progress (with the taskbar button), its failure, and where it went.
-pub fn export(notice: &ExportNotice, window: &mut Window, cx: &mut App) {
-    let taskbar = |window: &Window, done: u64, total: u64| {
-        if total > 0 {
-            window_state::taskbar_progress(window, ProgressState::Normal, Some(done), Some(total));
-        } else {
-            window_state::taskbar_progress(window, ProgressState::Indeterminate, None, None);
-        }
-    };
-    match notice {
-        ExportNotice::Shown { id, name, done, total } => {
-            window.push_notification(exporting(*id, name, *done, *total), cx);
-            taskbar(window, *done, *total);
-        }
-        ExportNotice::Progress {
-            id,
-            name,
-            done,
-            total,
-            shown,
-        } => {
-            taskbar(window, *done, *total);
-            if *shown {
-                window.push_notification(exporting(*id, name, *done, *total), cx);
-            }
-        }
-        ExportNotice::Ended { id, was_shown, idle } => {
-            if *was_shown {
-                window.remove_notification1::<ExportToast>(*id as usize, cx);
-            }
-            if *idle {
-                window_state::taskbar_progress(window, ProgressState::None, None, None);
-            }
-        }
-        ExportNotice::Failed { name, message } => window.push_notification(
-            Notification::error(message.clone()).title(t!("Couldn't export “{name}”", name = name.clone())),
-            cx,
-        ),
-        ExportNotice::Done { name, dest } => {
-            let dest = dest.clone();
-            let note = Notification::success(t!(
-                "Exported “{name}” as “{file}”",
-                name = name.clone(),
-                file = name_of(&dest)
-            ))
-            .action(move |_, _, _| {
-                let dest = dest.clone();
-                Button::new("show-export").label(t!("Show")).on_click(move |_, _, cx| {
-                    let dest = dest.clone();
-                    explorer::explorer(cx).update(cx, |e, cx| e.reveal_in_app(&dest, cx).detach());
-                })
-            });
-            window.push_notification(note, cx);
-        }
-    }
 }
 
 /// The service's update after the app's: when it is tried, what it says, and the offer when it can't go quietly.

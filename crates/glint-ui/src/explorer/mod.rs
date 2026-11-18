@@ -85,8 +85,8 @@
 //! | `find_types.rs` | searching's types: [`FindOptions`], [`Found`], [`Wider`], [`SearchIndex`], [`FindNotice`] |
 //! | `find.rs` | searching by name: run, as typed, stop, leave, clear, saved searches (`runFind`…) |
 //! | `inside.rs` | searching inside files as part of the same search: the engines, core's events, the files and their matching lines |
-//! | `actions_types.rs` | the menu actions' types: [`SizeRun`], [`ActionNotice`], [`ExportNotice`], [`Request`]… |
-//! | `actions.rs` | open with an app, Sandbox, new window, reveal, Recent, wallpaper, rotate, cloud pins, ncdu export, scripts, on demand |
+//! | `actions_types.rs` | the menu actions' types: [`SizeRun`], [`ActionNotice`], [`Request`]… |
+//! | `actions.rs` | open with an app, Sandbox, new window, reveal, Recent, wallpaper, rotate, cloud pins, scripts, on demand |
 //! | `sizes.rs` | folder sizes (`calcSizes`, `autoSizes`, `stopSizes`) and what reads them |
 //! | `compare.rs` | compare panes: the [`Comparison`] of each pane, diff only, Ctrl+Shift+M (`toggleComparePanes`) |
 //! | `shell_win.rs` | the shell calls the actions make directly: `open`, and reveal in File Explorer |

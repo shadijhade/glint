@@ -1,5 +1,5 @@
 //! Headless tests of the menu actions: opening with an app, Windows Sandbox, a new window, showing items, Recent,
-//! the wallpaper, rotating, cloud pins, the ncdu export, scripts and remotes on demand. They run on the fake disk
+//! the wallpaper, rotating, cloud pins, scripts and remotes on demand. They run on the fake disk
 //! behind the same `Source` the app uses for glint-core, with Arabic names where a name is shown.
 
 use super::fake::*;
@@ -8,7 +8,6 @@ use crate::testing;
 use gpui_kit::{AppContext as _, Entity, TestAppContext};
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::time::Duration;
 
 pub(super) struct Harness {
     pub explorer: Entity<Explorer>,
@@ -131,16 +130,6 @@ impl Harness {
             .into_iter()
             .filter_map(|e| match e {
                 ExplorerEvent::Request(r) => Some(r),
-                _ => None,
-            })
-            .collect()
-    }
-
-    pub fn exported(&self) -> Vec<ExportNotice> {
-        self.events()
-            .into_iter()
-            .filter_map(|e| match e {
-                ExplorerEvent::Export(n) => Some(n),
                 _ => None,
             })
             .collect()
@@ -523,122 +512,6 @@ fn cloud_pins_are_set_told_and_read_again_and_each_failure_has_its_own_words(cx:
         before + 3,
         "a failure changed nothing, so nothing is read again"
     );
-}
-
-// ---- Export as ncdu JSON ---------------------------------------------------------------------------------------
-
-#[test]
-fn the_export_is_suggested_a_name_from_the_folder_without_colons_and_backslashes() {
-    assert_eq!(Explorer::ncdu_file_name("C:\\a"), "a.ncdu");
-    assert_eq!(Explorer::ncdu_file_name("C:\\a\\تقارير"), "تقارير.ncdu");
-    // A drive is "C:" to `base_name`, and the colon goes; only a name that is nothing at all is "drive".
-    assert_eq!(Explorer::ncdu_file_name("C:\\"), "C.ncdu");
-    assert_eq!(Explorer::ncdu_file_name(""), "drive.ncdu");
-}
-
-#[gpui_kit::test]
-fn an_export_writes_the_file_and_says_where(cx: &mut TestAppContext) {
-    let _guard = testing::lock();
-    let h = harness(cx);
-    h.task(cx, |e, cx| e.export_ncdu(REPORTS, "C:\\out\\تقارير.ncdu", cx));
-    assert_eq!(
-        h.disk.exports(),
-        [(
-            REPORTS.to_string(),
-            "C:\\out\\تقارير.ncdu".to_string(),
-            "tab1".to_string()
-        )]
-    );
-    let told = h.exported();
-    assert!(matches!(
-        &told[..],
-        [
-            ExportNotice::Ended {
-                was_shown: false,
-                idle: true,
-                ..
-            },
-            ExportNotice::Done { .. }
-        ]
-    ));
-    assert_eq!(
-        told[1],
-        ExportNotice::Done {
-            name: "تقارير".into(),
-            dest: "C:\\out\\تقارير.ncdu".into()
-        }
-    );
-}
-
-#[gpui_kit::test]
-fn a_slow_export_shows_a_notice_that_counts_entries_and_stop_ends_it_saying_nothing(cx: &mut TestAppContext) {
-    let _guard = testing::lock();
-    let h = harness(cx);
-    let gate = h.disk.hold_export();
-    h.disk.script_export_progress(&[(120, 0), (120, 0), (450, 0)]);
-    let exporting = h
-        .explorer
-        .update(cx, |e, cx| e.export_ncdu("C:\\a", "C:\\out\\a.ncdu", cx));
-    cx.run_until_parked();
-    assert_eq!(h.read(cx, |e| e.busy_count()), 1, "an update waits for it");
-    let counted: Vec<(u64, bool)> = h
-        .exported()
-        .into_iter()
-        .filter_map(|n| match n {
-            ExportNotice::Progress { done, shown, .. } => Some((done, shown)),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(
-        counted,
-        [(120, false), (450, false)],
-        "a repeated count is not told twice"
-    );
-
-    cx.executor().advance_clock(Duration::from_millis(450));
-    cx.run_until_parked();
-    let id = h
-        .exported()
-        .into_iter()
-        .find_map(|n| match n {
-            ExportNotice::Shown { id, name, done, total } => {
-                assert_eq!((name.as_str(), done, total), ("a", 450, 0));
-                Some(id)
-            }
-            _ => None,
-        })
-        .expect("the notice shows after 400 ms");
-
-    h.run(cx, |e, _| e.stop_archive_work(id));
-    assert_eq!(h.disk.stopped(), ["tab1"], "an export stops through its tab's lane");
-    gate.close();
-    cx.foreground_executor().block_test(exporting);
-    cx.run_until_parked();
-    let told = h.exported();
-    assert!(!told
-        .iter()
-        .any(|n| matches!(n, ExportNotice::Failed { .. } | ExportNotice::Done { .. })));
-    assert!(matches!(
-        told.last(),
-        Some(ExportNotice::Ended {
-            was_shown: true,
-            idle: true,
-            ..
-        })
-    ));
-    assert_eq!(h.read(cx, |e| e.busy_count()), 0);
-}
-
-#[gpui_kit::test]
-fn a_failed_export_says_why(cx: &mut TestAppContext) {
-    let _guard = testing::lock();
-    let h = harness(cx);
-    h.disk.fail_action("export", "Access is denied");
-    h.task(cx, |e, cx| e.export_ncdu(REPORTS, "C:\\Windows\\x.ncdu", cx));
-    assert!(h.exported().contains(&ExportNotice::Failed {
-        name: "تقارير".into(),
-        message: "Access is denied".into()
-    }));
 }
 
 // ---- Scripts -----------------------------------------------------------------------------------------------------

@@ -4,7 +4,6 @@
 use super::cab::{self, Cabinet, FolderReader};
 use super::codec::{Codec, Crc32Checked, Fused, Zstd};
 use super::msi::{self, MsiSource};
-use super::ncdu;
 use super::rar::{self, RarSource};
 use super::stream::{self, Kind, Scan, StreamSource};
 use super::tree::{Item, ENCRYPTED, UNREADABLE};
@@ -36,8 +35,6 @@ pub enum Format {
     Msi,
     /// A RAR archive (RAR 4 or 5, a volume of a set too).
     Rar,
-    /// An ncdu export (JSON, plain or compressed): names and sizes only.
-    Ncdu(Codec),
     /// A disk image, an installer or another format 7-Zip reads (image.rs, through 7z.exe).
     Image,
 }
@@ -83,13 +80,9 @@ impl Format {
             Format::Cab
         } else if is("rar") {
             Format::Rar
-        } else if is("ncdu") {
-            Format::Ncdu(Codec::Plain)
         } else if let Some(codec) = Codec::ALL.into_iter().find(|c| *c != Codec::Plain && is(c.ext())) {
             if tarred {
                 Format::Tar(codec)
-            } else if stem.len() > 5 && stem.as_bytes()[stem.len() - 5..].eq_ignore_ascii_case(b".ncdu") {
-                Format::Ncdu(codec)
             } else {
                 Format::Single(codec)
             }
@@ -127,8 +120,6 @@ impl Format {
             Some(Format::Rar)
         } else if let Some(codec) = Codec::detect(head) {
             Some(Format::Single(codec))
-        } else if ncdu::looks_like(head) {
-            Some(Format::Ncdu(Codec::Plain))
         } else if super::tar::is_header(head) {
             Some(Format::Tar(Codec::Plain))
         } else {
@@ -150,12 +141,6 @@ impl Format {
             Format::Cab => "cab",
             Format::Msi => "msi",
             Format::Rar => "rar",
-            Format::Ncdu(Codec::Plain) => "ncdu",
-            Format::Ncdu(Codec::Gz) => "ncdu.gz",
-            Format::Ncdu(Codec::Xz) => "ncdu.xz",
-            Format::Ncdu(Codec::Bz2) => "ncdu.bz2",
-            Format::Ncdu(Codec::Zst) => "ncdu.zst",
-            Format::Ncdu(Codec::Lz4) => "ncdu.lz4",
             Format::Image => "disk image",
         }
     }
@@ -177,8 +162,6 @@ pub enum Source {
     Cab(Box<CabSource>),
     Msi(Box<MsiSource>),
     Rar(Box<RarSource>),
-    /// An ncdu export's listing: nothing in it has data.
-    Ncdu,
     Image(Box<super::image::ImageSource>),
 }
 
@@ -229,7 +212,7 @@ impl Source {
                 Some(found @ (Format::Zip | Format::SevenZ | Format::Cab | Format::Rar)) if format == Format::Image => found,
                 // What 7-Zip was asked to read stays its own: a disc's or a program's first bytes say little.
                 _ if format == Format::Image => format,
-                Some(found @ (Format::Zip | Format::SevenZ | Format::Cab | Format::Msi | Format::Rar | Format::Ncdu(_))) => found,
+                Some(found @ (Format::Zip | Format::SevenZ | Format::Cab | Format::Msi | Format::Rar)) => found,
                 Some(Format::Single(_) | Format::Tar(_)) => Format::Tar(Codec::Plain),
                 Some(Format::Image) | None => format,
             },
@@ -242,17 +225,8 @@ impl Source {
             Format::Msi => msi::open(path, MAX_ENTRIES).map(|(s, items)| (Source::Msi(Box::new(s)), items, format)),
             Format::Rar => rar::open(path, MAX_ENTRIES, password).map(|(s, items)| (Source::Rar(Box::new(s)), items, format)),
             Format::Image => super::image::open(path, MAX_ENTRIES).map(|(s, items)| (Source::Image(Box::new(s)), items, format)),
-            Format::Ncdu(codec) => open_ncdu(path, codec, scan),
             Format::Tar(_) | Format::Single(_) => {
                 let kind = stream::kind_of(path).ok_or_else(|| Failure::Damaged("it isn't a tar archive or a compressed file Glint reads".into()))?;
-                // A compressed ncdu export ("export.json.gz"): what it unpacks to says so.
-                if let Kind::Single(codec) = kind {
-                    let mut head = Vec::with_capacity(4096);
-                    let _ = codec.decoder(BufReader::new(File::open(path)?)).take(4096).read_to_end(&mut head);
-                    if ncdu::looks_like(&head) {
-                        return open_ncdu(path, codec, scan);
-                    }
-                }
                 let (source, items) = StreamSource::open(path, kind, scan, MAX_ENTRIES)?;
                 let format = match kind {
                     Kind::Tar(codec) => Format::Tar(codec),
@@ -274,7 +248,6 @@ impl Source {
             Source::Msi(m) => m.cost(item, size),
             Source::Rar(r) => r.cost(item, size),
             Source::Image(i) => i.cost(item, size),
-            Source::Ncdu => size,
         }
     }
 
@@ -289,7 +262,6 @@ impl Source {
             Source::Msi(m) => m.block_of(item),
             Source::Rar(r) => r.block_of(item),
             Source::Image(_) => None,
-            Source::Ncdu => None,
         }
     }
 
@@ -307,7 +279,6 @@ impl Source {
             Source::Msi(m) => m.ratio(item),
             Source::Rar(r) => r.ratio(),
             Source::Image(_) => 1,
-            Source::Ncdu => 1,
         }
     }
 
@@ -332,7 +303,6 @@ impl Source {
             Source::Msi(m) => m.problem(item),
             Source::Rar(r) => r.problem(item),
             Source::Image(i) => i.problem(item),
-            Source::Ncdu => Some(ncdu_has_no_data()),
         }
     }
 
@@ -350,7 +320,6 @@ impl Source {
             Source::Msi(m) => m.read_each(file, items, each, skipped),
             Source::Rar(r) => r.read_each(items, each, skipped),
             Source::Image(i) => i.read_each(items, each, skipped),
-            Source::Ncdu => items.iter().map(|&i| (i, ncdu_has_no_data())).collect(),
         }
     }
 }
@@ -1190,20 +1159,6 @@ fn block_entries_here<R: Read + Seek>(archive: &SevenZ, block: usize, source: &m
         io::copy(&mut entry, &mut io::sink())?;
     }
     Ok(true)
-}
-
-// ncdu exports
-
-fn ncdu_has_no_data() -> Failure {
-    Failure::Unreadable("it's in an ncdu export, which lists names and sizes, not what's in the files".into())
-}
-
-/// An ncdu export, read whole (with progress and Stop: a whole disk's can take a moment).
-fn open_ncdu(path: &Path, codec: Codec, scan: &Scan) -> Result<(Source, Vec<Item>, Format), Failure> {
-    let counted = stream::counted(BufReader::with_capacity(256 << 10, File::open(path)?), scan);
-    let reader = BufReader::with_capacity(256 << 10, codec.decoder(BufReader::with_capacity(256 << 10, counted)));
-    let items = ncdu::read(reader, MAX_ENTRIES).map_err(|e| stream::scan_failure(e, scan))?;
-    Ok((Source::Ncdu, items, Format::Ncdu(codec)))
 }
 
 // Cabinets

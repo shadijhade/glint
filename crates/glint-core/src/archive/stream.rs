@@ -46,12 +46,6 @@ struct Counted<'a, R> {
     scan: &'a Scan,
 }
 
-/// `inner` (a file) read with progress and Stop through `scan`, for other first reads of a whole
-/// file (an ncdu export's), whose failures `scan_failure` then tells apart.
-pub fn counted<'a, R: Read + 'a>(inner: R, scan: &'a Scan) -> impl Read + 'a {
-    Counted { inner, scan }
-}
-
 impl<R: Read> Read for Counted<'_, R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         if self.scan.stop.load(Ordering::Relaxed) {

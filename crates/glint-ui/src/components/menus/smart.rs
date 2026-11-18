@@ -175,7 +175,6 @@ fn event_key(event: &MenuEvent) -> Option<String> {
         MenuEvent::Duplicates { .. } => "do:duplicates",
         MenuEvent::Cleanup { .. } => "do:cleanup",
         MenuEvent::Rule { .. } => "do:rule",
-        MenuEvent::ExportNcdu { .. } => "do:export-ncdu",
         MenuEvent::RemovePersonalInfo { .. } => "do:remove-personal-info",
         MenuEvent::ChangeDateTaken { .. } => "do:change-date-taken",
         MenuEvent::SendNearby { .. } => "do:send-nearby",

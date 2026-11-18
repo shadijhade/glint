@@ -190,16 +190,6 @@ static KINDS: &[(&str, Kind)] = &[
         ),
     ),
     (
-        "ncdu",
-        kind(
-            Icon::FileArchive,
-            "ncdu export",
-            None,
-            &G.archives,
-            "text-amber-600 dark:text-amber-500",
-        ),
-    ),
-    (
         "pdf",
         kind(
             Icon::FileText,
@@ -592,7 +582,6 @@ mod tests {
         assert_eq!(type_label(&entry("a.dll")), "DLL system file");
         assert_eq!(type_label(&entry("a.pdf")), "PDF document");
         assert_eq!(type_label(&entry("a.docx")), "Word document");
-        assert_eq!(type_label(&entry("a.ncdu")), "ncdu export");
         assert_eq!(type_label(&entry("folder/")), "File folder");
         assert_eq!(type_label(&entry("a.xyz")), "XYZ file");
         assert_eq!(type_label(&entry("noext")), "File");

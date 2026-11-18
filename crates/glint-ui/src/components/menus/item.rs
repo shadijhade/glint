@@ -892,14 +892,6 @@ pub fn item_menu(targets: &[FileEntry], c: &ItemCtx) -> Vec<Node> {
                 )
                 .node()
             }),
-            folder_one.and_then(|e| {
-                Entry::ask(
-                    t!("Export as ncdu JSON…"),
-                    IconName::FileBraces,
-                    MenuEvent::ExportNcdu { folder: e.path.clone() },
-                )
-                .node()
-            }),
             when(!fixed && targets.iter().any(can_clean), || {
                 entry_node(Entry::ask(
                     t!("Remove personal info…"),

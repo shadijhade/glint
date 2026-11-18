@@ -149,9 +149,6 @@ struct ActionFake {
     indexed: HashSet<String>,
     /// What a folder measures to when a test says so (lower-case keys).
     measured: HashMap<String, Measured>,
-    exports: Vec<(String, String, String)>,
-    export_progress: Vec<(u64, u64)>,
-    export_gate: Option<async_channel::Receiver<()>>,
     scripts: Vec<Script>,
     scripts_folder: Option<String>,
     mounts: Vec<OnDemand>,
@@ -695,18 +692,6 @@ impl FakeDisk {
         gate
     }
 
-    /// Holds the ncdu export back until the returned sender sends (or is dropped).
-    pub fn hold_export(&self) -> async_channel::Sender<()> {
-        let (gate, wait) = async_channel::bounded(1);
-        self.state.borrow_mut().act.export_gate = Some(wait);
-        gate
-    }
-
-    /// What an export reports as it starts: (done, total) pairs.
-    pub fn script_export_progress(&self, steps: &[(u64, u64)]) {
-        self.state.borrow_mut().act.export_progress = steps.to_vec();
-    }
-
     /// The scripts in the Scripts folder, and where that folder is.
     pub fn set_scripts(&self, folder: &str, scripts: Vec<Script>) {
         let mut state = self.state.borrow_mut();
@@ -762,11 +747,6 @@ impl FakeDisk {
     /// The lanes asked to stop measuring.
     pub fn sizes_stopped(&self) -> Vec<String> {
         self.state.borrow().act.sizes_stopped.clone()
-    }
-
-    /// The exports asked for: (folder, destination, lane).
-    pub fn exports(&self) -> Vec<(String, String, String)> {
-        self.state.borrow().act.exports.clone()
     }
 
     /// The names in a folder as listed (sorted as the engine sorts them, hidden ones included).
@@ -1794,33 +1774,6 @@ impl Source for FakeDisk {
 
     fn cancel_folder_sizes(&self, lane: &str) {
         self.state.borrow_mut().act.sizes_stopped.push(lane.to_string());
-    }
-
-    fn export_ncdu(&self, path: &str, dest: &str, lane: &str, progress: ProgressSink) -> Fut<Result<Staged, String>> {
-        let state = self.state.clone();
-        let (path, dest, lane) = (path.to_string(), dest.to_string(), lane.to_string());
-        let (gate, steps) = {
-            let mut state = state.borrow_mut();
-            state.act.exports.push((path.clone(), dest.clone(), lane.clone()));
-            (state.act.export_gate.clone(), state.act.export_progress.clone())
-        };
-        Box::pin(async move {
-            for (done, total) in steps {
-                let _ = progress.try_send(StageProgress { done, total });
-            }
-            if held_and_stopped(&state, gate, &lane, |st| &mut st.arch.stopped).await {
-                return Err("cancelled".to_string());
-            }
-            if let Some(message) = failure(&state, "export") {
-                return Err(message);
-            }
-            Ok(Staged {
-                folder: path,
-                paths: vec![dest],
-                skipped: Vec::new(),
-                bytes: 0,
-            })
-        })
     }
 
     fn scripts(&self) -> Fut<Result<Vec<Script>, String>> {

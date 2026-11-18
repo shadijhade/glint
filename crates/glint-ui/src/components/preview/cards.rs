@@ -22,8 +22,6 @@ pub enum Plain {
     OnlineOnly,
     /// In a folder Windows keeps closed to this account.
     Closed,
-    /// Listed in an ncdu export: a name, a size and a date.
-    ListOnly,
     /// The kind's icon, nothing else.
     Icon,
 }
@@ -57,13 +55,6 @@ impl Render for PlainCard {
                 theme::tailwind(if theme::tokens(cx).dark { "amber-500" } else { "amber-600" }).unwrap_or_default(),
                 "preview-closed",
                 t!("Windows keeps the folder this file is in closed to your account, so it can't be previewed or opened. Get access to the folder first."),
-                None,
-                cx,
-            )
-            .into_any_element(),
-            Plain::ListOnly => big_icon(
-                &self.entry,
-                Some(t!("This file is listed in an ncdu export, with its size and date. What's in it isn't there.")),
                 None,
                 cx,
             )

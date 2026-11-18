@@ -1613,15 +1613,6 @@ fn inspect_and_share(inputs: &Inputs, place: &Place) -> Vec<Command> {
         ),
     );
     add(
-        here,
-        menu(
-            "export-ncdu",
-            t!("Export this folder as ncdu JSON…"),
-            I::FileBraces,
-            MenuEvent::ExportNcdu { folder: folder.clone() },
-        ),
-    );
-    add(
         sendable,
         menu(
             "send-pc",

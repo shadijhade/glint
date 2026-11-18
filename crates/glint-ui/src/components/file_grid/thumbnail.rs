@@ -44,7 +44,7 @@
 use crate::explorer::{self, ExplorerEvent};
 use crate::kit::prelude::*;
 use crate::theme;
-use glint_model::entries::{is_archived, is_list_only, is_locked, is_online_only, FileEntry};
+use glint_model::entries::{is_archived, is_locked, is_online_only, FileEntry};
 use glint_model::file_types::Kind;
 use glint_model::grid::thumb_step;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -334,7 +334,7 @@ impl Want {
 /// Whether Windows can have a thumbnail of this item at all (the TypeScript's `enabled`). An SVG counts: the
 /// service draws it ([`is_vector`]) rather than asking Windows, which has no handler for SVG as it comes.
 pub fn is_eligible(entry: &FileEntry) -> bool {
-    !entry.dir && !is_locked(entry) && !is_list_only(entry)
+    !entry.dir && !is_locked(entry)
 }
 
 /// Whether the service draws this file itself: an SVG of up to 4 MB, not inside an archive (`vector` in

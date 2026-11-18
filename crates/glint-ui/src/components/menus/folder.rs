@@ -368,13 +368,6 @@ pub fn folder_menu(folder: &str, current: bool, c: &FolderCtx) -> Vec<Node> {
                     MenuEvent::Rule { folder: owned.clone() },
                 ))
             }),
-            when(reads, || {
-                Node::Item(Entry::ask(
-                    t!("Export as ncdu JSON…"),
-                    IconName::FileBraces,
-                    MenuEvent::ExportNcdu { folder: owned.clone() },
-                ))
-            }),
             separator(),
             when(reads && folder_path, || {
                 Node::Item(Entry::ask(

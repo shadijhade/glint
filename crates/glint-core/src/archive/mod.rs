@@ -24,7 +24,6 @@ pub use compress::Format as CompressFormat;
 pub(crate) mod extract;
 mod image;
 mod msi;
-mod ncdu;
 mod rar;
 mod read;
 mod stream;
@@ -1026,9 +1025,9 @@ pub struct Peek {
 pub async fn archive_peek(path: String) -> Result<Peek, String> {
     fsx::blocking(move || {
         let found = locate(&path).ok_or("It isn't an archive Glint reads")?;
-        // A big compressed stream (or ncdu export) on disk that isn't in memory yet: only what its
+        // A big compressed stream on disk that isn't in memory yet: only what its
         // name and size say.
-        let stream = matches!(found.format, Format::Tar(c) | Format::Single(c) if c != codec::Codec::Plain) || matches!(found.format, Format::Ncdu(_));
+        let stream = matches!(found.format, Format::Tar(c) | Format::Single(c) if c != codec::Codec::Plain);
         let in_memory = state().opened.iter().any(|o| o.path.eq_ignore_ascii_case(&path));
         if stream && found.inner.is_empty() && !in_memory {
             let packed = fsx::stat(&found.outer).map_or(0, |e| e.size);
@@ -1190,32 +1189,6 @@ pub(crate) fn extract_beside(path: &str, cancel: &AtomicBool, on_progress: &Chan
             })
         }
     }
-}
-
-/// Export as ncdu JSON: the folder `path` on disk walked into `dest` as ncdu's JSON export (which
-/// ncdu, and Glint, open again), written to `dest.part` and renamed when done. Progress counts
-/// entries (there's no total to know ahead); Stop (the tab `lane`) or a failure leaves nothing.
-/// The export is `paths[0]` of what comes back.
-pub async fn export_ncdu(path: String, dest: String, lane: String, on_progress: Channel<StageProgress>) -> Result<Staged, String> {
-    if is_inside(&path) || locate(&path).is_some() {
-        return Err("Only folders on disk can be exported".into());
-    }
-    in_lane(lane, move |cancel| {
-        let part = format!("{dest}.part");
-        let written = std::fs::File::create(&part).map_err(Failure::from).and_then(|file| {
-            ncdu::export(Path::new(&path), file, cancel, &mut |done| {
-                let _ = on_progress.send(StageProgress { done, total: 0 });
-            })
-        });
-        match written.and_then(|done| std::fs::rename(&part, &dest).map(|_| done).map_err(Failure::from)) {
-            Ok(done) => Ok(Staged { folder: path, paths: vec![dest], skipped: Vec::new(), bytes: done.bytes }),
-            Err(e) => {
-                let _ = std::fs::remove_file(&part);
-                Err(e.message())
-            }
-        }
-    })
-    .await
 }
 
 /// A compressed tar's name without its ".tar" ("photos" for the "photos.tar" of photos.tar.gz).
