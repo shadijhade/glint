@@ -537,6 +537,32 @@ pub fn droppable(paths: &[String], dest: &str) -> Vec<String> {
         .collect()
 }
 
+/// The second part of an archive extension that has two ("tar.gz": "gz" after "tar").
+const COMPOUND_EXTENSION_ENDS: [&str; 5] = ["gz", "zst", "xz", "bz2", "lz4"];
+
+/// Where the extension of a file's name starts: the byte offset of its dot, or `None` for a folder and for a name
+/// with no extension (a dot at the very start, ".gitignore", starts the name rather than an extension). A
+/// compressed tar keeps both parts as its extension ("backup.tar.gz" starts at ".tar.gz", not at ".gz"). The one
+/// place that says what a name's extension is, for the rename box's selection and the batch rename.
+pub fn extension_start(name: &str, dir: bool) -> Option<usize> {
+    if dir {
+        return None;
+    }
+    let dot = name.rfind('.').filter(|&dot| dot > 0)?;
+    let ends_a_tar = COMPOUND_EXTENSION_ENDS
+        .iter()
+        .any(|end| name[dot + 1..].eq_ignore_ascii_case(end));
+    if ends_a_tar {
+        // ".tar" right before it, with a name in front of that.
+        if let Some(tar) = name[..dot].len().checked_sub(4).filter(|&tar| tar > 0) {
+            if name.is_char_boundary(tar) && name[tar..dot].eq_ignore_ascii_case(".tar") {
+                return Some(tar);
+            }
+        }
+    }
+    Some(dot)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -755,5 +781,38 @@ mod tests {
         assert_eq!(names_of(&crumbs("relative")), ["relative"]);
         assert_eq!(names_of(&crumbs("/a/b")), ["/", "a", "b"]);
         assert!(same_path("\u{c4}\\", "\u{e4}"));
+    }
+
+    #[test]
+    fn a_compressed_tar_has_a_two_part_extension() {
+        assert_eq!(extension_start("report.pdf", false), Some(6));
+        assert_eq!(extension_start("a.b.c", false), Some(3));
+        for ext in ["gz", "zst", "xz", "bz2", "lz4", "GZ"] {
+            let name = format!("backup.tar.{ext}");
+            assert_eq!(extension_start(&name, false), Some(6), "{name}");
+        }
+        assert_eq!(extension_start("BACKUP.TAR.GZ", false), Some(6));
+        // A lone .gz, a tar that isn't compressed, and a name that is only ".tar.gz" are single extensions.
+        assert_eq!(extension_start("notes.gz", false), Some(5));
+        assert_eq!(extension_start("backup.tar", false), Some(6));
+        assert_eq!(extension_start(".tar.gz", false), Some(4));
+        assert_eq!(extension_start("mytar.gz", false), Some(5));
+        assert_eq!(extension_start("a.tar.zip", false), Some(5));
+    }
+
+    #[test]
+    fn folders_and_names_without_an_extension_have_none() {
+        assert_eq!(extension_start("v1.tar.gz", true), None);
+        assert_eq!(extension_start("Makefile", false), None);
+        assert_eq!(extension_start(".gitignore", false), None);
+        assert_eq!(extension_start("trailing.", false), Some(8));
+    }
+
+    #[test]
+    fn the_extension_start_is_on_a_character_boundary() {
+        let name = "تقرير.tar.xz";
+        let at = extension_start(name, false).expect("an extension");
+        assert_eq!(&name[..at], "تقرير");
+        assert_eq!(extension_start("é.tar.gz", false), Some(2));
     }
 }

@@ -165,6 +165,8 @@ pub struct Tab {
     pub selection: Selection,
     /// The item being renamed (the rename part sets it; navigating to another folder clears it).
     pub renaming: Option<String>,
+    /// A rename started with Tab is being done (the box stays open until it is known whether it worked).
+    pub rename_busy: bool,
     /// A list with columns, or a grid of thumbnails.
     pub view: ViewMode,
     /// The sort in force here: the folder's own, else its kind's, else Settings' (resolved, not stored).
@@ -223,6 +225,7 @@ impl Tab {
                 focus: None,
             },
             renaming: None,
+            rename_busy: false,
             view,
             sort: Sort {
                 key: SortKey::Name,

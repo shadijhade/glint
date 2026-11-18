@@ -2398,3 +2398,94 @@ fn a_rows_spot_is_the_start_of_its_row_where_it_is_drawn(cx: &mut TestAppContext
     assert_eq!(spot_of(&mut ui, "C:\\x\\nothing.txt"), None);
     assert_eq!(spot_of(&mut ui, "C:\\x\\.secret"), None);
 }
+
+#[gpui_kit::test]
+fn tab_in_the_rename_box_renames_and_opens_the_box_on_the_next_row(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut ui = open(cx, &small_disk(), "C:\\x");
+    ui.begin_rename("C:\\x\\alpha.txt");
+    ui.visual.update(|window, cx| window.input("gamma", cx));
+    ui.press("tab");
+    // The row after it in the list (berry sorts before beta), with its name selected in a box of its own.
+    ui.settle_rename(Some("C:\\x\\berry.png"));
+    assert_eq!(ui.role_of("New name"), Some(Role::TextInput));
+    assert!(ui.labels().iter().any(|l| l.contains("gamma.txt")), "{:?}", ui.labels());
+    assert_eq!(ui.events(), [], "the explorer was asked directly, not through the list's events");
+    // Shift+Tab with nothing typed: back one row in the order shown, with no rename.
+    ui.press("shift-tab");
+    ui.settle_rename(Some("C:\\x\\docs"));
+    // Tab on the last row closes the box.
+    ui.press("tab");
+    ui.settle_rename(Some("C:\\x\\berry.png"));
+    for _ in 0..3 {
+        ui.press("tab");
+        ui.frame();
+    }
+    ui.settle_rename(None);
+}
+
+#[gpui_kit::test]
+fn a_tab_rename_that_fails_leaves_the_box_where_it_is(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut ui = open(cx, &small_disk(), "C:\\x");
+    let said = Rc::new(RefCell::new(Vec::new()));
+    let sink = said.clone();
+    ui.visual.update(|_, cx| {
+        cx.subscribe(&ui.explorer, move |_, event: &crate::explorer::ExplorerEvent, _| {
+            sink.borrow_mut().push(event.clone())
+        })
+        .detach();
+    });
+    ui.begin_rename("C:\\x\\alpha.txt");
+    ui.press("ctrl-a");
+    ui.visual.update(|window, cx| window.input("beta.md", cx));
+    ui.press("tab");
+    for _ in 0..40 {
+        ui.frame();
+    }
+    // The name is taken: it is told, and the box is on the same item with what was typed.
+    assert!(said.borrow().iter().any(|e| matches!(
+        e,
+        crate::explorer::ExplorerEvent::Operation(crate::explorer::OpNotice::Failed {
+            what: crate::explorer::Failing::Rename { .. },
+            ..
+        })
+    )));
+    ui.settle_rename(Some("C:\\x\\alpha.txt"));
+    assert!(!ui.explorer.read_with(&ui.visual, |e, _| e.rename_busy(e.active_tab_id())));
+    assert_eq!(ui.role_of("New name"), Some(Role::TextInput));
+    // The box is not stuck: Enter says what is typed.
+    ui.press("enter");
+    assert_eq!(
+        ui.events().last(),
+        Some(&FileListEvent::CommitRename {
+            path: "C:\\x\\alpha.txt".into(),
+            name: "beta.md".into()
+        })
+    );
+}
+
+impl Ui {
+    /// Starts the box as the explorer does on F2, and gives the frames it needs.
+    fn begin_rename(&mut self, path: &str) {
+        self.explorer.update(&mut self.visual, |e, cx| e.begin_rename(Some(path), cx));
+        self.frame();
+        self.frame();
+    }
+
+    /// Waits until the explorer says `path` is being renamed (or nothing when `None`).
+    fn settle_rename(&mut self, path: Option<&str>) {
+        for _ in 0..400 {
+            self.frame();
+            let now = self
+                .explorer
+                .read_with(&self.visual, |e, _| e.active_tab().and_then(|t| t.renaming.clone()));
+            if now.as_deref() == path {
+                self.frame();
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("the rename never reached {path:?}");
+    }
+}

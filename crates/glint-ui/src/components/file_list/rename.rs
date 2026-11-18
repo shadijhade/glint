@@ -8,17 +8,47 @@ use super::{FileList, FileListEvent};
 use crate::kit::prelude::*;
 use crate::{actions, t};
 
+actions!(
+    glint_rename,
+    [
+        /// Tab in the rename box: rename, and go on to the next item.
+        RenameNext,
+        /// Shift+Tab in the rename box: rename, and go on to the previous item.
+        RenamePrevious,
+    ]
+);
+
+/// The key context of a rename box (the list's and the grid's).
+pub const BOX_CONTEXT: &str = "RenameBox";
+
+/// Marks that the keys are bound in this app.
+struct Bound;
+
+impl Global for Bound {}
+
+/// Binds Tab and Shift+Tab in the rename box, once per app. They are bound here, not in `actions::BINDINGS`: they
+/// mean something only inside the box, and the shortcut sheet lists commands. The box's own context comes first
+/// (`RenameBox > Input`), which is deeper than the root's Tab (the next control) and so wins over it.
+pub fn ensure_bound(cx: &mut App) {
+    if cx.has_global::<Bound>() {
+        return;
+    }
+    cx.set_global(Bound);
+    cx.bind_keys([
+        KeyBinding::new("tab", RenameNext, Some("RenameBox > Input")),
+        KeyBinding::new("shift-tab", RenamePrevious, Some("RenameBox > Input")),
+    ]);
+}
+
 /// The characters no Windows file name can contain (`INVALID_NAME_HINT` lists them).
 pub const INVALID_NAME_CHARS: [char; 9] = ['\\', '/', ':', '*', '?', '"', '<', '>', '|'];
 
 /// Where the selection ends in a name being renamed: before the extension of a file ("report" in
-/// "report.pdf"), the whole name for a folder or a name that starts with its only dot (".gitignore").
-/// A UTF-8 byte offset, which is what the input takes (the TypeScript's `lastIndexOf` counted UTF-16 units).
+/// "report.pdf", "backup" in "backup.tar.gz"), the whole name for a folder or a name that starts with its only dot
+/// (".gitignore"). A UTF-8 byte offset, which is what the input takes (the TypeScript's `lastIndexOf` counted
+/// UTF-16 units).
 pub fn selection_end(name: &str, dir: bool) -> usize {
-    match name.rfind('.') {
-        Some(dot) if !dir && dot > 0 => dot,
-        _ => name.len(),
-    }
+    glint_model::paths::extension_start(name, dir).unwrap_or(name.len())
 }
 
 /// The rename box of the row being renamed.
@@ -42,6 +72,7 @@ impl FileList {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        ensure_bound(cx);
         let text = name.to_string();
         let state = cx.new(|cx| InputState::new(window, cx).default_value(text));
         let subscription = cx.subscribe_in(&state, window, |this, _, event: &InputEvent, _, cx| match event {
@@ -86,7 +117,12 @@ impl FileList {
     /// Enter or leaving the box commits what is typed; Escape cancels (`finish`). Says it once.
     pub(super) fn finish_rename(&mut self, commit: bool, cx: &mut Context<Self>) {
         let Some(rename) = self.rename.as_mut() else { return };
-        if rename.done {
+        if rename.done
+            || self
+                .shown
+                .tab
+                .is_some_and(|tab| self.explorer.read(cx).rename_busy(tab))
+        {
             return;
         }
         rename.done = true;
@@ -99,9 +135,25 @@ impl FileList {
         });
     }
 
+    /// Tab (`forward`) or Shift+Tab: renames to what is typed and opens the box on the next or previous row, in the
+    /// order the list shows. When the rename fails the box stays, with its error (the explorer's rename part).
+    pub(super) fn step_rename(&mut self, forward: bool, cx: &mut Context<Self>) {
+        let (Some(rename), Some(tab)) = (self.rename.as_ref(), self.shown.tab) else {
+            return;
+        };
+        if rename.done {
+            return;
+        }
+        let name = rename.state.read(cx).value().to_string();
+        self.explorer.update(cx, |explorer, cx| {
+            explorer.step_rename_in(tab, &name, forward, cx).detach()
+        });
+    }
+
     /// The rename box as it sits in the row: the input, named, with Escape and the invalid characters handled.
     pub(super) fn rename_input(&self, rename: &RenameBox, cx: &mut Context<Self>) -> AnyElement {
         div()
+            .key_context(BOX_CONTEXT)
             .flex_1()
             .min_w_0()
             .h(rems(1.5))
@@ -113,6 +165,8 @@ impl FileList {
             .on_action(cx.listener(|_, _: &actions::OpenInNewTab, _, _| {}))
             .on_action(cx.listener(|_, _: &actions::Rename, _, _| {}))
             .on_action(cx.listener(|_, _: &actions::Properties, _, _| {}))
+            .on_action(cx.listener(|this, _: &RenameNext, _, cx| this.step_rename(true, cx)))
+            .on_action(cx.listener(|this, _: &RenamePrevious, _, cx| this.step_rename(false, cx)))
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 let key = event.keystroke.key.as_str();
                 if key == "escape" {
@@ -155,7 +209,8 @@ mod tests {
     #[test]
     fn the_name_is_selected_without_its_extension() {
         assert_eq!(selection_end("report.pdf", false), 6);
-        assert_eq!(selection_end("archive.tar.gz", false), 11);
+        assert_eq!(selection_end("archive.tar.gz", false), 7);
+        assert_eq!(selection_end("notes.v2.gz", false), 8);
         // A folder, a name without a dot and a name that is only an extension are selected whole.
         assert_eq!(selection_end("v1.2 folder", true), "v1.2 folder".len());
         assert_eq!(selection_end("Makefile", false), 8);

@@ -110,7 +110,11 @@ impl Explorer {
         if self.tabs.get(&tab).is_none_or(|t| t.renaming.is_none()) {
             return;
         }
-        self.update_tab(tab, |t| t.renaming = None);
+        // A Tab rename still running is called off too: it won't open the box on the next item.
+        self.update_tab(tab, |t| {
+            t.renaming = None;
+            t.rename_busy = false;
+        });
         self.tab_changed(tab, cx);
     }
 
@@ -127,10 +131,72 @@ impl Explorer {
     /// name is empty or unchanged, a name Windows can't have is told, a failure is told.
     #[must_use = "dropping the task stops waiting for it; `.detach()` it to let it run"]
     pub fn commit_rename_in(&mut self, tab: TabId, name: &str, cx: &mut Context<Self>) -> Task<bool> {
+        if self.rename_busy(tab) {
+            return Task::ready(false);
+        }
         let Some(renaming) = self.tabs.get_mut(&tab).and_then(|t| t.renaming.take()) else {
             return Task::ready(false);
         };
         self.tab_changed(tab, cx);
+        self.rename_to(tab, renaming, name, None, cx)
+    }
+
+    /// Whether a rename started with Tab is still being done in the tab (the box has nothing more to say).
+    pub fn rename_busy(&self, tab: TabId) -> bool {
+        self.tabs.get(&tab).is_some_and(|t| t.rename_busy)
+    }
+
+    /// Tab (`forward`) or Shift+Tab in the rename box: renames the item to `name` as Enter does, then opens the
+    /// box on the next (or previous) item in the order the list shows, sorted, grouped and filtered. A rename that
+    /// fails (a name Windows refuses, one that is taken) is told and leaves the box where it is, with what was
+    /// typed in it: it doesn't move on. Nothing to rename (an empty or unchanged name) moves on. At the last (or
+    /// first) item the box closes. Resolves whether it renamed or moved on.
+    #[must_use = "dropping the task stops waiting for it; `.detach()` it to let it run"]
+    pub fn step_rename_in(&mut self, tab: TabId, name: &str, forward: bool, cx: &mut Context<Self>) -> Task<bool> {
+        let Some(t) = self.tabs.get(&tab).filter(|t| !t.rename_busy) else {
+            return Task::ready(false);
+        };
+        let Some(renaming) = t.renaming.clone() else {
+            return Task::ready(false);
+        };
+        let next = t
+            .rows
+            .position_of(&renaming)
+            .and_then(|at| if forward { at.checked_add(1) } else { at.checked_sub(1) })
+            .and_then(|at| t.rows.get(at))
+            .map(|e| e.path.clone());
+        self.update_tab(tab, |t| t.rename_busy = true);
+        self.rename_to(tab, renaming, name, Some(next), cx)
+    }
+
+    /// Opens the box on `next` (when it is still shown), or closes it, once a Tab rename is over. Escape pressed
+    /// meanwhile ([`Explorer::cancel_rename_in`]) has called it off: the box stays closed then.
+    fn finish_step(&mut self, tab: TabId, next: Option<String>, cx: &mut Context<Self>) {
+        let Some(t) = self.tabs.get(&tab) else { return };
+        if !t.rename_busy {
+            return;
+        }
+        let next = next.filter(|n| t.rows.position_of(n).is_some());
+        self.update_tab(tab, |t| t.rename_busy = false);
+        match next {
+            Some(next) => self.start_renaming(tab, &next, cx),
+            None => {
+                self.update_tab(tab, |t| t.renaming = None);
+                self.tab_changed(tab, cx);
+            }
+        }
+    }
+
+    /// Renames the item at `renaming` to what was typed. With `then` (a Tab rename) the box stays open when it
+    /// fails, and moves to the `Some` item (or closes) when it worked or had nothing to do.
+    fn rename_to(
+        &mut self,
+        tab: TabId,
+        renaming: String,
+        name: &str,
+        then: Option<Option<String>>,
+        cx: &mut Context<Self>,
+    ) -> Task<bool> {
         let entry = self.tabs.get(&tab).and_then(|t| {
             let entries: &[FileEntry] = match &t.find {
                 Some(find) => &find.entries,
@@ -139,27 +205,49 @@ impl Explorer {
             entries.iter().find(|e| e.path == renaming).cloned()
         });
         let Some(entry) = entry else {
+            if then.is_some() {
+                self.update_tab(tab, |t| {
+                    t.renaming = None;
+                    t.rename_busy = false;
+                });
+                self.tab_changed(tab, cx);
+            }
             return Task::ready(false);
+        };
+        // A Tab rename that can't happen leaves the box as it is, to be fixed or escaped.
+        let refused = |this: &mut Self| {
+            if then.is_some() {
+                this.update_tab(tab, |t| t.rename_busy = false);
+            }
+            Task::ready(false)
         };
         if is_archived(&entry) {
             self.read_only_notice(Some(tab), cx);
-            return Task::ready(false);
+            return refused(self);
         }
         if is_closed(&entry) {
             self.closed_notice(Some(tab), cx);
-            return Task::ready(false);
+            return refused(self);
         }
         if is_recycled(&entry) {
             self.recycled_notice(cx);
-            return Task::ready(false);
+            return refused(self);
         }
         let trimmed = match clean_name(name) {
-            None => return Task::ready(false),
-            Some(Ok(trimmed)) if trimmed == entry.name => return Task::ready(false),
-            Some(Ok(trimmed)) => trimmed.to_string(),
+            Some(Ok(trimmed)) if trimmed != entry.name => trimmed.to_string(),
             Some(Err(())) => {
                 cx.emit(ExplorerEvent::Operation(OpNotice::InvalidName));
-                return Task::ready(false);
+                return refused(self);
+            }
+            // Nothing to rename to (empty, or the name it has): a Tab goes on to the next item.
+            _ => {
+                return match then {
+                    Some(next) => {
+                        self.finish_step(tab, next, cx);
+                        Task::ready(true)
+                    }
+                    None => Task::ready(false),
+                };
             }
         };
         cx.spawn(async move |this, cx| {
@@ -167,8 +255,15 @@ impl Explorer {
                 path: entry.path.clone(),
                 name: trimmed.clone(),
             };
+            let failed = |this: &gpui_kit::WeakEntity<Self>, cx: &mut gpui_kit::AsyncApp| {
+                if then.is_some() {
+                    this.update(cx, |this, _| this.update_tab(tab, |t| t.rename_busy = false))
+                        .ok();
+                }
+                false
+            };
             match run_op(&this, cx, op).await {
-                Ok(false) => false,
+                Ok(false) => failed(&this, cx),
                 Err(message) => {
                     notify_failed(
                         &this,
@@ -178,7 +273,7 @@ impl Explorer {
                         },
                         message,
                     );
-                    false
+                    failed(&this, cx)
                 }
                 Ok(true) => {
                     let renamed = join_path(&parent_path(&entry.path), &trimmed);
@@ -188,6 +283,9 @@ impl Explorer {
                         .flatten();
                     if let Some(navigation) = shown {
                         navigation.await;
+                    }
+                    if let Some(next) = then {
+                        this.update(cx, |this, cx| this.finish_step(tab, next, cx)).ok();
                     }
                     true
                 }

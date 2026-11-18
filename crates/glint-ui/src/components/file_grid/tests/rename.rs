@@ -310,3 +310,72 @@ fn escape_ends_a_search_and_clears_a_filter(cx: &mut TestAppContext) {
     env.press("escape");
     env.settle(|env| env.names().len() == 4);
 }
+
+#[gpui_kit::test]
+fn tab_renames_and_goes_on_to_the_next_tile_and_shift_tab_to_the_previous(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut env = env(cx, &disk(0), plain());
+    env.click(2);
+    env.f2();
+    env.visual.update(|window, cx| window.input("gamma", cx));
+    env.press("tab");
+    env.settle(|env| {
+        env.names().contains(&"gamma.txt".to_string()) && env.renaming().as_deref() == Some("تقرير الربع.pdf")
+    });
+    assert_eq!(env.box_text().map(|(_, text)| text).as_deref(), Some("تقرير الربع.pdf"));
+    assert!(env.has_box());
+    // Shift+Tab with nothing changed goes back to the tile before, in the order shown.
+    env.press("shift-tab");
+    env.settle(|env| env.renaming().as_deref() == Some("gamma.txt"));
+    // At the first tile Shift+Tab closes the box, and the grid has the keyboard again.
+    for _ in 0..3 {
+        env.press("shift-tab");
+        env.frame();
+        env.frame();
+    }
+    env.settle(|env| env.renaming().is_none() && !env.has_box());
+    env.frame();
+    assert!(env.grid_has_the_keyboard());
+}
+
+#[gpui_kit::test]
+fn a_tab_rename_that_fails_keeps_the_box_and_what_was_typed(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut env = env(cx, &disk(0), plain());
+    let said = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let sink = said.clone();
+    env.visual.update(|_, cx| {
+        cx.subscribe(&env.explorer, move |_, event: &crate::explorer::ExplorerEvent, _| {
+            sink.borrow_mut().push(event.clone())
+        })
+        .detach();
+    });
+    env.click(2);
+    env.f2();
+    // The name of the tile before it: taken.
+    env.press("ctrl-a");
+    env.visual.update(|window, cx| window.input("a.jpg", cx));
+    env.press("tab");
+    env.settle(|env| {
+        !env.explorer
+            .read_with(&env.visual, |e, _| e.rename_busy(e.pane_tab_id(0)))
+    });
+    assert!(
+        said.borrow().iter().any(|e| matches!(
+            e,
+            crate::explorer::ExplorerEvent::Operation(crate::explorer::OpNotice::Failed {
+                what: crate::explorer::Failing::Rename { .. },
+                ..
+            })
+        )),
+        "the clash was told"
+    );
+    assert_eq!(env.renaming().as_deref(), Some("b.txt"), "it stayed on the item");
+    assert_eq!(env.box_text().map(|(_, text)| text).as_deref(), Some("a.jpg"));
+    assert!(env.names().contains(&"b.txt".to_string()));
+    // Enter works again from there: the box is not stuck.
+    env.press("ctrl-a");
+    env.visual.update(|window, cx| window.input("c.txt", cx));
+    env.press("enter");
+    env.settle(|env| env.names().contains(&"c.txt".to_string()));
+}
