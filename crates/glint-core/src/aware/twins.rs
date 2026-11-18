@@ -43,13 +43,42 @@ pub fn twins(path: &str, size: u64, stop: &AtomicBool) -> Option<Vec<String>> {
     )
 }
 
-/// The index's files of exactly `size` bytes other than `path`, in its order; None when it can't say.
+/// How long the drives the index has ready are remembered: a look at one file asks the service once, not once
+/// for every file looked at (a drive that starts scanning meanwhile is noticed within this long).
 #[cfg(windows)]
-fn same_size(path: &str, size: u64) -> Option<Vec<String>> {
-    use shadui_index::client::{self, Event};
-    use shadui_index::proto::SearchRequest;
+const ROOTS_FRESH: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// The drive roots last read from the index service, and when.
+#[cfg(windows)]
+type KnownRoots = std::sync::Mutex<Option<(std::time::Instant, Vec<String>)>>;
+
+/// The roots in `known` when they were read less than [`ROOTS_FRESH`] before `now`; otherwise what `read` finds,
+/// remembered when it is something. `read` runs with nothing locked.
+#[cfg(windows)]
+fn roots_cached(
+    known: &KnownRoots,
+    now: std::time::Instant,
+    read: impl FnOnce() -> Option<Vec<String>>,
+) -> Option<Vec<String>> {
+    {
+        let held = known.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((at, roots)) = held.as_ref() {
+            if now.saturating_duration_since(*at) < ROOTS_FRESH {
+                return Some(roots.clone());
+            }
+        }
+    }
+    let roots = read()?;
+    *known.lock().unwrap_or_else(|e| e.into_inner()) = Some((now, roots.clone()));
+    Some(roots)
+}
+
+/// The drives the index has finished scanning, as search roots; None when the service can't say, a drive is
+/// still being scanned (a "no copy" would be a guess) or none is ready.
+#[cfg(windows)]
+fn ready_roots() -> Option<Vec<String>> {
+    use shadui_index::client;
     let status = client::status().ok()?;
-    // A drive still being scanned would make "no copy" a guess.
     if status.volumes.iter().any(|v| v.state == "scanning") {
         return None;
     }
@@ -59,9 +88,16 @@ fn same_size(path: &str, size: u64) -> Option<Vec<String>> {
         .filter(|v| v.state == "ready")
         .map(|v| format!("{}\\", v.volume.trim_end_matches(['\\', '/'])))
         .collect();
-    if roots.is_empty() {
-        return None;
-    }
+    (!roots.is_empty()).then_some(roots)
+}
+
+/// The index's files of exactly `size` bytes other than `path`, in its order; None when it can't say.
+#[cfg(windows)]
+fn same_size(path: &str, size: u64) -> Option<Vec<String>> {
+    use shadui_index::client::{self, Event};
+    use shadui_index::proto::SearchRequest;
+    static KNOWN: KnownRoots = std::sync::Mutex::new(None);
+    let roots = roots_cached(&KNOWN, std::time::Instant::now(), ready_roots)?;
     let request = SearchRequest {
         query: format!("file: size:{size}"),
         roots,
@@ -205,5 +241,42 @@ mod tests {
         let stop = AtomicBool::new(true);
         assert_eq!(same_bytes(&a, &a, 5000, &stop), None);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_drives_are_asked_of_the_service_once_in_a_while_not_for_every_file() {
+        use std::cell::Cell;
+        use std::time::{Duration, Instant};
+        let known: KnownRoots = std::sync::Mutex::new(None);
+        let asked = Cell::new(0u32);
+        let read = || {
+            asked.set(asked.get() + 1);
+            Some(vec!["C:\\".to_string()])
+        };
+        let start = Instant::now();
+        assert_eq!(roots_cached(&known, start, read), Some(vec!["C:\\".to_string()]));
+        for n in 1..50u64 {
+            assert!(roots_cached(&known, start + Duration::from_millis(n * 10), read).is_some());
+        }
+        assert_eq!(asked.get(), 1, "fifty files, one question");
+        assert!(roots_cached(&known, start + ROOTS_FRESH + Duration::from_secs(1), read).is_some());
+        assert_eq!(asked.get(), 2, "asked again once the answer is old");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_service_that_cannot_say_is_asked_again_next_time() {
+        use std::cell::Cell;
+        let known: KnownRoots = std::sync::Mutex::new(None);
+        let asked = Cell::new(0u32);
+        let read = || {
+            asked.set(asked.get() + 1);
+            None
+        };
+        let now = std::time::Instant::now();
+        assert_eq!(roots_cached(&known, now, read), None);
+        assert_eq!(roots_cached(&known, now, read), None);
+        assert_eq!(asked.get(), 2, "a failure is not remembered");
     }
 }

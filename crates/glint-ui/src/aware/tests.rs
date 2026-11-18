@@ -17,6 +17,7 @@ use std::cell::{Cell, RefCell};
 /// One call of the fake probe.
 struct Call {
     paths: Vec<String>,
+    wants: Vec<Want>,
     lane: Lane,
     stop: Arc<AtomicBool>,
 }
@@ -47,7 +48,8 @@ impl Fake {
         let (seq, clip, reads) = (self.seq.clone(), self.clip.clone(), self.clip_reads.clone());
         Sources {
             probe: Rc::new(move |asks, lane, stop| {
-                calls.borrow_mut().push(Call { paths: asks.into_iter().map(|a| a.path).collect(), lane, stop });
+                let wants = asks.iter().map(|a| a.want).collect();
+                calls.borrow_mut().push(Call { paths: asks.into_iter().map(|a| a.path).collect(), wants, lane, stop });
                 let (sender, receiver) = async_channel::unbounded();
                 senders.borrow_mut().push(sender);
                 receiver
@@ -157,6 +159,31 @@ fn a_look_at_a_file_asks_once_on_the_quiet_lane_and_a_second_look_asks_nothing(c
     assert!(!fake.stopped(0), "a look for now doesn't stop the quiet run");
     look_ahead(cx, &world, std::slice::from_ref(&entry));
     assert_eq!(fake.asked(), 1, "a second look at the same file asks nothing");
+}
+
+#[gpui_kit::test]
+fn identical_copies_are_looked_for_only_when_one_item_is_looked_at(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let fake = Fake::new();
+    let world = world(cx, &fake, &empty_disk(), "C:\\x");
+    // Ctrl+A in a big folder: no item of a selection asks the index service for its twins.
+    let many: Vec<FileEntry> = (0..200).map(|n| a_file(&format!("f{n}.bin"))).collect();
+    look_ahead(cx, &world, &many);
+    assert_eq!(fake.asked(), 1);
+    {
+        let calls = fake.calls.borrow();
+        assert_eq!(calls[0].wants.len(), 200, "the rest is still asked about");
+        assert!(calls[0].wants.iter().all(|w| !w.twins && w.origin));
+    }
+    // Two items are a selection too.
+    look_ahead(cx, &world, &[a_file("p.bin"), a_file("q.bin")]);
+    assert!(fake.calls.borrow()[1].wants.iter().all(|w| !w.twins));
+    // One of them, alone, is asked for its twins: nothing was held back from it for good.
+    look_ahead(cx, &world, &[a_file("p.bin")]);
+    let calls = fake.calls.borrow();
+    assert_eq!(calls.len(), 3);
+    assert_eq!(calls[2].wants.len(), 1);
+    assert!(calls[2].wants[0].twins, "a single file gets its twins");
 }
 
 #[gpui_kit::test]
