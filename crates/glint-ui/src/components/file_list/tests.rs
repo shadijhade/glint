@@ -1987,6 +1987,137 @@ fn a_folder_read_ahead_says_what_it_holds_in_its_row(cx: &mut TestAppContext) {
     assert_eq!(said(&mut ui, 0), None);
 }
 
+#[gpui_kit::test]
+fn a_folder_row_builds_its_words_only_while_the_pointer_or_the_keyboard_is_on_it(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let disk = small_disk();
+    let mut ui = open(cx, &disk, "C:\\x");
+    let said = |ui: &mut Ui| -> Option<String> {
+        ui.visual.update(|window, cx| {
+            window.render_frame(cx);
+            window
+                .try_find(("file-list-peek", 0usize))
+                .and_then(|peek| peek.label().map(str::to_string))
+        })
+    };
+    // The folder is read ahead, but nothing is on its row: the words are known and not built (they were built
+    // clear, to be shown by the row's hover).
+    let explorer = ui.explorer.clone();
+    ui.visual
+        .update(|_, cx| explorer.update(cx, |e, cx| e.prefetch_folder("C:\\x\\docs", cx)));
+    ui.frame();
+    assert!(ui.list.read_with(&ui.visual, |list, _| list.peeks.has("C:\\x\\docs")));
+    assert_eq!(said(&mut ui), None);
+    // The pointer comes onto the row: it says what is in the folder, and gives it back when it leaves. A file's
+    // row, or a folder with nothing read, is not drawn again for it.
+    let list = ui.list.clone();
+    ui.visual
+        .update(|_, cx| list.update(cx, |list, cx| list.hover_folder_row("C:\\x\\docs", true, cx)));
+    let words = said(&mut ui).expect("the pointer is on the folder");
+    assert!(words.starts_with("1 file"), "{words}");
+    ui.visual
+        .update(|_, cx| list.update(cx, |list, cx| list.hover_folder_row("C:\\x\\elsewhere", false, cx)));
+    assert!(said(&mut ui).is_some(), "leaving another folder changes nothing");
+    ui.visual
+        .update(|_, cx| list.update(cx, |list, cx| list.hover_folder_row("C:\\x\\docs", false, cx)));
+    assert_eq!(said(&mut ui), None);
+}
+
+#[gpui_kit::test]
+fn the_peeks_are_walked_again_only_when_a_folder_was_read_ahead_or_let_go(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let disk = small_disk();
+    let mut ui = open(cx, &disk, "C:\\x");
+    let walks = |ui: &Ui| ui.list.read_with(&ui.visual, |list, _| list.peeks.walks);
+    ui.frame();
+    let start = walks(&ui);
+    for _ in 0..5 {
+        ui.frame();
+    }
+    assert_eq!(walks(&ui), start, "frames that change nothing walk nothing");
+    let explorer = ui.explorer.clone();
+    ui.visual
+        .update(|_, cx| explorer.update(cx, |e, cx| e.prefetch_folder("C:\\x\\docs", cx)));
+    ui.frame();
+    let read = walks(&ui);
+    assert!(read > start, "a folder read ahead is looked at");
+    for _ in 0..5 {
+        ui.frame();
+    }
+    assert_eq!(walks(&ui), read);
+}
+
+/// Counts this thread's heap allocations, so a test can say how many a frame makes.
+struct Counting;
+
+thread_local! {
+    static ALLOCATIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+// SAFETY: every call goes straight to the system allocator, which upholds the contract; the counter is a plain
+// thread-local cell that never allocates.
+unsafe impl std::alloc::GlobalAlloc for Counting {
+    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        let _ = ALLOCATIONS.try_with(|n| n.set(n.get() + 1));
+        // SAFETY: as above.
+        unsafe { std::alloc::System.alloc(layout) }
+    }
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
+        // SAFETY: as above.
+        unsafe { std::alloc::System.dealloc(ptr, layout) }
+    }
+}
+
+#[global_allocator]
+static COUNTING: Counting = Counting;
+
+/// What a frame asks of the folders read ahead when eight of them are (the most there are): the explorer's peeks
+/// walked, sorted and rebuilt (what every frame did before, forced here by forgetting the generation) against the
+/// one number a frame asks now. Run with --ignored --nocapture, in release.
+#[gpui_kit::test]
+#[ignore]
+fn eight_folders_read_ahead_cost_a_frame_nothing_while_they_stay_as_they_are(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let disk = FakeDisk::new();
+    let names: Vec<String> = (0..8).map(|i| format!("folder{i}")).collect();
+    disk.folder("C:\\x", names.iter().map(|name| folder("C:\\x", name)).collect());
+    for name in &names {
+        let at = format!("C:\\x\\{name}");
+        disk.folder(&at, (0..30).map(|i| file(&at, &format!("f{i}.txt"), 10 + i, 0)).collect());
+    }
+    let mut ui = open(cx, &disk, "C:\\x");
+    let explorer = ui.explorer.clone();
+    for name in &names {
+        let at = format!("C:\\x\\{name}");
+        ui.visual.update(|_, cx| explorer.update(cx, |e, cx| e.prefetch_folder(&at, cx)));
+    }
+    ui.settle();
+    const FRAMES: u32 = 20_000;
+    let mut peeks = Peeks::default();
+    let (mut walked_ns, mut walked_allocs, mut steady_ns, mut steady_allocs) = (0.0, 0.0, 0.0, 0.0);
+    ui.explorer.read_with(&ui.visual, |e, _| {
+        assert_eq!(peeks.read(e).len(), 8);
+        let before = ALLOCATIONS.with(|n| n.get());
+        let started = std::time::Instant::now();
+        for _ in 0..FRAMES {
+            peeks.generation = None;
+            std::hint::black_box(peeks.read(e));
+        }
+        walked_ns = started.elapsed().as_nanos() as f64 / FRAMES as f64;
+        walked_allocs = (ALLOCATIONS.with(|n| n.get()) - before) as f64 / FRAMES as f64;
+        let before = ALLOCATIONS.with(|n| n.get());
+        let started = std::time::Instant::now();
+        for _ in 0..FRAMES {
+            std::hint::black_box(peeks.read(e));
+        }
+        steady_ns = started.elapsed().as_nanos() as f64 / FRAMES as f64;
+        steady_allocs = (ALLOCATIONS.with(|n| n.get()) - before) as f64 / FRAMES as f64;
+    });
+    println!(
+        "a frame's peeks: {steady_ns:.0} ns and {steady_allocs:.1} allocations now; {walked_ns:.0} ns and {walked_allocs:.1} before"
+    );
+}
+
 impl Ui {
     /// The middle of row `i`, in the window.
     fn middle_of(&mut self, i: usize) -> Point<Pixels> {

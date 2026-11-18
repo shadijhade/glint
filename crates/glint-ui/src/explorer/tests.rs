@@ -1801,6 +1801,30 @@ fn a_folder_read_ahead_can_be_peeked_at_and_stays_put_while_it_is_read_again(cx:
 }
 
 #[gpui_kit::test]
+fn the_prefetch_generation_moves_only_when_the_peeks_may_have_changed(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let h = harness(cx);
+    standard_disk(&h.disk);
+    assert!(h.go(cx, "C:\\"));
+    let generation = |h: &Harness, cx: &TestAppContext| h.read(cx, |e| e.prefetch_generation());
+    let start = generation(&h, cx);
+    // Looking at the peeks, and looking again, changes nothing.
+    h.read(cx, |e| drop(e.peeks()));
+    h.read(cx, |e| drop(e.peeks()));
+    assert_eq!(generation(&h, cx), start);
+    // A folder read ahead, and its listing coming in, are changes.
+    h.run(cx, |e, cx| e.prefetch_folder("C:\\a", cx));
+    let read = generation(&h, cx);
+    assert_ne!(read, start);
+    // Nothing happens, nothing moves.
+    cx.run_until_parked();
+    assert_eq!(generation(&h, cx), read);
+    // Opening the folder takes its listing away: another change.
+    assert!(h.go(cx, "C:\\a"));
+    assert_ne!(generation(&h, cx), read);
+}
+
+#[gpui_kit::test]
 fn selecting_what_is_already_selected_tells_nobody(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let h = harness(cx);

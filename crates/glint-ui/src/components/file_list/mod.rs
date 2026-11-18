@@ -304,6 +304,8 @@ pub(crate) struct Frame {
     pub scale: f32,
     /// What the folders read ahead hold (the one under the pointer, the one the keyboard is on): their rows say it.
     pub peeks: Rc<Vec<Peek>>,
+    /// The folder the pointer is on: its row says what it holds (the keyboard's folder does without the pointer).
+    pub hovered_folder: Option<String>,
     /// The grid has just given way to the list: each row's picture is on its way from its tile, this far along.
     pub morph: Option<(crate::stage::Morph, f32)>,
 }
@@ -348,11 +350,26 @@ impl Peek {
 pub(crate) struct Peeks {
     known: Vec<(usize, Rc<Peek>)>,
     list: Rc<Vec<Peek>>,
+    /// The explorer's [`Explorer::prefetch_generation`] when `list` was made; None before the first read.
+    generation: Option<u64>,
+    /// How many times the explorer's peeks were walked and sorted (what a test says the frames cost).
+    #[cfg(test)]
+    walks: usize,
 }
 
 impl Peeks {
-    /// The peeks as the explorer has them now, newest first: the same list as last frame's when nothing changed.
+    /// The peeks as the explorer has them now, newest first: the same list as last frame's when nothing changed,
+    /// and then nothing is walked, sorted or allocated: a frame asks one number.
     pub(crate) fn read(&mut self, explorer: &Explorer) -> Rc<Vec<Peek>> {
+        let generation = explorer.prefetch_generation();
+        if self.generation == Some(generation) {
+            return self.list.clone();
+        }
+        self.generation = Some(generation);
+        #[cfg(test)]
+        {
+            self.walks += 1;
+        }
         let now: Vec<(usize, Rc<Peek>)> = explorer
             .peeks()
             .into_iter()
@@ -371,6 +388,11 @@ impl Peeks {
             self.known = now;
         }
         self.list.clone()
+    }
+
+    /// Whether a folder read ahead has something to say, as of the last read.
+    fn has(&self, path: &str) -> bool {
+        self.list.iter().any(|peek| peek.path == path)
     }
 }
 
@@ -418,6 +440,9 @@ pub struct FileList {
     prefetch: Option<Task<()>>,
     /// The pointer rests on a row: the wait before its item is looked at ahead (`aware::rest_on`).
     resting: Option<Task<()>>,
+    /// The folder the pointer is on, while it is: only its row builds the words of what it holds, since only a
+    /// row the pointer or the keyboard is on shows them.
+    hovered_folder: Option<String>,
     /// This list, for the listeners the window calls back (a drag that leaves the list).
     this: WeakEntity<Self>,
     /// The thumbnail service: the pictures in the icon cell.
@@ -549,6 +574,7 @@ impl FileList {
                 box_px: 16.,
                 scale: 1.,
                 peeks: Rc::new(Vec::new()),
+                hovered_folder: None,
                 morph: None,
             }),
             width: Rc::new(Cell::new(0.)),
@@ -560,6 +586,7 @@ impl FileList {
             restoring: false,
             prefetch: None,
             resting: None,
+            hovered_folder: None,
             this: cx.weak_entity(),
             thumbs,
             viewer,
@@ -1156,6 +1183,24 @@ impl FileList {
     /// press selects only it (but keeps a selection of several until release, so it can be dragged), a
     /// double-click opens, the right button selects it if it isn't and asks for its menu, the middle button
     /// opens a folder in a new tab.
+    /// The pointer came to the folder `path`, or left it. Its row says what the folder holds (read ahead) only while
+    /// the pointer is on it, so the row is drawn again when there is something to say, and not otherwise: moving over
+    /// the plain rows draws nothing.
+    fn hover_folder_row(&mut self, path: &str, hovered: bool, cx: &mut Context<Self>) {
+        let on = self.hovered_folder.as_deref() == Some(path);
+        if hovered == on {
+            return;
+        }
+        if hovered {
+            self.hovered_folder = Some(path.to_string());
+        } else {
+            self.hovered_folder = None;
+        }
+        if self.peeks.has(path) {
+            cx.notify();
+        }
+    }
+
     /// The pointer came to row `i`, or left it: resting there finds out what isn't known about its item, so its
     /// menu opens knowing it (docs/gpui/aware). Leaving before the wait is over asks nothing.
     fn rest_on_row(&mut self, i: usize, hovered: bool, cx: &mut Context<Self>) {
@@ -1458,6 +1503,7 @@ impl Render for FileList {
             box_px: (f32::from(window.rem_size()) * 1.25).round(),
             scale: window.scale_factor(),
             peeks,
+            hovered_folder: self.hovered_folder.clone(),
         });
         self.frame = frame.clone();
 
