@@ -93,6 +93,7 @@ namespace GlintE2E
         const uint INPUT_MOUSE = 0, INPUT_KEYBOARD = 1;
         const uint MOUSEEVENTF_MOVE = 0x1, MOUSEEVENTF_LEFTDOWN = 0x2, MOUSEEVENTF_LEFTUP = 0x4,
             MOUSEEVENTF_RIGHTDOWN = 0x8, MOUSEEVENTF_RIGHTUP = 0x10, MOUSEEVENTF_WHEEL = 0x800,
+            MOUSEEVENTF_XDOWN = 0x80, MOUSEEVENTF_XUP = 0x100,
             MOUSEEVENTF_VIRTUALDESK = 0x4000, MOUSEEVENTF_ABSOLUTE = 0x8000;
         const uint KEYEVENTF_EXTENDEDKEY = 0x1, KEYEVENTF_KEYUP = 0x2, KEYEVENTF_UNICODE = 0x4;
         const uint SWP_NOZORDER = 0x4, SWP_NOACTIVATE = 0x10;
@@ -341,6 +342,18 @@ namespace GlintE2E
                 ButtonUp(false);
                 Thread.Sleep(50);
             }
+            Thread.Sleep(80);
+        }
+
+        /// The mouse's side buttons at (x,y): Back (XBUTTON1) or Forward (XBUTTON2).
+        public static void SideButton(int x, int y, bool forward)
+        {
+            MoveTo(x, y);
+            Thread.Sleep(60);
+            int button = forward ? 2 : 1;
+            Mouse(MOUSEEVENTF_XDOWN, 0, 0, button);
+            Thread.Sleep(40);
+            Mouse(MOUSEEVENTF_XUP, 0, 0, button);
             Thread.Sleep(80);
         }
 

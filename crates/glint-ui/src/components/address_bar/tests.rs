@@ -316,6 +316,64 @@ fn back_forward_and_up_walk_the_tabs_history(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn back_and_forward_say_where_they_go_and_right_click_lists_the_places(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut rig = rig(cx, false, 900., "C:\\");
+    rig.go("C:\\Users");
+    // A search's results are a place too.
+    rig.visual.update(|_, cx| {
+        rig.explorer.update(cx, |e, cx| {
+            e.set_filter("me", None, cx);
+            e.run_find("me", explorer::Wider::default(), cx).detach()
+        })
+    });
+    rig.settle();
+    rig.go("C:\\Users\\me\\Documents");
+    // Back says where it goes: the results, by their words; Forward has nowhere to go.
+    assert_eq!(rig.role("Back to the results for “me” (Alt+Left)"), Some(Role::Button));
+    assert_eq!(rig.role("Forward (Alt+Right)"), Some(Role::Button));
+    // Right-click on Back: the places it can go to, nearest first, a search by its words and where it searched.
+    let at = rig
+        .element("Back to the results for “me” (Alt+Left)")
+        .expect("Back")
+        .bounds()
+        .center();
+    rig.visual.update(|window, cx| {
+        window.render_frame(cx);
+        window.pointer_down(at, MouseButton::Right, cx);
+        window.pointer_up(at, MouseButton::Right, cx);
+    });
+    rig.settle();
+    assert_eq!(rig.role("Places to go back to"), Some(Role::Menu));
+    assert_eq!(rig.roles(Role::MenuItem), ["“me”", "Users", "Local Disk (C:)"]);
+    // Choosing the last goes straight there, the places between are Forward's.
+    rig.click(("address-flyout-item", 2_usize));
+    assert_eq!(rig.path(), "C:\\");
+    assert!(!rig.has("Places to go back to"), "the menu closed");
+    assert_eq!(rig.role("Back (Alt+Left)"), Some(Role::Button));
+    assert_eq!(rig.role("Forward to Users (Alt+Right)"), Some(Role::Button));
+    let forward = rig.explorer.read_with(&rig.visual, |e, _| {
+        e.active_tab()
+            .map(|t| {
+                t.forward
+                    .iter()
+                    .map(|v| v.search_query().unwrap_or(&v.path).to_string())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    });
+    assert_eq!(forward, ["C:\\Users", "me", "C:\\Users\\me\\Documents"]);
+    // Forward twice: the results, as they were left.
+    rig.click("address-forward");
+    rig.click("address-forward");
+    let shown = rig.explorer.read_with(&rig.visual, |e, _| {
+        e.active_tab().and_then(|t| t.find.as_ref().map(|f| f.query.clone()))
+    });
+    assert_eq!(shown.as_deref(), Some("me"));
+    assert_eq!(rig.filter(), "me", "with their words in the box");
+}
+
+#[gpui_kit::test]
 fn a_chevron_lists_the_subfolders_in_the_background_and_a_click_opens_one(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let mut rig = rig(cx, false, 900., "C:\\Users\\me");

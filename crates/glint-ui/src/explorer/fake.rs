@@ -1551,6 +1551,14 @@ impl Source for FakeDisk {
         })
     }
 
+    fn missing(&self, paths: Vec<String>) -> Fut<Vec<String>> {
+        let state = self.state.clone();
+        Box::pin(async move {
+            let state = state.borrow();
+            paths.into_iter().filter(|p| entry_of(&state, p).is_none()).collect()
+        })
+    }
+
     fn find(
         &self,
         lane: &str,

@@ -108,12 +108,21 @@ impl Harness {
         })
     }
 
+    /// Back and Forward: each place by its folder ("search:" and its words for a search's results).
     fn history(&self, cx: &TestAppContext) -> (Vec<String>, Vec<String>) {
         self.read(cx, |e| {
+            let named = |list: &[Visit]| -> Vec<String> {
+                list.iter()
+                    .map(|v| match v.search_query() {
+                        Some(query) => format!("search:{query}"),
+                        None => v.path.clone(),
+                    })
+                    .collect()
+            };
             let tab = e.active_tab();
             (
-                tab.map(|t| t.back.clone()).unwrap_or_default(),
-                tab.map(|t| t.forward.clone()).unwrap_or_default(),
+                tab.map(|t| named(&t.back)).unwrap_or_default(),
+                tab.map(|t| named(&t.forward)).unwrap_or_default(),
             )
         })
     }
@@ -342,8 +351,8 @@ fn a_folder_windows_keeps_closed_opens_with_its_reason_and_get_access_opens_it(c
     h.read(cx, |e| {
         let tab = e.active_tab().expect("a tab");
         assert!(tab.no_access().is_none());
-        assert_eq!(tab.back, ["C:\\a"]);
     });
+    assert_eq!(h.history(cx).0, ["C:\\a"]);
 }
 
 #[gpui_kit::test]

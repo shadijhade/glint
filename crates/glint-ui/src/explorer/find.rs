@@ -21,10 +21,11 @@
 //! folder or New file puts something in the folder, [`Explorer::stop_find`], [`Explorer::leave_find`] or
 //! [`Explorer::clear_find`]. Each of those but the first tells the source to cancel the lane, as `cancelFind` did.
 //!
-//! # What isn't kept
+//! # History
 //!
-//! The TypeScript kept no history of name searches. The search history in Settings (`addToHistory`) is the
-//! text search's, which is another part's.
+//! A search is a place in the tab's Back and Forward history (`history.rs`): begun in a folder, it comes after the
+//! folder; leaving it for the folder is a step back, and Forward brings it back. The TypeScript kept no history
+//! of name searches. The recent searches the empty box offers (`addToHistory`) are saved by the address bar.
 
 use super::find_types::*;
 use super::model::{Explorer, Prefs};
@@ -281,6 +282,32 @@ impl Explorer {
     /// [`Explorer::run_find`] in a particular tab.
     #[must_use = "dropping the task stops waiting for the search, not the search; `.detach()` it to let it run"]
     pub fn run_find_in(&mut self, tab: TabId, query: &str, wider: Wider, cx: &mut Context<Self>) -> Task<()> {
+        self.run_find_with(tab, query, wider, true, cx)
+    }
+
+    /// A search brought back from Back or Forward runs again where it ran (its results weren't kept, or weren't all
+    /// in when it was left). The history already has it where it belongs.
+    #[must_use = "dropping the task stops waiting for the search, not the search; `.detach()` it to let it run"]
+    pub(super) fn run_find_again(
+        &mut self,
+        tab: TabId,
+        query: &str,
+        scope: String,
+        cx: &mut Context<Self>,
+    ) -> Task<()> {
+        self.run_find_with(tab, query, Wider::in_scope(scope), false, cx)
+    }
+
+    /// Runs a search in `tab`. With `history`, a search begun where the tab showed its folder is a place of its own
+    /// after the folder (`history.rs`); refining the search shown stays the same place.
+    fn run_find_with(
+        &mut self,
+        tab: TabId,
+        query: &str,
+        wider: Wider,
+        history: bool,
+        cx: &mut Context<Self>,
+    ) -> Task<()> {
         if query.trim().is_empty() {
             self.clear_find_in(tab, cx);
             return Task::ready(());
@@ -330,6 +357,8 @@ impl Explorer {
         let entries = before.map_or_else(no_entries, |f| f.entries.clone());
         let engine = t.find.as_ref().map(|f| f.engine.clone()).unwrap_or_default();
         let kept = !entries.is_empty();
+        // The folder, as it was before the search: Back from the results goes there.
+        let folder = (history && t.ready && t.find.is_none()).then(|| t.folder_visit());
         // What is inside the files: searched too when the search has words for it, unasked below a drive's top.
         let words = super::inside::inside_words(query);
         let can_inside = !words.is_empty() && super::inside::can_search_inside(&scope);
@@ -342,6 +371,9 @@ impl Explorer {
         // The older search's content search (this tab's) ends with it.
         self.inside_left(tab);
         self.update_tab(tab, |t| {
+            if let Some(folder) = folder {
+                t.leave_for_new(folder);
+            }
             t.find = Some(FindRun {
                 id,
                 query: query.to_string(),
@@ -605,10 +637,14 @@ impl Explorer {
         let Some(running) = self.tabs.get(&id).and_then(|t| t.find.as_ref()).map(|f| f.running) else {
             return;
         };
+        let left = self.tabs.get(&id).map(|t| t.visit());
         self.stop_find_job(id, running);
         self.update_tab(id, |t| {
             t.find = None;
             t.selection = Selection::default();
+            if let Some(left) = left {
+                t.back_from_search(left);
+            }
         });
         self.after_find_ended(id, cx);
         self.reload(Some(id), cx).detach();
@@ -629,6 +665,7 @@ impl Explorer {
         if find.is_none() && t.filter.is_empty() {
             return;
         }
+        let left = find.is_some().then(|| t.visit());
         if let Some(running) = find {
             self.stop_find_job(tab, running);
         }
@@ -636,6 +673,9 @@ impl Explorer {
             t.filter.clear();
             if t.find.take().is_some() {
                 t.selection = Selection::default();
+            }
+            if let Some(left) = left {
+                t.back_from_search(left);
             }
         });
         self.after_find_ended(tab, cx);

@@ -81,9 +81,14 @@ impl Explorer {
         if running.is_none() && t.filter.is_empty() {
             return;
         }
+        // Left for the folder, the results are what Forward brings back.
+        let left = running.is_some().then(|| t.visit());
         self.update_tab(tab, |t| {
             t.find = None;
             t.filter.clear();
+            if let Some(left) = left {
+                t.step_back_from_search(left);
+            }
         });
         if let Some(was_running) = running {
             self.stop_find_job(tab, was_running);

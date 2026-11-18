@@ -462,6 +462,35 @@ Add-Check 'search-inside' 'Ctrl+Shift+F goes to the search box; a word and Enter
     Assert-Eventually { Test-RowsShown (Get-ArenaNames) } 'and the folder is listed'
 }
 
+Add-Check 'search-history' 'a folder opened from search results: Backspace brings the results back with it selected, the mouse''s back button the folder searched, its forward button the results again' {
+    Send-Key 'ctrl+f'
+    Assert-Eventually { Find-El -Type Edit -Name 'Search * and its subfolders.' -Like } 'Ctrl+F puts the keyboard in the search box'
+    # 'inbo', not 'inbox': a tab showing results is called after their words, so the two titles differ.
+    Send-Text 'inbo'
+    Send-Key 'enter'
+    Assert-Eventually { Get-SearchBar } 'Enter shows the search results'
+    Assert-Eventually { Get-Row -Name 'inbox' } 'the folder inbox is among them'
+    Select-Row 'inbox'
+    Send-Key 'enter'
+    Assert-Eventually { (Get-TabTitle) -eq 'inbox' -and -not (Get-SearchBar) } 'Enter opens the folder from the results'
+    Assert-Eventually { Test-RowNamesAre 'inner.txt' } 'which lists its file'
+    Send-Key 'backspace'
+    Assert-Eventually { Get-SearchBar } 'Backspace brings the results back'
+    Assert-Eventually { (Get-TabTitle) -eq 'inbo' } 'with their words'
+    Assert-Eventually { Find-El -Type Edit -Name ('Search ' + $script:ArenaLeaf + ' and its subfolders.') } 'in the folder they were found in'
+    Assert-Eventually { Test-SelectedIs 'inbox' } 'with the folder opened from them selected'
+    $p = Get-EmptyListPoint
+    Invoke-SideButton $p.X $p.Y
+    Assert-Eventually { -not (Get-SearchBar) } 'the mouse''s back button leaves the results'
+    Assert-Eventually { Test-RowsShown (Get-ArenaNames) } 'for the folder searched, listed whole'
+    Invoke-SideButton $p.X $p.Y -Forward
+    Assert-Eventually { Get-SearchBar } 'its forward button brings the results back once more'
+    Assert-Eventually { Test-SelectedIs 'inbox' } 'inbox still selected'
+    Send-Key 'alt+right'
+    Assert-Eventually { (Get-TabTitle) -eq 'inbox' -and -not (Get-SearchBar) } 'Alt+Right goes on to the folder opened from them'
+    Assert-Eventually { Test-RowNamesAre 'inner.txt' } 'which lists its file again'
+}
+
 # ------------------------------------------------------------------------------------------------ settings, tabs, sidebar
 
 Add-Check 'settings' 'Ctrl+, opens Settings with its sections; Escape closes it' {

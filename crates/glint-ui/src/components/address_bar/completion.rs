@@ -77,6 +77,10 @@ pub(super) enum Look {
     Gallery,
     RecycleBin,
     Remote,
+    /// This PC (a place in Back's and Forward's menus).
+    ThisPc,
+    /// A search's results (a place in Back's and Forward's menus).
+    Search,
 }
 
 /// One line of the suggestion list, or of the menu a chevron opens.
