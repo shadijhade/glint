@@ -270,8 +270,8 @@ fn answer(pipe: Handle, engine: &Engine, updater: Option<&Updater>) {
             let gone = ClientGone::new(&pipe);
             engine.search_until(&request, &mut io, &|| gone.check())
         }
-        Request::Sizes { path } => {
-            let answer = match engine.sizes(&path) {
+        Request::Sizes { path, count } => {
+            let answer = match engine.sizes(&path, count) {
                 Ok(sizes) => Message::Sizes(sizes),
                 Err(message) => Message::Error { message },
             };
@@ -460,9 +460,12 @@ mod tests {
         assert_eq!(search("reprot", true, true), (vec![r"T:\Users\me\report.pdf".to_string()], Some((1, true))));
         assert_eq!(search("*", false, true).0, [r"T:\Users", r"T:\Users\me", r"T:\Users\me\notes.txt", r"T:\Users\me\report.pdf"], "the shorter path first, among names as good");
 
-        let sizes = client::sizes_on(client::connect_to(&name, &trust).unwrap(), r"t:\users").unwrap();
+        let sizes = client::sizes_on(client::connect_to(&name, &trust).unwrap(), r"t:\users", false).unwrap();
         assert_eq!((sizes.total, sizes.sizes), (1024, vec![("me".to_string(), 1024)]));
-        assert!(matches!(client::sizes_on(client::connect_to(&name, &trust).unwrap(), r"T:\Nowhere"), Err(Error::Service(_))));
+        assert_eq!((sizes.files, sizes.folders), (None, None), "counted only when asked");
+        let counted = client::sizes_on(client::connect_to(&name, &trust).unwrap(), r"t:\users", true).unwrap();
+        assert_eq!((counted.total, counted.files, counted.folders), (1024, Some(2), Some(1)));
+        assert!(matches!(client::sizes_on(client::connect_to(&name, &trust).unwrap(), r"T:\Nowhere", true), Err(Error::Service(_))));
 
         let map = |path: &str, depth, since| client::usage_on(client::connect_to(&name, &trust).unwrap(), &UsageRequest { path: path.into(), depth, max_items: 100, since });
         let found = map(r"t:\users", 2, None).unwrap();

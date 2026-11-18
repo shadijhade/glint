@@ -690,15 +690,18 @@ impl Engine {
         proto::write_message(out, &Message::Done { count: count as u64, limited, elapsed: ms(started), fuzzy: near.is_some() })
     }
 
-    /// Folder sizes: the folder's total and the total of each folder in it.
-    pub fn sizes(&self, path: &str) -> Result<Sizes, String> {
+    /// Folder sizes: the folder's total and the total of each folder in it; with `count`, how many files
+    /// and folders are below it too (one pass over the drive's names, where the sizes need none).
+    pub fn sizes(&self, path: &str, count: bool) -> Result<Sizes, String> {
         let started = Instant::now();
         let (letter, rest) = split_drive(path).ok_or("Not a folder on a local drive")?;
         let slot = self.ready_slot(letter).ok_or("This drive isn't indexed")?;
         let tree = slot.tree.read().unwrap();
         let dir = tree.resolve(rest).ok_or("This folder isn't in the index")?;
         let total = tree.rec(dir).filter(|r| r.dir()).ok_or("Not a folder")?.size();
-        Ok(Sizes { path: path.to_string(), total, sizes: tree.child_dirs(dir), elapsed: ms(started) })
+        let (files, folders) = if count { tree.count_below(dir) } else { (0, 0) };
+        let counted = |n| count.then_some(n);
+        Ok(Sizes { path: path.to_string(), total, sizes: tree.child_dirs(dir), elapsed: ms(started), files: counted(files), folders: counted(folders) })
     }
 
     /// Answers what's right inside a folder: result frames, as for a search, then a summary.
