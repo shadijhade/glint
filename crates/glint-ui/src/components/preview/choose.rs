@@ -102,7 +102,7 @@ pub enum Body {
     Notebook,
     /// A program's sections, imports and exports (`preview::program`).
     Program,
-    /// Contacts, calendars, mail, design files and Graphviz sources (`preview::small`).
+    /// Contacts, calendars, design files and Graphviz sources (`preview::small`).
     Small(SmallKind),
     /// What Git changed in the file since the last commit (`git::changes`).
     Changes,
@@ -221,8 +221,8 @@ pub fn views(entry: &FileEntry, changed: bool) -> Vec<ViewChoice> {
             t!("Preview"),
             t!("What it holds, as Glint reads it"),
         ));
-        // Outlook messages and design files are not text.
-        if !matches!(small, Some(SmallKind::Outlook | SmallKind::Design)) {
+        // Design files are not text.
+        if small != Some(SmallKind::Design) {
             views.push(choice(View::Source, t!("Text"), t!("The file as written")));
         }
     } else if rendered_markdown(entry) {
@@ -416,8 +416,10 @@ mod tests {
         assert_eq!(body("lab.ipynb"), Body::Notebook);
         assert_eq!(body("card.vcf"), Body::Small(SmallKind::Contact));
         assert_eq!(body("invite.ics"), Body::Small(SmallKind::Calendar));
-        assert_eq!(body("mail.eml"), Body::Small(SmallKind::Email));
-        assert_eq!(body("mail.msg"), Body::Small(SmallKind::Outlook));
+        // Mail has no previewer of its own: the type is unknown, so the text probe looks (and hands a binary
+        // .msg to Windows' previewer, or its bytes).
+        assert_eq!(body("mail.eml"), Body::Text);
+        assert_eq!(body("mail.msg"), Body::Text);
         assert_eq!(body("art.kra"), Body::Small(SmallKind::Design));
         assert_eq!(body("graph.dot"), Body::Small(SmallKind::Graphviz));
         assert_eq!(body("flow.mmd"), Body::Text);
@@ -434,7 +436,11 @@ mod tests {
             assert_eq!(later(book).body, Body::Shell(Fallback::Icon), "{book}");
             assert_eq!(later(book).later, None, "{book}");
             let entry = file("C:\\x", book, 10, 1);
-            assert_eq!(labels(&entry, false), pairs(&[(View::File, "File"), (View::Hex, "Hex")]), "{book}");
+            assert_eq!(
+                labels(&entry, false),
+                pairs(&[(View::File, "File"), (View::Hex, "Hex")]),
+                "{book}"
+            );
         }
         // What has its previewer now says nothing is missing.
         assert_eq!(later("movie.mp4").body, Body::Player(PlayerKind::Video));
@@ -612,14 +618,12 @@ mod tests {
             pairs(&[(View::File, "Preview"), (View::Source, "Text"), (View::Hex, "Hex")])
         );
         assert_eq!(choose(&contact, View::Source).body, Body::Text);
-        for binary in ["a.msg", "a.kra"] {
-            let entry = file("C:\\x", binary, 10, 1);
-            assert_eq!(
-                labels(&entry, false),
-                pairs(&[(View::File, "Preview"), (View::Hex, "Hex")]),
-                "{binary}"
-            );
-        }
+        // A design file is not text: its preview and its bytes.
+        let design = file("C:\\x", "a.kra", 10, 1);
+        assert_eq!(
+            labels(&design, false),
+            pairs(&[(View::File, "Preview"), (View::Hex, "Hex")])
+        );
         // In an archive they are not read from disk, so not as a contact.
         let inside = marked("a.vcf", attr::IN_ARCHIVE);
         assert_ne!(choose(&inside, View::File).body, Body::Small(SmallKind::Contact));

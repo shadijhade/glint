@@ -6,7 +6,6 @@ pub mod access;
 pub mod actions;
 pub mod agents;
 pub mod archive;
-pub mod attachments;
 pub mod aware;
 pub mod backup;
 pub mod bench;

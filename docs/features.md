@@ -175,7 +175,7 @@ With instant search on, the map comes from the index in one request: all of `C:\
 -   **Terminal recordings.** [asciinema](https://asciinema.org) recordings (.cast) play in the terminal pane's own renderer, with a scrubber and 1×, 2× and 4×, long pauses cut short.
 -   **Word documents without Office.** `.docx` files are laid out as pages in the preview by Glint itself, with nothing loaded from the internet.
 -   **Notebooks.** Jupyter notebooks show with their outputs.
--   **More previews.** Contacts (.vcf), calendar invites (.ics), emails (.eml, and Outlook's .msg) with their attachments and nothing loaded from the internet, the pictures Krita, OpenRaster, Procreate and Sketch files keep, and Graphviz files.
+-   **More previews.** Contacts (.vcf), calendar invites (.ics), the pictures Krita, OpenRaster, Procreate and Sketch files keep, and Graphviz files.
 -   **Old text files read right.** Arabic (Windows-1256), Cyrillic, Chinese and other older encodings are detected (Firefox's detector, [chardetng](https://github.com/hsivonen/chardetng)) in previews and Search inside files instantly, instead of showing as gibberish. **Read as** another, or **Convert to UTF-8** (Ctrl+Z takes it back).
 
 ## Archives and disk images

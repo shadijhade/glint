@@ -72,7 +72,8 @@ const CLASS: PCWSTR = w!("GlintPreviewHost");
 const SUBCLASS_ID: usize = 0x7072_6576;
 /// A handler that takes longer than this in one call is stopped, and not used again this session.
 const HUNG: Duration = Duration::from_secs(15);
-/// HTML and mail previewers run a browser engine on the file: Glint's own preview shows those.
+/// HTML and mail previewers run a browser engine on the file, which would load what a page or a message links to:
+/// Glint's own preview shows the HTML types, and mail is text.
 const SKIPPED: [&str; 7] = ["htm", "html", "xhtml", "mht", "mhtml", "eml", "svg"];
 
 // ---- The public face ------------------------------------------------------------------------------

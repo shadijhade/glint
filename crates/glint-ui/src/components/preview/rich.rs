@@ -1,4 +1,4 @@
-//! The rich text the Word and mail previews share: blocks and runs, right to left (previews-native.md sections 2-3).
+//! The rich text the Word previews draw: blocks and runs, right to left (previews-native.md sections 2-3).
 //!
 //! An EPUB chapter, an FB2 section and a Word document are all read into the same small model ([`Document`]: a
 //! list of [`Block`]s, each holding [`Text`] made of styled [`Span`]s), and one view ([`RichView`]) draws it.

@@ -207,7 +207,7 @@ A tour of what Glint does. **Every feature, in detail: [docs/features.md](docs/f
 
 -   **Code and text** with syntax colors, **Markdown** as GitHub shows it (math and Graphviz diagrams included), and **JSON, YAML and TOML** as trees you can filter with jq.
 -   **Tables you can query.** CSV, Excel, OpenDocument and Parquet files and SQLite databases, with SQL that only reads.
--   **Documents without their apps.** Word documents laid out as pages, Jupyter notebooks, emails with their attachments, contacts and calendar invites.
+-   **Documents without their apps.** Word documents laid out as pages, Jupyter notebooks, contacts and calendar invites.
 -   **Photos, songs and videos** with where and when they were taken, covers and waveforms, and **Trim** for a video or a recording.
 -   **Every file's bytes** in a Hex view, and Windows' own previewers for the rest, as in File Explorer.
 
