@@ -1,6 +1,6 @@
 //! Tests of the head and Suggested as data. Card E2 of docs/gpui/aware writes these.
 
-use super::head::{folder_head, head_of, Extras};
+use super::head::{folder_head, folder_head_with, head_of, Extras};
 use super::smart::{dress, keys, reason, row_for, zone};
 use super::tests::{ctx, english, find, labels, text};
 use super::*;
@@ -540,6 +540,21 @@ fn several_items_are_counted_and_weighed_by_their_files() {
     assert!(head.badges.is_empty() && head.changed.is_none());
     let two = head_of(&[folder("C:\\x", "a"), folder("C:\\x", "b")], None, &none);
     assert_eq!((two.title.to_string(), line(&two)), ("2 items".to_string(), "2 folders".to_string()));
+}
+
+#[test]
+fn a_folders_own_head_adds_its_whole_size_once_it_is_counted() {
+    let _guard = english();
+    let inside = |bytes, done| Probed {
+        inside: Some(Inside { files: 9, folders: 2, bytes, junk: 0, done, from_index: false }),
+        ..Probed::default()
+    };
+    let head = |probed: Option<&Probed>| folder_head_with("P".into(), Some(25), None, probed);
+    assert_eq!(line(&head(None)), "25 items");
+    assert_eq!(line(&head(Some(&inside(3 * 1024 * 1024, false)))), "25 items", "not while it is still counting");
+    assert_eq!(line(&head(Some(&inside(3 * 1024 * 1024, true)))), "25 items · 3.0 MB");
+    assert_eq!(line(&head(Some(&inside(0, true)))), "25 items");
+    assert_eq!(line(&folder_head_with("P".into(), None, None, Some(&inside(1024, true)))), "1.0 KB");
 }
 
 #[test]

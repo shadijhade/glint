@@ -81,8 +81,8 @@ fn rules(facts: &Facts, probed: Option<&Probed>, available: &[&str]) -> Vec<(&'s
     {
         out.push(("do:run-in-sandbox", 7.5, Why::Unsigned));
     }
-    // 7
-    if shape == Shape::Folder {
+    // 7: a folder selected, or the folder that is open (its menu with nothing selected; `probed` is its own).
+    if matches!(shape, Shape::Folder | Shape::Nothing) {
         if let Some(inside) = probed.and_then(|p| p.inside.as_ref()) {
             if inside.done && inside.junk >= 500 * MB {
                 out.push(("do:cleanup", 7.5, Why::BuildOutput(inside.junk)));
@@ -332,6 +332,17 @@ mod tests {
         let signed = Probed { signer: Some(Signer::Signed("Acme".into())), ..probed() };
         assert!(!has(&run(&facts(Shape::Program), Some(&signed), &all()), "do:run-in-sandbox"));
         assert!(!has(&run(&facts(Shape::Script), Some(&p), &all()), "do:run-in-sandbox"));
+    }
+
+    #[test]
+    fn the_open_folders_own_menu_offers_cleanup_for_its_build_output_too() {
+        // Nothing selected: the menu is the open folder's, and `probed` is what is known about that folder.
+        let p = Probed { inside: Some(inside(2_000 * MB, true)), ..probed() };
+        let picks = run(&facts(Shape::Nothing), Some(&p), &all());
+        assert_eq!(first(&picks), Some(("do:cleanup", 7.5, &Why::BuildOutput(2_000 * MB))));
+        assert!(!has(&run(&facts(Shape::Nothing), None, &all()), "do:cleanup"), "nothing known, nothing offered");
+        let small = Probed { inside: Some(inside(10 * MB, true)), ..probed() };
+        assert!(!has(&run(&facts(Shape::Nothing), Some(&small), &all()), "do:cleanup"));
     }
 
     #[test]
