@@ -248,6 +248,101 @@ fn a_quiet_look_that_has_finished_leaves_a_look_for_now_nothing_to_ask(cx: &mut 
     assert_eq!(fake.asked(), 1);
 }
 
+/// Counts how often the entity says answers came in, at once.
+fn count_answers(cx: &mut TestAppContext, aware: &Entity<Aware>) -> Rc<Cell<u32>> {
+    let seen = Rc::new(Cell::new(0));
+    let counter = seen.clone();
+    cx.update(|cx| {
+        cx.subscribe(aware, move |_, _: &Answered, _| counter.set(counter.get() + 1)).detach();
+    });
+    seen
+}
+
+#[gpui_kit::test]
+fn an_answer_is_kept_and_announced_at_once_and_only_the_redraw_waits_for_the_frame(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let fake = Fake::new();
+    let world = world(cx, &fake, &empty_disk(), "C:\\x");
+    let entry = a_file("a.bin");
+    look_ahead(cx, &world, std::slice::from_ref(&entry));
+    let (heard, answers) = (count_notices(cx, &world.aware), count_answers(cx, &world.aware));
+    // A fast first answer is told to the views with no wait before it.
+    fake.send(0, "C:\\x\\a.bin", Part::Origin(Origin { host: "github.com".into(), blocked: true }));
+    cx.run_until_parked();
+    assert_eq!((heard.get(), answers.get()), (1, 1));
+    // The next, a moment later, is kept at once and announced at once; the redraw is due at the frame's end.
+    fake.send(0, "C:\\x\\a.bin", Part::OpensWith("Notepad".into()));
+    cx.run_until_parked();
+    let known = world.aware.read_with(cx, |aware, _| aware.probed(&entry).cloned()).expect("kept");
+    assert_eq!(known.opens_with.as_deref(), Some("Notepad"), "kept without waiting a frame");
+    assert_eq!((heard.get(), answers.get()), (1, 2));
+    // Answers within the same frame add nothing to what is owed.
+    fake.send(0, "C:\\x\\a.bin", Part::Pages(2));
+    cx.run_until_parked();
+    assert_eq!((heard.get(), answers.get()), (1, 3));
+    cx.executor().advance_clock(FRAME);
+    cx.run_until_parked();
+    assert_eq!(heard.get(), 2, "one notice for everything that came in during the frame");
+    // After a quiet while the next answer is told at once again.
+    cx.executor().advance_clock(Duration::from_millis(100));
+    std::thread::sleep(FRAME);
+    fake.send(0, "C:\\x\\a.bin", Part::Target("C:\\t".into()));
+    cx.run_until_parked();
+    assert_eq!(heard.get(), 3);
+}
+
+#[gpui_kit::test]
+fn what_was_asked_is_answered_when_every_part_came_in_or_the_run_ended(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let fake = Fake::new();
+    let world = world(cx, &fake, &empty_disk(), "C:\\x");
+    let entry = a_file("a.bin");
+    let answered = |cx: &mut TestAppContext| world.aware.read_with(cx, |aware, _| aware.answered(&entry));
+    assert!(answered(cx), "nothing was asked, so nothing is awaited");
+    look_ahead(cx, &world, std::slice::from_ref(&entry));
+    assert!(!answered(cx));
+    let asked = fake.calls.borrow()[0].wants[0];
+    let all = [
+        (asked.origin, Part::Origin(Origin { host: String::new(), blocked: false })),
+        (asked.locked_by, Part::LockedBy(Vec::new())),
+        (asked.opens_with, Part::OpensWith("Notepad".into())),
+        (asked.twins, Part::Twins(Vec::new())),
+    ];
+    let parts: Vec<Part> = all.into_iter().filter(|(wanted, _)| *wanted).map(|(_, part)| part).collect();
+    let last = parts.len() - 1;
+    for (n, part) in parts.into_iter().enumerate() {
+        assert!(!answered(cx), "part {n} is still to come");
+        fake.send(0, "C:\\x\\a.bin", part);
+        cx.run_until_parked();
+        assert_eq!(answered(cx), n == last);
+    }
+    // A run that ends with parts unanswered has nothing more to say: they can't be known.
+    let other = a_file("b.bin");
+    look_ahead(cx, &world, std::slice::from_ref(&other));
+    assert!(!world.aware.read_with(cx, |aware, _| aware.answered(&other)));
+    fake.senders.borrow_mut().clear();
+    cx.run_until_parked();
+    assert!(world.aware.read_with(cx, |aware, _| aware.answered(&other)));
+}
+
+#[gpui_kit::test]
+fn a_folders_inside_is_answered_only_when_it_has_been_counted(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let fake = Fake::new();
+    let disk = empty_disk();
+    disk.folder("C:\\x\\d", Vec::new());
+    let world = world(cx, &fake, &disk, "C:\\x");
+    let dir = folder("C:\\x", "d");
+    look_ahead(cx, &world, std::slice::from_ref(&dir));
+    let inside = |done| Part::Inside(glint_model::aware::Inside { files: 1, folders: 0, bytes: 5, junk: 0, done, from_index: false });
+    fake.send(0, "C:\\x\\d", inside(false));
+    cx.run_until_parked();
+    assert!(!world.aware.read_with(cx, |aware, _| aware.answered(&dir)), "still counting");
+    fake.send(0, "C:\\x\\d", inside(true));
+    cx.run_until_parked();
+    assert!(world.aware.read_with(cx, |aware, _| aware.answered(&dir)));
+}
+
 #[gpui_kit::test]
 fn answers_sent_together_are_kept_and_the_views_hear_of_them_once(cx: &mut TestAppContext) {
     let _guard = testing::lock();
