@@ -111,7 +111,7 @@ The search box at the end of the address field looks for what you type in two pl
 <img src="../screenshots/text-search.png" alt="A search for one word: the file with it in its name, then seven files with it inside them, each with the lines that matched" width="100%">
 
 -   **Files found by what's in them are rows like any other.** They are listed under **Inside files**, each with the lines that matched under it (the line's number, the match marked; the first three, then a count of the rest: press it to list them all under the file). Press a line to show it in the preview (Quick Look too), and double-press it to open the file in the editor **Settings → Inside files** names, at that line (VS Code and its kin, Notepad++, Sublime Text, Zed, Vim and the JetBrains IDEs take a line; another editor opens the file at its top). Open, copy, rename, delete, drag or preview them as you would any result.
--   **Typing filters the folder; Enter searches below it.** Names come as you type where instant search covers the drive. What the files hold is read on Enter by ripgrep, streaming in as it's found, or as you type where the content index covers the folder. A whole drive is read inside only when you ask (**Inside files too** on the results' bar).
+-   **Typing filters the folder; Enter searches below it.** Names come as you type where instant search covers the drive. What the files hold is read on Enter by ripgrep, streaming in as it's found. A whole drive is read inside only when you ask (**Inside files too** on the results' bar).
 -   **Match case, whole words, regular expressions.** The three switches in the box (`Alt+C`, `Alt+W`, `Alt+R`) say how the words are matched inside files. The filters (`ext:pdf`, `size:>1mb`, `dm:7d`) narrow both halves.
 -   **Documents.** **Also look inside → Documents** (in the box's hints) searches the text inside PDF, Word, Excel, PowerPoint, OpenDocument and EPUB files, with the same case, whole-word and regex rules, without Office or a search index. Each line says where it is ("p. 12", "slide 3", "Sales, row 40").
     -   PDFs are read by [pdf-extract](https://github.com/jrmuizel/pdf-extract), the rest from their own XML; scanned PDFs, which hold pictures of text, have none to find.
@@ -120,8 +120,6 @@ The search box at the end of the address field looks for what you type in two pl
     -   **Pictures** (with Documents) reads the text in pictures as well, with Windows' own OCR (in the languages your Windows has it for): PNG, JPEG, TIFF, BMP and GIF, and WebP, HEIC and AVIF with Microsoft's extensions for them. A scan or a screenshot is then found by what it says.
     -   Skipped: hidden files and folders, the excluded folders (**Settings → Inside files**), and files kept only in the cloud (reading them would download them).
 -   **Recent searches** are one click away in the empty box, each with its folder; **Save** on the results' bar keeps a search in the sidebar.
-
--   **Search inside files instantly.** **Settings → Search inside files instantly** keeps an index ([tantivy](https://github.com/quickwit-oss/tantivy)) of the text, code and documents below the folders you choose, current as they change, so the search answers from it in milliseconds, as you type. It reads screenshots and scans with Windows' OCR too, and the pages of scanned PDFs, so their words are found.
 
 Up to version 0.10, searching inside files was a mode of its own (Text), with its own screen. From 0.11 it is this one search. What that screen alone did is gone with it: Replace all, code patterns (ast-grep) and exporting the results to CSV or JSON.
 
@@ -175,7 +173,7 @@ With instant search on, the map comes from the index in one request: all of `C:\
 -   **Word documents without Office.** `.docx` files are laid out as pages in the preview by Glint itself, with nothing loaded from the internet.
 -   **Notebooks.** Jupyter notebooks show with their outputs.
 -   **More previews.** Contacts (.vcf), calendar invites (.ics), the pictures Krita, OpenRaster, Procreate and Sketch files keep, and Graphviz files.
--   **Old text files read right.** Arabic (Windows-1256), Cyrillic, Chinese and other older encodings are detected (Firefox's detector, [chardetng](https://github.com/hsivonen/chardetng)) in previews and Search inside files instantly, instead of showing as gibberish. **Read as** another, or **Convert to UTF-8** (Ctrl+Z takes it back).
+-   **Old text files read right.** Arabic (Windows-1256), Cyrillic, Chinese and other older encodings are detected (Firefox's detector, [chardetng](https://github.com/hsivonen/chardetng)) in previews and searches inside files, instead of showing as gibberish. **Read as** another, or **Convert to UTF-8** (Ctrl+Z takes it back).
 
 ## Archives and disk images
 

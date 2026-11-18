@@ -162,8 +162,7 @@ impl Page {
         }
     }
 
-    /// The sections the page shows, in order (their ids after `settings-`). Inside files shows the content
-    /// index's section first, once its service has answered.
+    /// The sections the page shows, in order (their ids after `settings-`).
     pub fn sections(self) -> &'static [&'static str] {
         match self {
             Page::Overview => &["overview"],
@@ -174,7 +173,7 @@ impl Page {
             Page::Instant => &["instant-search"],
             Page::Find => &["find-files-by-name"],
             Page::Quick => &["quick-search"],
-            Page::Inside => &["search-inside-files-instantly", "search-text-ripgrep", "text-search-skips"],
+            Page::Inside => &["search-text-ripgrep", "text-search-skips"],
             Page::Clouds => &["clouds"],
             Page::Agents => &["ai-agents"],
             Page::Tools => &["tools"],

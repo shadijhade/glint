@@ -15,7 +15,6 @@ pub mod calc;
 pub mod cleanup;
 pub mod codesearch;
 pub mod compare;
-pub mod content;
 pub mod convert;
 pub mod crash;
 pub mod data_lens;

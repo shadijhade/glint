@@ -168,8 +168,6 @@ pub trait Source {
     fn cancel_find(&self, lane: &str);
     /// How instant search stands (`IndexInfo`), or `None` when that can't be said.
     fn search_index(&self) -> Fut<Option<SearchIndex>>;
-    /// Whether the content index covers `path` (and is on): plain words are then answered in milliseconds.
-    fn inside_covers(&self, path: &str) -> Fut<bool>;
     /// Starts a search inside files; what it finds arrives as core's `search-event`s
     /// ([`Explorer::inside_heard`](super::Explorer::inside_heard)). A search replaced by a newer one, or stopped
     /// while it starts, resolves to `Err("cancelled")`.
@@ -693,12 +691,6 @@ impl Source for CoreSource {
         });
     }
 
-    fn inside_covers(&self, path: &str) -> Fut<bool> {
-        let path = path.to_string();
-        let running = core_bridge::run(async move { glint_core::content::content_covers(path) });
-        Box::pin(async move { running.await.unwrap_or(false) })
-    }
-
     fn inside_start(&self, engine: InsideEngine, request: InsideRequest) -> Fut<Result<(), String>> {
         let (app, window) = (self.app.clone(), self.window());
         let running = core_bridge::run(async move {
@@ -731,13 +723,6 @@ impl Source for CoreSource {
                         ocr: request.options.ocr,
                     };
                     glint_core::run_doc_search(window, docs, request.id, request.max_results, state).await
-                }
-                InsideEngine::Index => {
-                    let words = glint_core::content::ContentSearch {
-                        query: request.query,
-                        path: request.path,
-                    };
-                    glint_core::content::run_content_search(window, words, request.id, request.max_results).await
                 }
             }
             .map(drop)

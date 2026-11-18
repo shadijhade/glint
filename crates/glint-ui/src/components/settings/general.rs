@@ -207,8 +207,7 @@ impl SettingsView {
         setting_row(label, hint, vec![control], t).into_any_element()
     }
 
-    /// The section `slot` draws (`settings-<slot>`), or None for one that draws nothing yet: the content index
-    /// waits until its service has answered once, as the TypeScript's `return null` did. The Overview is drawn by
+    /// The section `slot` draws (`settings-<slot>`), or None for one that draws nothing. The Overview is drawn by
     /// the view itself.
     pub(super) fn section_of(&mut self, slot: &str, t: &theme::Tokens, cx: &mut Context<Self>) -> Option<AnyElement> {
         let s = state::settings(cx).clone();
@@ -222,10 +221,6 @@ impl SettingsView {
                 vec![self.instant.clone().into_any_element()],
                 t,
             ),
-            "search-inside-files-instantly" => {
-                self.content.read(cx).status()?;
-                self.content.clone().into_any_element()
-            }
             "find-files-by-name" => self.find(&s, t, cx),
             "quick-search" => self.quick_search(&s, t, cx),
             "ai-agents" => self.agents.clone().into_any_element(),

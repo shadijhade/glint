@@ -559,7 +559,7 @@ impl AddressBar {
             .on_action(cx.listener(|_, _: &ListDown, _, cx| cx.emit(AddressBarEvent::FocusFiles { first: true })))
             .on_action(cx.listener(|this, _: &ListCancel, window, cx| this.leave_search(window, cx)))
             .tooltip(tip(t!(
-                "Typing filters this folder · Enter searches its subfolders too: names (the instant search index or fd; * and ? work, words all must match) and inside the files (ripgrep, or the content index). Filters: ext:pdf, path:src\\lib, size:>10mb, dm:7d (changed in the last 7 days), dm:>1y, file:, folder:, and for photos, videos and songs width:>1920, height:, taken:2024, camera:, duration:>5m, artist:, album:"
+                "Typing filters this folder · Enter searches its subfolders too: names (the instant search index or fd; * and ? work, words all must match) and inside the files (ripgrep). Filters: ext:pdf, path:src\\lib, size:>10mb, dm:7d (changed in the last 7 days), dm:>1y, file:, folder:, and for photos, videos and songs width:>1920, height:, taken:2024, camera:, duration:>5m, artist:, album:"
             )))
             .child(input)
             .children(plain.map(|p| overlay(p.into_any_element())))

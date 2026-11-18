@@ -114,8 +114,6 @@ struct State {
     inside_cancels: usize,
     /// A search inside files that can't start, once.
     inside_error: Option<String>,
-    /// Whether the content index covers every folder.
-    inside_covered: bool,
     /// A test drives the searches inside files by hand (`Explorer::inside_heard`); otherwise each one ends as it
     /// starts, having found nothing.
     inside_live: bool,
@@ -514,11 +512,6 @@ impl FakeDisk {
     /// request's id) and that they ended.
     pub fn live_inside(&self) {
         self.state.borrow_mut().inside_live = true;
-    }
-
-    /// Whether the content index covers every folder (it doesn't, unless a test says so).
-    pub fn set_inside_covered(&self, covered: bool) {
-        self.state.borrow_mut().inside_covered = covered;
     }
 
     /// The lanes whose search was asked to end.
@@ -1623,11 +1616,6 @@ impl Source for FakeDisk {
 
     fn cancel_find(&self, lane: &str) {
         self.state.borrow_mut().cancelled.push(lane.to_string());
-    }
-
-    fn inside_covers(&self, _path: &str) -> Fut<bool> {
-        let covered = self.state.borrow().inside_covered;
-        Box::pin(async move { covered })
     }
 
     fn inside_start(

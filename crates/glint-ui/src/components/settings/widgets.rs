@@ -321,23 +321,6 @@ pub fn toggler<V: 'static>(
     }
 }
 
-/// A folder or a path on its own line, cut short with an ellipsis, with a button at the end (a folder to
-/// take out, a PC to forget). `i` numbers the line among its kind.
-pub fn path_line(slot: &str, i: usize, text: String, action: Button) -> AnyElement {
-    let title: SharedString = text.clone().into();
-    row_start()
-        .id(id(&["settings-path", slot, &i.to_string()]))
-        .role(Role::ListItem)
-        .aria_label(title.clone())
-        .test_support()
-        .justify_between()
-        .gap(space(2.))
-        .text_size(theme::size::SM)
-        .child(div().flex_1().min_w_0().truncate().text_start().child(isolate(title)))
-        .child(div().flex_none().child(action))
-        .into_any_element()
-}
-
 /// Asks a question in a dialog above Settings and runs `on_ok` only if the person says yes (the Tauri
 /// `confirm`). Escape and Cancel close it and do nothing.
 pub fn confirm(

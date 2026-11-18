@@ -166,7 +166,7 @@ A tour of what Glint does. **Every feature, in detail: [docs/features.md](docs/f
 -   **One box for names and contents.** Typing filters the folder; `Enter` searches below it, names by the index or fd and contents by ripgrep, in one list.
 -   **Instant search**, when you turn it on: an index of every NTFS drive, kept current from the change journal, so names, folder sizes and maps answer from memory in milliseconds ([how it works, and its security model](docs/instant-search.md)).
 -   **Filters, or plain words.** `ext:pdf size:>10mb dm:7d`, `taken:2024 camera:canon`, `artist:`, `tag:work`, `git:changed`… or type `pdfs from last week over 5 mb` and Glint shows the filters it read. Typos are forgiven: `reprot` finds *Q3 Report.pdf*.
--   **Inside documents and pictures.** The text in PDFs, Word, Excel, PowerPoint, OpenDocument and EPUB files without Office, and in screenshots and scans through Windows' OCR. **Search inside files instantly** keeps an index of the folders you choose, to answer as you type.
+-   **Inside documents and pictures.** The text in PDFs, Word, Excel, PowerPoint, OpenDocument and EPUB files without Office, and in screenshots and scans through Windows' OCR.
 -   **Quick search from anywhere.** `Ctrl+Alt+F` in any app opens a search box over every drive, answered by the index as you type.
 
 [More about search →](docs/features.md#search)
@@ -301,7 +301,7 @@ A tour of what Glint does. **Every feature, in detail: [docs/features.md](docs/f
 
 ## AI agents
 
-AI agents that speak the [Model Context Protocol](https://modelcontextprotocol.io/) (Claude Code and Claude Desktop, VS Code's Copilot, Cursor and others) can use Glint's engines. `Glint.exe mcp` is the server: the agent starts it, and it answers on its standard input and output with 13 tools. Nine only read; four change files, and only after you allow each in a Windows dialog naming exactly what will happen.
+AI agents that speak the [Model Context Protocol](https://modelcontextprotocol.io/) (Claude Code and Claude Desktop, VS Code's Copilot, Cursor and others) can use Glint's engines. `Glint.exe mcp` is the server: the agent starts it, and it answers on its standard input and output with 12 tools. Eight only read; four change files, and only after you allow each in a Windows dialog naming exactly what will happen.
 
 | Tool | What it answers | How |
 | :--- | :--- | :--- |
@@ -310,7 +310,6 @@ AI agents that speak the [Model Context Protocol](https://modelcontextprotocol.i
 | `largest_files` | The biggest files anywhere below a folder | The index's disk-usage map |
 | `recent_changes` | What was renamed, moved, deleted or recycled lately, and where each item went | The index's 30 days of changes |
 | `search_text` | Lines of text files that contain a pattern | ripgrep |
-| `search_content` | Files holding every word given, best first: text, code, PDFs, Office documents and the text in pictures | The index of what files hold, where it's on |
 | `search_code` | Code matching an ast-grep pattern, such as `$X.unwrap()` | ast-grep, once installed |
 | `query_data` | One SQL query that only reads, over a CSV, JSON lines, Parquet, Excel or SQLite file | SQLite, or DuckDB when it's installed |
 | `compare_files` | What differs between two files | Difftastic by structure when it's installed, else line by line |

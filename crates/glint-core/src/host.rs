@@ -76,7 +76,7 @@ pub enum Event {
     DirChanged(String),
     /// A repository on screen changed (`git.rs`): its root.
     GitChanged(String),
-    /// What a search inside files found so far, or how it ended (`search_text`, the content index).
+    /// What a search inside files found so far, or how it ended (`search_text`).
     Search(crate::SearchEvent),
     /// The copy queue's jobs as they are now (`queue.rs`).
     CopyQueue(Vec<crate::queue::JobView>),
