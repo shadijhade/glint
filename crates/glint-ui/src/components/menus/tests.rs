@@ -119,7 +119,6 @@ fn a_file_gets_the_typescripts_items_in_its_order() {
             "-",
             "Move or copy to>",
             "Tags>",
-            "Encrypt…",
             "Compress to>",
             "Rename items in this folder…",
             "-",
@@ -307,7 +306,7 @@ fn files_get_the_tools_that_read_them() {
     let data = item_menu(&[text("a.csv"), text("b.parquet")], &ctx());
     assert!(find(&data, "Query 2 files together…").is_some() && find(&data, "Convert data…").is_some());
     let age = item_menu(&[text("a.txt.age")], &ctx());
-    assert!(find(&age, "Decrypt…").is_some() && find(&age, "Encrypt…").is_none());
+    assert!(find(&age, "Decrypt…").is_none() && find(&age, "Encrypt…").is_none(), "an .age file is an unknown type again");
     let program = item_menu(&[text("setup.exe")], &ctx());
     assert!(find(&program, "Run as administrator").is_some());
     let disk_image = item_menu(&[text("os.iso")], &ctx());
@@ -525,7 +524,6 @@ fn inside_an_archive_changes_are_greyed_out_and_a_note_says_why() {
         "Show in File Explorer",
         "Scripts",
         "Tags",
-        "Encrypt…",
         "Compress to",
     ] {
         assert!(

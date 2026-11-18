@@ -1176,7 +1176,6 @@ impl Workspace {
             MenuEvent::SetTags { paths, add, remove } => {
                 dialogs::tags::set_tags(window, cx, paths.clone(), add.clone(), remove.clone())
             }
-            MenuEvent::Vault { paths, decrypt } => dialogs::vault::open(window, cx, paths.clone(), *decrypt),
             MenuEvent::EditConnection { id } => dialogs::remote::open_edit(window, cx, id.clone()),
             MenuEvent::RemoveConnection { id } => dialogs::remote::remove_remote(window, cx, id.clone()),
             MenuEvent::SearchText { folder } => self.search_in(folder, window, cx),

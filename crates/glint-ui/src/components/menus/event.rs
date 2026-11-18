@@ -150,8 +150,6 @@ pub enum MenuEvent {
     NewOfKind { ext: String },
     /// "Rename items in this folder…": batch rename with every row of the folder (`openBatchRename(rows, rows)`).
     BatchRenameFolder,
-    /// "Encrypt…" / "Decrypt…" (`openVault`).
-    Vault { paths: Vec<String>, decrypt: bool },
     /// "Compress to" a format (`compressEntries`, after `secretsCheckFirst`).
     Compress { paths: Vec<String>, format: CompressFormat },
     /// "Compress to > In place…" (`openCompressInPlace`).

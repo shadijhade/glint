@@ -115,13 +115,6 @@ fn event_key(event: &MenuEvent) -> Option<String> {
         MenuEvent::NewTextDocument => "do:new-text-document",
         MenuEvent::NewOfKind { ext } => return Some(format!("do:new:{}", ext.to_lowercase())),
         MenuEvent::BatchRenameFolder => "do:batch-rename-folder",
-        MenuEvent::Vault { decrypt, .. } => {
-            if *decrypt {
-                "do:vault:decrypt"
-            } else {
-                "do:vault:encrypt"
-            }
-        }
         MenuEvent::Compress { format, .. } => match format {
             CompressFormat::Zip => "do:compress:zip",
             CompressFormat::SevenZ => "do:compress:7z",

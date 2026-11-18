@@ -204,7 +204,6 @@ Each of these is on the right-click menu of the files it works on, and in `Ctrl+
 -   **Convert document**, with [pandoc](https://pandoc.org): Word, OpenDocument, Markdown, HTML, EPUB, LaTeX, RTF and more into one another, Markdown into PowerPoint, and PDFs typeset by [Typst](https://typst.app) without Word or LaTeX. Arabic and Hebrew documents stay right to left.
 -   **Songs**: edit title, artist, album, track, year, genre and cover for one song or many (titles and track numbers from file names too); **Even volume** in Media brings recordings to the same loudness; the audio preview has a waveform.
 -   **Remove personal info** before sharing: where a photo was taken, the camera's serial number, names, the apps used and editing history, out of photos, videos, PDFs (ExifTool) and Word, Excel and PowerPoint files (Glint itself). **Change when it was taken** moves or sets photos' dates.
--   **Encrypt** files and folders with a passphrase or someone's age key: [age](https://age-encryption.org)'s format, in Glint itself, readable with age or rage anywhere.
 
 ## Tools
 
