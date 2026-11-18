@@ -1040,8 +1040,8 @@ impl Workspace {
 
     fn on_grid_event(&mut self, pane: usize, event: &FileGridEvent, window: &mut Window, cx: &mut Context<Self>) {
         match event {
-            FileGridEvent::ContextMenu { path, position } => self.menus.update(cx, |menus, cx| {
-                menus.open_list_menu(pane, Some(path), Some(*position), false, window, cx)
+            FileGridEvent::ContextMenu { path, position, shift } => self.menus.update(cx, |menus, cx| {
+                menus.open_list_menu(pane, Some(path), Some(*position), *shift, window, cx)
             }),
             FileGridEvent::BackgroundContextMenu { position } => self.menus.update(cx, |menus, cx| {
                 menus.open_background_menu(pane, Some(*position), window, cx)

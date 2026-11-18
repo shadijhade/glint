@@ -3,7 +3,9 @@
 //! list callback that draws the visible rows only reads it.
 
 use super::thumbnail::{thumbnail_square, Thumbnails, Want};
+use crate::components::row_facts::{Media, RowFacts, Want as FactsWant};
 use crate::components::{file_list::diff, git};
+use crate::dialogs::tags::tag_dots;
 use crate::explorer::Comparison;
 use crate::kit::prelude::*;
 use crate::{i18n, t, theme};
@@ -14,7 +16,7 @@ use glint_model::file_types::{kind_of, type_label};
 use glint_model::format::{format_full_date, format_size};
 use glint_model::grid::GridTile;
 use glint_model::paths::parent_path;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
@@ -68,6 +70,11 @@ pub(super) struct Frame {
     pub scale: f32,
     pub tokens: theme::Tokens,
     pub thumbs: Entity<Thumbnails>,
+    /// The tiles' tags, and what they are kept under (the tab's folder or search).
+    pub facts: Entity<RowFacts>,
+    pub facts_key: String,
+    /// The tiles the tags were last asked for.
+    pub asked: Rc<RefCell<Option<Asked>>>,
     pub viewer: EntityId,
     /// A fingerprint of the thumbnails last asked for, so the service is told only when the set changes.
     pub shown: Rc<Cell<u64>>,
@@ -86,6 +93,14 @@ pub(super) struct Frame {
     pub rem: f32,
     /// The list has just given way to the grid: each tile is on its way from its row, this far along.
     pub morph: Option<(crate::stage::Morph, f32)>,
+}
+
+/// What was last asked of the facts, so a frame that draws the same tiles asks nothing again.
+pub(super) struct Asked {
+    key: String,
+    from: usize,
+    to: usize,
+    rows: usize,
 }
 
 /// The name tiles are a hover group under: what shows only while the pointer is on a tile asks it.
@@ -196,6 +211,12 @@ pub(super) fn rows_in(frame: &Rc<Frame>, range: Range<usize>, window: &mut Windo
                 ..range.end.saturating_add(OVERSCAN_ROWS).saturating_mul(cols).min(len),
             cx,
         );
+        ask_tags(
+            frame,
+            range.start.saturating_sub(OVERSCAN_ROWS).saturating_mul(cols).min(len)
+                ..range.end.saturating_add(OVERSCAN_ROWS).saturating_mul(cols).min(len),
+            cx,
+        );
         for freed in frame.thumbs.update(cx, |thumbs, _| thumbs.take_evicted()) {
             window.drop_image(freed).ok();
         }
@@ -223,6 +244,33 @@ pub(super) fn rows_in(frame: &Rc<Frame>, range: Range<usize>, window: &mut Windo
         window.request_animation_frame();
     }
     rows
+}
+
+/// Asks for the tags of the tiles in `items` (the ones on screen and two rows either side), unless that is what was
+/// asked for last: reading them costs lookups, so a frame that draws the same tiles asks nothing.
+fn ask_tags(frame: &Frame, items: Range<usize>, cx: &mut App) {
+    if items.is_empty() {
+        return;
+    }
+    let same = frame.asked.borrow().as_ref().is_some_and(|asked| {
+        asked.key == frame.facts_key && (asked.from, asked.to, asked.rows) == (items.start, items.end, frame.rows.len())
+    });
+    if same {
+        return;
+    }
+    *frame.asked.borrow_mut() = Some(Asked {
+        key: frame.facts_key.clone(),
+        from: items.start,
+        to: items.end,
+        rows: frame.rows.len(),
+    });
+    let want = FactsWant {
+        tags: true,
+        media: Media::None,
+    };
+    frame.facts.update(cx, |facts, cx| {
+        facts.ask(&frame.facts_key, items.filter_map(|i| frame.rows.get(i)), want, cx)
+    });
 }
 
 /// Tells the thumbnail service which thumbnails the rows in `items` need, if that changed since the last frame.
@@ -331,6 +379,21 @@ fn tile(frame: &Rc<Frame>, i: usize, entry: &FileEntry, cx: &App) -> AnyElement 
     }
     if is_locked(entry) {
         square = square.child(corner_mark(i, "lock", lock_mark(entry, t), cx));
+    }
+    // The item's tags, as the list's rows show them: small colored dots, on the thumbnail's bottom corner at the
+    // reading direction's start (the cloud and lock marks are at its end).
+    let tags = frame
+        .facts
+        .read(cx)
+        .tags_of(&frame.facts_key, &entry.path)
+        .unwrap_or(&[]);
+    if let Some(dots) = tag_dots(("file-grid-tags", i), tags, cx) {
+        let corner = div().absolute().bottom(space(0.5)).child(dots);
+        square = square.child(if i18n::is_rtl() {
+            corner.right(space(0.5))
+        } else {
+            corner.left(space(0.5))
+        });
     }
 
     if let Some((_, over)) = frame.scrub.as_ref().filter(|(path, _)| *path == entry.path) {

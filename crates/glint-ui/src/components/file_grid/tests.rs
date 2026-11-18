@@ -1367,6 +1367,7 @@ mod scrubbing {
 }
 
 mod empty_find;
+mod parity;
 mod rename;
 
 #[gpui_kit::test]

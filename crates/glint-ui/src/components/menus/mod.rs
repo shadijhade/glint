@@ -45,7 +45,7 @@
 //!    - `FileListEvent::ContextMenu { target, at, shift }` -> `menus.update(cx, |m, cx| m.open_list_menu(pane, target.as_deref(), at, shift, window, cx))`.
 //!      `None` for `at` puts the menu at the middle of the window (the list passes the focused row's bottom edge
 //!      for the keyboard, see [`MenuHost::anchor`]).
-//!    - `FileGridEvent::ContextMenu { path, position }` -> `open_list_menu(pane, Some(&path), Some(position), false, ..)`.
+//!    - `FileGridEvent::ContextMenu { path, position, shift }` -> `open_list_menu(pane, Some(&path), Some(position), shift, ..)`.
 //!    - `FileGridEvent::BackgroundContextMenu { position }` -> `open_background_menu(pane, Some(position), ..)`.
 //!    - `ThisPcEvent::ContextMenu { path, position }` -> `open_folder_menu(&path, position, ..)`.
 //!    - The sidebar has a menu of its own (`components/sidebar/menu.rs`) with the places' items; the shared one is
