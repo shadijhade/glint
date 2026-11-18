@@ -164,21 +164,6 @@ pub static TOOLS: &[Tool] = &[
         used_for: "Subtitles for videos and recordings (Media), heard on this PC",
     },
     Tool {
-        id: "ast-grep",
-        name: "ast-grep",
-        exe: "ast-grep",
-        package: "ast-grep.ast-grep",
-        bundled: false,
-        winget: "ast-grep.ast-grep",
-        release: release(
-            "0.51.1",
-            "https://github.com/ast-grep/ast-grep/releases/download/0.51.1/app-x86_64-pc-windows-msvc.zip",
-            "12a0cefb77498820ef6fb302ed8758cbda39be87d4c15120dc74c1dea968a50d",
-            "ast-grep.exe",
-        ),
-        used_for: "Code patterns for AI agents (the MCP server): code found by its structure, console.log($MSG) or $X.unwrap()",
-    },
-    Tool {
         id: "jaq",
         name: "jaq",
         exe: "jaq",
@@ -194,21 +179,6 @@ pub static TOOLS: &[Tool] = &[
         used_for: "jq filters over JSON, YAML and TOML files, in their preview (jq, rewritten in Rust)",
     },
     Tool {
-        id: "zoxide",
-        name: "zoxide",
-        exe: "zoxide",
-        package: "ajeetdsouza.zoxide",
-        bundled: false,
-        winget: "ajeetdsouza.zoxide",
-        release: release(
-            "0.10.0",
-            "https://github.com/ajeetdsouza/zoxide/releases/download/v0.10.0/zoxide-0.10.0-x86_64-pc-windows-msvc.zip",
-            "f465ae548f8754c8e7edbc60b45fbf58c92bfe123db83d790252d6810fa5daf1",
-            "zoxide.exe",
-        ),
-        used_for: "Folder history shared with your terminals (Settings → History): the folders you cd to rank in Ctrl+K, and z finds the ones you open here",
-    },
-    Tool {
         id: "rimage",
         name: "rimage",
         exe: "rimage",
@@ -222,83 +192,6 @@ pub static TOOLS: &[Tool] = &[
             "rimage-0.14.0-x86_64-pc-windows-msvc/rimage.exe",
         ),
         used_for: "Converting pictures to JPEG, PNG, WebP or AVIF, smaller if asked (Convert pictures…)",
-    },
-    Tool {
-        id: "onefetch",
-        name: "onefetch",
-        exe: "onefetch",
-        package: "o2sh.onefetch",
-        bundled: false,
-        winget: "",
-        release: release(
-            "3.2.0",
-            "https://github.com/o2sh/onefetch/releases/download/3.2.0/onefetch-win.tar.gz",
-            "adeabb2b1ee201dad52a084adee3449a489c652672c8ec4fc0c0008d2aa145a5",
-            "onefetch.exe",
-        ),
-        used_for: "A Git repository's card in its preview: its languages, who works on it, its last change and license",
-    },
-    // winget's tokei is this one too: its later releases carry no programs.
-    Tool {
-        id: "tokei",
-        name: "tokei",
-        exe: "tokei",
-        package: "xampprocky.tokei",
-        bundled: false,
-        winget: "XAMPPRocky.Tokei",
-        release: release(
-            "12.1.2",
-            "https://github.com/XAMPPRocky/tokei/releases/download/v12.1.2/tokei-x86_64-pc-windows-msvc.exe",
-            "b1d6c4b18f5fa238bd2c6e47caa65a7a3e4a1bd0de6df0b7c19c8083c941f57b",
-            "",
-        ),
-        used_for: "Lines of code by language, on a Git repository's card",
-    },
-    Tool {
-        id: "just",
-        name: "just",
-        exe: "just",
-        package: "casey.just",
-        bundled: false,
-        winget: "Casey.Just",
-        release: release(
-            "1.59.0",
-            "https://github.com/casey/just/releases/download/1.59.0/just-1.59.0-x86_64-pc-windows-msvc.zip",
-            "9c5463e2d0974e31bee71346aa5cbf19167de1585a4abc1bae7b3b04604ea9c0",
-            "just.exe",
-        ),
-        used_for: "A justfile's recipes in the Run menu",
-    },
-    Tool {
-        id: "uv",
-        name: "uv",
-        exe: "uv",
-        package: "astral-sh.uv",
-        bundled: false,
-        winget: "astral-sh.uv",
-        release: release(
-            "0.13.7",
-            "https://github.com/astral-sh/uv/releases/download/0.13.7/uv-x86_64-pc-windows-msvc.zip",
-            "0cdc5b38fe5a8168ed6a25814f5ba43c21d313dd3187314fccb37b7cec46e021",
-            "uv.exe",
-        ),
-        used_for: "Python projects' scripts in the Run menu, and Python scripts in Scripts",
-    },
-    // The baseline build, which runs on processors without AVX2 too.
-    Tool {
-        id: "bun",
-        name: "Bun",
-        exe: "bun",
-        package: "oven-sh.bun",
-        bundled: false,
-        winget: "Oven-sh.Bun",
-        release: release(
-            "1.4.4",
-            "https://github.com/oven-sh/bun/releases/download/bun-v1.4.4/bun-windows-x64-baseline.zip",
-            "0f20ce6674d4f2dbcc8c5d59fdf99f7ba45f8c3b367e0f5781cbfa30a1c78d99",
-            "bun-windows-x64-baseline/bun.exe",
-        ),
-        used_for: "TypeScript and JavaScript scripts in Scripts",
     },
     Tool {
         id: "rclone",
@@ -426,21 +319,6 @@ pub static TOOLS: &[Tool] = &[
         ),
         used_for: "Back up: folders copied to a drive, a network folder or a cloud, encrypted, each backup adding only what changed, browsed in Previous versions",
     },
-    Tool {
-        id: "nushell",
-        name: "Nushell",
-        exe: "nu",
-        package: "nushell.nushell",
-        bundled: false,
-        winget: "Nushell.Nushell",
-        release: release(
-            "0.116.1",
-            "https://github.com/nushell/nushell/releases/download/0.116.1/nu-0.116.1-x86_64-pc-windows-msvc.zip",
-            "6658c9e61fe42c88326c1caa99e8dc9ad99bec6c0bc353e6ecb7c5d3f79feed7",
-            "nu.exe",
-        ),
-        used_for: "A shell for the terminal, and Nushell scripts in Scripts",
-    },
 ];
 
 pub fn get(id: &str) -> Option<&'static Tool> {
@@ -449,6 +327,49 @@ pub fn get(id: &str) -> Option<&'static Tool> {
 
 pub fn by_exe(exe: &str) -> Option<&'static Tool> {
     TOOLS.iter().find(|t| t.exe.eq_ignore_ascii_case(exe))
+}
+
+/// A shell or runtime Glint uses when it is on this PC's PATH, and never downloads, updates or removes: the
+/// ones people install for themselves. Without it the feature that wants it says how to get it and carries on.
+pub struct Runtime {
+    pub id: &'static str,
+    pub name: &'static str,
+    /// Its file name, without `.exe`.
+    pub exe: &'static str,
+    /// Its winget package, for the hint that says how to install it.
+    pub winget: &'static str,
+}
+
+pub static RUNTIMES: &[Runtime] = &[
+    // Folder history shared with the terminals' `z` (Settings → History).
+    Runtime { id: "zoxide", name: "zoxide", exe: "zoxide", winget: "ajeetdsouza.zoxide" },
+    // A justfile's recipes in the Run menu.
+    Runtime { id: "just", name: "just", exe: "just", winget: "Casey.Just" },
+    // Python scripts and projects.
+    Runtime { id: "uv", name: "uv", exe: "uv", winget: "astral-sh.uv" },
+    // TypeScript and JavaScript scripts.
+    Runtime { id: "bun", name: "Bun", exe: "bun", winget: "Oven-sh.Bun" },
+    // Nushell scripts, and a shell for the terminal.
+    Runtime { id: "nushell", name: "Nushell", exe: "nu", winget: "Nushell.Nushell" },
+];
+
+pub fn runtime(id: &str) -> Option<&'static Runtime> {
+    RUNTIMES.iter().find(|r| r.id == id)
+}
+
+/// A runtime found on this PC's PATH (or where winget and Scoop put programs), ready to run without a console
+/// window; an error that says how to install it otherwise.
+pub fn runtime_command(id: &str) -> Result<Command, String> {
+    let runtime = runtime(id).ok_or_else(|| format!("No runtime is called {id}"))?;
+    let (exe, _) = proc::locate(runtime.exe).ok_or_else(|| not_installed(runtime))?;
+    let mut command = Command::new(exe);
+    proc::no_window(&mut command);
+    Ok(command)
+}
+
+/// What to say of a runtime that isn't on this PC: Glint doesn't download it, so how to get it.
+fn not_installed(runtime: &Runtime) -> String {
+    format!("{} isn't installed. Glint uses the one on your PATH: winget install {}", runtime.name, runtime.winget)
 }
 
 /// Glint's own tools folder: `tools` in the app's local data folder, per user. Set at start.
@@ -1488,6 +1409,25 @@ mod tests {
         assert_eq!(offered, expected, "installer/tools.nsh's rows (id, kind, program, package) differ from TOOLS");
     }
 
+    /// The runtimes are found on PATH only: none is also a tool Glint downloads, each says how to install it, and
+    /// one that isn't there is reported with that hint rather than a download.
+    #[test]
+    fn the_runtimes_are_looked_for_on_path_and_never_downloaded() {
+        for (i, runtime) in RUNTIMES.iter().enumerate() {
+            assert!(RUNTIMES[i + 1..].iter().all(|other| other.id != runtime.id && other.exe != runtime.exe), "{} is listed twice", runtime.id);
+            assert!(get(runtime.id).is_none() && by_exe(runtime.exe).is_none(), "{} is a tool too", runtime.id);
+            assert!(!runtime.winget.is_empty(), "{} has no package to name", runtime.id);
+        }
+        assert_eq!(runtime("nushell").map(|r| r.exe), Some("nu"));
+        assert!(runtime("sendme").is_none());
+        // A runtime that isn't on this PC says how to get it.
+        assert_eq!(
+            not_installed(runtime("uv").unwrap()),
+            "uv isn't installed. Glint uses the one on your PATH: winget install astral-sh.uv"
+        );
+        assert!(runtime_command("nothing").unwrap_err().contains("No runtime"));
+    }
+
     #[test]
     fn every_tool_has_its_own_name_and_program() {
         for (i, tool) in TOOLS.iter().enumerate() {
@@ -1533,19 +1473,19 @@ mod tests {
         place(&dir.join("jaq-x86_64-pc-windows-msvc.exe"), &dir.join("difftastic"), "jaq").unwrap();
         assert_eq!(fs::read(dir.join("difftastic").join("jaq.exe")).unwrap(), b"jaq");
         assert!(!dir.join("difftastic").join("difft.exe").exists());
-        // A tarball (onefetch's): "./onefetch.exe" in it, gzip-compressed.
+        // A tarball (DuckDB's): "./duckdb.exe" in it, gzip-compressed.
         let mut tar = tar::Builder::new(Vec::new());
         let mut header = tar::Header::new_gnu();
-        header.set_size(11);
+        header.set_size(4);
         header.set_mode(0o755);
         header.set_cksum();
-        tar.append_data(&mut header, "./onefetch.exe", &b"one fetched"[..]).unwrap();
-        let mut gz = flate2::write::GzEncoder::new(File::create(dir.join("onefetch-win.tar.gz")).unwrap(), flate2::Compression::default());
+        tar.append_data(&mut header, "./duckdb.exe", &b"duck"[..]).unwrap();
+        let mut gz = flate2::write::GzEncoder::new(File::create(dir.join("duckdb-win.tar.gz")).unwrap(), flate2::Compression::default());
         gz.write_all(&tar.into_inner().unwrap()).unwrap();
         gz.finish().unwrap();
-        unpack_tarball(&dir.join("onefetch-win.tar.gz"), &[("onefetch.exe", "onefetch.exe")], &dir.join("onefetch")).unwrap();
-        assert_eq!(fs::read(dir.join("onefetch").join("onefetch.exe")).unwrap(), b"one fetched");
-        assert!(unpack_tarball(&dir.join("onefetch-win.tar.gz"), &[("other.exe", "y.exe")], &dir.join("y")).is_err());
+        unpack_tarball(&dir.join("duckdb-win.tar.gz"), &[("duckdb.exe", "duckdb.exe")], &dir.join("duckdb")).unwrap();
+        assert_eq!(fs::read(dir.join("duckdb").join("duckdb.exe")).unwrap(), b"duck");
+        assert!(unpack_tarball(&dir.join("duckdb-win.tar.gz"), &[("other.exe", "y.exe")], &dir.join("y")).is_err());
         fs::remove_dir_all(&dir).unwrap();
     }
 

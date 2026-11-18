@@ -333,7 +333,7 @@ fn history_counts_clear_and_come_back_with_undo(cx: &mut TestAppContext) {
         visual.update(|_, cx| persistence::app(cx).map(|a| a.history.len())),
         Some(1)
     );
-    // Max items and the zoxide switch, which waits for the tool.
+    // Max items and the zoxide switch, which waits for zoxide on the PATH.
     click(&mut visual, "settings-choice-max-history-items-1");
     assert_eq!(settings(&mut visual).max_history_items, 500);
     click(&mut visual, "settings-switch-zoxide");
@@ -506,4 +506,16 @@ fn the_search_index_names_rows_that_are_drawn(cx: &mut TestAppContext) {
             entry.page
         );
     }
+}
+
+#[gpui_kit::test]
+fn the_zoxide_switch_works_once_zoxide_is_on_the_path(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let fake = Arc::new(Fake::new());
+    *lock(&fake.zoxide_installed) = true;
+    let (mut visual, _) = open_settings(cx, &fake, None);
+    go_to(&mut visual, "history");
+    visual.run_until_parked();
+    click(&mut visual, "settings-switch-zoxide");
+    assert!(settings(&mut visual).zoxide, "zoxide is there, so the switch turns on");
 }

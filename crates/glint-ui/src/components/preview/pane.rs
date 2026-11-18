@@ -11,8 +11,6 @@ use super::frame::{EntryView, Place};
 use super::picture::release_retired;
 use super::states::centered;
 use crate::components::file_grid::thumbnail::{self, Thumbnails, Want};
-use crate::components::git::RepoCard;
-use crate::dialogs::action_run::tools_model;
 use crate::dialogs::{batch_rename, compare_files};
 use crate::explorer::{self, CompressFormat, Explorer, ExplorerEvent, Rows, Selection, Tab};
 use crate::kit::prelude::*;
@@ -43,16 +41,13 @@ pub struct Summary {
     pub total: Option<u64>,
     /// Windows keeps this account out of it: there is nothing listed to count.
     pub no_access: bool,
-    /// A Git repository's own folder.
-    pub repo: bool,
 }
 
-/// What a listing is scanned for: the Recycle Bin's total, and a `.git`. It takes a pass over every entry, so
+/// What a listing is scanned for: the Recycle Bin's total. It takes a pass over every entry, so
 /// it is done once per listing, not once per selection.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Scan {
     total: Option<u64>,
-    repo: bool,
 }
 
 impl Scan {
@@ -61,7 +56,6 @@ impl Scan {
         let bin = tab.is_recycle_bin() && !find;
         Scan {
             total: bin.then(|| tab.entries().iter().map(|e| e.size).sum()),
-            repo: !find && tab.archive().is_none() && tab.entries().iter().any(|e| e.lower == ".git"),
         }
     }
 }
@@ -79,7 +73,6 @@ impl Summary {
             items: tab.rows.len(),
             total: scan.total.or(sized),
             no_access: tab.is_closed() && !find,
-            repo: scan.repo,
         }
     }
 }
@@ -210,8 +203,6 @@ pub struct PreviewPane {
     summary: Summary,
     shown: Shown,
     view: Option<Entity<EntryView>>,
-    /// The repository's card, while the folder's card shows for a repository's own folder.
-    repo_card: Option<Entity<RepoCard>>,
     seen: Option<Fingerprint>,
     /// The scan of the listing shown, with the listing's address and the path it is for.
     scanned: Option<(usize, String, Scan)>,
@@ -247,7 +238,6 @@ impl PreviewPane {
             summary: Summary::default(),
             shown: Shown::Nothing,
             view: None,
-            repo_card: None,
             seen: None,
             scanned: None,
             generation: 0,
@@ -260,13 +250,9 @@ impl PreviewPane {
     }
 
     /// What the selection comes to, once settled.
+    #[cfg(test)]
     pub fn shown(&self) -> &Shown {
         &self.shown
-    }
-
-    /// The folder's summary.
-    pub fn summary(&self) -> &Summary {
-        &self.summary
     }
 
     /// The item's preview, when one item is shown.
@@ -381,43 +367,7 @@ impl PreviewPane {
         if self.shown != shown {
             self.shown = shown;
         }
-        self.sync_repo(window, cx);
         cx.notify();
-    }
-
-    /// Whether the folder's card is the plain one (not the Recycle Bin's, the Gallery's, Recent's, This PC's or
-    /// a closed folder's) and so has the repository's card under it when the folder is one.
-    fn plain_folder_card(&self) -> bool {
-        let summary = &self.summary;
-        !summary.no_access
-            && !is_recycle_bin(&summary.path)
-            && !is_gallery(&summary.path)
-            && !is_recent(&summary.path)
-            && summary.path != THIS_PC
-    }
-
-    /// Keeps the repository's card (it reads onefetch and tokei) only while it is on screen: nothing selected in a
-    /// repository's own folder.
-    fn sync_repo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let wanted = matches!(self.shown, Shown::Nothing) && self.summary.repo && self.plain_folder_card();
-        match (wanted, &self.repo_card) {
-            (true, Some(card)) => {
-                let path = self.summary.path.clone();
-                card.update(cx, |card, cx| card.set_path(path, cx));
-            }
-            (true, None) => {
-                let path = self.summary.path.clone();
-                let tools = tools_model(window, cx);
-                self.repo_card = Some(cx.new(|cx| RepoCard::new(path, tools, cx)));
-            }
-            (false, Some(_)) => self.repo_card = None,
-            (false, None) => {}
-        }
-    }
-
-    /// The repository's card, while it shows.
-    pub fn repo_card(&self) -> Option<&Entity<RepoCard>> {
-        self.repo_card.as_ref()
     }
 }
 
@@ -701,7 +651,6 @@ impl PreviewPane {
                 None => items(summary.items),
             }))
             .child(hint(t!("Select a file to preview it")))
-            .children(self.repo_card.clone())
             .into_any_element()
     }
 }

@@ -22,7 +22,7 @@ pub mod file_list;
 pub mod frequent_folders;
 /// The gallery's months, to jump through (GalleryMonths.tsx).
 pub mod gallery_months;
-/// Git: the branch chip, the repository and README cards, the Changes view, the marks in rows (GitChip.tsx, RepoCard.tsx, ReadmeCard.tsx, ChangesView.tsx).
+/// Git: the branch chip, the README card, the Changes view, the marks in rows (GitChip.tsx, ReadmeCard.tsx, ChangesView.tsx).
 pub mod git;
 /// The item, background and folder menus, and Windows' own menu (Explorer.tsx's menus, Menu.tsx, ActionParts.tsx).
 pub mod menus;

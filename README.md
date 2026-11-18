@@ -260,7 +260,7 @@ A tour of what Glint does. **Every feature, in detail: [docs/features.md](docs/f
 -   **Git at a glance.** Every file's and folder's status, the branch in the address bar and what changed in a file, read by gitoxide (Git needn't be installed).
 -   **A terminal under the files** (`` Ctrl+` ``) that follows the folder you're in: PowerShell, Command Prompt, Nushell, Git Bash or WSL.
 -   **Run a project's scripts** (npm, pnpm, Yarn, Bun, just, Cargo, uv), and your own scripts on what's selected.
--   **A repository's card** (onefetch and tokei), and **Open in** VS Code, Cursor, Zed or your terminal.
+-   **Open in** VS Code, Cursor, Zed or your terminal.
 
 [More for developers →](docs/features.md#for-developers)
 
@@ -310,7 +310,6 @@ AI agents that speak the [Model Context Protocol](https://modelcontextprotocol.i
 | `largest_files` | The biggest files anywhere below a folder | The index's disk-usage map |
 | `recent_changes` | What was renamed, moved, deleted or recycled lately, and where each item went | The index's 30 days of changes |
 | `search_text` | Lines of text files that contain a pattern | ripgrep |
-| `search_code` | Code matching an ast-grep pattern, such as `$X.unwrap()` | ast-grep, once installed |
 | `query_data` | One SQL query that only reads, over a CSV, JSON lines, Parquet, Excel or SQLite file | DuckDB, once it's installed |
 | `compare_files` | What differs between two files | Difftastic by structure when it's installed, else line by line |
 | `move_items`, `rename_item`, `create_folder`, `recycle_items` | Moves, renames, new folders and the Recycle Bin, asked first, and listed in **Settings → AI agents** with Undo | Windows' file engine |

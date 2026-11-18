@@ -128,7 +128,6 @@ impl Fake {
                         folders: 1,
                         files: 2,
                         bytes: 3000,
-                        repo: false,
                     }));
                     Box::pin(async move { answer })
                 })
@@ -272,10 +271,6 @@ impl GitSource for GitFake {
     }
 
     fn head_discard(&self, _: String) {}
-
-    fn card(&self, _: String) -> Fut<Option<glint_core::repo::RepoCard>> {
-        Box::pin(async { Ok(None) })
-    }
 }
 
 /// The pane in a window over a fake disk, with real pictures in a temp folder.
@@ -982,53 +977,6 @@ fn a_folder_that_is_not_where_the_tab_is_has_no_calculate_button(cx: &mut TestAp
     });
     assert!(!found);
     drop(env);
-}
-
-#[gpui_kit::test]
-fn a_folder_with_a_git_folder_has_the_repository_card_under_its_counts(cx: &mut TestAppContext) {
-    let _guard = testing::lock();
-    let mut env = setup(cx);
-    *env.fake.counts.borrow_mut() = Some(Ok(Counts {
-        folders: 1,
-        files: 2,
-        bytes: 3000,
-        repo: true,
-    }));
-    env.select("sub");
-    let card = env.body_as::<super::cards::FolderCard>().expect("a folder");
-    env.until("the card is made", |env| {
-        card.read_with(&env.visual, |c, _| c.repo().is_some())
-    });
-    // Not for a folder in the Recycle Bin.
-    env.select("old");
-    let card = env.body_as::<super::cards::FolderCard>().expect("a folder");
-    env.settle();
-    card.read_with(&env.visual, |c, _| assert!(c.repo().is_none()));
-}
-
-#[gpui_kit::test]
-fn the_folder_card_of_a_repositorys_own_folder_has_the_repository_card(cx: &mut TestAppContext) {
-    let _guard = testing::lock();
-    let mut env = setup(cx);
-    assert!(env.pane.read_with(&env.visual, |p, _| p.repo_card().is_none()));
-    // The folder shown gets a .git: the pane scans its listing for one.
-    let dir = env.folder.clone();
-    let mut entries = entries(&dir);
-    entries.push(folder(&dir, ".git"));
-    env.disk.folder(&dir, entries);
-    env.explorer.update(&mut env.visual, |e, cx| e.refresh(cx));
-    env.until("the pane knows it is a repository", |env| {
-        env.pane.read_with(&env.visual, |p, _| p.summary().repo)
-    });
-    env.until("its card is made", |env| {
-        env.pane.read_with(&env.visual, |p, _| p.repo_card().is_some())
-    });
-    // Selecting a file lets it go, and clearing the selection brings it back.
-    env.select("notes.txt");
-    assert!(env.pane.read_with(&env.visual, |p, _| p.repo_card().is_none()));
-    env.explorer.update(&mut env.visual, |e, cx| e.select_only(None, cx));
-    env.visual.run_until_parked();
-    assert!(env.pane.read_with(&env.visual, |p, _| p.repo_card().is_some()));
 }
 
 // ---- Windows' own previewers --------------------------------------------------------------------------------

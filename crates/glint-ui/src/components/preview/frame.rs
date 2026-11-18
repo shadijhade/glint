@@ -320,9 +320,9 @@ impl EntryView {
     /// Builds the previewer for the file in the view chosen, unless it is the one already built.
     fn build(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let view = effective_view(&self.entry, self.chosen.read(cx).view, self.changed);
-        let choice = choose(&self.entry, view);
+        let kind = choose(&self.entry, view);
         let key = Key {
-            body: choice.body,
+            body: kind,
             view,
             unlocks: self.unlocks.read(cx).count(),
         };
@@ -338,7 +338,7 @@ impl EntryView {
             let entry = entry.clone();
             cx.new(|_| PlainCard::new(entry, plain)).into()
         };
-        let body: AnyView = match choice.body {
+        let body: AnyView = match kind {
             Body::Folder => cx.new(|cx| FolderCard::new(entry.clone(), window, cx)).into(),
             Body::OnlineOnly => plain(Plain::OnlineOnly, cx),
             Body::Closed => plain(Plain::Closed, cx),

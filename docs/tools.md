@@ -1,6 +1,6 @@
 # Tools
 
-Glint gets much of its speed and reach from command-line tools, most of them from the Rust world. Three come with it. The rest install when a feature first needs one: that feature shows an **Install** card, and **Settings → Tools** lists every tool by what it's for, with its version, what it does in Glint, where it came from, a progress bar while it installs, and **Install**, **Update** (or **Update all**) or **Remove**.
+Glint gets much of its speed and reach from command-line tools, most of them from the Rust world. Three come with it. Most of the rest install when a feature first needs one: that feature shows an **Install** card, and **Settings → Tools** lists every tool by what it's for, with its version, what it does in Glint, where it came from, a progress bar while it installs, and **Install**, **Update** (or **Update all**) or **Remove**.
 
 ## Bundled
 
@@ -19,16 +19,8 @@ ripgrep and fd are the official Windows x64 releases, unmodified, installed next
 | [Czkawka](https://github.com/qarmin/czkawka) CLI | Clean up's look-alike pictures, videos and music, broken files and wrong extensions | winget `qarmin.czkawka.cli`, else its release, 12.0.2 |
 | [FFmpeg](https://ffmpeg.org/) | **Media**: trim, convert and shrink (hardware encoders when the PC has them), the sound alone, GIFs; videos Windows can't play get a copy that plays; Clean up's look-alike videos | winget `Gyan.FFmpeg.Essentials`, else its release, 9.0.2 (with ffprobe) |
 | [Difftastic](https://github.com/Wilfred/difftastic) | Compare two files, and a changed file's **Changes**: code compared by its structure | winget `Wilfred.difftastic`, else its release, 0.72.0 |
-| [ast-grep](https://github.com/ast-grep/ast-grep) | Code patterns, found and rewritten by their syntax (the MCP server's; the window's search no longer has them) | winget `ast-grep.ast-grep`, else its release, 0.51.1 |
 | [jaq](https://github.com/01mf02/jaq) | jq filters over JSON, YAML and TOML in their preview | its GitHub release, v3.1.2 |
 | [rimage](https://github.com/vlad-salone/rimage) | **Convert pictures** to JPEG, PNG, WebP or AVIF | its GitHub release, v0.14.0 |
-| [onefetch](https://github.com/o2sh/onefetch) | A Git repository's card in its preview | its GitHub release, 3.2.0 |
-| [tokei](https://github.com/XAMPPRocky/tokei) | Lines of code by language on that card | winget `XAMPPRocky.Tokei`, else its release, 12.1.2 |
-| [zoxide](https://github.com/ajeetdsouza/zoxide) | Folder history shared with your terminals (Settings → History) | winget `ajeetdsouza.zoxide`, else its release, 0.10.0 |
-| [just](https://github.com/casey/just) | A justfile's recipes in the **Run** menu | winget `Casey.Just`, else its release, 1.59.0 |
-| [uv](https://github.com/astral-sh/uv) | pyproject.toml's scripts in **Run**, and Python scripts in **Scripts** | winget `astral-sh.uv`, else its release, 0.13.7 |
-| [Bun](https://bun.sh/) | TypeScript and JavaScript scripts in **Scripts** (Node.js works too, for JavaScript) | winget `Oven-sh.Bun`, else its release, 1.4.4 (the baseline build, for any x64 processor) |
-| [Nushell](https://www.nushell.sh/) | A shell for the terminal, and Nushell scripts in **Scripts** | winget `Nushell.Nushell`, else its release, 0.116.1 |
 | [whisper.cpp](https://github.com/ggml-org/whisper.cpp) | **Make subtitles** (an .srt beside a video, in its language or in English) | its GitHub release, b5454, with Whisper's base model (downloaded the first time subtitles are made) |
 | [pdfcpu](https://github.com/pdfcpu/pdfcpu) | **PDF tools**: merge, split, keep or take out pages, turn pages, make smaller, save its pictures, passwords (AES-256), stamps. Run offline (`--offline`), its settings folder off | its GitHub release, v0.16.4 |
 | [DuckDB](https://duckdb.org) | **Query** over CSV, JSON and Parquet files of any size, read where they are; **Profile**; **Query together**; **Convert data**. Locked down first: no extensions downloaded or loaded, only the chosen files readable, one SELECT at a time | its GitHub release, v2.0.0 |
@@ -56,3 +48,15 @@ Glint builds each tool's arguments itself, from typed options (the UI never pass
 -   **Downloaded by Glint**: **Remove** in Settings → Tools deletes its folder; the model's row has its own **Remove**.
 -   **Installed with winget**: Glint leaves those alone, since you may use them outside Glint too. Remove one with `winget uninstall --id <id>`, or in **Settings → Apps → Installed apps**.
 -   **Everything Glint keeps**: its uninstaller's *Delete the application data* removes `%LOCALAPPDATA%\com.shado.shadui-ripgrep`: the tools it downloaded, the model, your Scripts folder, the folder rules' log and SFTP host keys you trusted in Glint.
+
+## Found on your PATH, not downloaded
+
+Five more programs are used when they're already on the PC, and are never downloaded, updated or removed by Glint (they used to be in Settings → Tools). Without one, the feature that wants it says so, with the `winget install` that gets it, and the rest works as before. Install them yourself, with winget or however you like, and Glint finds them on `PATH`, in winget's links and packages, Scoop's shims, Cargo's `bin` or Chocolatey's `bin`.
+
+| Program | In Glint | winget |
+| :--- | :--- | :--- |
+| [zoxide](https://github.com/ajeetdsouza/zoxide) | Folder history shared with your terminals (Settings → History) | `ajeetdsouza.zoxide` |
+| [just](https://github.com/casey/just) | A justfile's recipes in the **Run** menu | `Casey.Just` |
+| [uv](https://github.com/astral-sh/uv) | pyproject.toml's scripts in **Run**, and Python scripts in **Scripts** (Python itself works too) | `astral-sh.uv` |
+| [Bun](https://bun.sh/) | TypeScript and JavaScript scripts in **Scripts** (Node.js works too, for JavaScript) | `Oven-sh.Bun` |
+| [Nushell](https://www.nushell.sh/) | A shell for the terminal, and Nushell scripts in **Scripts** | `Nushell.Nushell` |

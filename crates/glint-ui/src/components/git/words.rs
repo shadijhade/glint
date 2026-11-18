@@ -1,7 +1,7 @@
 //! What Git's parts say and how they look: the marks' badges, the chip's and the status bar's wording, the colors
-//! of a change, a repository card's dates and languages, and which file is a folder's README.
+//! of a change, and which file is a folder's README.
 //! Ported from `GIT_BADGE` and `gitOf` (FileList.tsx), `GitChip.tsx`, `GitWork` (StatusBar.tsx), `readmeOf`
-//! (ReadmeCard.tsx) and the helpers at the top of `RepoCard.tsx`.
+//! (ReadmeCard.tsx).
 //!
 //! Everything is a plain function of its inputs, so it is tested without a window.
 
@@ -414,130 +414,6 @@ pub fn readme_of(entries: &[FileEntry]) -> Option<&FileEntry> {
     best
 }
 
-// ---- The repository card ------------------------------------------------------------------------------------
-
-/// GitHub's colors for the languages most repositories have (`COLORS`, by lowercase name); others take one of the
-/// rest.
-fn language_hex(language: &str) -> Option<u32> {
-    Some(match language.to_lowercase().as_str() {
-        "rust" => 0xdea584,
-        "typescript" => 0x3178c6,
-        "tsx" => 0x6aa5e8,
-        "javascript" | "jsx" => 0xf1e05a,
-        "python" => 0x3572a5,
-        "go" => 0x00add8,
-        "java" => 0xb07219,
-        "kotlin" => 0xa97bff,
-        "c" => 0x555555,
-        "c++" | "cpp" => 0xf34b7d,
-        "c#" | "csharp" => 0x178600,
-        "html" => 0xe34c26,
-        "css" => 0x663399,
-        "scss" => 0xc6538c,
-        "shell" => 0x89e051,
-        "powershell" => 0x012456,
-        "ruby" => 0x701516,
-        "php" => 0x4f5d95,
-        "swift" => 0xf05138,
-        "dart" => 0x00b4ab,
-        "lua" => 0x000080,
-        "vue" => 0x41b883,
-        "svelte" => 0xff3e00,
-        "zig" => 0xec915c,
-        "markdown" => 0x083fa1,
-        _ => return None,
-    })
-}
-
-/// The colors a language not in the table takes, by its place in the list (`OTHERS`).
-const OTHERS: [u32; 6] = [0x8b5cf6, 0x14b8a6, 0xf59e0b, 0xec4899, 0x64748b, 0x22c55e];
-
-/// A language's color in the card's bar and legend (`colorOf`): GitHub's, else one of six by its place in the list.
-pub fn language_color(language: &str, index: usize) -> Hsla {
-    gpui_kit::rgb(language_hex(language).unwrap_or(OTHERS[index % OTHERS.len()])).into()
-}
-
-/// A language's share as the legend writes it: whole percent, "<1" under one (`share >= 1 ? Math.round(share) : "<1"`).
-pub fn share_text(share: f64) -> String {
-    if share >= 1. {
-        // JS rounds .5 up.
-        format!("{}%", (share + 0.5).floor() as u64)
-    } else {
-        "<1%".to_string()
-    }
-}
-
-/// The repository's web address, from its remote URL: `git@host:owner/repo.git` becomes `https://host/owner/repo`.
-/// Only an `https://` address comes back (the card opens it in the browser).
-pub fn site_of(url: &str) -> Option<String> {
-    let mut site = url.to_string();
-    if let Some(rest) = url.strip_prefix("git@") {
-        // `^git@([^:]+):` -> `https://$1/`
-        if let Some((host, path)) = rest.split_once(':') {
-            if !host.is_empty() {
-                site = format!("https://{host}/{path}");
-            }
-        }
-    }
-    if let Some(trimmed) = site.strip_suffix(".git") {
-        site = trimmed.to_string();
-    }
-    site.starts_with("https://").then_some(site)
-}
-
-/// Milliseconds since 1970 of an RFC 3339 date like `2026-11-09T12:34:56+02:00` (`Date.parse`), or `None`.
-pub fn parse_rfc3339(text: &str) -> Option<i64> {
-    let text = text.trim();
-    let (date, time) = text.split_once(['T', 't', ' ']).unwrap_or((text, "00:00:00"));
-    let mut d = date.split('-');
-    let (year, month, day): (i64, i64, i64) = (
-        d.next()?.parse().ok()?,
-        d.next()?.parse().ok()?,
-        d.next()?.parse().ok()?,
-    );
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
-        return None;
-    }
-    // The zone: Z, or +hh:mm / -hh:mm after the clock.
-    let (clock, offset_minutes) = match time.find(['Z', 'z', '+', '-']) {
-        Some(at) => {
-            let (clock, zone) = (time.get(..at)?, time.get(at..)?);
-            let minutes = match zone.chars().next()? {
-                'Z' | 'z' => 0,
-                sign => {
-                    let digits: Vec<&str> = zone.get(1..)?.split(':').collect();
-                    let hours: i64 = digits.first()?.parse().ok()?;
-                    let minutes: i64 = digits.get(1).unwrap_or(&"0").parse().ok()?;
-                    let total = hours * 60 + minutes;
-                    if sign == '-' {
-                        -total
-                    } else {
-                        total
-                    }
-                }
-            };
-            (clock, minutes)
-        }
-        None => (time, 0),
-    };
-    let (clock, fraction) = clock.split_once('.').unwrap_or((clock, "0"));
-    let mut c = clock.split(':');
-    let (h, m, s): (i64, i64, i64) = (
-        c.next()?.parse().ok()?,
-        c.next().unwrap_or("0").parse().ok()?,
-        c.next().unwrap_or("0").parse().ok()?,
-    );
-    let millis: i64 = format!("{fraction:0<3}").get(..3)?.parse().ok()?;
-    // Howard Hinnant's days-from-civil.
-    let y = if month <= 2 { year - 1 } else { year };
-    let era = y.div_euclid(400);
-    let yoe = y.rem_euclid(400);
-    let doy = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe - 719_468;
-    Some((((days * 24 + h) * 60 + m - offset_minutes) * 60 + s) * 1000 + millis)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -744,42 +620,5 @@ mod tests {
         let cloud = vec![entry("README.md", false, attr::OFFLINE), entry("readme.mkd", false, 0)];
         assert_eq!(readme_of(&cloud).map(|e| e.name.as_str()), Some("readme.mkd"));
         assert!(readme_of(&[]).is_none());
-    }
-
-    #[test]
-    fn languages_and_shares_read_as_the_card_did() {
-        assert_eq!(share_text(0.4), "<1%");
-        assert_eq!(share_text(1.0), "1%");
-        assert_eq!(share_text(62.5), "63%");
-        assert_eq!(share_text(62.4), "62%");
-        assert_eq!(language_color("Rust", 0), gpui_kit::rgb(0xdea584).into());
-        assert_eq!(language_color("Zork", 7), gpui_kit::rgb(OTHERS[1]).into());
-    }
-
-    #[test]
-    fn a_remote_becomes_a_web_address_only_when_it_is_https() {
-        assert_eq!(
-            site_of("git@github.com:rafd/glint.git").as_deref(),
-            Some("https://github.com/rafd/glint")
-        );
-        assert_eq!(
-            site_of("https://github.com/rafd/glint.git").as_deref(),
-            Some("https://github.com/rafd/glint")
-        );
-        assert_eq!(site_of("http://example.com/x.git"), None);
-        assert_eq!(site_of("C:\\repos\\glint"), None);
-        assert_eq!(site_of("ssh://host/x"), None);
-    }
-
-    #[test]
-    fn dates_are_read_with_their_zone() {
-        assert_eq!(parse_rfc3339("1970-01-01T00:00:00Z"), Some(0));
-        assert_eq!(parse_rfc3339("2000-03-01T00:00:00Z"), Some(951_868_800_000));
-        // +02:00 is two hours earlier in UTC.
-        assert_eq!(parse_rfc3339("2000-03-01T02:00:00+02:00"), Some(951_868_800_000));
-        assert_eq!(parse_rfc3339("2000-02-29T22:30:00-01:30"), Some(951_868_800_000));
-        assert_eq!(parse_rfc3339("2000-03-01T00:00:00.5Z"), Some(951_868_800_500));
-        assert_eq!(parse_rfc3339("nonsense"), None);
-        assert_eq!(parse_rfc3339("2000-13-01T00:00:00Z"), None);
     }
 }

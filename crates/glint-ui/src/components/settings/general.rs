@@ -814,7 +814,7 @@ impl SettingsView {
             };
             kept(&app.habits.actions) + kept(&app.habits.places)
         });
-        let zoxide = self.tools.read(cx).tool("zoxide").and_then(|tool| tool.path.clone());
+        let zoxide = self.zoxide_found;
         let rows = vec![
             self.flag(
                 "save-search-history",
@@ -868,13 +868,13 @@ impl SettingsView {
             widgets::switch_row(
                 "zoxide",
                 t!("Share folder history with zoxide"),
-                Some(if zoxide.is_some() {
+                Some(if zoxide {
                     t!("Ctrl+K and quick search rank the folders you cd to in a terminal too, and z there finds the folders you open here")
                 } else {
-                    t!("zoxide, the smarter cd for terminals, isn't installed: Tools above installs it")
+                    t!("zoxide, the smarter cd for terminals, isn't installed: Glint uses the one on your PATH (winget install ajeetdsouza.zoxide)")
                 }),
                 s.zoxide,
-                zoxide.is_none() && !s.zoxide,
+                !zoxide && !s.zoxide,
                 |on, _, cx| {
                     // `refreshZoxide` needs no call: the palette and quick search ask for zoxide's folders each
                     // time they open, while this setting is on.

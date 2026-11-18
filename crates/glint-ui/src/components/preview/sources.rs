@@ -42,8 +42,6 @@ pub struct Counts {
     pub files: usize,
     /// The files' sizes added up.
     pub bytes: u64,
-    /// It has a `.git` (a file in a worktree): a repository's own folder.
-    pub repo: bool,
 }
 
 /// What an archive holds, from its list of entries (`ArchivePeek`).
@@ -158,7 +156,7 @@ impl Sources {
                             | glint_core::fsx::Listing::Items { entries, .. }) = listing;
                             let mut counts = glint_core::fsx::DirCounts::default();
                             for entry in &entries {
-                                counts.add(entry.dir, entry.size, entry.name.eq_ignore_ascii_case(".git"));
+                                counts.add(entry.dir, entry.size);
                             }
                             counts
                         })
@@ -169,7 +167,6 @@ impl Sources {
                         folders: counted.folders,
                         files: counted.files,
                         bytes: counted.bytes,
-                        repo: counted.repo,
                     })
                 });
                 Box::pin(async move { flat(running.await) })

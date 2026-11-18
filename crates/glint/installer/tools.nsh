@@ -26,50 +26,26 @@
   !insertmacro ${ROW} 4 difftastic "Difftastic" 3 tool difft wilfred.difftastic \
     "Comparing code by its structure" \
     "Difftastic compares code by its syntax. Compare two files then shows what changed in the code, not which lines moved."
-  !insertmacro ${ROW} 5 ast-grep "ast-grep" 3 tool ast-grep ast-grep.ast-grep \
-    "Code patterns for AI agents" \
-    "ast-grep searches code by its syntax. AI agents connected to Glint's MCP server then find code by its structure, such as console.log($$MSG) or $$X.unwrap()."
-  !insertmacro ${ROW} 6 jaq "jaq" 3 tool jaq 01mf02.jaq \
+  !insertmacro ${ROW} 5 jaq "jaq" 3 tool jaq 01mf02.jaq \
     "jq filters in JSON, YAML and TOML previews" \
     "jaq is jq, rewritten in Rust. The preview of a JSON, YAML or TOML file can then filter it with jq."
-  !insertmacro ${ROW} 7 onefetch "onefetch" 3 tool onefetch o2sh.onefetch \
-    "A Git repository's card in its preview" \
-    "onefetch sums up a Git repository. Its preview gets a card with its languages, who works on it, its last change and its license."
-  !insertmacro ${ROW} 8 tokei "tokei" 3 tool tokei xampprocky.tokei \
-    "Lines of code on a repository's card" \
-    "tokei counts lines of code. A Git repository's card then shows its lines of code by language."
-  !insertmacro ${ROW} 9 just "just" 3 tool just casey.just \
-    "A justfile's recipes in the Run menu" \
-    "just runs a project's commands. The Run menu then lists the recipes in a project's justfile."
-  !insertmacro ${ROW} 10 uv "uv" 4 tool uv astral-sh.uv \
-    "Running Python scripts and projects" \
-    "uv is Astral's fast Python manager. The Run menu runs Python projects' scripts with it, and Scripts runs Python scripts."
-  !insertmacro ${ROW} 11 bun "Bun" 4 tool bun oven-sh.bun \
-    "Running TypeScript and JavaScript scripts" \
-    "Bun is a fast JavaScript runtime. Scripts runs TypeScript and JavaScript scripts with it."
-  !insertmacro ${ROW} 12 nushell "Nushell" 4 tool nu nushell.nushell \
-    "A shell for the terminal, and Nu scripts" \
-    "Nushell is a shell for structured data. The terminal under the files can start it, and Scripts runs Nushell scripts."
-  !insertmacro ${ROW} 13 zoxide "zoxide" 4 tool zoxide ajeetdsouza.zoxide \
-    "Folder history shared with your terminals" \
-    "zoxide remembers the folders you go to. The folders you cd to in your terminals rank in Ctrl+K, and z finds the ones you open in Glint."
-  !insertmacro ${ROW} 14 rclone "rclone" 5 tool rclone rclone.rclone \
+  !insertmacro ${ROW} 6 rclone "rclone" 4 tool rclone rclone.rclone \
     "Google Drive, OneDrive, Dropbox and 60 more clouds" \
     "rclone reaches more than 60 cloud storage services. Glint then opens Google Drive, OneDrive, Dropbox, Box, MEGA, S3 and the rest like folders, signs you in to them, and keeps folders in sync with them."
-  !insertmacro ${ROW} 15 whisper "whisper.cpp" 1 tool whisper-cli whisper \
+  !insertmacro ${ROW} 7 whisper "whisper.cpp" 1 tool whisper-cli whisper \
     "Subtitles for videos and recordings" \
     "whisper.cpp runs OpenAI's Whisper on this PC. Media's Subtitles then writes what's said in videos and recordings, in any language; its model downloads the first time."
-  !insertmacro ${ROW} 16 pdfcpu "pdfcpu" 6 tool pdfcpu pdfcpu     "PDF tools: merge, split, pages, smaller, passwords"     "pdfcpu works on PDFs on this PC: merging and splitting them, keeping, taking out and turning pages, making them smaller, saving their pictures, adding or taking off a password and stamping them. Nothing is uploaded."
-  !insertmacro ${ROW} 17 duckdb "DuckDB" 6 tool duckdb duckdb.cli     "SQL over data files of any size"     "DuckDB reads CSV, JSON and Parquet files where they are, however big: Query, Profile (every column described), Query together and Convert data use it, reading only."
-  !insertmacro ${ROW} 18 exiftool "ExifTool" 6 tool exiftool oliverbetz.exiftool     "Remove personal info from photos, videos and PDFs"     "ExifTool reads and changes what files say about themselves. Remove personal info takes out where a photo was taken, the camera's serial number, names and editing history before you share; it also changes when photos were taken."
-  !insertmacro ${ROW} 19 7zip "7-Zip" 6 tool 7z 7zip.7zip     "Disk images and installers opened like folders"     "7-Zip reads ISO, VHD and VHDX, VMDK, DMG, WIM, ext4 and APFS images, installers and Linux packages. Glint opens them like folders, so you see what an installer holds without running it."
-  !insertmacro ${ROW} 20 pandoc "pandoc" 6 tool pandoc johnmacfarlane.pandoc \
+  !insertmacro ${ROW} 8 pdfcpu "pdfcpu" 5 tool pdfcpu pdfcpu     "PDF tools: merge, split, pages, smaller, passwords"     "pdfcpu works on PDFs on this PC: merging and splitting them, keeping, taking out and turning pages, making them smaller, saving their pictures, adding or taking off a password and stamping them. Nothing is uploaded."
+  !insertmacro ${ROW} 9 duckdb "DuckDB" 5 tool duckdb duckdb.cli     "SQL over data files of any size"     "DuckDB reads CSV, JSON and Parquet files where they are, however big: Query, Profile (every column described), Query together and Convert data use it, reading only."
+  !insertmacro ${ROW} 10 exiftool "ExifTool" 5 tool exiftool oliverbetz.exiftool     "Remove personal info from photos, videos and PDFs"     "ExifTool reads and changes what files say about themselves. Remove personal info takes out where a photo was taken, the camera's serial number, names and editing history before you share; it also changes when photos were taken."
+  !insertmacro ${ROW} 11 7zip "7-Zip" 5 tool 7z 7zip.7zip     "Disk images and installers opened like folders"     "7-Zip reads ISO, VHD and VHDX, VMDK, DMG, WIM, ext4 and APFS images, installers and Linux packages. Glint opens them like folders, so you see what an installer holds without running it."
+  !insertmacro ${ROW} 12 pandoc "pandoc" 5 tool pandoc johnmacfarlane.pandoc \
     "Convert document: Word, Markdown, HTML, EPUB and more" \
     "pandoc turns documents into one another: Word, OpenDocument, Markdown, HTML, EPUB, LaTeX, RTF and more, and Markdown into PowerPoint. It runs sandboxed: it reads only the document it's given."
-  !insertmacro ${ROW} 21 typst "Typst" 6 tool typst typst.typst \
+  !insertmacro ${ROW} 13 typst "Typst" 5 tool typst typst.typst \
     "Convert document: PDFs without LaTeX or Word" \
     "Typst typesets documents. Convert document makes its PDFs with it, from what pandoc writes, without LaTeX or Word."
-  !insertmacro ${ROW} 22 restic "restic" 7 tool restic restic.restic \
+  !insertmacro ${ROW} 14 restic "restic" 6 tool restic restic.restic \
     "Back up folders to a drive, a network folder or a cloud" \
     "restic backs up folders, encrypted, each backup adding only what changed. Glint backs up to a USB drive, a network folder or any cloud Remote reaches, and shows the backups in Previous versions."
 !macroend
@@ -78,10 +54,9 @@
   !insertmacro ${GROUP} 1 "Glint's own"
   !insertmacro ${GROUP} 2 "Clean up and pictures"
   !insertmacro ${GROUP} 3 "Code and projects"
-  !insertmacro ${GROUP} 4 "Scripts and terminal"
-  !insertmacro ${GROUP} 5 "Clouds"
-  !insertmacro ${GROUP} 6 "Documents, data and media"
-  !insertmacro ${GROUP} 7 "Backups"
+  !insertmacro ${GROUP} 4 "Clouds"
+  !insertmacro ${GROUP} 5 "Documents, data and media"
+  !insertmacro ${GROUP} 6 "Backups"
 !macroend
 
 ; The list view's messages and flags NSIS doesn't define, as numbers (System::Call takes no expressions).

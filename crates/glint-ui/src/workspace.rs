@@ -884,6 +884,19 @@ impl Workspace {
 
     /// Installs one of the extra tools (Settings' Tools does it, with its progress and its result notices).
     fn install_tool(&mut self, tool: String, window: &mut Window, cx: &mut Context<Self>) {
+        // A shell or runtime Glint only finds on the PATH (uv, Bun, just, Nushell, zoxide): it isn't downloaded, so
+        // the notice says how to get it.
+        if let Some(runtime) = glint_core::tools::runtime(&tool) {
+            window.push_notification(
+                Notification::info(t!(
+                    "Glint doesn't download it: install it yourself (winget install {package}) and Glint finds it on your PATH.",
+                    package = runtime.winget
+                ))
+                .title(t!("{name} isn't installed", name = runtime.name)),
+                cx,
+            );
+            return;
+        }
         let tools = match &self.tools {
             Some(tools) => tools.clone(),
             None => {

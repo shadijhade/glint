@@ -207,9 +207,8 @@ impl Explorer {
         }
         self.end_inside_job(cx);
         let prefs = Prefs::read(cx);
-        // The search box's switches. A code pattern has no place in a search by name and contents.
-        let mut options = crate::persistence::app(cx).map(|app| app.options).unwrap_or_default();
-        options.code = false;
+        // The search box's switches.
+        let options = crate::persistence::app(cx).map(|app| app.options).unwrap_or_default();
         self.searching.inside_serial += 1;
         let id = format!("in-{:x}-{}", std::process::id(), self.searching.inside_serial);
         let request = InsideRequest {

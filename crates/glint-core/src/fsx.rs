@@ -164,24 +164,22 @@ pub fn folder_stamp(path: String) -> Result<f64, String> {
     Ok(modified.duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64() * 1000.0))
 }
 
-/// What a folder holds, counted: its folders, its files and their bytes, and whether one of them is `.git`.
+/// What a folder holds, counted: its folders, its files and their bytes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DirCounts {
     pub folders: usize,
     pub files: usize,
     pub bytes: u64,
-    pub repo: bool,
 }
 
 impl DirCounts {
-    pub fn add(&mut self, dir: bool, size: u64, lower_name_is_git: bool) {
+    pub fn add(&mut self, dir: bool, size: u64) {
         if dir {
             self.folders += 1;
         } else {
             self.files += 1;
             self.bytes = self.bytes.saturating_add(size);
         }
-        self.repo |= lower_name_is_git;
     }
 }
 
@@ -194,7 +192,7 @@ pub async fn count_dir(path: String) -> Result<Option<DirCounts>, String> {
         let Ok(entries) = read_dir(&dir) else { return Ok(None) };
         let mut counts = DirCounts::default();
         for entry in &entries {
-            counts.add(entry.dir, entry.size, entry.name.eq_ignore_ascii_case(".git"));
+            counts.add(entry.dir, entry.size);
         }
         Ok(Some(counts))
     })
@@ -1124,7 +1122,7 @@ mod tests {
         std::fs::write(dir.join("a.txt"), "12345").unwrap();
         std::fs::write(dir.join("b.bin"), vec![0u8; 100]).unwrap();
         let counted = crate::host::async_runtime::block_on(count_dir(dir.to_string_lossy().into_owned())).unwrap();
-        assert_eq!(counted, Some(DirCounts { folders: 2, files: 2, bytes: 105, repo: true }));
+        assert_eq!(counted, Some(DirCounts { folders: 2, files: 2, bytes: 105 }));
         let missing = dir.join("nope").to_string_lossy().into_owned();
         assert_eq!(crate::host::async_runtime::block_on(count_dir(missing)).unwrap(), None);
         std::fs::remove_dir_all(&dir).unwrap();

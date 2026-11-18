@@ -87,7 +87,7 @@ pub mod zipxml;
 #[cfg(test)]
 mod tests;
 
-pub use choose::{choose, effective_view, views, Body, Choice, Fallback, View};
+pub use choose::{choose, effective_view, views, Body, Fallback, View};
 pub use frame::{chosen, Chosen, EntryEvent, EntryView, Place};
 pub use pane::{resolve, should_show, toggle as toggle_pane, Many, PreviewPane, Shown, Summary};
 pub use shell::{cover, uncover};

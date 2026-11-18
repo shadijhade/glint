@@ -193,6 +193,8 @@ pub trait Backend: Send + Sync + 'static {
     // Editors, shells, agents, File Explorer.
     fn openers(&self) -> Fut<Vec<openers::Opener>>;
     fn shells(&self) -> Fut<Vec<term::Shell>>;
+    /// Whether zoxide is on the PATH (History's switch waits for it).
+    fn zoxide_installed(&self) -> Fut<bool>;
     fn mcp_setup(&self) -> Fut<McpSetup>;
     fn agents_registry_available(&self) -> Fut<bool>;
     fn agents_register(&self) -> Fut<String>;
@@ -319,6 +321,10 @@ impl Backend for CoreBackend {
 
     fn openers(&self) -> Fut<Vec<openers::Opener>> {
         on_core(openers::openers())
+    }
+
+    fn zoxide_installed(&self) -> Fut<bool> {
+        on_core(async { Ok(glint_core::zoxide::zoxide_installed().await) })
     }
 
     fn shells(&self) -> Fut<Vec<term::Shell>> {

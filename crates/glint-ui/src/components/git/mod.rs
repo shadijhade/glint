@@ -1,5 +1,5 @@
-//! Git: the branch chip, the repository and README cards, the Changes view, the marks in rows (GitChip.tsx,
-//! RepoCard.tsx, ReadmeCard.tsx, ChangesView.tsx, and the `useGit` store of src/lib/git.ts).
+//! Git: the branch chip, the README card, the Changes view, the marks in rows (GitChip.tsx,
+//! ReadmeCard.tsx, ChangesView.tsx, and the `useGit` store of src/lib/git.ts).
 //!
 //! | TypeScript                                   | Here                                                          |
 //! |----------------------------------------------|---------------------------------------------------------------|
@@ -9,7 +9,6 @@
 //! | `GIT_BADGE`, `gitOf` (FileList.tsx)          | [`words::badge`], [`words::row_git`], [`row::badge_element`]    |
 //! | `GitWork` (StatusBar.tsx)                    | [`status_line`], [`stage`]                                     |
 //! | `GitChip`                                    | [`chip::GitChip`]                                              |
-//! | `RepoCard`                                   | [`cards::RepoCard`]                                            |
 //! | `ReadmeCard`, `readmeOf`                     | [`cards::ReadmeCard`], [`readme_of`]                           |
 //! | `ChangesView`                                | [`changes::ChangesView`]                                       |
 //!
@@ -56,11 +55,7 @@
 //! popover hangs under the chip from its start edge; it closes on Escape, a press outside, or any button in it. Its
 //! buttons act through the explorer (`set_filter`, `navigate` in the chip's tab) and the model (trust, status).
 //!
-//! **The cards.** In the preview pane:
-//! - [`cards::RepoCard::new`]`(folder, tools, cx)` for a folder with a `.git` (the pane's `counts.repo`) that isn't
-//!   in the Recycle Bin, under the folder's counts; `set_path` follows the selection. `tools` is the shared tools
-//!   model (`dialogs::action_run::tools_model`): the card offers to install onefetch and tokei when they are missing
-//!   and reads again once they are there.
+//! **The README and the changes.** In the preview pane:
 //! - [`cards::ReadmeCard::new`]`(entry, window, cx)` above the file list, for [`readme_of`]`(listing entries)` when
 //!   `settings.show_readme`, not over search results, the disk map, a closed folder, or a folder read from the
 //!   index; keyed by the README's path (`set_entry` rereads when it changed). It draws nothing for a README that is
@@ -89,9 +84,8 @@
 //!
 //! # Not ported
 //!
-//! - Nothing from the four components is left out. Not exercised by a test: the install cards of onefetch and tokei
-//!   (they read the settings Tools model, which cannot be faked from outside its module), and the real glint-core
-//!   calls (`CoreGit`), which need a repository on disk.
+//! - Nothing from the components is left out. Not exercised by a test: the real glint-core calls (`CoreGit`),
+//!   which need a repository on disk.
 
 pub mod cards;
 pub mod changes;
@@ -106,7 +100,7 @@ mod tests;
 use crate::explorer::TabId;
 use gpui_kit::App;
 
-pub use cards::{ReadmeCard, RepoCard};
+pub use cards::ReadmeCard;
 pub use changes::ChangesView;
 pub use chip::GitChip;
 pub use model::{

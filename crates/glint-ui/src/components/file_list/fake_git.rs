@@ -5,7 +5,6 @@
 use crate::components::git::model::{Fut, Source, View};
 use crate::components::git::{self, Counts};
 use glint_core::git::FileDiff;
-use glint_core::repo::RepoCard;
 use glint_model::entries::GitMark;
 use glint_model::groups::GitMarks;
 use gpui_kit::App;
@@ -77,8 +76,4 @@ impl Source for FakeGit {
     }
 
     fn head_discard(&self, _path: String) {}
-
-    fn card(&self, _path: String) -> Fut<Option<RepoCard>> {
-        Box::pin(async { Ok(None) })
-    }
 }

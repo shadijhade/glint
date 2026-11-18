@@ -7,7 +7,13 @@ use std::process::{Command, Stdio};
 use std::sync::{mpsc, OnceLock};
 
 fn zoxide() -> Option<Command> {
-    crate::tools::command("zoxide").ok()
+    crate::tools::runtime_command("zoxide").ok()
+}
+
+/// Whether zoxide is on this PC's PATH (Settings → History offers sharing only then). Looking takes a walk
+/// through the PATH folders, so it isn't done on the UI thread.
+pub async fn zoxide_installed() -> bool {
+    crate::fsx::blocking(|| Ok::<bool, String>(zoxide().is_some())).await.unwrap_or(false)
 }
 
 /// zoxide's folders and their scores, best first; None when zoxide isn't installed.
