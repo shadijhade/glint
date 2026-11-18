@@ -58,7 +58,7 @@ use std::time::Duration;
 /// How far the pointer moves with a crumb held before the folder is dragged out (`crumbDragRef`, 6 px).
 const DRAG_THRESHOLD: f32 = 6.;
 
-pub use keys::{ListAccept, ListCancel, ListComplete, ListDown, ListFirst, ListLast, ListUp};
+pub use keys::{ListAccept, ListCancel, ListComplete, ListDown, ListFirst, ListLast, ListRemove, ListUp};
 
 /// A listing with more entries than this is ranked on a background thread rather than while you type.
 const RANK_IN_BACKGROUND: usize = 5_000;
@@ -288,6 +288,9 @@ pub struct AddressBar {
     // The search box
     search: Entity<InputState>,
     find_focused: bool,
+    /// The hint the arrow keys have stepped to in the empty search box's popup (recent searches first, then the
+    /// filters), as its place in that list. Enter takes it.
+    hint_at: Option<usize>,
     plain: Option<glint_model::plain::Plain>,
     find_timer: Option<Task<()>>,
     /// A crumb pressed, and where: dragged past [`DRAG_THRESHOLD`] with the button down, it drags its folder out.
@@ -364,6 +367,7 @@ impl AddressBar {
             flyout_seq: 0,
             search,
             find_focused: false,
+            hint_at: None,
             plain: None,
             find_timer: None,
             crumb_press: None,

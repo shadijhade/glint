@@ -26,6 +26,8 @@ actions!(
         ListAccept,
         /// Escape: give up what was typed, or close the menu.
         ListCancel,
+        /// Delete on a recent search the arrows have stepped to: forget it.
+        ListRemove,
     ]
 );
 
@@ -67,6 +69,9 @@ pub(super) fn ensure_bound(cx: &mut App) {
         // clears and leaves.
         KeyBinding::new("tab", ListComplete, Some("AddressFind > Input")),
         KeyBinding::new("down", ListDown, Some("AddressFind > Input")),
+        // The empty box's hints: Up and Down step through them, Delete forgets a recent search.
+        KeyBinding::new("up", ListUp, Some("AddressFind > Input")),
+        KeyBinding::new("delete", ListRemove, Some("AddressFind > Input")),
         KeyBinding::new("escape", ListCancel, Some("AddressFind > Input")),
     ]);
 }

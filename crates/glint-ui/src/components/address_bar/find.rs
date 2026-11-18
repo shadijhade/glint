@@ -61,9 +61,15 @@ impl AddressBar {
         match event {
             InputEvent::Change => {
                 let value = self.search.read(cx).value().to_string();
+                self.hint_at = None;
                 self.filter_changed(value, cx);
             }
-            InputEvent::PressEnter { .. } => self.run_search(window, cx),
+            // The hint the arrows are on is what Enter takes; with none, it searches.
+            InputEvent::PressEnter { .. } => {
+                if !self.take_hint(window, cx) {
+                    self.run_search(window, cx)
+                }
+            }
             InputEvent::Focus => {
                 self.find_focused = true;
                 self.plain = self.read_plain(&self.search.read(cx).value());
@@ -71,6 +77,7 @@ impl AddressBar {
             }
             InputEvent::Blur => {
                 self.find_focused = false;
+                self.hint_at = None;
                 self.plain = None;
                 cx.notify();
             }
@@ -176,6 +183,102 @@ impl AddressBar {
         });
     }
 
+    /// Whether the empty box's hints are showing.
+    fn hints_open(&self) -> bool {
+        self.find_focused && self.seen.filter.is_empty() && !self.seen.has_find
+    }
+
+    /// The last searches the empty box offers (query and folder), newest first.
+    fn recent_searches(cx: &App) -> Vec<(String, String)> {
+        crate::persistence::app(cx)
+            .map(|app| {
+                app.history
+                    .iter()
+                    .take(RECENT_SHOWN)
+                    .map(|item| (item.query.clone(), item.path.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The filters the hints offer, in the order they are drawn: the filters of any file, then what photos,
+    /// videos and songs say.
+    fn filter_offers(&self) -> (Vec<Offer>, Vec<Offer>) {
+        let mut first: Vec<Offer> = FILTERS.to_vec();
+        if self.in_repository {
+            first.push(GIT_FILTER);
+        }
+        (first, PROP_FILTERS.to_vec())
+    }
+
+    /// How many hints there are to step through: the recent searches, then the filters.
+    fn hint_count(&self, cx: &App) -> usize {
+        let (first, props) = self.filter_offers();
+        Self::recent_searches(cx).len() + first.len() + props.len()
+    }
+
+    /// Down in the empty box: to the next hint (the last stays). With no hints showing it goes to the list.
+    fn hint_down(&mut self, cx: &mut Context<Self>) {
+        let count = self.hint_count(cx);
+        if !self.hints_open() || count == 0 {
+            cx.emit(AddressBarEvent::FocusFiles { first: true });
+            return;
+        }
+        self.hint_at = Some(self.hint_at.map_or(0, |at| (at + 1).min(count - 1)));
+        cx.notify();
+    }
+
+    /// Up in the empty box: to the hint before, and from the first back to the box. Elsewhere it is the box's.
+    fn hint_up(&mut self, cx: &mut Context<Self>) {
+        match self.hint_at.filter(|_| self.hints_open()) {
+            Some(at) => {
+                self.hint_at = at.checked_sub(1);
+                cx.notify();
+            }
+            None => cx.propagate(),
+        }
+    }
+
+    /// Enter on the hint the arrows are on: a recent search runs again, a filter goes into the box. False when
+    /// the arrows are on none.
+    fn take_hint(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(at) = self.hint_at.filter(|_| self.hints_open()) else {
+            return false;
+        };
+        self.hint_at = None;
+        let recent = Self::recent_searches(cx);
+        if let Some((query, folder)) = recent.get(at) {
+            self.run_recent(query.clone(), folder.clone(), cx);
+            return true;
+        }
+        let (first, props) = self.filter_offers();
+        let offers = first.into_iter().chain(props);
+        if let Some((start, _, _)) = offers.into_iter().nth(at - recent.len()) {
+            self.set_search_text(start.to_string(), window, cx);
+        }
+        true
+    }
+
+    /// Delete on a recent search the arrows are on, or its × button: forgets it (what is saved loses it too).
+    fn forget_recent(&mut self, query: &str, folder: &str, cx: &mut Context<Self>) {
+        crate::persistence::update_app(cx, |app| app.remove_from_history(query, folder));
+        // The arrows stay near where they were.
+        let count = self.hint_count(cx);
+        self.hint_at = self
+            .hint_at
+            .and_then(|at| count.checked_sub(1).map(|last| at.min(last)));
+        cx.notify();
+    }
+
+    /// Delete with the arrows on a recent search forgets it; anywhere else it edits the box.
+    fn forget_current(&mut self, cx: &mut Context<Self>) {
+        let recent = Self::recent_searches(cx);
+        match self.hint_at.filter(|_| self.hints_open()).and_then(|at| recent.get(at)) {
+            Some((query, folder)) => self.forget_recent(query, folder, cx),
+            None => cx.propagate(),
+        }
+    }
+
     /// Tab: the filters read from plain words go in the box.
     fn take_plain(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.plain.as_ref().map(|p| p.query.clone()) {
@@ -196,6 +299,7 @@ impl AddressBar {
     /// Escape: clears the search and goes back to the list, like Explorer.
     fn leave_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.find_timer = None;
+        self.hint_at = None;
         if !self.search.read(cx).value().is_empty() || self.seen.has_find {
             self.clear_search(window, cx);
         }
@@ -351,8 +455,14 @@ impl AddressBar {
                 )
         });
 
-        let hints = (self.find_focused && seen.filter.is_empty() && !seen.has_find).then(|| {
-            let offers = |title: Option<SharedString>, list: Vec<Offer>, base: usize, cx: &mut Context<Self>| {
+        let current_hint = self.hint_at;
+        let hints = self.hints_open().then(|| {
+            // `first_place`: where this group starts among all the hints the arrows step through.
+            let offers = |title: Option<SharedString>,
+                          list: Vec<Offer>,
+                          base: usize,
+                          first_place: usize,
+                          cx: &mut Context<Self>| {
                 col()
                     .mt(space(1.5))
                     .children(title.map(|title| {
@@ -364,10 +474,12 @@ impl AddressBar {
                             .child(title)
                     }))
                     .children(list.into_iter().enumerate().map(|(i, (start, example, meaning))| {
+                        let current = current_hint == Some(first_place + i);
                         row_start()
                             .id(("address-offer", base + i))
                             .role(Role::Button)
                             .aria_label(example)
+                            .aria_selected(current)
                             .test_support()
                             .items_baseline()
                             .gap(space(2.))
@@ -375,6 +487,7 @@ impl AddressBar {
                             .py(space(1.))
                             .rounded(theme::size::RADIUS_SM)
                             .cursor_pointer()
+                            .when(current, |s| s.bg(t.accent))
                             .hover(|s| s.bg(t.accent))
                             .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
                             .on_click(cx.listener(move |this, _, window, cx| {
@@ -391,10 +504,7 @@ impl AddressBar {
                             .child(div().text_color(t.muted_foreground).child(i18n::translate(meaning)))
                     }))
             };
-            let mut first: Vec<Offer> = FILTERS.to_vec();
-            if self.in_repository {
-                first.push(GIT_FILTER);
-            }
+            let (first, props) = self.filter_offers();
             let base = first.len();
             let height = (viewport.height - rem * 3.5).max(px(0.));
             // Where else the words are looked for inside files, beyond their own text.
@@ -440,15 +550,8 @@ impl AddressBar {
                     cx,
                 ));
             // The last searches: one click opens its folder and runs it again.
-            let recent: Vec<(String, String)> = crate::persistence::app(cx)
-                .map(|app| {
-                    app.history
-                        .iter()
-                        .take(RECENT_SHOWN)
-                        .map(|item| (item.query.clone(), item.path.clone()))
-                        .collect()
-                })
-                .unwrap_or_default();
+            let recent = Self::recent_searches(cx);
+            let recent_count = recent.len();
             let recents = (!recent.is_empty()).then(|| {
                 col()
                     .id("address-search-recent")
@@ -466,16 +569,21 @@ impl AddressBar {
                     .children(recent.into_iter().enumerate().map(|(i, (query, folder))| {
                         let place = glint_model::paths::base_name(&folder).to_string();
                         let (run_query, run_folder) = (query.clone(), folder.clone());
+                        let (forget_query, forget_folder) = (query.clone(), folder.clone());
+                        let forget_label = t!("Remove {query} from the recent searches", query = query);
+                        let current = current_hint == Some(i);
                         row_start()
                             .id(("address-recent", i))
                             .role(Role::Button)
                             .aria_label(t!("{query} in {folder}", query = query, folder = place))
+                            .aria_selected(current)
                             .test_support()
                             .gap(space(2.))
                             .px(space(1.5))
                             .py(space(1.))
                             .rounded(theme::size::RADIUS_SM)
                             .cursor_pointer()
+                            .when(current, |s| s.bg(t.accent))
                             .hover(|s| s.bg(t.accent))
                             .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
                             .on_click(cx.listener(move |this, _, _, cx| {
@@ -488,6 +596,20 @@ impl AddressBar {
                                     .flex_none()
                                     .text_color(t.muted_foreground)
                                     .child(isolate(place)),
+                            )
+                            .child(
+                                Button::new(("address-recent-forget", i))
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(IconName::X)
+                                    .accessibility_label(forget_label)
+                                    .tooltip(t!("Remove from the recent searches (Del)"))
+                                    .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        // The row under the button would run the search.
+                                        cx.stop_propagation();
+                                        this.forget_recent(&forget_query, &forget_folder, cx)
+                                    })),
                             )
                     }))
             });
@@ -513,11 +635,12 @@ impl AddressBar {
                 )))
                 .child(reaches)
                 .children(recents)
-                .child(offers(None, first, 0, cx))
+                .child(offers(None, first, 0, recent_count, cx))
                 .child(offers(
                     Some(t!("What photos, videos and songs say (read from the files):")),
-                    PROP_FILTERS.to_vec(),
+                    props,
                     base,
+                    recent_count + base,
                     cx,
                 ))
         });
@@ -555,7 +678,9 @@ impl AddressBar {
                 this.toggle_option(SearchOptionKey::Regex, cx)
             }))
             .on_action(cx.listener(|this, _: &ListComplete, window, cx| this.take_plain(window, cx)))
-            .on_action(cx.listener(|_, _: &ListDown, _, cx| cx.emit(AddressBarEvent::FocusFiles { first: true })))
+            .on_action(cx.listener(|this, _: &ListDown, _, cx| this.hint_down(cx)))
+            .on_action(cx.listener(|this, _: &ListUp, _, cx| this.hint_up(cx)))
+            .on_action(cx.listener(|this, _: &ListRemove, _, cx| this.forget_current(cx)))
             .on_action(cx.listener(|this, _: &ListCancel, window, cx| this.leave_search(window, cx)))
             .tooltip(tip(t!(
                 "Typing filters this folder · Enter searches its subfolders too: names (the instant search index or fd; * and ? work, words all must match) and inside the files (ripgrep). Filters: ext:pdf, path:src\\lib, size:>10mb, dm:7d (changed in the last 7 days), dm:>1y, file:, folder:, and for photos, videos and songs width:>1920, height:, taken:2024, camera:, duration:>5m, artist:, album:"
