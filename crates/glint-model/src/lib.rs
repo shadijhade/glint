@@ -24,6 +24,7 @@ pub mod hex;
 pub mod i18n;
 pub mod json_tree;
 pub mod markdown;
+pub mod natural;
 pub mod paths;
 pub mod plain;
 pub mod rank;

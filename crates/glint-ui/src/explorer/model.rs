@@ -28,7 +28,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// Listings with more entries than this are sorted on a background thread rather than on the UI thread.
-const ROWS_IN_BACKGROUND: usize = 20_000;
+const ROWS_IN_BACKGROUND: usize = 5_000;
 /// How long a flashed path stays highlighted (the TypeScript's 1200 ms).
 const FLASH_FOR: Duration = Duration::from_millis(1200);
 
@@ -744,7 +744,7 @@ impl Explorer {
     }
 
     /// Rebuilds a tab's rows if their inputs changed (the listing, the sort, a setting, the filter). A
-    /// listing of more than 20,000 entries that needs real sorting is sorted on a background thread: until it
+    /// listing of more than 5,000 entries that needs real sorting is sorted on a background thread: until it
     /// is done the tab shows the listing in the engine's order.
     pub(super) fn rebuild_rows(&mut self, id: TabId, cx: &mut Context<Self>) {
         let _span = crate::perf::span("rebuild rows");

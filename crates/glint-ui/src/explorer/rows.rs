@@ -11,9 +11,11 @@
 //! [`build_rows`] is a pure function of its inputs so a huge folder can be ordered on a background thread.
 
 use super::types::{Hit, Hits};
-use glint_model::entries::{entry_order, is_hidden, matcher, FileEntry, GitMarks, SizeOf, Sort, SortKey};
+use glint_model::entries::{
+    by_name, entry_order_by, is_hidden, matcher, FileEntry, GitMarks, Reads, SizeOf, Sort, SortKey,
+};
 use glint_model::groups::{group_order, GroupBy, GroupHeader, GroupedOrder, SizeOf as GroupSizeOf};
-use std::cmp::Ordering;
+use glint_model::natural::NameKeys;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::Arc;
@@ -453,12 +455,7 @@ pub fn build_rows(entries: &Arc<[FileEntry]>, spec: &RowSpec, now: i64) -> Rows 
     if !by_default {
         if let Some(order) = order.as_mut() {
             let size_of = measured.as_ref().map(|f| f as &SizeOf);
-            let compare = entry_order(spec.sort, spec.folders_first, spec.presorted, size_of, None, None);
-            // A stable sort, so ties keep the engine's name order, as the TypeScript's did.
-            order.sort_by(|&a, &b| match (entries.get(a as usize), entries.get(b as usize)) {
-                (Some(a), Some(b)) => compare(a, b),
-                _ => Ordering::Equal,
-            });
+            sort_order(entries, order, spec, size_of);
         }
     }
 
@@ -519,6 +516,54 @@ pub fn build_rows(entries: &Arc<[FileEntry]>, spec: &RowSpec, now: i64) -> Rows 
         Some(inside) => with_hits(grouped, inside),
         None => grouped,
     }
+}
+
+/// Puts `order` (positions in `entries`) in the order of `spec`'s sort. A stable sort, so ties keep the engine's
+/// name order, as the TypeScript's did.
+///
+/// A sort that compares names (by name, or any sort whose ties go by name) makes every name's natural-order key
+/// once and compares those: reading each name's digit runs again at every comparison cost most of the time of
+/// sorting a big folder.
+fn sort_order(entries: &[FileEntry], order: &mut Vec<u32>, spec: &RowSpec, size_of: Option<&SizeOf>) {
+    /// A row on its way into place: its entry, where it is in `entries`, and where it started in the sort.
+    struct Slot<'e> {
+        entry: &'e FileEntry,
+        index: u32,
+        start: usize,
+    }
+    let mut slots: Vec<Slot> = order
+        .iter()
+        .filter_map(|&index| entries.get(index as usize).map(|entry| (index, entry)))
+        .enumerate()
+        .map(|(start, (index, entry))| Slot { entry, index, start })
+        .collect();
+    let by_names = !spec.presorted || spec.sort.key == SortKey::Name;
+    let keys = if by_names {
+        NameKeys::new(slots.iter().map(|slot| slot.entry.lower.as_str()))
+    } else {
+        None
+    };
+    let name_order = |a: &Slot, b: &Slot| match &keys {
+        Some(keys) => keys
+            .compare(a.start, b.start)
+            .then_with(|| a.entry.name.cmp(&b.entry.name)),
+        None => by_name(a.entry, b.entry),
+    };
+    let reads = Reads {
+        size_of,
+        taken_of: None,
+        facts_of: None,
+    };
+    let compare = entry_order_by(
+        spec.sort,
+        spec.folders_first,
+        spec.presorted,
+        reads,
+        |slot: &Slot| slot.entry,
+        name_order,
+    );
+    slots.sort_by(compare);
+    *order = slots.iter().map(|slot| slot.index).collect();
 }
 
 /// `rows` with what a search found inside files: each file's matching lines under its row (the first
@@ -1024,5 +1069,145 @@ mod tests {
         assert!(reads_git("", GroupBy::Git));
         assert!(reads_git("x GIT:new", GroupBy::None));
         assert!(!reads_git("report", GroupBy::Kind));
+    }
+
+    /// Names that are hard for a key: digit runs and leading zeros, case, accents, scripts, a long shared start
+    /// (differing only after 32 bytes of key) and digit runs longer than a length byte holds.
+    fn tricky_names(count: usize) -> Vec<String> {
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move |n: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % n as u64) as usize
+        };
+        let parts = [
+            "amd64_microsoft-windows-",
+            "File",
+            "IMG_",
+            "é",
+            "ß",
+            "z",
+            "0",
+            "007",
+            "10",
+            "9",
+            ".",
+            " ",
+            "-",
+            "a",
+            "日本",
+            "😀",
+            "Σ",
+            "_copy",
+            ".txt",
+        ];
+        let mut names: Vec<String> = (0..count)
+            .map(|_| (0..1 + next(6)).map(|_| parts[next(parts.len())]).collect::<String>())
+            .collect();
+        let long = "windows-component-store-assembly-".repeat(2);
+        for i in 0..30 {
+            names.push(format!("{long}{i}"));
+            names.push(format!("{long}{i:03}.dll"));
+        }
+        for digits in [254usize, 255, 256, 300] {
+            names.push(format!("n{}1x", "9".repeat(digits)));
+            names.push(format!("n{}2x", "9".repeat(digits)));
+            names.push(format!("n0{}", "1".repeat(digits)));
+        }
+        names
+    }
+
+    /// The listing as entries: every fifth one a folder, sizes and dates that tie often.
+    fn tricky_listing(count: usize) -> Arc<[FileEntry]> {
+        tricky_names(count)
+            .iter()
+            .enumerate()
+            .map(|(i, name)| {
+                if i % 5 == 0 {
+                    folder(name)
+                } else {
+                    file(name, (i % 7) as u64, (i % 11) as i64)
+                }
+            })
+            .collect()
+    }
+
+    /// What the rows were before they used name keys: `entry_order` over the indices.
+    fn order_by_comparing_names(entries: &Arc<[FileEntry]>, spec: &RowSpec) -> Vec<usize> {
+        let compare =
+            glint_model::entries::entry_order(spec.sort, spec.folders_first, spec.presorted, None, None, None);
+        let mut order: Vec<usize> = (0..entries.len()).filter(|&i| !is_hidden(&entries[i])).collect();
+        order.sort_by(|&a, &b| compare(&entries[a], &entries[b]));
+        order
+    }
+
+    fn sorted_by_comparing_names(entries: &Arc<[FileEntry]>, spec: &RowSpec) -> Vec<String> {
+        let order = order_by_comparing_names(entries, spec);
+        order.into_iter().map(|i| entries[i].path.clone()).collect()
+    }
+
+    /// Rows sort exactly as comparing the names did, for every key, either direction, with and without the
+    /// engine's presorting, folders first or not.
+    #[test]
+    fn rows_sorted_with_name_keys_are_in_the_order_comparing_names_gives() {
+        let entries = tricky_listing(1_500);
+        for key in [SortKey::Name, SortKey::Modified, SortKey::Size, SortKey::Type] {
+            for desc in [false, true] {
+                for presorted in [false, true] {
+                    for folders_first in [false, true] {
+                        let spec = RowSpec {
+                            sort: Sort { key, desc },
+                            folders_first,
+                            presorted,
+                            ..RowSpec::default()
+                        };
+                        let want = sorted_by_comparing_names(&entries, &spec);
+                        let rows = build_rows(&entries, &spec, 0);
+                        let got: Vec<String> = rows.iter().map(|entry| entry.path.clone()).collect();
+                        assert_eq!(got.len(), want.len());
+                        // Without the engine's order the listing here is not in it, so the by-default shortcut
+                        // (which keeps the listing as it is) is not what is being compared.
+                        if !(presorted && folders_first && key == SortKey::Name && !desc) {
+                            assert_eq!(
+                                got, want,
+                                "{key:?} desc={desc} presorted={presorted} folders={folders_first}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Sorting 20,000 rows by name, by the old way (comparing names) and by name keys. Run in release:
+    /// `cargo test --release -p glint-ui --lib explorer::rows::tests::sorting_twenty_thousand_rows -- --ignored --nocapture`
+    #[test]
+    #[ignore = "timing: run in release"]
+    fn sorting_twenty_thousand_rows_costs_less_with_name_keys() {
+        let entries = tricky_listing(20_000);
+        let spec = RowSpec {
+            sort: Sort {
+                key: SortKey::Name,
+                desc: true,
+            },
+            presorted: false,
+            ..RowSpec::default()
+        };
+        let best = |work: &dyn Fn() -> usize| {
+            (0..9)
+                .map(|_| {
+                    let started = std::time::Instant::now();
+                    std::hint::black_box(work());
+                    started.elapsed().as_secs_f64() * 1000.0
+                })
+                .fold(f64::MAX, f64::min)
+        };
+        let before = best(&|| order_by_comparing_names(&entries, &spec).len());
+        let after = best(&|| build_rows(&entries, &spec, 0).len());
+        println!(
+            "{} rows, name sort: comparing names {before:.2} ms, name keys {after:.2} ms",
+            entries.len()
+        );
     }
 }

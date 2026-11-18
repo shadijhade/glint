@@ -309,7 +309,7 @@ fn trim_zeros(digits: &[u8]) -> &[u8] {
 }
 
 /// Names in natural order, ties by the name as written (code point order, as the core's sort does).
-fn by_name(a: &FileEntry, b: &FileEntry) -> Ordering {
+pub fn by_name(a: &FileEntry, b: &FileEntry) -> Ordering {
     natural_compare(&a.lower, &b.lower).then_with(|| a.name.cmp(&b.name))
 }
 
@@ -373,6 +373,45 @@ pub fn entry_order<'a, 'f: 'a>(
     taken_of: Option<&'a TakenOf<'a>>,
     facts_of: Option<&'a FactsOf<'f>>,
 ) -> impl Fn(&FileEntry, &FileEntry) -> Ordering + use<'a, 'f> {
+    let reads = Reads {
+        size_of,
+        taken_of,
+        facts_of,
+    };
+    entry_order_by(sort, folders_first, presorted, reads, entry_itself, by_name)
+}
+
+fn entry_itself(entry: &FileEntry) -> &FileEntry {
+    entry
+}
+
+/// What a sort reads about an entry besides the entry itself.
+pub struct Reads<'a, 'f> {
+    pub size_of: Option<&'a SizeOf<'a>>,
+    pub taken_of: Option<&'a TakenOf<'a>>,
+    pub facts_of: Option<&'a FactsOf<'f>>,
+}
+
+/// [`entry_order`] over any items that stand for entries: `entry` says which, and `name_order` compares two
+/// items by name (natural order, ties by the name as written, as `by_name` does), so that a caller that has made
+/// the names' keys ([`crate::natural::NameKeys`]) compares those instead of reading each name again.
+pub fn entry_order_by<'a, 'f: 'a, T, E, N>(
+    sort: Sort,
+    folders_first: bool,
+    presorted: bool,
+    reads: Reads<'a, 'f>,
+    entry: E,
+    name_order: N,
+) -> impl Fn(&T, &T) -> Ordering + use<'a, 'f, T, E, N>
+where
+    E: Fn(&T) -> &FileEntry + 'a,
+    N: Fn(&T, &T) -> Ordering + 'a,
+{
+    let Reads {
+        size_of,
+        taken_of,
+        facts_of,
+    } = reads;
     let group = move |e: &FileEntry| usize::from(!(folders_first && e.dir));
     let size = move |e: &FileEntry| size_of.map_or(e.size, |f| f(e));
     let taken = move |e: &FileEntry| taken_of.and_then(|f| f(e)).unwrap_or(e.modified);
@@ -393,9 +432,10 @@ pub fn entry_order<'a, 'f: 'a>(
             .unwrap_or("")
     };
     let duration = move |e: &FileEntry| facts(e).and_then(|f| f.duration).unwrap_or(-1.0);
-    move |a, b| {
+    move |item_a, item_b| {
+        let (a, b) = (entry(item_a), entry(item_b));
         let by = match sort.key {
-            SortKey::Name => by_name(a, b),
+            SortKey::Name => name_order(item_a, item_b),
             SortKey::Modified => a.modified.cmp(&b.modified),
             // When a photo or video was taken, else when the file was modified.
             SortKey::Taken => taken(a).cmp(&taken(b)),
@@ -409,10 +449,13 @@ pub fn entry_order<'a, 'f: 'a>(
             SortKey::Album => compare_base_numeric(text(a, false), text(b, false)),
         };
         let by = if sort.desc { by.reverse() } else { by };
-        group(a)
-            .cmp(&group(b))
-            .then(by)
-            .then_with(|| if presorted { Ordering::Equal } else { by_name(a, b) })
+        group(a).cmp(&group(b)).then(by).then_with(|| {
+            if presorted {
+                Ordering::Equal
+            } else {
+                name_order(item_a, item_b)
+            }
+        })
     }
 }
 
