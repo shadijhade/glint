@@ -1315,6 +1315,9 @@ mod tests {
         }
     }
 
+    /// The status line while a scan of `C:\Work` is under way.
+    const SCANNING: &str = "Scanning modification timestamps across Work…";
+
     #[derive(Default)]
     struct Log {
         scans: AtomicUsize,
@@ -1342,6 +1345,27 @@ mod tests {
         (source, log)
     }
 
+    /// [`fake`] whose scans answer only when the test lets them: one message on the returned sender lets one scan
+    /// answer. A scan that "is under way" is then a state the test holds for as long as it likes, rather than one
+    /// that an answer from core's threads may end before the test has looked.
+    fn gated(answer: Result<TimelineReport, String>) -> (Source, Arc<Log>, async_channel::Sender<()>) {
+        let (source, log) = fake(Ok(report()));
+        let (release, released) = async_channel::unbounded::<()>();
+        let ungated = source.scan.clone();
+        let source = Source {
+            scan: Arc::new(move |root, window_ms| {
+                let (scan, released, answer) = (ungated(root, window_ms), released.clone(), answer.clone());
+                Box::pin(async move {
+                    let _ = released.recv().await;
+                    let _ = scan.await;
+                    answer
+                })
+            }),
+            ..source
+        };
+        (source, log, release)
+    }
+
     fn effects(log: &Arc<Log>) -> Effects {
         let (a, b, c) = (log.clone(), log.clone(), log.clone());
         Effects {
@@ -1365,13 +1389,17 @@ mod tests {
         })
     }
 
+    /// Waits for `done`, which depends on work that runs on core's own threads (a scan answers from there), so it
+    /// is the thing waited for and not a count of tries: how long a busy PC takes to get to those threads is not
+    /// known. A condition that never comes still ends the test, after a minute.
     fn settle(cx: &mut VisualTestContext, what: &str, mut done: impl FnMut(&mut VisualTestContext) -> bool) {
-        for _ in 0..400 {
+        let giving_up = std::time::Instant::now() + Duration::from_secs(60);
+        while std::time::Instant::now() < giving_up {
             cx.run_until_parked();
             if done(cx) {
                 return;
             }
-            std::thread::sleep(Duration::from_millis(5));
+            std::thread::sleep(Duration::from_millis(2));
         }
         panic!("never happened: {what}");
     }
@@ -1492,8 +1520,11 @@ mod tests {
     fn another_time_window_scans_again_and_forgets_the_subfolder(cx: &mut TestAppContext) {
         let _guard = testing::lock();
         let mut visual = window(cx);
-        let (source, log) = fake(Ok(report()));
-        open_dialog(&mut visual, "C:\\Work", source, effects(&log));
+        let (source, log, release) = gated(Ok(report()));
+        open_dialog(&mut visual, r"C:\Work", source, effects(&log));
+        // The first scan under way, and then answered.
+        assert_eq!(role_of(&mut visual, SCANNING), Some(Role::Status));
+        release.try_send(()).unwrap();
         settle(&mut visual, "the list", |cx| has(cx, "3 files"));
 
         // Choosing a busy folder filters to it and shows the chip that clears it.
@@ -1503,22 +1534,22 @@ mod tests {
             role_of(&mut visual, "Clear subfolder filter: In: src"),
             Some(Role::Button)
         );
-        // A week: scan again, the filter goes.
+        // A week: scan again, the filter goes. The scan is held, so it is seen under way.
         click(&mut visual, ("timeline-window", 4_usize));
-        assert_eq!(
-            role_of(&mut visual, "Scanning modification timestamps across Work…"),
-            Some(Role::Status)
-        );
-        settle(&mut visual, "the second scan", |_| {
-            log.scans.load(Ordering::SeqCst) == 2
-        });
+        assert_eq!(role_of(&mut visual, SCANNING), Some(Role::Status));
+        assert_eq!(log.scans.load(Ordering::SeqCst), 2);
         assert_eq!(log.last_window.load(Ordering::SeqCst), 7 * 24 * 60 * 60 * 1000);
-        settle(&mut visual, "all three again", |cx| has(cx, "3 files"));
+        release.try_send(()).unwrap();
+        settle(&mut visual, "the second scan's answer", |cx| !has(cx, SCANNING));
+        assert!(has(&mut visual, "3 files"));
         assert!(!has(&mut visual, "Clear subfolder filter: In: src"));
         // Refresh asks again over the same window.
         click(&mut visual, "timeline-refresh");
-        settle(&mut visual, "a third scan", |_| log.scans.load(Ordering::SeqCst) == 3);
+        assert_eq!(log.scans.load(Ordering::SeqCst), 3);
         assert_eq!(log.last_window.load(Ordering::SeqCst), 7 * 24 * 60 * 60 * 1000);
+        release.try_send(()).unwrap();
+        settle(&mut visual, "the third scan's answer", |cx| !has(cx, SCANNING));
+        assert!(has(&mut visual, "3 files"));
     }
 
     #[gpui_kit::test]

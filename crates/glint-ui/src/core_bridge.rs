@@ -41,7 +41,7 @@ use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, PostMessageW, RegisterClassW, SetForegroundWindow, ShowWindow, HWND_MESSAGE,
+    CreateWindowExW, DefWindowProcW, IsWindow, PostMessageW, RegisterClassW, SetForegroundWindow, ShowWindow, HWND_MESSAGE,
     SW_SHOW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WNDCLASSW,
 };
 
@@ -96,7 +96,7 @@ pub fn init(cx: &mut App) {
 /// [`init`], with the background housekeeping (crash reports, sweeps of old temp folders…) optional, so tests
 /// get the bridge without touching the PC.
 pub(crate) fn init_with(cx: &mut App, housekeeping: bool) {
-    let message_window = create_message_window();
+    let message_window = ensure_message_window();
     let (events_in, events_out) = async_channel::unbounded::<host::Event>();
     let app = AppHandle::new(
         move |event| {
@@ -208,9 +208,35 @@ unsafe extern "system" fn bridge_proc(window: HWND, message: u32, wparam: WPARAM
     }
 }
 
-/// Makes the hidden message-only window on the calling (UI) thread and remembers it. `None` if Windows
-/// refuses; jobs are then dropped (and said so).
+/// Taken while the message window is looked at or replaced: the check "is there one" and the making of one are
+/// one step, so two threads starting an app at once (tests do) can't each make one and leave the later one's
+/// thread to receive the earlier one's jobs.
+static MESSAGE_WINDOW_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// The message-only window jobs are posted to: the one that is there while its thread lives, else a new one made
+/// on the calling (UI) thread. An app starts once, so for the app this makes the window; a test
+/// process starts many (each test's own app, on its own thread), and none of them may take the window away from
+/// the thread that is pumping it.
+pub(crate) fn ensure_message_window() -> Option<HWND> {
+    let _turn = MESSAGE_WINDOW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let current = MESSAGE_WINDOW.load(Ordering::Acquire);
+    // SAFETY: `IsWindow` takes any handle, a stale one included, and says whether it is a window.
+    if current != 0 && unsafe { IsWindow(Some(HWND(current as *mut _))) }.as_bool() {
+        return Some(HWND(current as *mut _));
+    }
+    make_message_window()
+}
+
+/// Makes the hidden message-only window on the calling (UI) thread and remembers it, replacing any other. `None`
+/// if Windows refuses; jobs are then dropped (and said so). Only the message-window tests replace a live window,
+/// to have one of their own.
+#[cfg(test)]
 pub(crate) fn create_message_window() -> Option<HWND> {
+    let _turn = MESSAGE_WINDOW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    make_message_window()
+}
+
+fn make_message_window() -> Option<HWND> {
     // SAFETY: plain window-class registration and creation on this thread; the class and window names are
     // static, and the procedure matches the required signature.
     unsafe {
@@ -395,7 +421,8 @@ mod tests {
     }
 
     /// The message window is one per process: the tests that make and pump it take turns, or one's window
-    /// replaces the other's mid-test and its jobs land on a thread that never pumps them.
+    /// replaces the other's mid-test and its jobs land on a thread that never pumps them. Every other test's
+    /// `testing::init` leaves a window that is there alone (`ensure_message_window`), so none takes it from them.
     static MESSAGE_WINDOW_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
