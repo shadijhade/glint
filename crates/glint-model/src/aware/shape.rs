@@ -228,6 +228,7 @@ pub fn want_for(entry: &FileEntry) -> Want {
         text: small_enough && (class == One::Code || (class == One::Data && entry.ext != "parquet")),
         pages: class == One::Pdf,
         target: entry.ext == "lnk",
+        extracted: class == One::Archive,
         twins: (1024..=256 * 1024 * 1024).contains(&entry.size),
         ..Want::default()
     }
@@ -374,6 +375,7 @@ mod tests {
         assert!(!want_for(&file("a.txt", 100)).twins);
         assert!(want_for(&file("a.txt", 5000)).twins);
         assert!(want_for(&file("a.lnk", 5000)).target);
+        assert!(want_for(&file("a.zip", 5000)).extracted && !want_for(&file("a.txt", 5000)).extracted);
         assert!(want_for(&file("a.pdf", 5000)).pages);
         let any = want_for(&file("a.txt", 5000));
         assert!(any.origin && any.locked_by && any.opens_with);

@@ -53,6 +53,9 @@ pub fn probe(asks: Vec<Ask>, lane: Lane, stop: Arc<AtomicBool>, out: Channel<Ans
         if want.opens_with {
             job(lane, &stop, &out, &path, file::opens_with, Part::OpensWith);
         }
+        if want.extracted {
+            job(lane, &stop, &out, &path, file::extracted, Part::Extracted);
+        }
         if want.inside {
             let (stop, out, path) = (stop.clone(), out.clone(), path.clone());
             pool::spawn(lane, move || {
@@ -226,6 +229,23 @@ mod tests {
         let got = wait_for(&seen, 1);
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].part, Part::Media(Media { width: 1, height: 1, seconds: 0.0 }));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_archive_asked_for_its_folder_says_whether_it_was_extracted() {
+        let dir = scratch("extracted");
+        let zip = dir.join("pack.zip");
+        let _ = std::fs::write(&zip, b"PK");
+        let want = Want { extracted: true, ..Want::default() };
+        let (out, seen) = collector();
+        probe(vec![ask(&zip, want)], Lane::Quiet, Arc::new(AtomicBool::new(false)), out);
+        assert_eq!(wait_for(&seen, 1)[0].part, Part::Extracted(None));
+        let _ = std::fs::create_dir_all(dir.join("pack"));
+        let (out, seen) = collector();
+        probe(vec![ask(&zip, want)], Lane::Quiet, Arc::new(AtomicBool::new(false)), out);
+        let folder = dir.join("pack").to_string_lossy().into_owned();
+        assert_eq!(wait_for(&seen, 1)[0].part, Part::Extracted(Some(folder)));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

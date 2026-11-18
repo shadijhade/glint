@@ -227,6 +227,14 @@ pub fn item_menu(targets: &[FileEntry], c: &ItemCtx) -> Vec<Node> {
             .node(),
         );
     }
+    // An archive that was extracted before: its folder is a click away, ahead of extracting it again.
+    if let Some(folder) = one
+        .filter(|e| is_archive_file(e) && !fixed)
+        .and(c.probed.as_ref())
+        .and_then(|probed| probed.extracted.clone().flatten())
+    {
+        m.push(Entry::task(t!("Open extracted folder"), IconName::FolderOpen, Task::OpenExtracted(folder)).node());
+    }
     if let Some(e) = one.filter(|e| (is_archive_file(e) || is_browsable(e)) && !fixed) {
         m.push(
             Entry::ask(

@@ -59,8 +59,12 @@ fn rules(facts: &Facts, probed: Option<&Probed>, available: &[&str]) -> Vec<(&'s
     if let Some(name) = probed.and_then(|p| p.locked_by.as_ref()).and_then(|names| names.first()) {
         out.push(("do:locks", 9.5, Why::InUse(name.clone())));
     }
-    // 2
+    // 2: an archive that was extracted already is opened where it went before it is extracted again.
     if shape == Shape::Archive && !facts.fixed {
+        let extracted = matches!(probed.and_then(|p| p.extracted.as_ref()), Some(Some(_)));
+        if extracted {
+            out.push(("do:open-extracted", 9.2, Why::Plain));
+        }
         out.push(("do:extract-here", 9.0, Why::Plain));
     }
     // 3
@@ -223,6 +227,7 @@ mod tests {
         vec![
             "do:locks",
             "do:extract-here",
+            "do:open-extracted",
             "do:mount",
             "do:defender",
             "do:compare",
@@ -292,6 +297,25 @@ mod tests {
         assert_eq!(first(&picks), Some(("do:extract-here", 9.0, &Why::Plain)));
         let fixed = Facts { fixed: true, ..facts(Shape::Archive) };
         assert!(!has(&run(&fixed, None, &all()), "do:extract-here"));
+    }
+
+    #[test]
+    fn an_archive_that_was_extracted_offers_its_folder_before_extracting_again() {
+        let done = Probed { extracted: Some(Some("C:\\x\\pack".into())), ..probed() };
+        let picks = run(&facts(Shape::Archive), Some(&done), &all());
+        assert_eq!(first(&picks), Some(("do:open-extracted", 9.2, &Why::Plain)));
+        assert_eq!(picks.get(1).map(|p| p.key.as_str()), Some("do:extract-here"), "extracting stays on offer");
+        let not_yet = Probed { extracted: Some(None), ..probed() };
+        for p in [Some(&not_yet), None] {
+            let picks = run(&facts(Shape::Archive), p, &all());
+            assert_eq!(first(&picks), Some(("do:extract-here", 9.0, &Why::Plain)));
+            assert!(!has(&picks, "do:open-extracted"));
+        }
+        // The row has to be in the menu, and an archive in an archive can't be extracted.
+        let without: Vec<&str> = all().into_iter().filter(|k| *k != "do:open-extracted").collect();
+        assert!(!has(&run(&facts(Shape::Archive), Some(&done), &without), "do:open-extracted"));
+        let fixed = Facts { fixed: true, ..facts(Shape::Archive) };
+        assert!(!has(&run(&fixed, Some(&done), &all()), "do:open-extracted"));
     }
 
     #[test]

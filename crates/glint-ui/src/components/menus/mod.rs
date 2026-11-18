@@ -1014,7 +1014,7 @@ impl MenuHost {
     fn perform(&mut self, task: Task, _pane: usize, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
         let explorer = try_explorer(cx);
         match task {
-            Task::Navigate(path) => {
+            Task::Navigate(path) | Task::OpenExtracted(path) => {
                 if let Some(explorer) = explorer {
                     explorer.update(cx, |e, cx| e.navigate(path, NavOptions::default(), cx));
                 }

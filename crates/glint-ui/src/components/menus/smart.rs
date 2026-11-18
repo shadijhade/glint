@@ -66,6 +66,7 @@ fn task_key(task: &Task) -> String {
         Task::ShowProperties(_) => "task:show-properties",
         Task::OpenIn { opener, .. } => return format!("task:open-in:{opener}"),
         Task::OpenInFileExplorer(_) => "task:open-in-file-explorer",
+        Task::OpenExtracted(_) => "do:open-extracted",
     };
     key.to_string()
 }

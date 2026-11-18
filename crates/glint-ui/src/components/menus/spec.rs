@@ -389,6 +389,9 @@ pub enum Task {
     OpenIn { opener: String, name: String, path: String },
     /// File Explorer's own window on a folder (`openPath`).
     OpenInFileExplorer(String),
+    /// Opens the folder an archive was extracted to, in the active tab: as [`Task::Navigate`], and a row of its
+    /// own for Suggested to put forward.
+    OpenExtracted(String),
 }
 
 /// `visibleItems` (Menu.tsx): the items a menu shows. Strips left with no button, submenus left with nothing,

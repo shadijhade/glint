@@ -4,7 +4,7 @@
 //! A fact is said only when it is known (R1): unknown is nothing at all.
 
 use super::event::MenuEvent;
-use super::spec::{Badge, Head, HeadPicture, Run, Tone};
+use super::spec::{Badge, Head, HeadPicture, Run, Task, Tone};
 use crate::kit::prelude::*;
 use crate::{i18n, t};
 use glint_model::aware::{Probed, Signer};
@@ -252,6 +252,15 @@ fn badges(entry: &FileEntry, probed: Option<&Probed>, extras: &Extras) -> Vec<Ba
                     ));
                 }
                 None => {}
+            }
+            if let Some(folder) = probed.extracted.as_ref().and_then(Option::as_ref) {
+                all.push(badge(
+                    t!("Already extracted"),
+                    IconName::FolderOpen,
+                    Tone::Good,
+                    Some(folder.clone().into()),
+                    Run::Do(Task::OpenExtracted(folder.clone())),
+                ));
             }
             if let Some(first) = probed.twins.as_ref().and_then(|twins| twins.first()) {
                 let count = probed.twins.as_ref().map_or(0, Vec::len);
