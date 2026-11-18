@@ -39,8 +39,7 @@
 //! file's icon, or the file as text). (Wave 9 brought tables, notebooks, program headers, contacts, calendars, mail,
 //! the Changes, Query and Profile views; wave 10 the player, PDF pages and Word documents; wave 11
 //! Mermaid and Graphviz diagrams, math, Typst documents and cast recordings; wave 15 HTML mail laid out as a page in
-//! [`small`], with the pictures from the internet off until asked and a switch to the plain version. 0.14 took the
-//! book reader out: books go to Windows' previewer.)
+//! [`small`]. 0.14 took the book reader and the mail viewer out: books go to Windows' previewer, mail is text.)
 
 /// JSON, YAML and TOML as a tree; CSV and TSV as a table (DataPreview.tsx, DataTree.tsx).
 pub mod data;
@@ -75,21 +74,21 @@ pub mod probe;
 /// A program's sections, imports and exports (BinaryPreview.tsx).
 pub mod program;
 pub mod quick_look;
-/// The rich text the Word and mail previews share: blocks and runs, right to left (previews-native.md sections 2-3).
+/// The rich text the Word previews draw: blocks and runs, right to left (previews-native.md sections 2-3).
 pub mod rich;
 /// Workbooks and Parquet as tables (SheetPreview in FilePreview.tsx).
 pub mod sheet;
 pub mod shell;
 /// Who signed a program, and whether Windows trusts it (SignatureChip.tsx).
 pub mod signature;
-/// Contacts, calendars, mail (HTML laid out as a page, pictures from the internet only when asked), design files (SmallPreviews.tsx).
+/// Contacts, calendars, design files and Graphviz sources (SmallPreviews.tsx).
 pub mod small;
 pub mod sources;
 /// SQLite databases: their tables and SQL (SqlitePreview in FilePreview.tsx).
 pub mod sqlite;
 pub mod states;
-/// What Word documents and HTML mail share: a zip, XML and XHTML read into blocks.
-pub mod xhtml;
+/// What Word documents read their zip and XML with.
+pub mod zipxml;
 /// SVG drawn as a GPUI image, cached by its source and size: the pipeline diagrams and math share (previews-native.md sections 4-7).
 pub mod svg_image;
 #[cfg(test)]

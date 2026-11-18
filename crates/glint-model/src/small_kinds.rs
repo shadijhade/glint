@@ -1,6 +1,6 @@
 //! Ported from src/lib/smallKinds.ts.
 //!
-//! The small file kinds with their own previews (contacts, calendars, mail...). The TypeScript kept this
+//! The small file kinds with their own previews (contacts, calendars, design files...). The TypeScript kept this
 //! table apart from the preview component so that FilePreview could tell which kind a file is without
 //! loading the preview module. The same split keeps the table here, away from the UI crate.
 
@@ -15,10 +15,6 @@ pub enum SmallKind {
     Contact,
     /// Calendar entries (.ics, .ical).
     Calendar,
-    /// Internet e-mail messages (.eml).
-    Email,
-    /// Outlook messages (.msg).
-    Outlook,
     /// Paint and design files that are archives of layers (.kra, .ora, .procreate, .sketch).
     Design,
     /// Graphviz graphs (.dot, .gv).
@@ -38,8 +34,6 @@ pub fn small_kind_of(ext: &str) -> Option<SmallKind> {
     match ext {
         "vcf" | "vcard" => Some(SmallKind::Contact),
         "ics" | "ical" => Some(SmallKind::Calendar),
-        "eml" => Some(SmallKind::Email),
-        "msg" => Some(SmallKind::Outlook),
         "kra" | "ora" | "procreate" | "sketch" => Some(SmallKind::Design),
         "dot" | "gv" => Some(SmallKind::Graphviz),
         _ => None,
@@ -57,8 +51,9 @@ mod tests {
         assert_eq!(small_kind_of("vcard"), Some(SmallKind::Contact));
         assert_eq!(small_kind_of("ics"), Some(SmallKind::Calendar));
         assert_eq!(small_kind_of("ical"), Some(SmallKind::Calendar));
-        assert_eq!(small_kind_of("eml"), Some(SmallKind::Email));
-        assert_eq!(small_kind_of("msg"), Some(SmallKind::Outlook));
+        // Mail has had no preview of its own since 0.14.
+        assert_eq!(small_kind_of("eml"), None);
+        assert_eq!(small_kind_of("msg"), None);
         assert_eq!(small_kind_of("kra"), Some(SmallKind::Design));
         assert_eq!(small_kind_of("ora"), Some(SmallKind::Design));
         assert_eq!(small_kind_of("procreate"), Some(SmallKind::Design));

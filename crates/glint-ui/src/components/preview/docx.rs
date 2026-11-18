@@ -44,12 +44,12 @@
 //! - **Tracked changes and comments** aren't marked, as before.
 //! - **Text isn't selectable or copyable** (see `rich.rs`).
 
-use super::xhtml::{any_attr, child, flat_text, is_external, lname, parse_xml, resolve, Archive};
 use super::rich::{
     picture_of, Align, Block, Builder, Cell, Dir, Document, Picture, RichEvent, RichView, Row, Script, Style, Table,
     Text,
 };
 use super::text::{big_icon, redraw_after_delay, waiting};
+use super::zipxml::{any_attr, child, flat_text, is_external, lname, parse_xml, resolve, Archive};
 use crate::kit::prelude::*;
 use crate::{actions, t};
 use gpui_kit::{EventEmitter, KeyDownEvent, MouseButton, Task};
@@ -681,7 +681,7 @@ pub(super) fn read_docx_archive(arch: &Archive) -> Result<Document, String> {
 /// Reads the Word document at `path`.
 pub fn read_docx_file(path: &str) -> Result<Document, String> {
     let arch = Archive::open(path).map_err(|e| match e {
-        super::xhtml::ZipError::Broken(reason) => reason,
+        super::zipxml::ZipError::Broken(reason) => reason,
         _ => t!("Glint can't lay this document out.").to_string(),
     })?;
     read_docx_archive(&arch)

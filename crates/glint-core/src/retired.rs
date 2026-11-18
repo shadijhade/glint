@@ -1,6 +1,6 @@
 //! What removed features left on users' PCs: 0.12's photo, speech and meaning search's downloads and what they
 //! learned, paired devices' key and pairings, and the built-in Typst's previews; 0.13's retired tools; 0.14's book
-//! reader's saved places. [`sweep`] deletes exactly those,
+//! reader's saved places and the mail viewer's saved attachments. [`sweep`] deletes exactly those,
 //! once per start, on a background thread (startup.rs in glint-ui), and nothing else. Whisper's model
 //! (`models\whisper-base`) stays: Media's Subtitles still uses it (whisper.rs).
 
@@ -50,6 +50,10 @@ const RETIRED_ROAMING: &[&str] = &[
     "books.json.tmp",
 ];
 
+/// Under the temp folder: where the mail viewer saved an attachment to open it with its app (attachments.rs,
+/// marked as from the internet), one folder a time. Whatever is still open in an app stays until Windows clears it.
+const RETIRED_TEMP: &[&str] = &["Glint attachments"];
+
 /// Deletes what the removed features left in Glint's data folders, if they're there.
 pub fn sweep() {
     if let Some(data) = crate::tools::data_dir() {
@@ -58,6 +62,7 @@ pub fn sweep() {
     if let Ok(roaming) = crate::host::PathResolver.app_data_dir() {
         sweep_in(&roaming, RETIRED_ROAMING);
     }
+    sweep_in(&std::env::temp_dir(), RETIRED_TEMP);
 }
 
 /// Deletes `retired`'s paths under `data`; returns those it deleted. A link is deleted, never what it points to.
@@ -126,6 +131,15 @@ mod tests {
 
         assert_eq!(gone.len(), 9, "{gone:?}");
         assert_eq!(sweep_in(&roaming, RETIRED_ROAMING), [roaming.join("books.json")]);
+        // A mail attachment saved to the temp folder, with the mark Windows puts on files from the internet.
+        let temp = std::env::temp_dir().join(format!("glint-retired-temp-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp);
+        fs::create_dir_all(temp.join("Glint attachments").join("1a2b")).unwrap();
+        fs::write(temp.join("Glint attachments").join("1a2b").join("report.pdf"), "%PDF").unwrap();
+        fs::write(temp.join("other.txt"), "mine").unwrap();
+        assert_eq!(sweep_in(&temp, RETIRED_TEMP), [temp.join("Glint attachments")]);
+        assert!(temp.join("other.txt").exists(), "nothing else in the temp folder goes");
+        fs::remove_dir_all(&temp).unwrap();
         assert!(roaming.join("state.json").exists(), "the state stays");
         fs::remove_dir_all(&roaming).unwrap();
         for relative in RETIRED {
@@ -141,7 +155,10 @@ mod tests {
         ] {
             assert!(data.join(kept).exists(), "{kept} went");
         }
-        assert!(sweep_in(&data, RETIRED).is_empty(), "a second start has nothing to delete");
+        assert!(
+            sweep_in(&data, RETIRED).is_empty(),
+            "a second start has nothing to delete"
+        );
         fs::remove_dir_all(&data).unwrap();
     }
 
