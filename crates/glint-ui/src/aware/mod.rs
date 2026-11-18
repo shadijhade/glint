@@ -186,8 +186,9 @@ impl Aware {
         self.look(entries, Lane::Quiet, cx);
     }
 
-    /// Something on screen shows these now: finds out what isn't known about them at once. Says whether
-    /// anything was left to ask.
+    /// Something on screen shows these now: finds out what isn't known about them at once. What a quiet look
+    /// (the pointer resting on the item) asked about them and hasn't had answered yet is asked again on the lane
+    /// for now, where it goes first. Says whether anything is being asked for them now, so a menu knows to wait.
     pub fn look_now(&mut self, entries: &[FileEntry], cx: &mut Context<Self>) -> bool {
         self.look(entries, Lane::Now, cx)
     }
@@ -256,6 +257,35 @@ impl Aware {
         }
     }
 
+    /// What the run on `lane`, if it is still going, was asked about `path`.
+    fn pending(&self, lane: Lane, path: &str) -> Want {
+        let run = match lane {
+            Lane::Quiet => &self.quiet,
+            Lane::Now => &self.now,
+        };
+        run.as_ref()
+            .filter(|run| !run.done.load(Ordering::SeqCst) && !run.stop.load(Ordering::SeqCst))
+            .map_or_else(Want::default, |run| {
+                run.asked
+                    .iter()
+                    .filter(|(asked, _)| asked.eq_ignore_ascii_case(path))
+                    .fold(Want::default(), |all, (_, want)| all.and(*want))
+            })
+    }
+
+    /// Whether the quiet run is still going and was asked about nothing but `entries`: ending it loses nobody
+    /// else's answers.
+    fn quiet_is_only_about(&self, entries: &[FileEntry]) -> bool {
+        self.quiet.as_ref().is_some_and(|run| {
+            !run.done.load(Ordering::SeqCst)
+                && !run.stop.load(Ordering::SeqCst)
+                && run
+                    .asked
+                    .iter()
+                    .all(|(path, _)| entries.iter().any(|entry| path.eq_ignore_ascii_case(&entry.path)))
+        })
+    }
+
     /// Whether the run on `lane` is still going and was asked about one of `entries`.
     fn finding_out(&self, lane: Lane, entries: &[FileEntry]) -> bool {
         let run = match lane {
@@ -291,6 +321,7 @@ impl Aware {
         // run is still finding out asks nothing; what it hadn't answered is let go of by the stop, and is asked
         // by the next look.
         let mut planned: Vec<(&FileEntry, Want)> = Vec::new();
+        let mut promoted = false;
         // Identical copies cost a question to the index service and a read of every candidate, so they are
         // looked for only when there is one item to say them about (a selected or hovered file), never for
         // each of a selection of two hundred.
@@ -302,6 +333,16 @@ impl Aware {
                 }
                 let mut want = self.cache.plan(entry, now);
                 want.twins &= one;
+                if lane == Lane::Now {
+                    // What the quiet lane was asked and hasn't answered yet is wanted now: asked again here, it
+                    // goes first. A run for now that is going on about the item has it all already.
+                    let late = self.cache.unanswered(entry, self.pending(Lane::Quiet, &entry.path));
+                    let late = if self.pending(Lane::Now, &entry.path).is_empty() { late } else { Want::default() };
+                    if !late.is_empty() {
+                        promoted = true;
+                        want = want.and(late);
+                    }
+                }
                 if !want.is_empty() {
                     planned.push((entry, want));
                 }
@@ -314,6 +355,11 @@ impl Aware {
             return false;
         }
         self.stop(lane);
+        // The quiet run's unanswered parts are being asked on the other lane now; if it was about nothing else,
+        // it is ended, so a folder isn't walked twice.
+        if promoted && self.quiet_is_only_about(entries) {
+            self.stop(Lane::Quiet);
+        }
         let mut asks = Vec::new();
         for (entry, want) in planned {
             self.cache.asking(entry, want, now);

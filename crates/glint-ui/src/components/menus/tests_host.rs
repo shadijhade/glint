@@ -617,6 +617,30 @@ fn a_menu_waits_a_breath_for_what_is_being_found_out_and_suggests_from_it(cx: &m
 }
 
 #[gpui_kit::test]
+fn a_right_click_on_what_the_pointer_was_resting_on_asks_what_is_left_for_now_and_waits(cx: &mut TestAppContext) {
+    let _guard = english();
+    let mut rig = rig(cx, "C:\\apps");
+    rig.ui.select(&[SETUP]);
+    // The pointer rested on the program: its questions went out on the quiet lane and aren't answered yet.
+    let entry = file("C:\\apps", "setup.exe", 4_000_000, 0);
+    rig.ui.visual.update(|_, cx| {
+        aware::shared(cx).update(cx, |aware, cx| aware.look_ahead(std::slice::from_ref(&entry), cx));
+    });
+    assert_eq!(rig.fake.calls.borrow().len(), 1);
+    assert_eq!(rig.fake.calls.borrow()[0].lane, Lane::Quiet);
+    let menus = rig.ui.menus.clone();
+    rig.ui.visual.update(|window, cx| {
+        menus.update(cx, |m, cx| m.open_list_menu(0, Some(SETUP), Some(at(100., 10.)), false, window, cx));
+    });
+    rig.ui.frame();
+    // The questions are asked again where they go first, and the menu waits for them.
+    assert_eq!(rig.fake.calls.borrow().len(), 2);
+    assert_eq!(rig.fake.calls.borrow()[1].lane, Lane::Now);
+    assert!(!rig.ui.is_open());
+    assert!(rig.ui.visual.update(|_, cx| super::showing(cx)));
+}
+
+#[gpui_kit::test]
 fn a_menu_asked_for_while_another_waits_is_the_one_that_opens(cx: &mut TestAppContext) {
     let _guard = english();
     let mut rig = rig(cx, "C:\\x");

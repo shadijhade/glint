@@ -96,6 +96,12 @@ impl Cache {
         }
     }
 
+    /// What of `asked` hasn't been answered about `entry`. Nothing when nothing is kept for it, or what is kept
+    /// is about another file (it changed since).
+    pub(super) fn unanswered(&self, entry: &FileEntry, asked: Want) -> Want {
+        self.probed(entry).map_or_else(Want::default, |probed| asked.minus(probed))
+    }
+
     /// Takes in one answer; false when nothing is kept for the path any more (it was forgotten meanwhile).
     pub(super) fn take(&mut self, path: &str, part: Part) -> bool {
         match self.kept.get_mut(&key(path)) {

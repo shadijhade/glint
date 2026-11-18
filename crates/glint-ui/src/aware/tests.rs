@@ -120,8 +120,8 @@ fn look_ahead(cx: &mut TestAppContext, world: &World, entries: &[FileEntry]) {
     world.aware.update(cx, |aware, cx| aware.look_ahead(entries, cx));
 }
 
-fn look_now(cx: &mut TestAppContext, world: &World, entries: &[FileEntry]) {
-    world.aware.update(cx, |aware, cx| aware.look_now(entries, cx));
+fn look_now(cx: &mut TestAppContext, world: &World, entries: &[FileEntry]) -> bool {
+    world.aware.update(cx, |aware, cx| aware.look_now(entries, cx))
 }
 
 /// Counts how often the entity says it changed.
@@ -145,7 +145,7 @@ impl Render for Blank {
 // ---- Looking ----------------------------------------------------------------------------------------------
 
 #[gpui_kit::test]
-fn a_look_at_a_file_asks_once_on_the_quiet_lane_and_a_second_look_asks_nothing(cx: &mut TestAppContext) {
+fn a_look_at_a_file_asks_once_on_the_quiet_lane_and_a_second_quiet_look_asks_nothing(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let fake = Fake::new();
     let world = world(cx, &fake, &empty_disk(), "C:\\x");
@@ -154,9 +154,6 @@ fn a_look_at_a_file_asks_once_on_the_quiet_lane_and_a_second_look_asks_nothing(c
     assert_eq!(fake.asked(), 1);
     assert_eq!(fake.calls.borrow()[0].paths, vec!["C:\\x\\a.bin".to_string()]);
     assert_eq!(fake.calls.borrow()[0].lane, Lane::Quiet);
-    look_now(cx, &world, std::slice::from_ref(&entry));
-    assert_eq!(fake.asked(), 1, "what was asked is not asked again, on either lane");
-    assert!(!fake.stopped(0), "a look for now doesn't stop the quiet run");
     look_ahead(cx, &world, std::slice::from_ref(&entry));
     assert_eq!(fake.asked(), 1, "a second look at the same file asks nothing");
 }
@@ -184,6 +181,71 @@ fn identical_copies_are_looked_for_only_when_one_item_is_looked_at(cx: &mut Test
     assert_eq!(calls.len(), 3);
     assert_eq!(calls[2].wants.len(), 1);
     assert!(calls[2].wants[0].twins, "a single file gets its twins");
+}
+
+#[gpui_kit::test]
+fn a_look_for_now_takes_over_what_the_quiet_lane_has_not_answered_yet(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let fake = Fake::new();
+    let world = world(cx, &fake, &empty_disk(), "C:\\x");
+    let entry = a_file("a.bin");
+    look_ahead(cx, &world, std::slice::from_ref(&entry));
+    let asked_quietly = fake.calls.borrow()[0].wants[0];
+    assert!(asked_quietly.origin && asked_quietly.locked_by);
+    // The origin comes in; the rest is still on its way when the right-click arrives.
+    fake.send(0, "C:\\x\\a.bin", Part::Origin(Origin { host: "github.com".into(), blocked: true }));
+    cx.run_until_parked();
+    assert!(look_now(cx, &world, std::slice::from_ref(&entry)), "something is being asked for now, so the menu waits");
+    assert_eq!(fake.asked(), 2);
+    let calls = fake.calls.borrow();
+    assert_eq!(calls[1].lane, Lane::Now);
+    let promoted = calls[1].wants[0];
+    assert!(!promoted.origin, "what came in is not asked again");
+    assert_eq!(promoted, asked_quietly.minus(&Probed { origin: Some(Origin { host: String::new(), blocked: true }), ..Probed::default() }));
+    assert!(calls[0].stop.load(Ordering::SeqCst), "the quiet run was only about this file: it ends, nothing is asked twice");
+    assert!(!calls[1].stop.load(Ordering::SeqCst));
+}
+
+#[gpui_kit::test]
+fn a_second_look_for_now_leaves_the_promoted_run_alone(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let fake = Fake::new();
+    let world = world(cx, &fake, &empty_disk(), "C:\\x");
+    let entry = a_file("a.bin");
+    look_ahead(cx, &world, std::slice::from_ref(&entry));
+    assert!(look_now(cx, &world, std::slice::from_ref(&entry)));
+    // The menu builds its rows with a look of its own a moment later: it asks nothing new and stops nothing.
+    assert!(!look_now(cx, &world, std::slice::from_ref(&entry)));
+    assert_eq!(fake.asked(), 2);
+    assert!(!fake.stopped(1));
+    assert!(world.aware.read_with(cx, |aware, _| aware.settling(&entry)));
+}
+
+#[gpui_kit::test]
+fn a_quiet_run_that_is_about_other_files_too_goes_on_when_one_of_them_is_taken_over(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let fake = Fake::new();
+    let world = world(cx, &fake, &empty_disk(), "C:\\x");
+    let (one, two) = (a_file("one.bin"), a_file("two.bin"));
+    look_ahead(cx, &world, &[one.clone(), two.clone()]);
+    assert!(look_now(cx, &world, std::slice::from_ref(&one)));
+    assert_eq!(fake.calls.borrow()[1].paths, vec!["C:\\x\\one.bin".to_string()]);
+    assert!(!fake.stopped(0), "the selection's other file is still being found out quietly");
+}
+
+#[gpui_kit::test]
+fn a_quiet_look_that_has_finished_leaves_a_look_for_now_nothing_to_ask(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let fake = Fake::new();
+    let world = world(cx, &fake, &empty_disk(), "C:\\x");
+    let entry = a_file("a.bin");
+    look_ahead(cx, &world, std::slice::from_ref(&entry));
+    // The run ends without answering everything: what can't be known stays unknown, as before.
+    fake.senders.borrow_mut().clear();
+    cx.run_until_parked();
+    assert!(!world.aware.read_with(cx, |aware, _| aware.settling(&entry)));
+    assert!(!look_now(cx, &world, std::slice::from_ref(&entry)));
+    assert_eq!(fake.asked(), 1);
 }
 
 #[gpui_kit::test]
