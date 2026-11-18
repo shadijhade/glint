@@ -25,8 +25,13 @@ pub const MAX_FRAME: usize = 64 << 20;
 pub enum Request {
     Status,
     Search(SearchRequest),
-    /// Folder sizes: the folder's total and the total of each folder in it.
-    Sizes { path: String },
+    /// Folder sizes: the folder's total and the total of each folder in it; with `count`, how many files
+    /// and folders are below it too. A service from before ignores `count` and sends no counts.
+    Sizes {
+        path: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        count: bool,
+    },
     /// A disk-usage map: the biggest files and folders below a folder, a few levels deep.
     Usage(UsageRequest),
     /// Everything right inside a folder, for one Windows keeps the user out of: hit frames, as a
@@ -198,6 +203,12 @@ pub struct Sizes {
     /// Folder name → bytes, for each folder right inside it.
     pub sizes: Vec<(String, u64)>,
     pub elapsed: f64,
+    /// The files and the folders below it, all the way down (`Tree::count_below`), when asked with
+    /// `count`; a service from before leaves them out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub files: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folders: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -544,6 +555,32 @@ mod tests {
         let json = serde_json::to_string(&Message::History(answer.clone())).unwrap();
         assert!(json.contains(r#""type":"history""#) && json.contains(r#""kind":"moved""#), "{json}");
         assert_eq!(serde_json::from_str::<Message>(&json).unwrap(), Message::History(answer));
+    }
+
+    /// Sizes with counts and without, between an app and a service of either age.
+    #[test]
+    fn sizes_are_counted_only_when_asked_and_understood_across_versions() {
+        let plain = Request::Sizes { path: r"C:\Users".into(), count: false };
+        assert_eq!(serde_json::to_string(&plain).unwrap(), r#"{"op":"sizes","path":"C:\\Users"}"#, "as an app from before asked");
+        let counted = Request::Sizes { path: r"C:\Users".into(), count: true };
+        let mut wire = Vec::new();
+        write_request(&mut wire, &counted).unwrap();
+        assert_eq!(read_request(&mut wire.as_slice()).unwrap(), counted);
+        // A service from before reads the request as its own and leaves `count` out.
+        #[derive(Deserialize, Debug, PartialEq)]
+        #[serde(tag = "op", rename_all = "camelCase")]
+        enum Before {
+            Sizes { path: String },
+        }
+        let json = serde_json::to_string(&counted).unwrap();
+        assert_eq!(serde_json::from_str::<Before>(&json).unwrap(), Before::Sizes { path: r"C:\Users".into() });
+        // Its answer has no counts.
+        let answer = serde_json::from_str::<Message>(r#"{"type":"sizes","path":"C:\\Users","total":5,"sizes":[],"elapsed":0.1}"#).unwrap();
+        assert!(matches!(answer, Message::Sizes(Sizes { files: None, folders: None, total: 5, .. })));
+        let answer = Sizes { path: r"C:\Users".into(), total: 5, sizes: vec![], elapsed: 0.1, files: Some(3), folders: Some(1) };
+        let json = serde_json::to_string(&Message::Sizes(answer.clone())).unwrap();
+        assert!(json.contains(r#""files":3,"folders":1"#), "{json}");
+        assert_eq!(serde_json::from_str::<Message>(&json).unwrap(), Message::Sizes(answer));
     }
 
     #[test]

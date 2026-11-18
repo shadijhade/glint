@@ -148,11 +148,17 @@ pub fn claim() -> Result<Option<Status>, Error> {
 }
 
 pub fn sizes(path: &str) -> Result<Sizes, Error> {
-    sizes_on(connect()?, path)
+    sizes_on(connect()?, path, false)
 }
 
-pub(crate) fn sizes_on(pipe: Handle, path: &str) -> Result<Sizes, Error> {
-    match reply(&ask(pipe, &Request::Sizes { path: path.to_string() })?)? {
+/// `sizes`, with how many files and folders are below the folder (`Sizes::files` and `folders`). A service
+/// from before answers without them.
+pub fn sizes_counted(path: &str) -> Result<Sizes, Error> {
+    sizes_on(connect()?, path, true)
+}
+
+pub(crate) fn sizes_on(pipe: Handle, path: &str, count: bool) -> Result<Sizes, Error> {
+    match reply(&ask(pipe, &Request::Sizes { path: path.to_string(), count })?)? {
         Message::Sizes(sizes) => Ok(sizes),
         _ => Err(unexpected()),
     }

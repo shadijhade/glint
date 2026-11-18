@@ -40,6 +40,13 @@ and `tests/e2e`'s new `search-history` check with the real keyboard and side but
   and eleven allocations, on every row of every frame: 38 ns now against 552 ns (`format::tests::sizes_cost_little`),
   the same text over 200,000 sizes, and the grouping the same as Windows' own in seven locales. Region settings'
   "123456789" (no grouping) is honoured now; a change to the region settings shows from Glint's next start.
+- A folder's hover card gets its counts from the instant search service with the folder's sizes: the service
+  counts what is below it (`Tree::count_below`: one pass over the drive's names) and sends two numbers. Before, the
+  app searched the folder for its files and the service sent up to 20,000 paths to be thrown away: 14 to 21 ms a
+  hover on this PC, and no count at all for a folder with more files (`C:\Repos`, `System32`). Now every folder gets
+  its count of files, and of folders too: 0.3 ms for a folder of 10,000 files and 0.9 ms for a whole 2.2-million-file
+  drive in the service's code (`tree::tests::counting_below_a_folder_costs_little`). A service from before answers
+  without counts, and the hover searches as it did until the service updates itself.
 
 ## 0.13.2: updates that need nobody
 

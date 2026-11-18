@@ -35,7 +35,7 @@ const REPORT_EVERY: Duration = Duration::from_millis(150);
 /// A walk that has run this long gives up as if stopped: a folder this big is not "free" to count.
 const LONGEST: Duration = Duration::from_secs(3);
 
-/// The index counts files by a search; more than this and the count isn't said (R1: not guessed).
+/// A service from before counts files by a search; more than this and the count isn't said (R1: not guessed).
 const MOST_FILES_FROM_INDEX: usize = 20_000;
 
 /// What is in the folder at `path`, all the way down. From the instant search index when it covers the folder
@@ -75,13 +75,26 @@ fn is_junk(folder: &Path, name: &str) -> bool {
     }
 }
 
-/// The index's answer for `path`, when it covers it.
+/// The index's answer for `path`, when it covers it: the sizes, with the files and folders below counted in
+/// the service (one pass over its names, nothing sent but the counts).
 #[cfg(windows)]
 fn from_index(path: &str) -> Option<Inside> {
+    let sizes = shadui_index::client::sizes_counted(path).ok()?;
+    let junk = sizes.sizes.iter().filter(|(name, _)| is_junk(Path::new(path), name)).map(|(_, bytes)| *bytes).sum();
+    let (files, folders) = match (sizes.files, sizes.folders) {
+        (Some(files), Some(folders)) => (files, folders),
+        // A service from before counts nothing: its files by a search, as before it updates itself.
+        _ => (files_by_search(path)?, 0),
+    };
+    Some(Inside { files, folders, bytes: sizes.total, junk, done: true, from_index: true })
+}
+
+/// The files below `path` by a search of the index, for a service from before `Sizes` counted them: None when
+/// the index doesn't cover the folder, 0 when there are more than `MOST_FILES_FROM_INDEX`.
+#[cfg(windows)]
+fn files_by_search(path: &str) -> Option<u64> {
     use shadui_index::client::{self, Event};
     use shadui_index::proto::SearchRequest;
-    let sizes = client::sizes(path).ok()?;
-    let junk = sizes.sizes.iter().filter(|(name, _)| is_junk(Path::new(path), name)).map(|(_, bytes)| *bytes).sum();
     let request = SearchRequest {
         query: "file:".into(),
         roots: vec![path.into()],
@@ -107,7 +120,7 @@ fn from_index(path: &str) -> Option<Inside> {
     if asked.is_err() || !covered {
         return None;
     }
-    Some(Inside { files: files?, folders: 0, bytes: sizes.total, junk, done: true, from_index: true })
+    files
 }
 
 #[cfg(not(windows))]

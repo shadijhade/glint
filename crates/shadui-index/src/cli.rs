@@ -24,7 +24,8 @@ shadui-index: instant file name search and folder sizes for Glint
   run [--volume C:]...        run in this console instead of as a service (administrator)
   status                      what the running service has indexed
   search QUERY [--in PATH]... [--max N] [--hidden] [--fuzzy] [--repeat N] [--print | --long]
-  sizes PATH                  folder sizes from the running service
+  sizes PATH [--count]        folder sizes from the running service; --count: with how many files
+                              and folders are below it
   usage PATH [--depth N] [--max N] [--repeat N] [--grew DAYS]
                               a disk-usage map from the running service, timed end to end;
                               --grew: what grew since the mark closest to DAYS ago
@@ -102,10 +103,13 @@ pub fn main() -> i32 {
             }
         },
         Some("search") if rest.first().is_some_and(|q| !q.starts_with("--")) => search(rest),
-        Some("sizes") if !rest.is_empty() => match client::sizes(&rest[0]) {
+        Some("sizes") if !rest.is_empty() => match if rest.iter().any(|a| a == "--count") { client::sizes_counted(&rest[0]) } else { client::sizes(&rest[0]) } {
             Ok(mut sizes) => {
                 sizes.sizes.sort_by_key(|s| std::cmp::Reverse(s.1));
                 println!("{} bytes in {} ({:.2} ms in the service)", sizes.total, sizes.path, sizes.elapsed);
+                if let (Some(files), Some(folders)) = (sizes.files, sizes.folders) {
+                    println!("{files} files and {folders} folders below it");
+                }
                 for (name, size) in sizes.sizes.iter().take(20) {
                     println!("{size:>16}  {name}");
                 }

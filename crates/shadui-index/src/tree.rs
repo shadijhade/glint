@@ -722,6 +722,44 @@ impl Tree {
         folders.iter().copied().filter(|&id| self.links[id as usize].rec >= FIRST_USER_RECORD).chain(files.concat()).collect()
     }
 
+    /// How many files and folders are below folder `dir`, all the way down, as a walk of it counts them: a
+    /// file with names in more than one place below it once for each, and NTFS's own records left out. The
+    /// folders come from the folder lists; the files from one pass over every name, as `list` makes.
+    pub fn count_below(&self, dir: u32) -> (u64, u64) {
+        let mut below = vec![0u64; self.recs.len() / 64 + 1];
+        let marked = |below: &[u64], n: u32| below.get(n as usize / 64).is_some_and(|word| word >> (n % 64) & 1 != 0);
+        let mark = |below: &mut [u64], n: u32| {
+            if let Some(word) = below.get_mut(n as usize / 64) {
+                *word |= 1 << (n % 64);
+            }
+        };
+        mark(&mut below, dir);
+        let mut folders = 0u64;
+        let mut open = vec![dir];
+        while let Some(at) = open.pop() {
+            for &id in self.kids.of(at) {
+                let rec = self.links[id as usize].rec;
+                // A folder already marked would be a loop (a broken index): counted once.
+                if rec < FIRST_USER_RECORD || marked(&below, rec) {
+                    continue;
+                }
+                mark(&mut below, rec);
+                folders += 1;
+                open.push(rec);
+            }
+        }
+        const CHUNK: usize = 1 << 14;
+        let files = self
+            .links
+            .par_chunks(CHUNK)
+            .map(|links| {
+                let inside = |link: &&Link| link.flags & LINK_USED != 0 && marked(&below, link.parent) && link.rec >= FIRST_USER_RECORD && !self.recs[link.rec as usize].dir();
+                links.iter().filter(inside).count() as u64
+            })
+            .sum();
+        (files, folders)
+    }
+
     /// A disk-usage map of folder `dir`: the files and folders in it and in its folders, down to
     /// `depth` levels, without empty ones. Only the `max` biggest are kept, with the folders they're
     /// in; the rest still count in their folders' sizes, and the second value says whether any were
@@ -1660,6 +1698,23 @@ mod tests {
         assert_eq!(tree.dir_path(ROOT, &mut cache), Some(""));
     }
 
+    #[test]
+    fn counts_the_files_and_folders_below_a_folder() {
+        let mut tree = sample();
+        assert_eq!(tree.count_below(ROOT), (4, 5));
+        assert_eq!(tree.count_below(21), (3, 2), "hidden ones too");
+        assert_eq!(tree.count_below(25), (1, 0));
+        assert_eq!(tree.count_below(30), (1, 0));
+        // A file with a name in two places counts in each, as a walk finds it.
+        tree.set_record(40, &file(2 * KB, &[(21, "one.dll"), (30, "two.dll")]));
+        assert_eq!((tree.count_below(ROOT), tree.count_below(21), tree.count_below(30)), ((6, 5), (4, 2), (2, 0)));
+        // Moved and deleted: counted where they are now.
+        tree.set_record(23, &dir(1, &[(30, "docs")]));
+        tree.remove_record(26);
+        assert_eq!((tree.count_below(21), tree.count_below(30)), ((2, 0), (3, 2)));
+        assert_eq!(tree.count_below(ROOT), (5, 5));
+    }
+
     /// A map as (name, parent's place, size, folder), the folder mapped first as "".
     fn map(tree: &Tree, dir: u32, depth: u32, max: usize) -> (Vec<(String, u32, u64, bool)>, bool) {
         let (items, limited) = tree.usage(dir, depth, max);
@@ -1973,6 +2028,56 @@ mod tests {
                 best = best.min(started.elapsed().as_secs_f64() * 1000.0);
             }
             println!("{query:>10}: {found} found in {best:.1} ms (best of 5)");
+        }
+    }
+
+    /// 2.2 million files in 24,200 folders three deep: what counting what is below a folder costs (a hover
+    /// asks it), against the search for its files that a hover made before. Run with --ignored --nocapture,
+    /// in release.
+    #[test]
+    #[ignore]
+    fn counting_below_a_folder_costs_little() {
+        let mut builder = Builder::new(2_300_000);
+        builder.record(ROOT, 5, true, 0, 0);
+        let mut n = 20u32;
+        let mut tops = Vec::new();
+        for top in 0..220 {
+            let t = n;
+            n += 1;
+            tops.push(t);
+            builder.record(t, 1, true, 0x10, 0);
+            builder.name(t, make_ref(ROOT, 5), &format!("top {top}"));
+            for mid in 0..10 {
+                let m = n;
+                n += 1;
+                builder.record(m, 1, true, 0x10, 0);
+                builder.name(m, make_ref(t, 1), &format!("mid {mid}"));
+                for file in 0..1000 {
+                    builder.record(n, 1, false, 0x20, 0);
+                    builder.name(n, make_ref(m, 1), &format!("file {file}.txt"));
+                    n += 1;
+                }
+            }
+        }
+        let tree = builder.finish();
+        let (names, filters) = crate::query::parse("file:").unwrap();
+        let matcher = NameMatcher::from_terms(names);
+        let best = |f: &dyn Fn() -> u64| {
+            let mut ms = f64::MAX;
+            let mut answer = 0;
+            for _ in 0..5 {
+                let started = std::time::Instant::now();
+                answer = f();
+                ms = ms.min(started.elapsed().as_secs_f64() * 1000.0);
+            }
+            (answer, ms)
+        };
+        for (what, dir) in [("a folder of 10,000 files", tops[7]), ("the drive", ROOT)] {
+            let (counted, count_ms) = best(&|| tree.count_below(dir).0);
+            let search = Search { matcher: &matcher, filters: &filters, now: 0, scope: dir, hidden: true, excludes: &Excludes::default() };
+            let (found, search_ms) = best(&|| tree.search(&search).len() as u64);
+            assert_eq!(counted, found);
+            println!("{what}: {counted} files counted in {count_ms:.1} ms; the search for them took {search_ms:.1} ms");
         }
     }
 
