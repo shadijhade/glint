@@ -49,7 +49,7 @@ use glint_model::file_types::Kind;
 use glint_model::grid::thumb_step;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::future::Future;
-use std::hash::Hash;
+use std::hash::{Hash, Hasher};
 use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -199,14 +199,89 @@ fn pixels_of(image: &RenderImage) -> (u32, u32) {
 
 /// A file as it is now, at a size: a file that changes (or is downloaded, from online-only) gets a new
 /// thumbnail (`thumbKey`).
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct Key {
-    /// Lowercase: Windows paths ignore case.
+    /// Lowercase ([`lower_into`]): Windows paths ignore case.
     path: String,
     step: u32,
     modified: i64,
     bytes: u64,
     cloud: bool,
+}
+
+/// A [`Key`]'s fields, however they are held: lets a map of keys be asked with a path still in a reusable buffer,
+/// so that looking a tile up each frame allocates nothing (a `HashMap<Key, _>` can only be asked with a `&Key`,
+/// which needs its own `String`).
+trait KeyParts {
+    fn parts(&self) -> (&str, u32, i64, u64, bool);
+}
+
+impl KeyParts for Key {
+    fn parts(&self) -> (&str, u32, i64, u64, bool) {
+        (&self.path, self.step, self.modified, self.bytes, self.cloud)
+    }
+}
+
+/// A key whose path is borrowed.
+struct KeyRef<'a> {
+    path: &'a str,
+    step: u32,
+    modified: i64,
+    bytes: u64,
+    cloud: bool,
+}
+
+impl KeyParts for KeyRef<'_> {
+    fn parts(&self) -> (&str, u32, i64, u64, bool) {
+        (self.path, self.step, self.modified, self.bytes, self.cloud)
+    }
+}
+
+// Both hash and compare through `parts`, as `Borrow` requires: a `Key` and the borrowed form of it are equal and
+// hash alike.
+impl Hash for Key {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.parts().hash(state);
+    }
+}
+
+impl Hash for dyn KeyParts + '_ {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.parts().hash(state);
+    }
+}
+
+impl PartialEq for dyn KeyParts + '_ {
+    fn eq(&self, other: &Self) -> bool {
+        self.parts() == other.parts()
+    }
+}
+
+impl Eq for dyn KeyParts + '_ {}
+
+impl<'a> std::borrow::Borrow<dyn KeyParts + 'a> for Key {
+    fn borrow(&self) -> &(dyn KeyParts + 'a) {
+        self
+    }
+}
+
+/// `path` lowercased into `out` (which is cleared first), character by character, so that a buffer kept between
+/// calls stops allocating once it has grown. Every key's path goes through here, so the two sides of a lookup
+/// agree (`str::to_lowercase` differs only for a Greek final sigma).
+fn lower_into(path: &str, out: &mut String) {
+    out.clear();
+    for c in path.chars() {
+        if c.is_ascii() {
+            out.push(c.to_ascii_lowercase());
+        } else {
+            out.extend(c.to_lowercase());
+        }
+    }
+}
+
+thread_local! {
+    /// The buffer [`Thumbnails::look`] lowercases a path into.
+    static LOWERED: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
 }
 
 /// One thumbnail a view shows (or is about to).
@@ -244,8 +319,10 @@ impl Want {
     }
 
     fn key(&self) -> Key {
+        let mut path = String::with_capacity(self.path.len());
+        lower_into(&self.path, &mut path);
         Key {
-            path: self.path.to_lowercase(),
+            path,
             step: self.step,
             modified: self.modified,
             bytes: self.bytes,
@@ -375,6 +452,15 @@ impl<K: Hash + Eq + Clone, V> Lru<K, V> {
     }
 
     fn get(&self, key: &K) -> Option<&V> {
+        self.get_by(key)
+    }
+
+    /// [`Lru::get`] with any borrowed form of the key.
+    fn get_by<Q>(&self, key: &Q) -> Option<&V>
+    where
+        K: std::borrow::Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
         self.map.get(key).map(|(value, _)| value)
     }
 
@@ -907,42 +993,47 @@ impl Thumbnails {
         if !is_eligible(entry) {
             return Look::Icon;
         }
-        let key = Key {
-            path: entry.path.to_lowercase(),
-            step: thumb_step(css_box, scale),
-            modified: entry.modified,
-            bytes: entry.size,
-            cloud: is_online_only(entry),
-        };
-        match self.held.get(&key) {
-            // This size's picture is in.
-            Some(Held {
-                image: Some(image),
-                px,
-                since,
-                ..
-            }) => {
-                let (w, h) = (px.0 as f32 / scale, px.1 as f32 / scale);
-                let (width, height) = fit(w, h, css_box, css_box, false);
-                let shown = match since.filter(|_| arriving) {
-                    Some(since) => (since.elapsed().as_secs_f32() / ARRIVE.as_secs_f32()).min(1.),
-                    None => 1.,
-                };
-                Look::Picture(Drawn {
-                    image: image.clone(),
-                    width,
-                    height,
-                    shown,
-                })
+        let step = thumb_step(css_box, scale);
+        let cloud = is_online_only(entry);
+        LOWERED.with_borrow_mut(|path| {
+            lower_into(&entry.path, path);
+            let key = KeyRef {
+                path,
+                step,
+                modified: entry.modified,
+                bytes: entry.size,
+                cloud,
+            };
+            match self.held.get_by::<dyn KeyParts>(&key) {
+                // This size's picture is in.
+                Some(Held {
+                    image: Some(image),
+                    px,
+                    since,
+                    ..
+                }) => {
+                    let (w, h) = (px.0 as f32 / scale, px.1 as f32 / scale);
+                    let (width, height) = fit(w, h, css_box, css_box, false);
+                    let shown = match since.filter(|_| arriving) {
+                        Some(since) => (since.elapsed().as_secs_f32() / ARRIVE.as_secs_f32()).min(1.),
+                        None => 1.,
+                    };
+                    Look::Picture(Drawn {
+                        image: image.clone(),
+                        width,
+                        height,
+                        shown,
+                    })
+                }
+                // It has none, for good: the icon.
+                Some(Held { image: None, .. }) => Look::Icon,
+                None => self.stand_in(key.path, css_box, scale),
             }
-            // It has none, for good: the icon.
-            Some(Held { image: None, .. }) => Look::Icon,
-            None => self.stand_in(&key, css_box, scale),
-        }
+        })
     }
 
-    fn stand_in(&self, key: &Key, css_box: f32, scale: f32) -> Look {
-        let Some(latest) = self.latest.get(&key.path) else {
+    fn stand_in(&self, path: &str, css_box: f32, scale: f32) -> Look {
+        let Some(latest) = self.latest.get_by::<str>(path) else {
             return Look::Icon;
         };
         // Not far smaller than the square (a picture a quarter of its size or less would be blown up).
@@ -1516,5 +1607,51 @@ pub(super) mod tests {
             service.read_with(&visual, |t, _| t.run("tab1").map(|r| r.found)),
             Some(0)
         );
+    }
+
+    /// A key built from a mixed-case, non-ASCII path in a reused buffer finds the key `Want::key` made, with
+    /// nothing allocated for the lookup: the buffer keeps its place in memory from one lookup to the next.
+    #[test]
+    fn a_tile_is_found_by_a_borrowed_key_without_allocating() {
+        let path = r"C:\Users\Ünï\Photos\IMG_0001.JPG";
+        let mut want = want(path);
+        want.modified = 7;
+        want.bytes = 9;
+        let mut held: Lru<Key, u32> = Lru::new();
+        held.insert(want.key(), 42);
+
+        let mut buffer = String::new();
+        let lookup = |path: &str, step: u32, buffer: &mut String| {
+            lower_into(path, buffer);
+            let key = KeyRef {
+                path: buffer,
+                step,
+                modified: 7,
+                bytes: 9,
+                cloud: false,
+            };
+            held.get_by::<dyn KeyParts>(&key).copied()
+        };
+        assert_eq!(lookup(path, want.step, &mut buffer), Some(42));
+        // Another case of the same path is the same file; another size is not.
+        assert_eq!(lookup(&path.to_uppercase(), want.step, &mut buffer), Some(42));
+        assert_eq!(lookup(path, want.step + 1, &mut buffer), None);
+        // The buffer grew for the first path and was only rewritten since.
+        let (at, capacity) = (buffer.as_ptr(), buffer.capacity());
+        for _ in 0..100 {
+            assert_eq!(lookup(path, want.step, &mut buffer), Some(42));
+        }
+        assert_eq!((buffer.as_ptr(), buffer.capacity()), (at, capacity));
+    }
+
+    /// `Thumbnails::look` ignores the case of a path as the keys do, and the stand-in for a path is found by its
+    /// lowercase path too.
+    #[test]
+    fn the_lowering_a_key_and_a_lookup_share_keeps_greek_and_ascii_alike() {
+        for path in [r"C:\A\B.PNG", r"C:\ΟΔΟΣ\Σ.png", r"C:\İstanbul\ß.JPG"] {
+            let mut buffer = String::new();
+            lower_into(path, &mut buffer);
+            assert_eq!(want(path).key().path, buffer, "{path}");
+        }
     }
 }
