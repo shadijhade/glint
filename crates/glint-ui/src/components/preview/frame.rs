@@ -25,7 +25,6 @@ use super::data::DataPreview;
 use super::details::{has_details, map_link, rows};
 use super::docx::{DocxEvent, DocxView};
 use super::hex::HexPreview;
-use super::model3d::ModelView;
 use super::notebook::NotebookView;
 use super::pdf::PdfView;
 use super::picture::{release_retired, PictureView};
@@ -295,7 +294,6 @@ impl EntryView {
             ProgramPreview,
             PdfView,
             DocxView,
-            ModelView,
             CastView,
             SmallPreview
         );
@@ -388,7 +386,6 @@ impl EntryView {
             Body::Small(kind) => cx.new(|cx| SmallPreview::new(entry.clone(), kind, window, cx)).into(),
             Body::Player(kind) => cx.new(|cx| PlayerView::new(entry.clone(), kind, window, cx)).into(),
             Body::Pdf => cx.new(|cx| PdfView::new(entry.clone(), window, cx)).into(),
-            Body::Model => cx.new(|cx| ModelView::new(entry.clone(), window, cx)).into(),
             Body::Cast => cx.new(|cx| CastView::new(path, window, cx)).into(),
             Body::Docx => {
                 // A document Glint can't lay out falls back to Windows' previewer over the icon, as in the web app.
@@ -470,7 +467,6 @@ impl Render for EntryView {
         // Pictures, frames and drawings of views that are gone leave the GPU atlas.
         release_retired(window);
         super::player::release_retired(window);
-        super::model3d::release_retired(window);
         let t = theme::tokens(cx).clone();
         let prefix = self.place.prefix();
         let entry = self.entry.clone();

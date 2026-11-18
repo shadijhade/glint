@@ -18,8 +18,6 @@ use gpui_kit::SharedString;
 
 /// Word documents laid out without Office, up to a size (`DOCX_EXTS`, `DOCX_MAX`).
 const DOCX_EXTS: [&str; 4] = ["docx", "docm", "dotx", "dotm"];
-/// 3D formats (`MODEL_EXTS`).
-const MODELS: [&str; 6] = ["stl", "obj", "glb", "gltf", "ply", "3mf"];
 /// Databases (`SQLITE_EXTS`).
 const SQLITE: [&str; 6] = ["sqlite", "sqlite3", "db", "db3", "s3db", "sl3"];
 /// Plain tables (`TABULAR_EXTS`).
@@ -120,8 +118,6 @@ pub enum Body {
     Pdf,
     /// A Word document laid out without Office (`preview::docx`).
     Docx,
-    /// A 3D model drawn and turned (`preview::model3d`).
-    Model,
     /// An asciinema recording played (`preview::cast`).
     Cast,
     /// Windows' own previewer for the type, over `fallback`.
@@ -209,8 +205,7 @@ pub fn views(entry: &FileEntry, changed: bool) -> Vec<ViewChoice> {
     let notebook = is_notebook(entry);
     let small = small_of(entry);
     let sheet = is_sheet(entry);
-    // 3D models and asciinema recordings have one view of their own, named for what it does.
-    let model = readable(entry) && !is_archived(entry) && one_of(entry, &MODELS);
+    // Asciinema recordings have one view of their own, named for what it does.
     let cast = readable(entry) && entry.ext == "cast";
     let choice = |view, label: SharedString, title: SharedString| ViewChoice { view, label, title };
     if notebook {
@@ -230,8 +225,6 @@ pub fn views(entry: &FileEntry, changed: bool) -> Vec<ViewChoice> {
         if !matches!(small, Some(SmallKind::Outlook | SmallKind::Design)) {
             views.push(choice(View::Source, t!("Text"), t!("The file as written")));
         }
-    } else if model {
-        views.push(choice(View::File, t!("Model"), t!("The model, drawn")));
     } else if rendered_markdown(entry) {
         views.push(choice(View::File, t!("Rendered"), t!("The Markdown as it reads")));
         views.push(choice(View::Source, t!("Source"), t!("The Markdown as written")));
@@ -358,9 +351,6 @@ pub fn choose(entry: &FileEntry, view: View) -> Choice {
     if is_notebook(entry) {
         return Choice::of(if source { Body::Text } else { Body::Notebook });
     }
-    if readable && !archived && one_of(entry, &MODELS) {
-        return Choice::of(Body::Model);
-    }
     if rendered_markdown(entry) {
         return Choice::of(if source { Body::Text } else { Body::Markdown });
     }
@@ -450,7 +440,12 @@ mod tests {
         assert_eq!(later("movie.mp4").body, Body::Player(PlayerKind::Video));
         assert_eq!(later("song.mp3").body, Body::Player(PlayerKind::Audio));
         assert_eq!(later("paper.pdf").body, Body::Pdf);
-        assert_eq!(later("model.stl").body, Body::Model);
+        // 3D models have no previewer of their own: their type is unknown, so the text probe looks, and hands a
+        // binary file to Windows' previewer (or its bytes).
+        for model in ["model.stl", "scene.glb", "scene.gltf", "mesh.ply", "part.3mf"] {
+            assert_eq!(later(model).body, Body::Text, "{model}");
+            assert_eq!(later(model).later, None, "{model}");
+        }
         assert_eq!(later("letter.docx").body, Body::Docx);
         for ready in [
             "notes.md",
@@ -462,7 +457,6 @@ mod tests {
             "movie.mp4",
             "song.mp3",
             "paper.pdf",
-            "model.stl",
             "letter.docx",
         ] {
             assert_eq!(later(ready).later, None, "{ready}");
@@ -594,19 +588,13 @@ mod tests {
     }
 
     #[test]
-    fn models_and_recordings_have_a_view_named_for_what_it_does() {
-        for (name, label, title) in [
-            ("m.stl", "Model", "The model, drawn"),
-            ("m.glb", "Model", "The model, drawn"),
-            ("c.cast", "Play", "The recording, played"),
-        ] {
-            let entry = file("C:\\x", name, 10, 1);
-            let first = &views(&entry, false)[0];
-            assert_eq!(first.view, View::File, "{name}");
-            assert_eq!(first.label, label, "{name}");
-            assert_eq!(first.title, title, "{name}");
-        }
-        // A recording is also text; a model is read as it is.
+    fn recordings_have_a_view_named_for_what_it_does() {
+        let entry = file("C:\\x", "c.cast", 10, 1);
+        let first = &views(&entry, false)[0];
+        assert_eq!(first.view, View::File);
+        assert_eq!(first.label, "Play");
+        assert_eq!(first.title, "The recording, played");
+        // A recording is also text.
         let cast = file("C:\\x", "c.cast", 10, 1);
         assert_eq!(
             labels(&cast, false),
@@ -614,9 +602,6 @@ mod tests {
         );
         assert_eq!(choose(&cast, View::File).body, Body::Cast);
         assert_eq!(choose(&cast, View::Source).body, Body::Text);
-        // Inside an archive they aren't read from disk: the plain File view.
-        let inside = marked("a.stl", attr::IN_ARCHIVE);
-        assert_eq!(views(&inside, false)[0].label, "File");
     }
 
     #[test]

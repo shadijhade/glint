@@ -37,7 +37,7 @@
 //! Nothing is marked `PORT ME(<kind>)` in the previewers now: a file the TypeScript had a previewer for either has
 //! its native one or gets what the TypeScript showed when its own previewer failed (Windows' previewer over the
 //! file's icon, or the file as text). (Wave 9 brought tables, notebooks, program headers, contacts, calendars, mail,
-//! the Changes, Query and Profile views; wave 10 the player, PDF pages, Word documents and 3D models; wave 11
+//! the Changes, Query and Profile views; wave 10 the player, PDF pages and Word documents; wave 11
 //! Mermaid and Graphviz diagrams, math, Typst documents and cast recordings; wave 15 HTML mail laid out as a page in
 //! [`small`], with the pictures from the internet off until asked and a switch to the plain version. 0.14 took the
 //! book reader out: books go to Windows' previewer.)
@@ -63,8 +63,6 @@ pub mod docx;
 pub mod frame;
 /// Math in Markdown, LaTeX syntax (RaTeX).
 pub mod math;
-/// 3D models: STL, OBJ, PLY, glTF/GLB and 3MF, drawn and turned (ModelView.tsx).
-pub mod model3d;
 /// Jupyter notebooks as they read (NotebookView.tsx).
 pub mod notebook;
 pub mod pane;
