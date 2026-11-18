@@ -144,6 +144,10 @@ pub trait Source {
     fn open_with(&self, path: &str, how: &OpenHow) -> Fut<Result<(), String>>;
     /// Whether every one of these is still on disk (a drag's extracted copies may be gone by the next drag).
     fn all_exist(&self, paths: Vec<String>) -> Fut<bool>;
+    /// Which of these are gone from the disk (search results brought back from the history). Only an answer of "not
+    /// there" counts: a path Windows won't say anything about (closed to this account, a share that's offline) is
+    /// not gone.
+    fn missing(&self, paths: Vec<String>) -> Fut<Vec<String>>;
 
     // ---- Searching -----------------------------------------------------------------------------------
 
@@ -576,6 +580,19 @@ impl Source for CoreSource {
             glint_core::fsx::blocking(move || Ok(paths.iter().all(|p| std::path::Path::new(p).exists()))).await
         });
         Box::pin(async move { running.await.ok().and_then(Result::ok).unwrap_or(false) })
+    }
+
+    fn missing(&self, paths: Vec<String>) -> Fut<Vec<String>> {
+        let running = core_bridge::run(async move {
+            glint_core::fsx::blocking(move || {
+                let gone = |path: &String| {
+                    matches!(std::fs::symlink_metadata(path), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+                };
+                Ok(paths.into_iter().filter(|path| gone(path)).collect::<Vec<_>>())
+            })
+            .await
+        });
+        Box::pin(async move { running.await.ok().and_then(Result::ok).unwrap_or_default() })
     }
 
     fn open_with(&self, path: &str, how: &OpenHow) -> Fut<Result<(), String>> {

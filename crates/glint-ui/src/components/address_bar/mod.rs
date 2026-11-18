@@ -39,7 +39,9 @@ mod search;
 
 use crate::components::git::{self, GitChip};
 use crate::core_bridge::Core;
-use crate::explorer::{self, CoreSource, Drive, DriveKind, Explorer, KnownFolder, NavOptions, Refresh, Source, TabId};
+use crate::explorer::{
+    self, CoreSource, Drive, DriveKind, Explorer, KnownFolder, NavOptions, Refresh, Source, TabId, Visit,
+};
 use crate::kit::prelude::*;
 use crate::{i18n, state, t, theme};
 use completion::{Ask, Look, Suggestion, Typed};
@@ -98,14 +100,42 @@ struct CrumbView {
     drive: Option<DriveKind>,
 }
 
+/// Where Back or Forward goes, as its button says: a folder, or a search's results in it.
+#[derive(Clone, Debug, PartialEq)]
+struct Place {
+    path: String,
+    /// The search's words, for a search.
+    query: Option<String>,
+}
+
+impl Place {
+    fn of(visit: &Visit) -> Place {
+        Place {
+            path: visit.path.clone(),
+            query: visit.search_query().map(str::to_string),
+        }
+    }
+
+    /// Whether `place` says where `visit` is (worked out without making a place).
+    fn same(place: &Option<Place>, visit: Option<&Visit>) -> bool {
+        match (place, visit) {
+            (None, None) => true,
+            (Some(place), Some(visit)) => place.path == visit.path && place.query.as_deref() == visit.search_query(),
+            _ => false,
+        }
+    }
+}
+
 /// What the bar draws from the explorer, taken once per change so a redraw is cheap and a change that
 /// doesn't concern the bar (a selection) doesn't redraw it.
 #[derive(Clone, Debug, PartialEq)]
 struct Seen {
     tab: TabId,
     path: String,
-    back: bool,
-    forward: bool,
+    /// Where Back goes, if anywhere.
+    back: Option<Place>,
+    /// Where Forward goes, if anywhere.
+    forward: Option<Place>,
     loading: bool,
     filter: String,
     has_find: bool,
@@ -141,8 +171,8 @@ impl Seen {
         self.tab == explorer.active_tab_id()
             && self.path == path
             && !is_remote_path(path)
-            && self.back == tab.is_some_and(|t| !t.back.is_empty())
-            && self.forward == tab.is_some_and(|t| !t.forward.is_empty())
+            && Place::same(&self.back, tab.and_then(|t| t.back.last()))
+            && Place::same(&self.forward, tab.and_then(|t| t.forward.first()))
             && self.loading == tab.is_some_and(|t| t.loading)
             && self.filter == tab.map_or("", |t| t.filter.as_str())
             && self.has_find == tab.is_some_and(|t| t.find.is_some())
@@ -194,8 +224,8 @@ impl Seen {
             .collect();
         Seen {
             tab: explorer.active_tab_id(),
-            back: tab.is_some_and(|t| !t.back.is_empty()),
-            forward: tab.is_some_and(|t| !t.forward.is_empty()),
+            back: tab.and_then(|t| t.back.last()).map(Place::of),
+            forward: tab.and_then(|t| t.forward.first()).map(Place::of),
             loading: tab.is_some_and(|t| t.loading),
             filter: tab.map(|t| t.filter.clone()).unwrap_or_default(),
             has_find: tab.is_some_and(|t| t.find.is_some()),
@@ -696,6 +726,71 @@ impl AddressBar {
             .update(cx, |explorer, cx| explorer.go_forward(cx).detach());
     }
 
+    /// What Back's (or Forward's) button says: where it goes.
+    fn history_tip(&self, place: Option<&Place>, back: bool, cx: &App) -> SharedString {
+        let Some(place) = place else {
+            return if back {
+                t!("Back (Alt+Left)")
+            } else {
+                t!("Forward (Alt+Right)")
+            };
+        };
+        // The folder by the name its tab would have ("Local Disk (C:)", "Documents", "This PC").
+        let name = || place_name(&self.explorer.read(cx).tab_name(&place.path));
+        match (&place.query, back) {
+            (Some(query), true) => t!("Back to the results for “{query}” (Alt+Left)", query = query),
+            (Some(query), false) => t!("Forward to the results for “{query}” (Alt+Right)", query = query),
+            (None, true) => t!("Back to {place} (Alt+Left)", place = name()),
+            (None, false) => t!("Forward to {place} (Alt+Right)", place = name()),
+        }
+    }
+
+    /// Right-click on Back (or Forward): the places it can go to, nearest first; choosing one goes straight there.
+    fn open_history(&mut self, back: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let items = self.history_items(back, cx);
+        if items.is_empty() {
+            return;
+        }
+        self.open_flyout(flyout::At::History(back), String::new(), None, Some(items), window, cx);
+    }
+
+    /// Back's (or Forward's) button with what hangs on it: the folder it goes to read ahead while the pointer is on
+    /// it, and its menu of places when that is open.
+    fn history_button(&mut self, button: Button, back: bool, cx: &mut Context<Self>) -> impl IntoElement {
+        let explorer = self.explorer.clone();
+        div()
+            .id(if back {
+                "address-back-place"
+            } else {
+                "address-forward-place"
+            })
+            .relative()
+            .flex_none()
+            .on_hover(move |hovered, _, cx| {
+                if *hovered {
+                    Self::read_ahead_history(&explorer, back, cx);
+                }
+            })
+            .child(button)
+            .children(self.flyout_menu(flyout::At::History(back), cx))
+    }
+
+    /// The pointer is on Back (or Forward): the folder it goes to is read ahead, so the click shows it at once.
+    fn read_ahead_history(explorer: &Entity<Explorer>, back: bool, cx: &mut App) {
+        explorer.update(cx, |explorer, cx| {
+            let Some(tab) = explorer.active_tab() else {
+                return;
+            };
+            let next = if back { tab.back.last() } else { tab.forward.first() };
+            let path = next
+                .map(|visit| visit.path.clone())
+                .filter(|path| !same_path(path, &tab.path));
+            if let Some(path) = path {
+                explorer.prefetch_folder(&path, cx);
+            }
+        });
+    }
+
     fn go_up(&mut self, cx: &mut Context<Self>) {
         self.explorer.update(cx, |explorer, cx| explorer.go_up(cx).detach());
     }
@@ -780,6 +875,8 @@ fn look_icon(look: Look, cx: &App) -> Icon {
         Look::Gallery => (IconName::Images, t.muted_foreground),
         Look::RecycleBin => (IconName::Trash, t.muted_foreground),
         Look::Remote => (IconName::Cloud, t.muted_foreground),
+        Look::ThisPc => (IconName::Monitor, t.muted_foreground),
+        Look::Search => (IconName::Search, t.primary),
     };
     icon(name).size_4().flex_none().text_color(color)
 }
@@ -809,14 +906,34 @@ impl Render for AddressBar {
                 .accessibility_label(label.clone())
                 .tooltip(label)
         };
-        let back = button("address-back", back_icon(), t!("Back (Alt+Left)"))
-            .disabled(!seen.back)
-            .on_click(cx.listener(|this, _, _, cx| this.go_back(cx)));
+        // Each says where it goes and reads that folder ahead while the pointer is on it; right-click lists the places
+        // it can go to.
+        let back = button(
+            "address-back",
+            back_icon(),
+            self.history_tip(seen.back.as_ref(), true, cx),
+        )
+        .disabled(seen.back.is_none())
+        .on_click(cx.listener(|this, _, _, cx| this.go_back(cx)))
+        .on_mouse_down(
+            MouseButton::Right,
+            cx.listener(|this, _, window, cx| this.open_history(true, window, cx)),
+        );
+        let back = self.history_button(back, true, cx);
         // A narrow window shows Forward only when there's somewhere to go.
-        let forward = (sm || seen.forward).then(|| {
-            button("address-forward", forward_icon(), t!("Forward (Alt+Right)"))
-                .disabled(!seen.forward)
-                .on_click(cx.listener(|this, _, _, cx| this.go_forward(cx)))
+        let forward = (sm || seen.forward.is_some()).then(|| {
+            let forward = button(
+                "address-forward",
+                forward_icon(),
+                self.history_tip(seen.forward.as_ref(), false, cx),
+            )
+            .disabled(seen.forward.is_none())
+            .on_click(cx.listener(|this, _, _, cx| this.go_forward(cx)))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|this, _, window, cx| this.open_history(false, window, cx)),
+            );
+            self.history_button(forward, false, cx)
         });
         let up = button("address-up", IconName::ArrowUp, t!("Up (Alt+Up)"))
             .disabled(seen.path == THIS_PC)

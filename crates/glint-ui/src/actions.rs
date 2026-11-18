@@ -51,6 +51,8 @@ actions!(
         SearchHere,
         FocusAddress,
         Back,
+        // Backspace: Back, or Up with nothing to go back to.
+        BackOrUp,
         Forward,
         Up,
         Refresh,
@@ -196,7 +198,12 @@ pub static BINDINGS: &[Binding] = &[
     bind!("alt-left", "Workspace", Back, "Back"),
     bind!("alt-right", "Workspace", Forward, "Forward"),
     bind!("alt-up", "Workspace", Up, "Up"),
-    bind!("backspace", "FileList", Back, "Back"),
+    bind!(
+        "backspace",
+        "FileList",
+        BackOrUp,
+        "Back (with nothing to go back to: up)"
+    ),
     bind!("f2", "FileList", Rename, "Rename (several selected: all at once)"),
     bind!(
         "ctrl-shift-r",

@@ -4,6 +4,7 @@
 //! Views read it through [`Explorer::tab`](super::Explorer::tab) and never change it: every change goes
 //! through an `Explorer` method, which keeps the rows, the watches and the events right.
 
+use super::history::Visit;
 use super::rows::{RowSpec, Rows};
 use super::types::*;
 use glint_model::columns::{ColumnId, FolderKind};
@@ -154,8 +155,10 @@ pub struct Tab {
     pub loading: bool,
     /// From the click to the new list on screen, ms ([`Explorer::mark_shown`](super::Explorer::mark_shown)).
     pub shown_in: f64,
-    pub back: Vec<String>,
-    pub forward: Vec<String>,
+    /// The places before this one, the nearest last ([`Visit`]: a folder or a search, as it was left).
+    pub back: Vec<Visit>,
+    /// The places Back came from, the nearest first.
+    pub forward: Vec<Visit>,
     /// Text in the search box: filters what's shown; Enter searches subfolders by name (the find part).
     pub filter: String,
     pub find: Option<FindRun>,
@@ -194,6 +197,9 @@ pub struct Tab {
     /// The folder was to be read again while a navigation was under way: it is, once that has landed, if
     /// the tab still shows it (see `Explorer::reload`).
     pub(super) reload_waiting: bool,
+    /// The place in the history a walk is opening (Back if `true`, and the visit's number), until it lands: Back
+    /// pressed again meanwhile (a held Backspace) goes on from there.
+    pub(super) walking: Option<(bool, u64)>,
 }
 
 impl Tab {
@@ -236,6 +242,7 @@ impl Tab {
             nav_started: None,
             rereading: None,
             reload_waiting: false,
+            walking: None,
         }
     }
 

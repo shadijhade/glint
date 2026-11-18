@@ -2275,6 +2275,9 @@ impl Render for Workspace {
             // Moving around.
             .on_action(cx.listener(|_, _: &actions::Back, _, cx| Self::explorer(cx, |e, cx| e.go_back(cx).detach())))
             .on_action(
+                cx.listener(|_, _: &actions::BackOrUp, _, cx| Self::explorer(cx, |e, cx| e.go_back_or_up(cx).detach())),
+            )
+            .on_action(
                 cx.listener(|_, _: &actions::Forward, _, cx| Self::explorer(cx, |e, cx| e.go_forward(cx).detach())),
             )
             .on_action(cx.listener(|_, _: &actions::Up, _, cx| Self::explorer(cx, |e, cx| e.go_up(cx).detach())))
@@ -3016,6 +3019,83 @@ mod tests {
         });
         settle(&mut visual);
         assert_eq!(path(&mut visual), "C:\\Work\\src");
+    }
+
+    #[gpui_kit::test]
+    fn backspace_and_the_side_buttons_bring_back_the_search_a_folder_was_opened_from(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let (mut visual, workspace) = open_workspace(cx, false);
+        let shown = |visual: &mut VisualTestContext| {
+            visual.update(|_, cx| {
+                let explorer = explorer::explorer(cx);
+                let tab = explorer.read(cx).active_tab().expect("a tab");
+                (tab.path.clone(), tab.find.as_ref().map(|find| find.query.clone()))
+            })
+        };
+        // A search in C:\Work, and a folder opened from its results.
+        visual.update(|_, cx| {
+            explorer::explorer(cx).update(cx, |e, cx| {
+                e.set_filter("src", None, cx);
+                e.run_find("src", explorer::Wider::default(), cx).detach()
+            })
+        });
+        settle(&mut visual);
+        assert_eq!(shown(&mut visual), ("C:\\Work".into(), Some("src".into())));
+        visual.update(|_, cx| {
+            explorer::explorer(cx).update(cx, |e, cx| e.navigate("C:\\Work\\src", Default::default(), cx))
+        });
+        settle(&mut visual);
+        assert_eq!(shown(&mut visual), ("C:\\Work\\src".into(), None));
+        // Backspace in the list: the results again, the folder opened from them selected.
+        visual.update(|window, cx| {
+            window.render_frame(cx);
+            workspace.update(cx, |workspace, cx| workspace.focus_files(window, cx));
+            window.render_frame(cx);
+            window.press("backspace", cx);
+        });
+        settle(&mut visual);
+        assert_eq!(shown(&mut visual), ("C:\\Work".into(), Some("src".into())));
+        let focused = visual.update(|_, cx| {
+            let explorer = explorer::explorer(cx);
+            let focus = explorer
+                .read(cx)
+                .active_tab()
+                .and_then(|t| t.selection.focus().map(str::to_string));
+            focus
+        });
+        assert_eq!(focused.as_deref(), Some("C:\\Work\\src"));
+        assert_eq!(role_of(&mut visual, "Back to Work (Alt+Left)"), Some(Role::Button));
+        assert_eq!(role_of(&mut visual, "Forward to src (Alt+Right)"), Some(Role::Button));
+        // Mouse 4: the folder the search began in. Mouse 5: the results once more.
+        let over_the_files = bounds_of(&mut visual, "content").center();
+        // A real side button presses before it lets go (the press is what wakes the pointer after typing).
+        let side = |visual: &mut VisualTestContext, button: NavigationDirection| {
+            visual.update(|window, cx| {
+                window.pointer_down(over_the_files, MouseButton::Navigate(button), cx);
+                window.pointer_up(over_the_files, MouseButton::Navigate(button), cx);
+            })
+        };
+        side(&mut visual, NavigationDirection::Back);
+        settle(&mut visual);
+        assert_eq!(shown(&mut visual), ("C:\\Work".into(), None));
+        assert_eq!(
+            role_of(&mut visual, "Forward to the results for “src” (Alt+Right)"),
+            Some(Role::Button)
+        );
+        side(&mut visual, NavigationDirection::Forward);
+        settle(&mut visual);
+        assert_eq!(shown(&mut visual), ("C:\\Work".into(), Some("src".into())));
+        // Backspace in the list with nothing to go back to: up.
+        visual.update(|_, cx| explorer::explorer(cx).update(cx, |e, cx| e.new_tab(Some("C:\\Work\\src"), cx)));
+        settle(&mut visual);
+        visual.update(|window, cx| {
+            window.render_frame(cx);
+            workspace.update(cx, |workspace, cx| workspace.focus_files(window, cx));
+            window.render_frame(cx);
+            window.press("backspace", cx);
+        });
+        settle(&mut visual);
+        assert_eq!(shown(&mut visual).0, "C:\\Work");
     }
 
     #[gpui_kit::test]

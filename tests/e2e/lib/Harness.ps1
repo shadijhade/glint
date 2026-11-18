@@ -515,6 +515,12 @@ function Invoke-Drag {
     Invoke-DragPoints -X1 $a.X -Y1 $a.Y -X2 $b.X -Y2 $b.Y -Shift:$Shift
 }
 
+# The mouse's Back (or, with -Forward, Forward) side button over a point (screen pixels).
+function Invoke-SideButton {
+    param([int]$X, [int]$Y, [switch]$Forward)
+    [GlintE2E.Win]::SideButton($X, $Y, [bool]$Forward)
+}
+
 function Invoke-ClickAt {
     param([int]$X, [int]$Y, [switch]$Right)
     [GlintE2E.Win]::Click($X, $Y, [bool]$Right)

@@ -21,7 +21,12 @@ pub(super) enum At {
     Crumb(usize),
     /// The "…": the folders folded away.
     Folded,
+    /// Right-click on Back (`true`) or Forward: the places in the tab's history that way, nearest first.
+    History(bool),
 }
+
+/// The most places Back's and Forward's menus list.
+const HISTORY_SHOWN: usize = 20;
 
 /// The menu that is open.
 pub(super) struct Flyout {
@@ -124,6 +129,65 @@ impl AddressBar {
             );
         }
         items
+    }
+
+    /// The places Back (`back`) or Forward can go to in the active tab, nearest first: a folder by its name, a
+    /// search by its words and the folder it searched.
+    pub(super) fn history_items(&self, back: bool, cx: &App) -> Vec<Suggestion> {
+        let explorer = self.explorer.read(cx);
+        let Some(tab) = explorer.active_tab() else {
+            return Vec::new();
+        };
+        let places: Vec<&Visit> = if back {
+            tab.back.iter().rev().take(HISTORY_SHOWN).collect()
+        } else {
+            tab.forward.iter().take(HISTORY_SHOWN).collect()
+        };
+        places
+            .into_iter()
+            .map(|visit| {
+                let name = place_name(&explorer.tab_name(&visit.path));
+                match visit.search_query() {
+                    Some(query) => Suggestion {
+                        name: format!("“{query}”"),
+                        detail: Some(t!("in {place}", place = name).to_string()),
+                        path: visit.path.clone(),
+                        dir: true,
+                        archive: false,
+                        look: Look::Search,
+                    },
+                    None => Suggestion {
+                        name,
+                        detail: None,
+                        path: visit.path.clone(),
+                        dir: true,
+                        archive: false,
+                        look: self.look_of(&visit.path),
+                    },
+                }
+            })
+            .collect()
+    }
+
+    /// How a place in the history looks: a drive, a known folder, one of Glint's places, or a folder.
+    fn look_of(&self, path: &str) -> Look {
+        if path == THIS_PC {
+            Look::ThisPc
+        } else if is_recycle_bin(path) {
+            Look::RecycleBin
+        } else if is_recent(path) {
+            Look::Recent
+        } else if is_gallery(path) {
+            Look::Gallery
+        } else if is_remote_path(path) {
+            Look::Remote
+        } else if let Some(drive) = self.seen.drives.iter().find(|d| same_path(&d.path, path)) {
+            Look::Drive(drive.kind)
+        } else if let Some(known) = self.seen.known.iter().find(|k| same_path(&k.path, path)) {
+            Look::Known(known.id)
+        } else {
+            Look::Folder
+        }
     }
 
     /// Opens the menu at `at`: for `folder`'s subfolders, or for `given` items (the folded crumbs).
@@ -306,16 +370,32 @@ impl AddressBar {
 
     /// Opens the item at this position in the shown items, and closes the menu.
     fn flyout_open_item(&mut self, at: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(path) = self
+        let Some(index) = self.flyout.as_ref().and_then(|f| f.shown.get(at).copied()) else {
+            return;
+        };
+        self.flyout_choose(index, window, cx);
+    }
+
+    /// The item at `index` of the menu's items was chosen: the menu closes and the folder opens; in Back's or
+    /// Forward's menu, the tab goes straight to that place in its history, as it was left.
+    fn flyout_choose(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((at, path)) = self
             .flyout
             .as_ref()
-            .and_then(|f| f.shown.get(at).and_then(|&i| f.items.get(i)))
-            .map(|item| item.path.clone())
+            .and_then(|f| f.items.get(index).map(|item| (f.at, item.path.clone())))
         else {
             return;
         };
         self.close_flyout(false, window, cx);
-        self.open(path, window, cx);
+        match at {
+            At::History(back) => {
+                self.explorer.update(cx, |explorer, cx| {
+                    explorer.go_through_history(back, index + 1, cx).detach()
+                });
+                window.focus(&self.focus, cx);
+            }
+            _ => self.open(path, window, cx),
+        }
     }
 
     /// A chevron, with the menu under it when it's the one open.
@@ -378,6 +458,8 @@ impl AddressBar {
                 "Subfolders of {name}",
                 name = self.seen.crumbs.get(i).map(|c| c.name.as_str()).unwrap_or_default()
             ),
+            At::History(true) => t!("Places to go back to"),
+            At::History(false) => t!("Places to go forward to"),
         }
     }
 
@@ -496,20 +578,21 @@ impl AddressBar {
         let Some(flyout) = self.flyout.as_ref() else {
             return Vec::new();
         };
-        let rows: Vec<(usize, Suggestion, bool, bool)> = range
+        let rows: Vec<(usize, usize, Suggestion, bool, bool)> = range
             .filter_map(|pos| {
-                let item = flyout.items.get(*flyout.shown.get(pos)?)?;
+                let index = *flyout.shown.get(pos)?;
+                let item = flyout.items.get(index)?;
                 let active = flyout
                     .active_child
                     .as_deref()
                     .is_some_and(|child| same_path(&item.path, child));
-                Some((pos, item.clone(), active, flyout.cursor == Some(pos)))
+                Some((pos, index, item.clone(), active, flyout.cursor == Some(pos)))
             })
             .collect();
         rows.into_iter()
-            .map(|(pos, item, active, on_it)| {
+            .map(|(pos, index, item, active, on_it)| {
                 let name = suggestion_name(&item);
-                let (path, middle) = (item.path.clone(), item.path.clone());
+                let middle = item.path.clone();
                 align_row(2.)
                     .id(("address-flyout-item", pos))
                     .role(Role::MenuItem)
@@ -538,10 +621,7 @@ impl AddressBar {
                             this.open_in_new_tab(&middle, cx);
                         }),
                     )
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.close_flyout(false, window, cx);
-                        this.open(path.clone(), window, cx);
-                    }))
+                    .on_click(cx.listener(move |this, _, window, cx| this.flyout_choose(index, window, cx)))
                     .child(look_icon(item.look, cx))
                     .child(div().flex_1().min_w_0().truncate().child(isolate(name)))
                     .children(item.detail.as_ref().map(|detail| {

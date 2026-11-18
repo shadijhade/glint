@@ -405,6 +405,9 @@ pub struct NavOptions {
     pub silent: bool,
     /// The tab to open it in (default: the active one).
     pub tab: Option<TabId>,
+    /// A place brought back from Back or Forward: shown as it was left (its search's results, its box, selection
+    /// and scroll), and the history moves to it. Set by the history's walk (`history.rs`).
+    pub restore: Option<Box<super::history::Visit>>,
 }
 
 impl NavOptions {

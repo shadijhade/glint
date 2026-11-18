@@ -1,7 +1,8 @@
-//! Navigation: opening folders, history, re-reading, prefetching and the drives.
-//! Ported from explorer.ts: `navigate`, `getAccess` (in open.rs), `goBack`, `goForward`, `goUp`, `reload`,
-//! `reloadFolder`, `reread`, `refresh`, `refreshDrives`, `prefetchFolder`, `takePrefetched`, `hoverFolder`,
-//! `leaveFolder`, and `showArchiveReading` (a big archive read whole says how far along it is, with Stop).
+//! Navigation: opening folders, re-reading, prefetching and the drives. Back and Forward are `history.rs`'s: a
+//! navigation hands it the place the tab leaves, and lands a place it brings back ([`NavOptions::restore`]).
+//! Ported from explorer.ts: `navigate`, `getAccess` (in open.rs), `goUp`, `reload`, `reloadFolder`, `reread`,
+//! `refresh`, `refreshDrives`, `prefetchFolder`, `takePrefetched`, `hoverFolder`, `leaveFolder`, and
+//! `showArchiveReading` (a big archive read whole says how far along it is, with Stop).
 //!
 //! **Stale results.** Every tab counts its navigations. A listing that comes back for an older number than
 //! the tab's newest was superseded (the person clicked elsewhere meanwhile, or the tab closed) and is
@@ -30,8 +31,6 @@ const READING_EVERY: Duration = Duration::from_millis(250);
 const PREFETCH_FRESH: Duration = Duration::from_millis(2000);
 /// The most folders read ahead at once: they're for the next click.
 const PREFETCH_MOST: usize = 8;
-/// Back history keeps this many folders.
-const HISTORY_MOST: usize = 100;
 /// The pointer rests on a folder this long before it's read ahead (the web app waited 80 ms): its row says what is
 /// in it once it has been read, so this is most of what is waited for. Long enough that a pointer crossing the
 /// list reads nothing on its way.
@@ -151,8 +150,19 @@ enum Claim {
     Waiting(async_channel::Receiver<(Option<f64>, Option<Listed>)>),
 }
 
+/// How a navigation ended ([`Explorer::navigate_task`] says only whether the folder opened).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum Landed {
+    /// The folder opened.
+    Opened,
+    /// It couldn't be listed: the message says why.
+    Failed(String),
+    /// A newer navigation in the tab won, or the tab was closed meanwhile.
+    Superseded,
+}
+
 /// What happens next to a failed navigation, decided by its message (see `navigate`).
-fn failure_notice(message: &str, target: &str, tab: TabId, select: &Option<Vec<String>>) -> Option<Notice> {
+pub(super) fn failure_notice(message: &str, target: &str, tab: TabId, select: &Option<Vec<String>>) -> Option<Notice> {
     if message == "cancelled" {
         // Stopped reading an archive: nothing to report.
         return None;
@@ -233,10 +243,22 @@ impl Explorer {
         options: NavOptions,
         cx: &mut Context<Self>,
     ) -> Task<bool> {
+        let landing = self.navigate_landing(target, options, cx);
+        cx.spawn(async move |_, _| landing.await == Landed::Opened)
+    }
+
+    /// [`Explorer::navigate_task`], saying how the navigation ended: opened, failed (and why), or overtaken.
+    #[must_use = "dropping the task cancels the navigation; `.detach()` it to let it run"]
+    pub(super) fn navigate_landing(
+        &mut self,
+        target: impl Into<String>,
+        options: NavOptions,
+        cx: &mut Context<Self>,
+    ) -> Task<Landed> {
         let target: String = target.into();
         let id = options.tab.unwrap_or_else(|| self.active_tab_id());
         let Some(tab) = self.tabs.get_mut(&id) else {
-            return Task::ready(false);
+            return Task::ready(Landed::Superseded);
         };
         tab.nav_seq += 1;
         let seq = tab.nav_seq;
@@ -282,10 +304,10 @@ impl Explorer {
                     crate::perf::ms(started)
                 )
             });
-            let opened = this
+            let landed = this
                 .update(cx, |this, cx| {
                     let applying = Instant::now();
-                    let opened = this.finish_navigation(id, seq, started, target, options, outcome, cx);
+                    let landed = this.finish_navigation(id, seq, started, target, options, outcome, cx);
                     crate::perf::say(|| {
                         format!(
                             "nav applied at={:.2} took={:.2}",
@@ -293,12 +315,12 @@ impl Explorer {
                             crate::perf::ms(applying)
                         )
                     });
-                    opened
+                    landed
                 })
-                .unwrap_or(false);
+                .unwrap_or(Landed::Superseded);
             // Everyone who follows the explorer has heard by now.
             crate::perf::say(|| format!("nav told at={:.2}", crate::perf::ms(started)));
-            opened
+            landed
         })
     }
 
@@ -368,7 +390,7 @@ impl Explorer {
         options: NavOptions,
         outcome: Option<Result<Listed, ListFailure>>,
         cx: &mut Context<Self>,
-    ) -> bool {
+    ) -> Landed {
         let (listing, denied) = match outcome {
             None => (None, None),
             Some(Ok(listing)) => (Some(listing), None),
@@ -378,6 +400,7 @@ impl Explorer {
                 if self.tabs.get(&id).is_some_and(|t| t.nav_seq == seq) {
                     self.update_tab(id, |t| {
                         t.loading = false;
+                        t.walking = None;
                         if !t.ready {
                             t.load = LoadState::Failed(failure.message.clone());
                         }
@@ -390,14 +413,17 @@ impl Explorer {
                     self.tab_changed(id, cx);
                     // The tab stays where it was: what changed there meanwhile is read now.
                     self.reload_if_waiting(id, true, cx);
+                    return Landed::Failed(failure.message);
                 }
-                return false;
+                return Landed::Superseded;
             }
         };
         // A newer navigation in this tab won, or the tab was closed meanwhile.
         let Some(state) = self.tabs.get(&id).filter(|t| t.nav_seq == seq) else {
-            return false;
+            return Landed::Superseded;
         };
+        // A place brought back from Back or Forward, as it was left.
+        let restore = options.restore.as_deref();
 
         let path = listing
             .as_ref()
@@ -443,9 +469,28 @@ impl Explorer {
             Some(old) if same && selected.iter().any(|p| p == old) => Some(old.to_string()),
             _ => selected.last().cloned(),
         };
-        let was_running = !same && state.find.as_ref().is_some_and(|f| f.running);
-        let dropped_find = !same && state.find.is_some();
-        let old_path = state.path.clone();
+        let mut selection = super::tab::Selection {
+            paths: std::sync::Arc::new(selected.iter().map(String::as_str).collect()),
+            anchor: focus.clone(),
+            focus: focus.clone(),
+        };
+        // A place brought back shows its search's results, if they were kept (else the search runs again once it is
+        // back), and what was selected there, as far as it is still there.
+        let (restored_run, rerun) = restore.map(Self::restored_run).unwrap_or_default();
+        let check_restored = restored_run.is_some() && rerun.is_none();
+        if let Some(visit) = restore.filter(|v| !v.selection.is_empty()) {
+            let empty: &[glint_model::entries::FileEntry] = &[];
+            let shown = match (&restored_run, &listing) {
+                (Some(run), _) => &run.entries[..],
+                (None, Some(listing)) => &listing.entries[..],
+                (None, None) => empty,
+            };
+            selection = super::history::restored_selection(&visit.selection, shown);
+        }
+        // Going to another folder ends the search shown; so does a place brought back, which shows its own.
+        let leaving_find = !same || restore.is_some();
+        let was_running = leaving_find && state.find.as_ref().is_some_and(|f| f.running);
+        let dropped_find = leaving_find && state.find.is_some();
         let was_ready = state.ready;
         // Timed from the click to the list on screen; a tab out of sight is timed when it's shown.
         let visible = self.visible_tabs().contains(&id);
@@ -462,6 +507,8 @@ impl Explorer {
             }),
         };
         let keep_history = !options.no_history && was_ready && !same;
+        // The place the tab leaves, as it is now: Back brings it back.
+        let left = (was_ready && (keep_history || restore.is_some())).then(|| state.visit());
         let has_listing = listing.is_some();
         let archived = listing.as_ref().is_some_and(|l| l.archive.is_some());
         // The folder left: a big one's entries are freed away from this thread.
@@ -472,21 +519,26 @@ impl Explorer {
             tab.listing = listing;
             tab.load = load;
             tab.loading = false;
-            tab.selection = super::tab::Selection {
-                paths: std::sync::Arc::new(selected.iter().map(String::as_str).collect()),
-                anchor: focus.clone(),
-                focus: focus.clone(),
-            };
+            tab.walking = None;
+            tab.selection = selection;
             if !same {
                 tab.filter.clear();
                 tab.find = None;
                 tab.renaming = None;
             }
-            if keep_history {
-                tab.back.push(old_path);
-                let extra = tab.back.len().saturating_sub(HISTORY_MOST);
-                tab.back.drain(..extra);
-                tab.forward.clear();
+            match (restore, left) {
+                (Some(visit), left) => {
+                    tab.filter = visit.filter.clone();
+                    tab.find = restored_run;
+                    if visit.scroll.is_some() {
+                        tab.scroll = visit.scroll.clone();
+                    }
+                    if let Some(left) = left {
+                        tab.arrive(left, visit.id);
+                    }
+                }
+                (None, Some(left)) => tab.leave_for_new(left),
+                (None, None) => {}
             }
             tab.nav_started = visible.then_some(started);
         });
@@ -541,7 +593,10 @@ impl Explorer {
         // A read of this same folder that waited for the navigation is done now (the listing may be from before
         // the change); one of the folder left behind is forgotten.
         self.reload_if_waiting(id, same, cx);
-        true
+        if restore.is_some() {
+            self.after_restore(id, rerun, check_restored, cx);
+        }
+        Landed::Opened
     }
 
     /// A navigation has landed: the read that waited for it ([`Explorer::reload`]) is done now if the tab still
@@ -583,60 +638,14 @@ impl Explorer {
         }
     }
 
-    /// Back (Alt+Left): the previous folder in the active tab's history (`goBack`).
-    #[must_use = "dropping the task cancels the navigation; `.detach()` it to let it run"]
-    pub fn go_back(&mut self, cx: &mut Context<Self>) -> Task<bool> {
-        self.walk_history(true, cx)
-    }
-
-    /// Forward (Alt+Right): the folder Back came from (`goForward`).
-    #[must_use = "dropping the task cancels the navigation; `.detach()` it to let it run"]
-    pub fn go_forward(&mut self, cx: &mut Context<Self>) -> Task<bool> {
-        self.walk_history(false, cx)
-    }
-
-    fn walk_history(&mut self, backwards: bool, cx: &mut Context<Self>) -> Task<bool> {
-        let id = self.active_tab_id();
-        let Some(tab) = self.tabs.get(&id) else {
-            return Task::ready(false);
-        };
-        let (back, forward, path) = (tab.back.clone(), tab.forward.clone(), tab.path.clone());
-        let target = if backwards { back.last() } else { forward.first() };
-        let Some(target) = target.cloned() else {
-            return Task::ready(false);
-        };
-        let navigation = self.navigate_task(
-            target,
-            NavOptions {
-                no_history: true,
-                tab: Some(id),
-                ..Default::default()
-            },
-            cx,
-        );
-        cx.spawn(async move |this, cx| {
-            if !navigation.await {
-                return false;
-            }
-            this.update(cx, |this, cx| {
-                this.update_tab(id, |t| {
-                    if backwards {
-                        t.back = back.get(..back.len().saturating_sub(1)).unwrap_or(&[]).to_vec();
-                        t.forward = std::iter::once(path).chain(forward).collect();
-                    } else {
-                        t.back = back.into_iter().chain(std::iter::once(path)).collect();
-                        t.forward = forward.get(1..).unwrap_or(&[]).to_vec();
-                    }
-                });
-                this.tab_changed(id, cx);
-            })
-            .is_ok()
-        })
-    }
-
-    /// Up (Alt+Up, Backspace): the parent folder (`goUp`). `false` on This PC.
+    /// Up (Alt+Up; Backspace with nothing to go back to): the parent folder (`goUp`). `false` on This PC. From a
+    /// search's results, up is the folder they were found in: the search is left for it, as Escape leaves it.
     #[must_use = "dropping the task cancels the navigation; `.detach()` it to let it run"]
     pub fn go_up(&mut self, cx: &mut Context<Self>) -> Task<bool> {
+        if self.active_tab().is_some_and(|tab| tab.find.is_some()) {
+            self.clear_find(cx);
+            return Task::ready(true);
+        }
         let path = self.current_path().to_string();
         if path == THIS_PC {
             return Task::ready(false);

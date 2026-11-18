@@ -63,7 +63,8 @@
 //! | `rows.rs` | [`Rows`], [`RowSpec`] and [`build_rows`]: sorting, hidden items, filter, groups |
 //! | `memory.rs` | [`Memory`]: last folder, session, visits, folders' own views |
 //! | `model.rs` | the [`Explorer`] struct, getters, settings and rows plumbing |
-//! | `nav.rs` | navigate, history, reload, prefetch, drives |
+//! | `nav.rs` | navigate, reload, prefetch, drives |
+//! | `history.rs` | Back and Forward: [`Visit`]s (folders and searches, as they were left), walking them, Backspace |
 //! | `tabs.rs` | tabs and panes |
 //! | `select.rs` | selection |
 //! | `open.rs` | opening files and entries, go to, Get access |
@@ -99,6 +100,7 @@ mod compare;
 mod create;
 mod find;
 mod find_types;
+mod history;
 mod inside;
 mod memory;
 mod model;
@@ -135,6 +137,8 @@ pub(crate) mod fake;
 #[cfg(test)]
 mod find_tests;
 #[cfg(test)]
+mod history_tests;
+#[cfg(test)]
 mod inside_tests;
 #[cfg(test)]
 mod ops_tests;
@@ -147,6 +151,7 @@ pub use actions_types::*;
 pub use archive_types::*;
 pub use compare::{compare_listings, Comparison, RowDiffs};
 pub use find_types::{FindNotice, FindOptions, Found, SearchIndex, Wider};
+pub use history::{SearchVisit, Visit};
 pub use inside::{can_search_inside, inside_filters, inside_unasked, inside_words, InsideEngine, InsideRequest};
 pub use memory::Memory;
 pub(crate) use model::let_go;
