@@ -12,9 +12,10 @@
 //! Those two words go through the i18n catalog for the given `Language`; the Arabic catalog has no entry for them
 //! yet, so they stay English there until it does.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt::Write as _;
-use std::sync::{Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::i18n::{translate, Language};
@@ -130,20 +131,40 @@ fn format_date_in(ms: i64, now: Option<i64>, locale: Option<&str>, language: Lan
         return String::new();
     }
     match now {
-        None => with_cache(|cache| {
-            let today = today_start_cached(cache, now_millis());
-            if let Some(hit) = cache.short.get(&(ms, language)) {
-                return hit.clone();
-            }
-            let formatted = format_date_with_today(ms, today, locale, language);
-            if cache.short.len() >= MAX_CACHE_SIZE {
-                cache.short.clear();
-            }
-            cache.short.insert((ms, language), formatted.clone());
-            formatted
-        }),
+        None => cached_date(ms, now_millis(), locale, language).to_string(),
         Some(now) => format_date_with_today(ms, local_midnight(now), locale, language),
     }
+}
+
+/// The same label as `format_date(ms, None, language)`, for the caller that already knows the time (`now`, Unix
+/// milliseconds): a list reads the clock once a frame instead of once a row. The text is shared with the cache, so
+/// asking again for a date costs a hash lookup and a reference count, and no allocation.
+pub fn format_date_shared(ms: i64, now: i64, language: Language) -> Arc<str> {
+    if ms == 0 {
+        return empty_text();
+    }
+    cached_date(ms, now, None, language)
+}
+
+fn empty_text() -> Arc<str> {
+    static EMPTY: OnceLock<Arc<str>> = OnceLock::new();
+    EMPTY.get_or_init(|| Arc::from("")).clone()
+}
+
+/// The cached label of `ms`, made when it is not there. `now` decides which day is "Today".
+fn cached_date(ms: i64, now: i64, locale: Option<&str>, language: Language) -> Arc<str> {
+    with_cache(|cache| {
+        let today = today_start_cached(cache, now);
+        if let Some(hit) = cache.short.get(&(ms, language)) {
+            return hit.clone();
+        }
+        let formatted: Arc<str> = format_date_with_today(ms, today, locale, language).into();
+        if cache.short.len() >= MAX_CACHE_SIZE {
+            cache.short.clear();
+        }
+        cache.short.insert((ms, language), formatted.clone());
+        formatted
+    })
 }
 
 /// The long form with the date and the time in full, for tooltips: "Saturday, October 3, 2026 4:15:00 PM".
@@ -157,13 +178,13 @@ fn format_full_date_in(ms: i64, locale: Option<&str>) -> String {
     }
     with_cache(|cache| {
         if let Some(hit) = cache.full.get(&ms) {
-            return hit.clone();
+            return hit.to_string();
         }
         let formatted = format_full(ms, locale);
         if cache.full.len() >= MAX_CACHE_SIZE {
             cache.full.clear();
         }
-        cache.full.insert(ms, formatted.clone());
+        cache.full.insert(ms, formatted.as_str().into());
         formatted
     })
 }
@@ -173,17 +194,18 @@ fn format_full_date_in(ms: i64, locale: Option<&str>) -> String {
 struct DateCache {
     today_start: i64,
     today_end: i64,
-    short: HashMap<(i64, Language), String>,
-    full: HashMap<i64, String>,
+    short: HashMap<(i64, Language), Arc<str>>,
+    full: HashMap<i64, Arc<str>>,
 }
 
-/// The one cache for the whole process. Mutex::new is const, so it needs no lazy setup.
-static DATE_CACHE: Mutex<Option<DateCache>> = Mutex::new(None);
+thread_local! {
+    /// Each thread keeps its own cache, so a row asking for its date takes no lock. The window's thread is the one
+    /// that draws dates by the hundred; the others ask now and then and fill a small cache of their own.
+    static DATE_CACHE: RefCell<DateCache> = RefCell::new(DateCache::default());
+}
 
 fn with_cache<R>(f: impl FnOnce(&mut DateCache) -> R) -> R {
-    // A poisoned lock only means another thread panicked mid-update; the cache is still usable.
-    let mut guard = DATE_CACHE.lock().unwrap_or_else(PoisonError::into_inner);
-    f(guard.get_or_insert_with(DateCache::default))
+    DATE_CACHE.with(|cache| f(&mut cache.borrow_mut()))
 }
 
 /// The start of the local day that `now` falls in. The cache is kept for that day; when `now` leaves it,
@@ -421,11 +443,14 @@ fn system_time(date: &DateTime<Local>) -> SYSTEMTIME {
 fn format_short_date(date: &DateTime<Local>, locale: Option<&str>) -> String {
     let name = LocaleName::new(locale);
     let st = system_time(date);
-    let picture = locale_string(&name, LOCALE_SLONGDATE)
-        .map(|long| short_picture(&long))
-        .filter(|picture| !picture.is_empty())
-        .unwrap_or_else(|| "MMM d, yyyy".to_owned());
-    let picture = nul_terminated(&picture);
+    let own;
+    let picture: &[u16] = match locale {
+        None => user_short_picture(),
+        Some(_) => {
+            own = short_picture_of(&name);
+            &own
+        }
+    };
     read_wide(|buf| {
         // SAFETY: `st` lives across the call, and `picture` is a NUL-terminated picture (flags 0 are required with
         // a picture). The calendar is NULL for the default one. `buf` is as in `read_wide`.
@@ -441,6 +466,23 @@ fn format_short_date(date: &DateTime<Local>, locale: Option<&str>) -> String {
         }
     })
     .unwrap_or_else(|| format!("{}-{:02}-{:02}", date.year(), date.month(), date.day()))
+}
+
+/// The short-date picture of a locale as Windows takes it (NUL-terminated UTF-16).
+fn short_picture_of(name: &LocaleName) -> Vec<u16> {
+    let picture = locale_string(name, LOCALE_SLONGDATE)
+        .map(|long| short_picture(&long))
+        .filter(|picture| !picture.is_empty())
+        .unwrap_or_else(|| "MMM d, yyyy".to_owned());
+    nul_terminated(&picture)
+}
+
+/// The user's own short-date picture, worked out once a run (like their digit grouping): it took a call into
+/// Windows and a pass over the picture for every date that was not cached, and a change to Region settings shows
+/// from Glint's next start.
+fn user_short_picture() -> &'static [u16] {
+    static USER: OnceLock<Vec<u16>> = OnceLock::new();
+    USER.get_or_init(|| short_picture_of(&LocaleName::new(None)))
 }
 
 /// Turns a long-date picture ("dddd, MMMM d, yyyy") into the short one ("MMM d, yyyy"): the weekday (a run of
@@ -811,6 +853,118 @@ mod tests {
         let (now, _) = time(&format_size);
         let (then, _) = time(&before);
         println!("a size: {now:.0} ns now, {then:.0} ns before ({:.0}x)", then / now);
+    }
+
+    /// Counts this thread's heap allocations, so a test can say how many a piece of code makes.
+    struct Counting;
+
+    thread_local! {
+        static ALLOCATIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    }
+
+    // SAFETY: every call goes straight to the system allocator, which upholds the contract; the counter is a
+    // plain thread-local cell that never allocates.
+    unsafe impl std::alloc::GlobalAlloc for Counting {
+        unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+            let _ = ALLOCATIONS.try_with(|n| n.set(n.get() + 1));
+            // SAFETY: as above.
+            unsafe { std::alloc::System.alloc(layout) }
+        }
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
+            // SAFETY: as above.
+            unsafe { std::alloc::System.dealloc(ptr, layout) }
+        }
+    }
+
+    #[global_allocator]
+    static COUNTING: Counting = Counting;
+
+    fn allocations() -> u64 {
+        ALLOCATIONS.with(|n| n.get())
+    }
+
+    /// What the dates of one visible row cost, as the list asks on every frame: the short date for the cell and
+    /// the full one for its tooltip (before, both were made for every row; now only the short one is).
+    /// Run with --ignored --nocapture, in release.
+    #[test]
+    #[ignore]
+    fn dates_cost_little() {
+        const ROWS: i64 = 60;
+        const FRAMES: i64 = 20_000;
+        let base = local_ms(2026, 3, 1, 9, 0);
+        let dates: Vec<i64> = (0..ROWS).map(|i| base + i * 7_919_000).collect();
+        let language = Language::En;
+        // The list's per-frame clock: read once a frame, not once a row.
+        let now = now_millis();
+        let measure = |per_row: &dyn Fn(i64) -> usize| {
+            for &ms in &dates {
+                per_row(ms);
+            }
+            let allocated = allocations();
+            let started = std::time::Instant::now();
+            let mut length = 0;
+            for _ in 0..FRAMES {
+                for &ms in &dates {
+                    length += per_row(ms);
+                }
+            }
+            let rows = (FRAMES * ROWS) as f64;
+            (
+                started.elapsed().as_nanos() as f64 / rows,
+                (allocations() - allocated) as f64 / rows,
+                length,
+            )
+        };
+        // Before: the short and the full date as Strings, a lock and a clock read for each of them.
+        let (then_ns, then_allocs, then_length) =
+            measure(&|ms| format_date(ms, None, language).len() + format_full_date(ms).len());
+        // Now: the short date shared with the cache (the full one is made when its tooltip is shown).
+        let (ns, allocs, length) = measure(&|ms| format_date_shared(ms, now, language).len());
+        assert!(then_length > length && length > 0);
+        println!("a row's dates: {ns:.0} ns, {allocs:.1} allocations now; {then_ns:.0} ns, {then_allocs:.1} before");
+    }
+
+    #[test]
+    fn shared_dates_say_what_the_plain_ones_say() {
+        let now = now_millis();
+        for ms in [
+            now,
+            now - 3_600_000,
+            now - DAY,
+            now - 40 * DAY,
+            local_ms(2020, 2, 29, 23, 59),
+        ] {
+            assert_eq!(
+                &*format_date_shared(ms, now, Language::En),
+                format_date(ms, None, Language::En).as_str()
+            );
+        }
+        assert_eq!(&*format_date_shared(0, now, Language::En), "");
+        // Asking twice hands out the same text, not a new one.
+        let first = format_date_shared(now - 40 * DAY, now, Language::En);
+        let again = format_date_shared(now - 40 * DAY, now, Language::En);
+        assert!(Arc::ptr_eq(&first, &again));
+    }
+
+    #[test]
+    fn the_cached_labels_follow_the_day_of_the_now_given() {
+        let noon = noon_oct_14_2026();
+        let ms = noon - 3_600_000;
+        let today = format_date_shared(ms, noon, Language::En);
+        assert!(today.starts_with("Today "), "got {today:?}");
+        // The next day, the same moment is yesterday's: the label cached for the old day is not served again.
+        let next_day = format_date_shared(ms, noon + DAY, Language::En);
+        assert!(next_day.starts_with("Yesterday "), "got {next_day:?}");
+    }
+
+    #[test]
+    fn the_short_date_picture_is_worked_out_once() {
+        let first = user_short_picture();
+        assert!(
+            first.last() == Some(&0) && first.len() > 1,
+            "NUL-terminated and not empty"
+        );
+        assert!(std::ptr::eq(first, user_short_picture()));
     }
 
     #[test]

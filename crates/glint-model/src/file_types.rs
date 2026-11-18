@@ -422,14 +422,27 @@ pub fn kind_of(entry: &FileEntry) -> &'static Kind {
 
 /// The Type column's text: the kind's label with `%` replaced by the uppercased extension ("File" without one).
 pub fn type_label(entry: &FileEntry) -> String {
+    let mut out = String::new();
+    push_type_label(entry, &mut out);
+    out
+}
+
+/// [`type_label`] written onto the end of `out`, for the caller that is building a longer line (the list's
+/// description of a row, made for every visible row on every frame): no string of its own, and the uppercased
+/// extension is written a letter at a time.
+pub fn push_type_label(entry: &FileEntry, out: &mut String) {
     let label = kind_of(entry).label;
     if !label.contains('%') {
-        return label.to_string();
-    }
-    if entry.ext.is_empty() {
-        "File".to_string()
+        out.push_str(label);
+    } else if entry.ext.is_empty() {
+        out.push_str("File");
     } else {
-        label.replace('%', &entry.ext.to_uppercase())
+        for (n, part) in label.split('%').enumerate() {
+            if n > 0 {
+                out.extend(entry.ext.chars().flat_map(char::to_uppercase));
+            }
+            out.push_str(part);
+        }
     }
 }
 
@@ -586,6 +599,25 @@ mod tests {
         // A text name with no extension has the "txt" label, which has no extension to show.
         assert_eq!(type_label(&entry("LICENSE")), "File");
         assert_eq!(type_label(&entry("a.JPG")), "JPG image");
+    }
+
+    #[test]
+    fn a_label_is_pushed_onto_a_line_the_same_as_it_is_made() {
+        for name in [
+            "a.png",
+            "a.pdf",
+            "folder/",
+            "noext",
+            "LICENSE",
+            "a.JPG",
+            "a.xyz",
+            "a.straße",
+        ] {
+            let e = entry(name);
+            let mut line = String::from("Photo, ");
+            push_type_label(&e, &mut line);
+            assert_eq!(line, format!("Photo, {}", type_label(&e)), "{name}");
+        }
     }
 
     #[test]
