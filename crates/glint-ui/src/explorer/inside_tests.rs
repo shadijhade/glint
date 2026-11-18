@@ -166,6 +166,67 @@ fn a_search_looks_inside_the_files_too_and_lists_them_with_their_lines(cx: &mut 
 }
 
 #[gpui_kit::test]
+fn a_files_lines_are_all_listed_once_asked_for_and_a_new_search_starts_over(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let r = rig(cx);
+    r.go(cx, "C:\\proj");
+    r.find(cx, "needle", Wider::default());
+    r.say(
+        cx,
+        glint_core::TextSaid::Matches(
+            (1..=6)
+                .map(|n| inside_match("C:\\proj\\src\\main.rs", "needle\n", n, 0, 6))
+                .collect(),
+        ),
+    );
+    let tab = r.explorer.read_with(cx, |e, _| e.active_tab_id());
+    // The file named for it comes first, as a result of the name search; its lines are the second part.
+    let inside = |cx: &TestAppContext| r.lines(cx).split_off(2);
+    assert_eq!(
+        inside(cx),
+        [
+            "# Inside files (1)",
+            "main.rs",
+            "  1: needle",
+            "  2: needle",
+            "  3: needle",
+            "  +3"
+        ]
+    );
+    // A file that isn't one of the search's changes nothing.
+    r.explorer
+        .update(cx, |e, cx| e.expand_hits(tab, "C:\\proj\\readme.md", cx));
+    assert_eq!(inside(cx).len(), 6);
+    r.explorer
+        .update(cx, |e, cx| e.expand_hits(tab, "C:\\proj\\src\\main.rs", cx));
+    assert_eq!(
+        inside(cx),
+        [
+            "# Inside files (1)",
+            "main.rs",
+            "  1: needle",
+            "  2: needle",
+            "  3: needle",
+            "  4: needle",
+            "  5: needle",
+            "  6: needle",
+        ]
+    );
+    // Asked again, it is the same; the lines still coming in are listed as they come.
+    r.explorer
+        .update(cx, |e, cx| e.expand_hits(tab, "C:\\proj\\src\\main.rs", cx));
+    assert_eq!(inside(cx).len(), 8);
+    r.say(
+        cx,
+        glint_core::TextSaid::Matches(vec![inside_match("C:\\proj\\src\\main.rs", "needle\n", 7, 0, 6)]),
+    );
+    assert_eq!(inside(cx).len(), 9);
+    // Another search lists three lines and a count again.
+    r.find(cx, "needle ", Wider::default());
+    assert!(r.run_of(cx).inside.expanded.is_empty());
+}
+
+#[gpui_kit::test]
 fn the_filters_of_the_search_narrow_the_files_found_by_their_contents(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let r = rig(cx);

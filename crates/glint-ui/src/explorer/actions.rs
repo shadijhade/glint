@@ -71,7 +71,7 @@ impl Explorer {
                     opening.await;
                 });
             }
-            OpenHow::Editor(_) => ActionFailure::OpenFile,
+            OpenHow::Editor(_) | OpenHow::EditorAt { .. } => ActionFailure::OpenFile,
             OpenHow::Picker => ActionFailure::AppPicker,
         };
         let opening = self.source.open_with(path, &how);

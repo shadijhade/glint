@@ -2,7 +2,7 @@
 //! presses and keys change the explorer as the TypeScript did, an Arabic name, and the Arabic interface.
 
 use super::*;
-use crate::explorer::fake::{file, folder, hidden, FakeDisk};
+use crate::explorer::fake::{file, folder, hidden, inside_event, inside_match, FakeDisk};
 use crate::explorer::NavOptions;
 use crate::testing;
 use glint_model::columns::ColumnId;
@@ -2021,6 +2021,108 @@ fn a_folder_row_builds_its_words_only_while_the_pointer_or_the_keyboard_is_on_it
     ui.visual
         .update(|_, cx| list.update(cx, |list, cx| list.hover_folder_row("C:\\x\\docs", false, cx)));
     assert_eq!(said(&mut ui), None);
+}
+
+/// `C:\x` searched for "needle": `big.rs` holds it on four lines (three are listed, then "1 more matching line").
+fn searched_inside(cx: &mut TestAppContext) -> (Ui, FakeDisk) {
+    let disk = FakeDisk::new();
+    disk.folder(
+        "C:\\x",
+        vec![folder("C:\\x", "docs"), file("C:\\x", "big.rs", 100, 0)],
+    );
+    disk.live_inside();
+    let mut ui = open(cx, &disk, "C:\\x");
+    let explorer = ui.explorer.clone();
+    let task = ui.visual.update(|_, cx| {
+        explorer.update(cx, |e, cx| {
+            e.set_filter("needle", None, cx);
+            e.run_find("needle", crate::explorer::Wider::default(), cx)
+        })
+    });
+    cx.foreground_executor().block_test(task);
+    ui.frame();
+    let id = disk.inside_searches().last().map(|(_, request)| request.id.clone()).expect("asked");
+    let event = inside_event(
+        &id,
+        glint_core::TextSaid::Matches(vec![
+            inside_match("C:\\x\\big.rs", "let needle = 1;\n", 3, 4, 10),
+            inside_match("C:\\x\\big.rs", "needle();\n", 9, 0, 6),
+            inside_match("C:\\x\\big.rs", "// needle\n", 12, 3, 9),
+            inside_match("C:\\x\\big.rs", "end of needle\n", 20, 7, 13),
+        ]),
+    );
+    ui.visual.update(|_, cx| explorer.update(cx, |e, cx| e.inside_heard(&event, cx)));
+    ui.settle();
+    (ui, disk)
+}
+
+#[gpui_kit::test]
+fn the_more_line_of_a_file_lists_the_rest_of_its_matching_lines_where_it_stands(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let (mut ui, _disk) = searched_inside(cx);
+    let said = |ui: &mut Ui, line: usize| -> Option<String> {
+        ui.visual.update(|window, cx| {
+            window.render_frame(cx);
+            window
+                .try_find(("file-hit", line))
+                .and_then(|hit| hit.label().map(str::to_string))
+        })
+    };
+    // The header, the file, three of its lines, then the count of the rest.
+    assert_eq!(said(&mut ui, 4).as_deref(), Some("Line 12: // needle"));
+    assert_eq!(said(&mut ui, 5).as_deref(), Some("1 more matching line"));
+    assert_eq!(said(&mut ui, 6), None);
+    ui.visual.update(|window, cx| {
+        window.render_frame(cx);
+        window.click(("file-hit", 5usize), cx);
+    });
+    ui.frame();
+    // The fourth line takes its place, and nothing is left to count; the file stays selected, its preview not told
+    // to show a line of the "more" line.
+    assert_eq!(said(&mut ui, 5).as_deref(), Some("Line 20: end of needle"));
+    assert_eq!(said(&mut ui, 6), None);
+    let selected = ui
+        .explorer
+        .read_with(&ui.visual, |e, _| e.active_tab().map(|t| t.selection.contains("C:\\x\\big.rs")));
+    assert_eq!(selected, Some(true));
+}
+
+#[gpui_kit::test]
+fn a_matching_line_shows_in_the_preview_when_pressed_and_opens_the_editor_at_it_when_double_pressed(
+    cx: &mut TestAppContext,
+) {
+    let _guard = testing::lock();
+    let (mut ui, disk) = searched_inside(cx);
+    // One press: the file's preview is asked for that line, and nothing is opened.
+    ui.visual.update(|window, cx| {
+        window.render_frame(cx);
+        window.click(("file-hit", 3usize), cx);
+    });
+    ui.frame();
+    let spot = ui.visual.update(|_, cx| {
+        cx.try_global::<crate::components::preview::Spot>()
+            .map(|spot| (spot.path.clone(), spot.line))
+    });
+    assert_eq!(spot, Some(("C:\\x\\big.rs".to_string(), 9)));
+    assert!(disk.opened().is_empty());
+    // Two presses, with an editor named in Settings: the editor opens the file at the line.
+    ui.visual
+        .update(|_, cx| crate::state::update(cx, |s| s.editor_path = "C:\\Code\\code.exe".into()));
+    ui.visual.update(|window, cx| {
+        window.render_frame(cx);
+        window.double_click(("file-hit", 4usize), cx);
+    });
+    ui.frame();
+    assert_eq!(
+        disk.opened(),
+        [(
+            "C:\\x\\big.rs".to_string(),
+            OpenHow::EditorAt {
+                editor: "C:\\Code\\code.exe".into(),
+                line: 12
+            }
+        )]
+    );
 }
 
 #[gpui_kit::test]

@@ -702,6 +702,7 @@ impl Explorer {
                 .map(|find| super::rows::RowInside {
                     only: find.inside.only.clone(),
                     hits: find.inside.hits.clone(),
+                    expanded: find.inside.expanded.clone(),
                     lines: tab.view == ViewMode::List,
                 }),
         })

@@ -60,6 +60,8 @@ impl PartialEq for RowMarks {
 pub struct RowInside {
     pub only: Arc<HashSet<String>>,
     pub hits: Arc<Hits>,
+    /// The files whose every line is shown, not the first [`HITS_SHOWN`] and a count of the rest.
+    pub expanded: Arc<HashSet<String>>,
     /// The rows show the lines and the two parts' headers (the list does; the grid and the columns view show the
     /// files alone).
     pub lines: bool,
@@ -67,7 +69,10 @@ pub struct RowInside {
 
 impl PartialEq for RowInside {
     fn eq(&self, other: &Self) -> bool {
-        self.lines == other.lines && Arc::ptr_eq(&self.only, &other.only) && Arc::ptr_eq(&self.hits, &other.hits)
+        self.lines == other.lines
+            && Arc::ptr_eq(&self.only, &other.only)
+            && Arc::ptr_eq(&self.hits, &other.hits)
+            && Arc::ptr_eq(&self.expanded, &other.expanded)
     }
 }
 
@@ -612,7 +617,14 @@ fn with_hits(rows: Rows, inside: &RowInside) -> Rows {
                     .get(row)
                     .and_then(|entry| inside.hits.get(&entry.path))
                     .map_or(0, |hits| hits.len());
-                let shown = hits.min(HITS_SHOWN);
+                let shown = if placed
+                    .get(row)
+                    .is_some_and(|entry| inside.expanded.contains(&entry.path))
+                {
+                    hits
+                } else {
+                    hits.min(HITS_SHOWN)
+                };
                 let row_number = u32::try_from(row).unwrap_or(u32::MAX);
                 for hit in 0..shown {
                     lines.push(HIT_BASE - i32::try_from(hit_lines.len()).unwrap_or(0));

@@ -1177,6 +1177,32 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn a_search_line_pressed_in_the_list_is_shown_in_the_open_preview(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        testing::set_rtl(false);
+        let (source, _) = fake(Ok(read_of("one\ntwo\nthree\nfour\n")));
+        let (view, mut visual) = preview(cx, "C:\\src\\main.rs", source);
+        settle(&mut visual, |cx| {
+            view.read_with(cx, |v, _| matches!(v.state, Load::Shown(_)))
+        });
+        let selected = |view: &Entity<TextPreview>, visual: &VisualTestContext| {
+            view.read_with(visual, |v, cx| match &v.state {
+                Load::Shown(shown) => shown.editor.read(cx).selected_text().to_string(),
+                _ => String::new(),
+            })
+        };
+        assert_eq!(selected(&view, &visual), "");
+        // Another file's line is not this one's.
+        visual.update(|_, cx| crate::components::preview::spot(cx, "C:\\src\\other.rs", 2));
+        visual.run_until_parked();
+        assert_eq!(selected(&view, &visual), "");
+        // Its own line is selected.
+        visual.update(|_, cx| crate::components::preview::spot(cx, "C:\\src\\main.rs", 3));
+        visual.run_until_parked();
+        assert_eq!(selected(&view, &visual), "three");
+    }
+
+    #[gpui_kit::test]
     fn a_big_file_shows_its_first_lines_and_says_so(cx: &mut TestAppContext) {
         let _guard = testing::lock();
         testing::set_rtl(false);

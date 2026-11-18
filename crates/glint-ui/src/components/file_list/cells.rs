@@ -154,8 +154,10 @@ impl FileList {
         let selected = frame.selected.contains(&entry.path);
         let rtl = i18n::is_rtl();
         let mono = theme::mono_font(cx);
-        // Pressed, the line is what the preview of its file shows (a "more" line shows the first one not listed).
-        let spot = hit.line.map(|line| (entry.path.clone(), line));
+        // Pressed, the line is what the preview of its file shows; double-pressed, it is where the editor opens.
+        // A "more" line is for opening the rest of the lines instead.
+        let spot = hit.line.filter(|_| at.more == 0).map(|line| (entry.path.clone(), line));
+        let expands = (at.more > 0).then(|| entry.path.clone());
         // Under the name: past the row's inset, its padding, the icon and the gap after it.
         let indent = INSET + px(6.) + rems(1.).to_pixels(px(frame.box_px)) + px(8.);
         let (place, body, said): (SharedString, AnyElement, SharedString) = if at.more > 0 {
@@ -252,10 +254,7 @@ impl FileList {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                    this.row_down(row, event, window, cx);
-                    if let Some((path, line)) = &spot {
-                        crate::components::preview::spot(cx, path, *line);
-                    }
+                    this.hit_down(row, event, spot.as_ref(), expands.as_deref(), window, cx)
                 }),
             )
             .on_mouse_down(

@@ -82,6 +82,9 @@ pub enum OpenHow {
     Default,
     /// With this program (the editor in Settings) (`openPath(path, editorPath)`).
     Editor(String),
+    /// With that program, at a line of the file (from 1), as far as the program takes one
+    /// ([`glint_model::editor::editor_args`]): a search's matching line, double-clicked.
+    EditorAt { editor: String, line: u64 },
     /// With Windows' "Open with" picker (`openWith`).
     Picker,
 }
