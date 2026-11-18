@@ -79,12 +79,12 @@ until a release updates it (the tests run the service's code in a test and throu
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | `Glint.exe`, `.text` / `.rdata` | file sizes & `python scripts/dev/size-by-crate.py --json <file>` | 93,770,752 B; 68.4 / 21.8 MB (0.12: 93,284,352 B; 68.2 / 21.6 MB) | — | — | — | **82,779,648 B; 60.5 / 19.1 MB** (−11.7%) |
 | Crates compiled | `cargo tree --locked --offline -p glint --target x86_64-pc-windows-msvc -e normal --prefix none \| sort -u \| wc -l` | 1,015 (0.12: 724) | — | — | — | **836** (−179) |
-| Cold start | `npm run bench -- --start` | not measured yet: it opens Glint's window five times, so it runs with the e2e checks, on the user's word | — | — | — | |
+| Cold start | `npm run bench -- --start` | not measured: it starts the release `Glint.exe`, which shares the installed copy's single-instance name, Run key and taskbar jump list, so it waits for 0.14 to be installed (or another PC) | — | — | — | |
 | Engine: list System32 (all) | `npm run bench` | 1.35 ms (warm) | — | — | — | 1.36 ms: the same (nothing in 0.14 lists folders differently; a cold first run gave 1.72, which wasn't 0.13.2's) |
 | Engine: index search & typo search | `npm run bench` | 8.1 / 27–36 ms | — | — | — | the same: both runs ask the installed 0.13.2 service, so the service's gains (the hover's counts, close matches, all cores) show once it updates. In its code: typo `kernal32` 13.6 → 6.2 ms over 3.35 million names |
 | Engine: copy 5000 small files (1 / 16) | `npm run bench -- --copy 5000` | 1,443–1,448 / 902–959 ms | — | — | — | 1,384–1,471 / 964–1,114 ms: within noise (two rounds each, turn about; 0.14 didn't touch copying) |
-| Frame spans (scroll, folder hover, zoom) | `GLINT_FRAME_LOG=1` | not measured yet (the app on screen: with the e2e checks) | — | — | — | per row, in tests: a size 552 → 38 ns, a row's dates 107 → 14 ns, read-ahead peeks 114 → 1 ns a frame; 20,000 rows sort in 2.94 ms, not 4.35 |
-| Idle CPU over 120 s (shown / tray) | `TotalProcessorTime` delta | not measured yet (the app running two minutes: with the e2e checks) | — | — | — | |
+| Frame spans (scroll, folder hover, zoom) | `GLINT_FRAME_LOG=1` | not measured (the release build on screen: see Cold start) | — | — | — | per row, in tests: a size 552 → 38 ns, a row's dates 107 → 14 ns, read-ahead peeks 114 → 1 ns a frame; 20,000 rows sort in 2.94 ms, not 4.35 |
+| Idle CPU over 120 s (shown / tray) | `TotalProcessorTime` delta | not measured (the release build running two minutes: see Cold start) | — | — | — | |
 
 ### Part A. Performance: Remaining Hot Paths, Index Service, & Startup
 
@@ -209,13 +209,14 @@ Each removal is an isolated commit (delete the code, its tests, its menu/palette
 5. **Part C (`C1`–`C6`)**: implement new features (`Ctrl+B` Flat View, clipboard hash verification, extracted-archive awareness, Paste as link, Drop Basket, Store data folder).
 6. **Final verification**: full M0 table, `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --check`, `npm run check-imports`, and `tests\e2e\run.ps1`.
 
-**Final verification (2026-11-18, master at `d613940`):**
+**Final verification (2026-11-18, master at `bd192bb`):**
 
-- `cargo test --workspace --no-fail-fast`: shadui-index 98, glint-core 335, glint-model 295, glint-ui 2,416, no failures (X-Ray's flaky test, which failed once in the run before, fixed in `70a9ff3`); `cargo clippy --workspace --all-targets -- -D warnings`: clean.
+- `cargo test --workspace --no-fail-fast`: shadui-index 98, glint-core 337, glint-model 295, glint-ui 2,416, no failures (X-Ray's flaky test, which failed once in the run before, fixed in `70a9ff3`); `cargo clippy --workspace --all-targets -- -D warnings`: clean.
 - `npm run check-imports`: Windows 10 has every import of the release `Glint.exe` and `shadui-index.exe`.
 - `npm run licenses -- --check`: current. `cargo deny check`: bans, licenses and sources ok; advisories report RUSTSEC-2026-0543, chrono unmaintained (no fixed version; glint-core, glint-model and the vendored GPUI use it), which is the maintainer's to ignore or move off before a release.
 - `cargo fmt --check` fails on master in files 0.14 didn't touch, as it did before; files that were clean are still clean.
-- Still to do, on the user's word: `tests\e2e\run.ps1` (it takes the mouse and keyboard, and the user's Glint must be closed), and with it M0's cold start, frame spans and idle CPU, which need the app on screen.
+- `tests\e2e\run.ps1`: 21 of 21, twice (the debug build at `bd192bb`), the user's own Glint files untouched. `command-bar` had failed on this PC, on the build from before 0.14 too: Paste found the clipboard held by another app (PowerToys' Advanced Paste reads it after every copy; `0bfa640` waits up to 1.2 s for it, off the UI thread), and the harness clicked where the dock's buttons had been a moment before (`bd192bb` waits for them to settle).
+- M0's cold start, frame spans and idle CPU weren't measured: they need the release `Glint.exe` running, and it shares the installed copy's single-instance name, Run key and taskbar jump list.
 
 ---
 
