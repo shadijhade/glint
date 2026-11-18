@@ -3,12 +3,12 @@
 *0.13.0 came out on 2026-11-16 ([its release](https://github.com/shadijhade/glint/releases/tag/v0.13.0)),
 0.13.1, a fix for its zoom, the same day ([its release](https://github.com/shadijhade/glint/releases/tag/v0.13.1)),
 and 0.13.2, updates that need nobody, that evening ([its release](https://github.com/shadijhade/glint/releases/tag/v0.13.2)).
-The next release is being got ready: what it has so far is under **In the next release**, and **Planned for 0.14** (audited 2026-11-18 from `5630c16`) was done the same day, every item of it: each says where (its commit on master), and the M0 table has the numbers.
+0.14.0 is the release of what's under **In 0.14.0** and of **Planned for 0.14** (audited 2026-11-18 from `5630c16`), done the same day, every item of it: each says where (its commit on master), and the M0 table has the numbers ([its release](https://github.com/shadijhade/glint/releases/tag/v0.14.0)).
 The plan for 0.12 that was here is in git history (`git show df1245a:NEXT_RELEASE.md`), the plans for 0.9 to 0.11
 before it (`git show 47c33fa:NEXT_RELEASE.md`), and 0.13's own plan, the menu and the dock that know the selection,
 is [docs/gpui/aware/PLAN.md](docs/gpui/aware/PLAN.md) with its task cards beside it.*
 
-## In the next release
+## In 0.14.0
 
 ### Back and Forward that remember
 
