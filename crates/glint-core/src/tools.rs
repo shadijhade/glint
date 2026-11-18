@@ -373,7 +373,7 @@ pub static TOOLS: &[Tool] = &[
             "91663c2f36c2a334b0e5e639006d8c29c29e013af0c477d80bb931df68870312",
             "duckdb.exe",
         ),
-        used_for: "SQL over CSV, JSON and Parquet files of any size, read where they are, data files queried together, their columns' profile, and converting them",
+        used_for: "SQL over CSV, JSON and Parquet files of any size, read where they are, and over SQLite databases and workbooks; data files queried together, their columns' profile, and converting them",
     },
     // The Windows build is Perl with ExifTool beside it: the program and its exiftool_files folder.
     // exiftool.org keeps only the newest version, so the pin points at SourceForge, which keeps them all.

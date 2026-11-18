@@ -530,12 +530,6 @@ fn parquet_preview(path: &str) -> Result<SheetPreview, String> {
     })
 }
 
-/// A Parquet file whole (up to `limit` rows), for SQL.
-pub(crate) fn load_parquet(path: &str, name: &str, limit: usize) -> Result<Loaded, String> {
-    let (columns, _, rows, _) = read_parquet(path, limit)?;
-    Ok(Loaded { name: name.into(), columns, rows, first: 1, header: false })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -609,14 +603,11 @@ mod tests {
         group.close().unwrap();
         writer.close().unwrap();
         let read = parquet_preview(path.to_str().unwrap()).unwrap();
-        let loaded = load_parquet(path.to_str().unwrap(), "data", 10).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(read.types, ["BYTE_ARRAY · String", "DOUBLE", "INT32 · Date"]);
         assert_eq!(read.table.columns.iter().map(|c| c.kind.as_str()).collect::<Vec<_>>(), ["text", "number", "text"]);
         assert_eq!(read.table.rows, [["a", "0", "2026-01-01"], ["b", "12.5", "2026-01-02"]]);
         assert_eq!((read.total_rows, read.table.truncated), (2, false));
-        assert_eq!(loaded.columns, ["name", "amount", "day"]);
-        assert_eq!(loaded.rows[1], [Cell::Text("b".into()), Cell::Float(12.5), Cell::Text("2026-01-02".into())]);
     }
 
     #[test]

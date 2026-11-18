@@ -85,7 +85,7 @@ pub fn first_rows(table: &str) -> String {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Tables {
     pub tables: Vec<String>,
-    /// Who answers: "DuckDB" or "SQLite".
+    /// Who answers: "DuckDB".
     pub engine: String,
     /// Loading the file took this long (0 when it was loaded already).
     pub load_ms: f64,
@@ -632,11 +632,7 @@ impl QueryView {
     /// The box, the Run button, the tables and the engine.
     fn header(&self, tables: &Tables, t: &theme::Tokens, cx: &mut Context<Self>) -> impl IntoElement {
         let mono = theme::mono_font(cx);
-        let engine_hint = if tables.engine == "DuckDB" {
-            t!("DuckDB reads the file where it is, however big")
-        } else {
-            t!("Loaded into SQLite in memory")
-        };
+        let engine_hint = t!("DuckDB runs the query, reading only");
         col()
             .flex_none()
             .gap(space(1.5))
@@ -808,11 +804,12 @@ impl Render for QueryView {
         let tables = match &self.load {
             Load::Waiting => return root.child(waiting("query-loading", t!("Loading it for SQL…"), &t)),
             Load::Failed(reason) => {
-                // A file too big for SQLite's memory is DuckDB's to read: the card offers it.
-                let card = if reason.contains("too big to load") {
+                // Every query is DuckDB's: without it the card offers it. (The SQLite extension that can't be
+                // fetched is another message, and no card.)
+                let card = if reason.contains("DuckDB isn't installed") {
                     self.tooling.card(
                         "duckdb",
-                        t!("DuckDB queries data files of any size where they are, without loading them. Install it and SQL works on this one."),
+                        t!("DuckDB answers SQL over data files of any size, databases and workbooks. Install it and Query works on this one."),
                         IconName::Database,
                         cx,
                     )
@@ -1896,7 +1893,7 @@ mod tests {
         );
         assert!(has(
             &mut visual,
-            "DuckDB. DuckDB reads the file where it is, however big"
+            "DuckDB. DuckDB runs the query, reading only"
         ));
         // Another table: its first rows, quoted because its name isn't a plain word.
         click(&mut visual, ("query-table", 1_usize));
@@ -1960,20 +1957,23 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn a_file_that_cannot_be_opened_is_told_so(cx: &mut TestAppContext) {
+    fn a_query_without_duckdb_is_told_so(cx: &mut TestAppContext) {
         let _guard = testing::lock();
         cx.update(testing::init);
         let mut value = Fake::new();
         if let Some(inner) = Arc::get_mut(&mut value) {
-            inner.tables = Err("The file is too big to load".into());
+            inner.tables = Err("DuckDB isn't installed. Settings → Tools installs it.".into());
         }
         let backend: Arc<dyn Backend> = value.clone();
         let (mut visual, view) = testing::open_window(cx, move |window, cx| {
             cx.new(|cx| QueryView::new(strings(&[r"C:\d\a.csv"]), None, backend, Tooling::with(&[]), window, cx))
         });
         // Loading shows first; then the reason, as an alert, and nothing was run.
-        settle(&mut visual, |cx| has(cx, "The file is too big to load"));
-        assert_eq!(role_of(&mut visual, "The file is too big to load"), Some(Role::Alert));
+        settle(&mut visual, |cx| has(cx, "DuckDB isn't installed. Settings → Tools installs it."));
+        assert_eq!(
+            role_of(&mut visual, "DuckDB isn't installed. Settings → Tools installs it."),
+            Some(Role::Alert)
+        );
         assert!(view.read_with(&visual, |q, _| q.tables().is_none()));
         assert!(value.queries().is_empty());
     }

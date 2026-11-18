@@ -1,12 +1,15 @@
-//! DuckDB (MIT, a tool Glint installs) for data files of any size: once it's there, Query reads CSV, TSV,
-//! JSON and Parquet files where they are, however big, instead of loading them into SQLite (sql.rs, which
-//! stops at 256 MB); several files are queried together, each a table named after it; Profile describes
-//! each column (DuckDB's SUMMARIZE); and Convert data writes CSV, Parquet (Zstandard) or JSON lines.
+//! DuckDB (MIT, a tool Glint installs) answers every SQL query: Query reads CSV, TSV, JSON and Parquet files where
+//! they are, however big; a SQLite database is attached read-only through DuckDB's `sqlite` extension; a workbook's
+//! sheets are read from copies Glint writes for the query (sql.rs); several files are queried together, each a table
+//! named after it; Profile describes each column (DuckDB's SUMMARIZE); and Convert data writes CSV, Parquet
+//! (Zstandard) or JSON lines.
 //!
-//! Reading only, as sql.rs: what's typed runs inside DuckDB's `query()`, which takes a single SELECT and
-//! nothing else, after the session has been locked down: no extensions downloaded or loaded, no files but
-//! the ones chosen (`allowed_paths`, then `enable_external_access = false`), and the configuration locked.
-//! The whole script is one `-c` argument, so none of the CLI's dot commands can run. Nothing is sent anywhere.
+//! Reading only: what's typed runs inside DuckDB's `query()`, which takes a single SELECT and nothing else, after
+//! the session has been locked down: no extensions downloaded or loaded, no files but the ones chosen
+//! (`allowed_paths`, then `enable_external_access = false`), and the configuration locked. The whole script is one
+//! `-c` argument, so none of the CLI's dot commands can run. Nothing of yours is sent anywhere. The one download
+//! besides the tool itself is DuckDB's own `sqlite` extension (a program from extensions.duckdb.org that DuckDB keeps
+//! in its own folder), fetched the first time a SQLite file is queried, on its own before any query runs.
 
 use crate::actions::{self, Job, Output, Progress, Report};
 use crate::data_lens::TableColumn;
@@ -28,11 +31,6 @@ static STOP: AtomicBool = AtomicBool::new(false);
 
 fn extension(path: &str) -> String {
     Path::new(path).extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default()
-}
-
-/// Whether DuckDB is there to read `path` (else sql.rs loads it).
-pub fn takes(path: &str) -> bool {
-    READS.contains(&extension(path).as_str()) && crate::tools::command("duckdb").is_ok()
 }
 
 /// A string as a SQL literal.
@@ -77,20 +75,59 @@ fn table_names(paths: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// What a query reads.
+pub(crate) enum Source {
+    /// Data files DuckDB reads itself, a table named after each (the first also `data`).
+    Files(Vec<String>),
+    /// A SQLite database, attached read-only through DuckDB's `sqlite` extension: its own tables.
+    Sqlite(String),
+    /// Tables DuckDB reads from CSV files Glint wrote for it (a workbook's sheets): each table's name and file.
+    Sheets(Vec<(String, String)>),
+}
+
+/// The part of a script that ends the session's freedom to reach anything: no extensions fetched, no files
+/// outside `allowed` (none at all once they are), and the configuration locked.
+fn lock_down(allowed: &[String]) -> String {
+    let allowed = allowed.iter().map(|p| literal(p)).collect::<Vec<_>>().join(", ");
+    format!("SET autoinstall_known_extensions = false; SET autoload_known_extensions = false; SET allowed_paths = [{allowed}]; SET enable_external_access = false; SET lock_configuration = true; ")
+}
+
+/// Locks the session down over `allowed`, then makes a view of each of `tables` (name and the expression that reads
+/// it), the first also `data` unless one is called that.
+fn views(allowed: &[String], tables: &[(String, String)]) -> String {
+    let mut out = lock_down(allowed);
+    for (name, from) in tables {
+        out.push_str(&format!("CREATE VIEW {} AS SELECT * FROM {}; ", ident(name), from));
+    }
+    if let Some((_, first)) = tables.first().filter(|_| !tables.iter().any(|(name, _)| name.eq_ignore_ascii_case("data"))) {
+        out.push_str(&format!("CREATE VIEW data AS SELECT * FROM {first}; "));
+    }
+    out
+}
+
+impl Source {
+    /// Everything a script does before the query itself: the session locked down and its tables set up.
+    fn setup(&self) -> String {
+        match self {
+            Source::Files(paths) => {
+                let tables: Vec<(String, String)> = table_names(paths).into_iter().zip(paths.iter().map(|p| reader(p))).collect();
+                views(paths, &tables)
+            }
+            // The extension is loaded and the file attached while the session may still reach them; what follows
+            // takes the reach away, and the attached database goes on being read.
+            Source::Sqlite(db) => format!("LOAD sqlite; ATTACH {} AS src (TYPE sqlite, READ_ONLY); USE src; {}", literal(db), lock_down(&[])),
+            Source::Sheets(sheets) => {
+                let tables: Vec<(String, String)> = sheets.iter().map(|(name, file)| (name.clone(), format!("read_csv({}, header = true)", literal(file)))).collect();
+                let files: Vec<String> = sheets.iter().map(|(_, file)| file.clone()).collect();
+                views(&files, &tables)
+            }
+        }
+    }
+}
+
 /// The locked-down session over `paths` (each a view by its table name, the first also `data`), then `body`.
 fn script(paths: &[String], body: &str) -> String {
-    let allowed = paths.iter().map(|p| literal(p)).collect::<Vec<_>>().join(", ");
-    let mut out = format!(
-        "SET autoinstall_known_extensions = false; SET autoload_known_extensions = false; SET allowed_paths = [{allowed}]; SET enable_external_access = false; SET lock_configuration = true; "
-    );
-    for (path, name) in paths.iter().zip(table_names(paths)) {
-        out.push_str(&format!("CREATE VIEW {} AS SELECT * FROM {}; ", ident(&name), reader(path)));
-    }
-    if let Some(first) = paths.first() {
-        out.push_str(&format!("CREATE VIEW data AS SELECT * FROM {}; ", reader(first)));
-    }
-    out.push_str(body);
-    out
+    format!("{}{body}", Source::Files(paths.to_vec()).setup())
 }
 
 fn duckdb() -> Result<Command, String> {
@@ -144,21 +181,80 @@ pub fn tables(paths: &[String]) -> SqlTables {
     SqlTables { tables, engine: "DuckDB", load_ms: 0.0 }
 }
 
-/// Runs `sql` (one SELECT) over `paths`: its columns, typed, and its first 1,000 rows.
-pub fn query(paths: &[String], sql: &str) -> Result<SqlAnswer, String> {
+/// DuckDB itself, or why it isn't there: "DuckDB isn't installed. Settings → Tools installs it."
+pub(crate) fn available() -> Result<(), String> {
+    duckdb().map(drop)
+}
+
+/// Makes sure DuckDB has its `sqlite` extension: it downloads it once, from extensions.duckdb.org, into its own
+/// folder, and later runs find it there without going online. Done on its own, before the query's session is
+/// locked, so that a failure to fetch it (offline, a proxy) is told as that and not as a SQL error.
+fn ensure_sqlite_extension() -> Result<(), String> {
+    static READY: AtomicBool = AtomicBool::new(false);
+    if READY.load(Ordering::Relaxed) {
+        return Ok(());
+    }
+    let mut command = duckdb()?;
+    command.arg("-c").arg("INSTALL sqlite; LOAD sqlite;");
+    actions::run_tool(command, "DuckDB", &AtomicBool::new(false), |_| {}).map_err(|said| sqlite_extension_failure(&said))?;
+    READY.store(true, Ordering::Relaxed);
+    Ok(())
+}
+
+/// What it says when the `sqlite` extension couldn't be had, with DuckDB's own words for why on a line of their own.
+fn sqlite_extension_failure(said: &str) -> String {
+    let why = plain(said).lines().find(|line| !line.trim().is_empty()).unwrap_or_default().trim().to_string();
+    format!(
+        "DuckDB reads SQLite files with its SQLite extension, which it downloads once from extensions.duckdb.org the first time. It couldn't be fetched: check that this PC is online and try again.\n{why}"
+    )
+}
+
+/// The tables of a SQLite database, tables first and then views, as DuckDB lists them.
+fn sqlite_tables(db: &str) -> Result<SqlTables, String> {
     let started = Instant::now();
+    ensure_sqlite_extension()?;
+    let body = "SELECT name FROM (SELECT table_name AS name, 0 AS k FROM duckdb_tables() WHERE database_name = 'src' UNION ALL SELECT view_name, 1 FROM duckdb_views() WHERE database_name = 'src' AND NOT internal) WHERE NOT starts_with(name, 'sqlite_') ORDER BY k, name;";
+    let results = run_script(&format!("{}{body}", Source::Sqlite(db.to_string()).setup()), &AtomicBool::new(false))?;
+    let tables = results.iter().filter_map(|v| v.as_array()).flatten().filter_map(|row| row["name"].as_str().map(str::to_string)).collect();
+    Ok(SqlTables { tables, engine: "DuckDB", load_ms: started.elapsed().as_secs_f64() * 1000.0 })
+}
+
+/// The tables there are to query in `source`.
+pub(crate) fn tables_of(source: &Source) -> Result<SqlTables, String> {
+    available()?;
+    match source {
+        Source::Files(paths) => Ok(tables(paths)),
+        Source::Sqlite(db) => sqlite_tables(db),
+        Source::Sheets(sheets) => Ok(SqlTables { tables: sheets.iter().map(|(name, _)| name.clone()).collect(), engine: "DuckDB", load_ms: 0.0 }),
+    }
+}
+
+/// Runs `sql` (one SELECT) over `source`: its columns, typed, and its first 1,000 rows. `stop` ends it ("cancelled").
+pub(crate) fn query_over(source: &Source, sql: &str, stop: &AtomicBool) -> Result<SqlAnswer, String> {
+    let started = Instant::now();
+    available()?;
+    if matches!(source, Source::Sqlite(_)) {
+        ensure_sqlite_extension()?;
+    }
     let inner = literal(sql.trim().trim_end_matches(';'));
     let body = format!("DESCRIBE SELECT * FROM query({inner}); SELECT * FROM query({inner}) LIMIT {};", MAX_BACK + 1);
-    let results = run_script(&script(paths, &body), &AtomicBool::new(false))?;
-    let described = results.first().and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let results = run_script(&format!("{}{body}", source.setup()), stop)?;
+    // The description is the first result that describes columns; the rows (if the CLI prints any) follow it.
+    let at = results.iter().position(|v| v.as_array().is_some_and(|rows| rows.first().is_some_and(|row| row.get("column_name").is_some() && row.get("column_type").is_some())));
+    let described = at.and_then(|at| results[at].as_array()).cloned().unwrap_or_default();
     let columns: Vec<TableColumn> = described
         .iter()
         .map(|c| TableColumn { name: c["column_name"].as_str().unwrap_or_default().to_string(), kind: kind(c["column_type"].as_str().unwrap_or_default()).to_string() })
         .collect();
-    let rows_json = results.get(1).and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let rows_json = at.and_then(|at| results.get(at + 1)).and_then(|v| v.as_array()).cloned().unwrap_or_default();
     let truncated = rows_json.len() > MAX_BACK;
     let rows = rows_json.iter().take(MAX_BACK).map(|row| columns.iter().map(|c| cell(&row[&c.name])).collect()).collect();
     Ok(SqlAnswer { engine: "DuckDB", columns, rows, truncated, elapsed_ms: started.elapsed().as_secs_f64() * 1000.0, load_ms: 0.0 })
+}
+
+/// Runs `sql` (one SELECT) over `paths`: its columns, typed, and its first 1,000 rows.
+pub fn query(paths: &[String], sql: &str) -> Result<SqlAnswer, String> {
+    query_over(&Source::Files(paths.to_vec()), sql, &AtomicBool::new(false))
 }
 
 pub async fn duck_tables(paths: Vec<String>) -> Result<SqlTables, String> {
@@ -307,6 +403,39 @@ mod tests {
         assert!(s.contains(r#"CREATE VIEW "it_s" AS SELECT * FROM read_parquet('C:\data\it''s.parquet');"#), "{s}");
         assert!(s.contains("allowed_paths = ['C:\\data\\sales 2024.csv', 'C:\\data\\it''s.parquet']"), "{s}");
         assert!(s.ends_with("SELECT 1;"));
+    }
+
+    #[test]
+    fn a_sqlite_file_is_attached_read_only_before_the_session_is_locked() {
+        let s = format!("{}SELECT 1;", Source::Sqlite(r"C:\my data\it's.db".into()).setup());
+        let (load, attach, lock) = (s.find("LOAD sqlite;").unwrap(), s.find("ATTACH ").unwrap(), s.find("lock_configuration = true").unwrap());
+        assert!(load < attach && attach < lock, "{s}");
+        assert!(s.contains(r"ATTACH 'C:\my data\it''s.db' AS src (TYPE sqlite, READ_ONLY); USE src;"), "{s}");
+        assert!(!s.contains("INSTALL"), "nothing is downloaded once a query's session starts: {s}");
+        assert!(s.contains("enable_external_access = false") && s.contains("autoinstall_known_extensions = false"), "{s}");
+        assert!(s.ends_with("SELECT 1;"));
+    }
+
+    #[test]
+    fn a_workbooks_sheets_are_tables_named_for_them_and_the_first_is_data() {
+        let sheets = vec![("Sales 2024".to_string(), r"C:\t\sheet-0.csv".to_string()), ("Notes".to_string(), r"C:\t\sheet-1.csv".to_string())];
+        let s = Source::Sheets(sheets).setup();
+        assert!(s.contains(r#"CREATE VIEW "Sales 2024" AS SELECT * FROM read_csv('C:\t\sheet-0.csv', header = true);"#), "{s}");
+        assert!(s.contains(r#"CREATE VIEW "Notes" AS SELECT * FROM read_csv('C:\t\sheet-1.csv', header = true);"#), "{s}");
+        assert!(s.contains("CREATE VIEW data AS SELECT * FROM read_csv('C:\\t\\sheet-0.csv', header = true);"), "{s}");
+        assert!(s.contains(r"allowed_paths = ['C:\t\sheet-0.csv', 'C:\t\sheet-1.csv']"), "{s}");
+        // A sheet called data is `data` itself.
+        let own = Source::Sheets(vec![("Data".to_string(), r"C:\t\sheet-0.csv".to_string())]).setup();
+        assert_eq!(own.matches("CREATE VIEW").count(), 1, "{own}");
+    }
+
+    #[test]
+    fn a_sqlite_extension_that_cannot_be_fetched_is_told_as_that() {
+        let said = sqlite_extension_failure("IO Error: Failed to download extension \"sqlite_scanner\" at URL \"http://extensions.duckdb.org/v2.0.0/windows_amd64/sqlite_scanner.duckdb_extension.gz\"
+(HTTP error 0)");
+        assert!(said.starts_with("DuckDB reads SQLite files with its SQLite extension, which it downloads once from extensions.duckdb.org"), "{said}");
+        assert!(said.contains("check that this PC is online"), "{said}");
+        assert!(said.lines().nth(1).is_some_and(|why| why.starts_with("IO Error: Failed to download extension")), "{said}");
     }
 
     #[test]
