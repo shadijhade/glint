@@ -208,9 +208,12 @@ fn view_in(folder: &str, repo: Option<gix::Repository>, trusted: &[String], forc
         view.upstream = Some(upstream.shorten().to_string().trim_start_matches("remotes/").to_string());
         let theirs = repo.find_reference(upstream.as_ref()).ok().and_then(|mut r| r.peel_to_id().ok()).map(|id| id.detach());
         if let (Some(ours), Some(theirs)) = (head, theirs) {
-            let count = |tip: gix::ObjectId, hidden: gix::ObjectId| repo.rev_walk([tip]).with_hidden([hidden]).all().map_or(0, |walk| walk.take(MAX_WALK).filter(Result::is_ok).count() as u32);
-            view.ahead = count(ours, theirs);
-            view.behind = count(theirs, ours);
+            // On the same commit as its upstream (a synced branch) there is nothing to walk.
+            if ours != theirs {
+                let count = |tip: gix::ObjectId, hidden: gix::ObjectId| repo.rev_walk([tip]).with_hidden([hidden]).all().map_or(0, |walk| walk.take(MAX_WALK).filter(Result::is_ok).count() as u32);
+                view.ahead = count(ours, theirs);
+                view.behind = count(theirs, ours);
+            }
         }
     }
 
@@ -758,6 +761,20 @@ mod tests {
         clone.git(&["fetch", "-q"]).unwrap();
         let view = view(&clone.at(""), &[], false, Arc::new(AtomicBool::new(false))).unwrap().unwrap();
         assert_eq!((view.upstream.as_deref(), view.ahead, view.behind), (Some("origin/main"), 2, 1));
+    }
+
+    #[test]
+    fn a_branch_level_with_its_upstream_is_neither_ahead_nor_behind() {
+        let Some(upstream) = Repo::new("level-upstream") else { return };
+        upstream.put("a.txt", "1
+");
+        upstream.git(&["add", "."]).unwrap();
+        upstream.git(&["commit", "-q", "-m", "1"]).unwrap();
+        let Some(clone) = Repo::new("level-clone") else { return };
+        fs::remove_dir_all(&clone.0).unwrap();
+        Command::new("git").args(["clone", "-q"]).arg(&upstream.0).arg(&clone.0).output().unwrap();
+        let view = view(&clone.at(""), &[], false, Arc::new(AtomicBool::new(false))).unwrap().unwrap();
+        assert_eq!((view.upstream.as_deref(), view.ahead, view.behind), (Some("origin/main"), 0, 0));
     }
 
     #[test]

@@ -26,6 +26,17 @@ fn wanted(lane: Lane) -> usize {
     }
 }
 
+thread_local! {
+    /// Set on a lane's own threads once they are in COM's multithreaded apartment.
+    static IN_MTA: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether the calling thread is one of the lanes' own, already in COM's multithreaded apartment: where
+/// Windows' asynchronous calls may be waited on directly, without a thread of their own for the wait.
+pub fn in_mta() -> bool {
+    IN_MTA.with(|flag| flag.get())
+}
+
 /// What a lane's thread does first: COM (shortcuts and the PDF reader need it), and for the quiet lane the
 /// efficiency mode and background priority. Older Windows may refuse either: the answers are ignored.
 #[cfg(windows)]
@@ -37,9 +48,8 @@ fn begin_thread(lane: Lane) {
     };
 
     // SAFETY: plain COM initialisation of the calling thread, which is rayon's own.
-    unsafe {
-        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-    }
+    let initialised = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
+    IN_MTA.with(|flag| flag.set(initialised));
     if lane == Lane::Quiet {
         // SAFETY: the handle is this thread's own pseudo-handle, and the struct outlives the call.
         unsafe {
@@ -142,6 +152,16 @@ mod tests {
             spawn(lane, move || flag.store(true, Ordering::SeqCst));
             assert!(wait_for(&done), "{lane:?} never ran its job");
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_lanes_threads_are_in_the_multithreaded_apartment_and_others_are_not() {
+        assert!(!in_mta());
+        for lane in [Lane::Quiet, Lane::Now] {
+            assert!(install(lane, in_mta), "{lane:?}'s thread isn't in the MTA");
+        }
+        assert!(!std::thread::spawn(in_mta).join().unwrap());
     }
 
     #[test]
