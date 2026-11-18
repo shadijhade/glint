@@ -322,6 +322,7 @@ Add-Check 'command-bar' 'the command bar buttons work: New folder, Copy and Past
     Assert-Eventually { (Get-Button 'Copy (Ctrl+C)').Current.IsEnabled } 'Copy is enabled with a file selected'
     Click-Button 'Copy (Ctrl+C)'
     Assert-Eventually { @([GlintE2E.ClipboardBackup]::FilesNow() | Where-Object { $_ -like '*\alpha.txt' }).Count -eq 1 } 'Copy put the file on the real clipboard'
+    Wait-ButtonSettled 'Paste (Ctrl+V)'
     Click-Button 'Paste (Ctrl+V)'
     Assert-Eventually { Test-Path -LiteralPath (Get-ArenaPath 'alpha - Copy.txt') } 'Paste made the copy beside the original' 10
     Assert-Eventually { Test-RowsShown @('alpha - Copy.txt') } 'the list shows the copy'

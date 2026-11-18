@@ -227,11 +227,36 @@ function Clear-Toasts {
     }
 }
 
-# Clicks a button of the window by its accessible name (a `*` in the name matches anything), after clearing any toast.
+# Clicks a button of the window by its accessible name (a `*` in the name matches anything), after clearing any toast,
+# once it has stopped moving: the dock lays itself out again as the selection and the clipboard change, and a click
+# aimed from where a button was a moment before lands beside it.
 function Click-Button {
     param([string]$Name)
     Clear-Toasts
+    Wait-ButtonSettled $Name -StillMs 250 -Seconds 3
     $b = Get-Button $Name
     if (-not $b) { throw "no button '$Name' on screen" }
     Invoke-Click $b
+}
+
+# Waits until a button has stayed where it is for $StillMs (at most $Seconds). The dock's Paste grows into "Paste 1 file"
+# once the app sees files on the clipboard, which it looks for every 700 ms, and the dock moves round it: a click aimed
+# from where Paste was before that lands beside it.
+function Wait-ButtonSettled {
+    param([string]$Name, [int]$StillMs = 900, [int]$Seconds = 5)
+    $deadline = (Get-Date).AddSeconds($Seconds)
+    $last = $null
+    $since = Get-Date
+    while ((Get-Date) -lt $deadline) {
+        $b = Get-Button $Name
+        $now = if ($b) { $r = Get-Rect $b; "$($r.L),$($r.T),$($r.W),$($r.H)" } else { '' }
+        if ($now -ne $last) {
+            $last = $now
+            $since = Get-Date
+        }
+        elseif (((Get-Date) - $since).TotalMilliseconds -ge $StillMs) {
+            return
+        }
+        Start-Sleep -Milliseconds 100
+    }
 }
