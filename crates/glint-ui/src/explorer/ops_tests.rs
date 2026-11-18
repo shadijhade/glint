@@ -325,6 +325,9 @@ fn pasting_with_no_files_makes_a_file_of_the_picture_or_text_and_starts_renaming
         h.next_undo(cx).map(|(_, l)| l).as_deref(),
         Some("paste of “Pasted text 2026-11-10.txt”")
     );
+    // Ctrl+Z takes the pasted file out again (it goes to the Recycle Bin).
+    h.task(cx, |e, cx| e.undo(None, cx));
+    assert!(h.disk.names("C:\\c").is_empty());
 
     // Into a folder that isn't the one shown, it is said instead.
     h.disk.set_paste_file(Some("Pasted image.png"));

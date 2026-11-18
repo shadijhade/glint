@@ -35,9 +35,9 @@ fn paste_says_how_many_files_it_would_paste_or_move() {
 }
 
 #[test]
-fn a_picture_text_or_nothing_on_the_clipboard_has_no_paste_words() {
+fn a_picture_says_paste_picture_and_text_or_nothing_has_no_paste_words() {
     let _guard = testing::lock();
-    assert!(smart::paste_words(&Clip::Picture).is_none());
+    assert_eq!(smart::paste_words(&Clip::Picture).as_deref(), Some("Paste picture"));
     assert!(smart::paste_words(&Clip::Text).is_none());
     assert!(smart::paste_words(&Clip::Empty).is_none());
 }
@@ -70,7 +70,8 @@ fn the_paste_tooltip_names_the_files_and_where_they_are_from() {
         "Paste (Ctrl+V): a.txt, from C:\\"
     );
     assert_eq!(tip(&Clip::Empty), "Paste (Ctrl+V)");
-    assert_eq!(tip(&Clip::Text), "Paste (Ctrl+V)");
+    assert_eq!(tip(&Clip::Text), "Paste text as a new .txt file (Ctrl+V)");
+    assert_eq!(tip(&Clip::Picture), "Paste picture as a new PNG file (Ctrl+V)");
 }
 
 // ---- The rig -----------------------------------------------------------------------------------------------
