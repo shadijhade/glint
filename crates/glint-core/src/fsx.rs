@@ -477,11 +477,8 @@ pub fn sort_entries(entries: &mut Vec<Entry>) {
                 natural_key_into(&e.name.to_lowercase(), &mut keys);
             }
             let key = &keys[start..];
-            let mut bytes = [0u8; 32];
-            bytes[..key.len().min(32)].copy_from_slice(&key[..key.len().min(32)]);
-            let word = |n: usize| u64::from_be_bytes(bytes[n * 8..n * 8 + 8].try_into().unwrap_or_default());
             let index = (block * BLOCK + i) as u32;
-            items.push(Item { head: [word(0), word(1), word(2), word(3)], block: block as u32, start: start as u32, end: keys.len() as u32, index, dir: e.dir });
+            items.push(Item { head: head(key), block: block as u32, start: start as u32, end: keys.len() as u32, index, dir: e.dir });
         }
         (keys, items)
     };
@@ -515,38 +512,8 @@ pub fn sort_entries(entries: &mut Vec<Entry>) {
     entries.extend(items.iter().filter_map(|item| slots[item.index as usize].take()));
 }
 
-/// A key whose plain byte order is natural order, so sorting compares keys with memcmp instead of
-/// parsing numbers on every comparison: each digit run becomes '0', its length, then its digits
-/// without leading zeros. Since digits are the only bytes from '0' to '9', a run still sorts against
-/// other characters exactly where a digit would. Same order as `natural_cmp`. `lower` is lowercase;
-/// ASCII letters are lowercased here too, so an ASCII name needn't be copied first.
-pub(crate) fn natural_key(lower: &str) -> Vec<u8> {
-    let mut key = Vec::with_capacity(lower.len() + 4);
-    natural_key_into(lower, &mut key);
-    key
-}
-
-/// `natural_key`, added to the end of `key`: what's between digit runs lowercased in one go (a loop the
-/// compiler vectorizes), not a byte at a time.
-fn natural_key_into(lower: &str, key: &mut Vec<u8>) {
-    let bytes = lower.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        let run = bytes[i..].iter().position(u8::is_ascii_digit).map_or(bytes.len(), |p| i + p);
-        key.extend(bytes[i..run].iter().map(u8::to_ascii_lowercase));
-        i = run;
-        if i < bytes.len() {
-            let start = i;
-            while i < bytes.len() && bytes[i].is_ascii_digit() {
-                i += 1;
-            }
-            let digits = trim_zeros(&bytes[start..i]);
-            key.push(b'0');
-            key.push(digits.len().min(255) as u8);
-            key.extend_from_slice(digits);
-        }
-    }
-}
+pub(crate) use glint_model::natural::natural_key;
+use glint_model::natural::{head, natural_key_into};
 
 /// Compares strings with digit runs compared as numbers. Byte order elsewhere is code point order.
 #[cfg(test)]
@@ -578,6 +545,7 @@ fn natural_cmp(a: &str, b: &str) -> Ordering {
     (a.len() - i).cmp(&(b.len() - j))
 }
 
+#[cfg(test)]
 fn trim_zeros(digits: &[u8]) -> &[u8] {
     let start = digits.iter().position(|&d| d != b'0').unwrap_or(digits.len());
     &digits[start..]
