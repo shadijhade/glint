@@ -259,10 +259,25 @@ pub struct FileName {
     pub name: String,
 }
 
+/// Reads a $FILE_NAME value. None for a DOS 8.3 alias (the index keeps the long name beside it) and for a value too
+/// short for the name it claims. The alias is told apart before anything is decoded: a drive has millions of them
+/// and each used to cost two heap allocations to be thrown away.
 pub fn file_name(value: &[u8]) -> Option<FileName> {
+    if value.get(0x41) == Some(&NAMESPACE_DOS) {
+        return None;
+    }
     let len = *value.get(0x40)? as usize;
-    let units: Vec<u16> = value.get(0x42..0x42 + 2 * len)?.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect();
-    Some(FileName { parent: u64_at(value, 0)?, namespace: value[0x41], name: String::from_utf16_lossy(&units) })
+    let namespace = *value.get(0x41)?;
+    let raw = value.get(0x42..0x42 + 2 * len)?;
+    // A name is at most 255 UTF-16 units, so a stack buffer always holds it.
+    let mut units = [0u16; 255];
+    for (unit, pair) in units.iter_mut().zip(raw.as_chunks::<2>().0) {
+        *unit = u16::from_le_bytes(*pair);
+    }
+    // One allocation, sized for an all-ASCII name (the usual one); unpaired surrogates become U+FFFD.
+    let mut name = String::with_capacity(len);
+    name.extend(char::decode_utf16(units[..len].iter().copied()).map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER)));
+    Some(FileName { parent: u64_at(value, 0)?, namespace, name })
 }
 
 /// Where a non-resident attribute list's bytes are, when they don't fit in the base record.
@@ -309,7 +324,7 @@ pub fn parse(record: &mut [u8], strict: bool) -> Option<Parsed> {
                 parsed.attrs = u32_at(value, 0x20).unwrap_or(0) & !INTERNAL_ATTRIBUTES;
             }
             (ATTR_FILE_NAME, Body::Resident(value)) => {
-                if let Some(name) = file_name(value).filter(|n| n.namespace != NAMESPACE_DOS) {
+                if let Some(name) = file_name(value) {
                     parsed.names.push(name);
                 }
             }
@@ -499,6 +514,81 @@ pub(crate) mod tests {
         assert_eq!(names, [(5 | 5 << 48, "Long file name.txt"), (40 | 2 << 48, "a much longer hard link name.txt")]);
     }
 
+    /// Counts this thread's heap allocations, so a test can say a path allocates nothing.
+    struct Counting;
+    thread_local! { static ALLOCATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+    // SAFETY: every call is forwarded unchanged to the system allocator; only a thread-local counter is added.
+    unsafe impl std::alloc::GlobalAlloc for Counting {
+        unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+            let _ = ALLOCATIONS.try_with(|n| n.set(n.get() + 1));
+            unsafe { std::alloc::System.alloc(layout) }
+        }
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
+            unsafe { std::alloc::System.dealloc(ptr, layout) }
+        }
+    }
+    #[global_allocator]
+    static COUNTING: Counting = Counting;
+
+    fn allocations_during<T>(work: impl FnOnce() -> T) -> (T, usize) {
+        let before = ALLOCATIONS.with(|n| n.get());
+        let result = work();
+        (result, ALLOCATIONS.with(|n| n.get()) - before)
+    }
+
+    fn name_value(namespace: u8, name: &str) -> Vec<u8> {
+        let units: Vec<u16> = name.encode_utf16().collect();
+        let mut value = vec![0u8; 0x42 + 2 * units.len()];
+        value[0..8].copy_from_slice(&(5u64 | 5 << 48).to_le_bytes());
+        value[0x40] = units.len() as u8;
+        value[0x41] = namespace;
+        for (i, u) in units.iter().enumerate() {
+            value[0x42 + 2 * i..0x44 + 2 * i].copy_from_slice(&u.to_le_bytes());
+        }
+        value
+    }
+
+    #[test]
+    fn a_dos_alias_is_skipped_without_touching_the_heap() {
+        let alias = name_value(NAMESPACE_DOS, "LONGFI~1.TXT");
+        assert_eq!(allocations_during(|| file_name(&alias)), (None, 0));
+        // Even one whose length byte lies about the value is dropped first, not read.
+        let mut lying = alias.clone();
+        lying[0x40] = 255;
+        assert_eq!(allocations_during(|| file_name(&lying)), (None, 0));
+        // A kept name costs only its own String.
+        let long = name_value(NAMESPACE_WIN32, "Long file name.txt");
+        let (kept, allocations) = allocations_during(|| file_name(&long));
+        assert_eq!(kept.unwrap().name, "Long file name.txt");
+        assert_eq!(allocations, 1);
+    }
+
+    #[test]
+    fn names_from_a_damaged_disk_never_panic() {
+        let full = "é".repeat(255);
+        assert_eq!(file_name(&name_value(NAMESPACE_WIN32, &full)).unwrap().name, full);
+        let value = name_value(NAMESPACE_WIN32, "abc");
+        // Every cut of the value, with every length byte over each cut, answers without panicking.
+        for cut in 0..value.len() {
+            for len in [0u8, 1, 3, 4, 254, 255] {
+                let mut part = value[..cut].to_vec();
+                if part.len() > 0x40 {
+                    part[0x40] = len;
+                }
+                let _ = file_name(&part);
+            }
+        }
+        assert_eq!(file_name(&value[..0x41]), None);
+        assert_eq!(file_name(&value[..0x42]), None);
+        let mut short = value.clone();
+        short[0x40] = 4;
+        assert_eq!(file_name(&short), None);
+        // Unpaired surrogates become U+FFFD instead of failing.
+        let mut broken = name_value(NAMESPACE_WIN32, "ab");
+        broken[0x42..0x44].copy_from_slice(&0xD800u16.to_le_bytes());
+        assert_eq!(file_name(&broken).unwrap().name, "\u{FFFD}b");
+    }
+
     #[test]
     fn non_resident_sizes_come_from_the_first_extent() {
         let runs = [0x21, 0x10, 0x00, 0x01, 0x00];
@@ -589,5 +679,35 @@ pub(crate) mod tests {
         assert_eq!(parse_boot_sector(&boot).unwrap().bytes_per_cluster, 2 << 20);
         boot[3] = b'X';
         assert!(parse_boot_sector(&boot).is_err());
+    }
+
+    /// Speed of parsing many records the way a drive scan does: each has a long name and its DOS alias.
+    /// Run with `cargo test -p shadui-index --release --lib record::tests::parsing_many_records -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "a speed measurement, not a check"]
+    fn parsing_many_records_costs_little() {
+        let template: Vec<Vec<u8>> = (0..64u64)
+            .map(|i| {
+                RecordBuilder::new(1024, 1, RECORD_IN_USE, 0)
+                    .std_info(133_000_000_000_000_000, 0x20)
+                    .file_name(5 | 5 << 48, NAMESPACE_WIN32, &format!("A fairly long file name number {i}.txt"))
+                    .file_name(5 | 5 << 48, NAMESPACE_DOS, &format!("AFAIRL~{i}.TXT"))
+                    .data(b"hello")
+                    .build()
+            })
+            .collect();
+        const RECORDS: usize = 300_000;
+        let mut best = std::time::Duration::MAX;
+        for _ in 0..5 {
+            let start = std::time::Instant::now();
+            let mut names = 0;
+            for i in 0..RECORDS {
+                let mut record = template[i % template.len()].clone();
+                names += parse(&mut record, true).unwrap().names.len();
+            }
+            assert_eq!(names, RECORDS);
+            best = best.min(start.elapsed());
+        }
+        println!("parse of {RECORDS} records (one kept name, one DOS alias each): {best:?}, {:.0} ns each", best.as_nanos() as f64 / RECORDS as f64);
     }
 }
