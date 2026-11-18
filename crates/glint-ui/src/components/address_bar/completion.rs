@@ -24,12 +24,20 @@ pub(super) struct Typed {
     pub prefix: String,
 }
 
-/// Splits typed text into the folder to list and the name being typed (the `useMemo` on `text`).
+/// Splits typed text into the folder to list and the name being typed (the `useMemo` on `text`). A start of `~`
+/// (the profile folder) or `%NAME%` (an environment variable) is read as the folder it stands for.
 pub(super) fn split_typed(text: &str) -> Typed {
+    split_expanded(text, &|name| std::env::var(name).ok())
+}
+
+/// [`split_typed`], with the environment (and so the profile folder, `USERPROFILE`) given.
+fn split_expanded(text: &str, env: &dyn Fn(&str) -> Option<String>) -> Typed {
     let raw = text.trim_matches(is_js_space);
     if raw.is_empty() || raw.eq_ignore_ascii_case("this pc") {
         return Typed::default();
     }
+    let expanded = expand_start(raw, env);
+    let raw = expanded.as_deref().unwrap_or(raw);
     match raw.rfind(['\\', '/']) {
         // The separators are one byte, so the cut falls on a character boundary.
         Some(at) => Typed {
@@ -41,6 +49,34 @@ pub(super) fn split_typed(text: &str) -> Typed {
             prefix: raw.to_lowercase(),
         },
     }
+}
+
+/// `raw` with a leading `~` or `%NAME%` replaced by what it stands for, or `None` when it starts with neither,
+/// or the name is unknown or empty (it stays as typed: nothing is guessed). The folder alone ("~", "%APPDATA%")
+/// counts as that folder followed by a separator, so what it holds is listed.
+fn expand_start(raw: &str, env: &dyn Fn(&str) -> Option<String>) -> Option<String> {
+    let (value, rest) = if let Some(rest) = raw.strip_prefix('~') {
+        // "~" or "~\…" ("~name" is a name that happens to start with a tilde).
+        (env("USERPROFILE")?, rest)
+    } else {
+        let inner = raw.strip_prefix('%')?;
+        let end = inner.find('%')?;
+        let name = &inner[..end];
+        if name.is_empty() {
+            return None;
+        }
+        (env(name)?, &inner[end + 1..])
+    };
+    // The variable's folder, then a separator or nothing; "%NAME%x" is not that folder.
+    if !(rest.is_empty() || rest.starts_with(['\\', '/'])) {
+        return None;
+    }
+    let value = value.trim_end_matches(['\\', '/']);
+    if value.is_empty() {
+        return None;
+    }
+    let rest = if rest.is_empty() { "\\" } else { rest };
+    Some(format!("{value}{rest}"))
 }
 
 /// Whether `dir` is a place a listing makes sense for: "C:\…" or "\\server\share…". Anything else (a bare
@@ -259,6 +295,42 @@ mod tests {
         // Arabic names lower-case as Unicode, and the cut is on the separator.
         let t = split_typed("C:\\ملفات\\التق");
         assert_eq!((t.parent_dir.as_str(), t.prefix.as_str()), ("C:\\ملفات\\", "التق"));
+    }
+
+    #[test]
+    fn a_leading_tilde_or_variable_stands_for_its_folder_and_an_unknown_one_stays_as_typed() {
+        let env = |name: &str| match name.to_ascii_uppercase().as_str() {
+            "USERPROFILE" => Some("C:\\Users\\me".to_string()),
+            "APPDATA" => Some("C:\\Users\\me\\AppData\\Roaming\\".to_string()),
+            "EMPTY" => Some(String::new()),
+            _ => None,
+        };
+        let split = |text: &str| {
+            let t = split_expanded(text, &env);
+            (t.parent_dir, t.prefix)
+        };
+        let want = |dir: &str, prefix: &str| (dir.to_string(), prefix.to_string());
+        assert_eq!(split("~\\Doc"), want("C:\\Users\\me\\", "doc"));
+        assert_eq!(split("~/Documents/Re"), want("C:\\Users\\me/Documents/", "re"));
+        // The tilde alone lists the profile folder.
+        assert_eq!(split("~"), want("C:\\Users\\me\\", ""));
+        assert_eq!(split("%USERPROFILE%\\Down"), want("C:\\Users\\me\\", "down"));
+        // Variable names are not case sensitive, and a closing separator in the value isn't doubled.
+        assert_eq!(
+            split("%appdata%\\Mic"),
+            want("C:\\Users\\me\\AppData\\Roaming\\", "mic")
+        );
+        assert_eq!(split("%APPDATA%"), want("C:\\Users\\me\\AppData\\Roaming\\", ""));
+        // Not expanded: an unknown or empty variable, a name that only starts with a tilde, a percent that
+        // doesn't close, a variable that goes on into a name, a tilde that isn't first.
+        assert_eq!(split("%NOPE%\\x"), want("%NOPE%\\", "x"));
+        assert_eq!(split("%EMPTY%\\x"), want("%EMPTY%\\", "x"));
+        assert_eq!(split("~backup\\x"), want("~backup\\", "x"));
+        assert_eq!(split("%USERPROFILE\\x"), want("%USERPROFILE\\", "x"));
+        assert_eq!(split("%USERPROFILE%x"), want("", "%userprofile%x"));
+        assert_eq!(split("C:\\~\\x"), want("C:\\~\\", "x"));
+        // With no profile folder known the tilde stays too.
+        assert_eq!(split_expanded("~\\a", &|_| None).parent_dir, "~\\");
     }
 
     #[test]

@@ -78,7 +78,39 @@ fn rig(cx: &mut TestAppContext, rtl: bool, width: f32, start: &str) -> Rig {
 
 /// [`rig`], with a fake Git behind the Git model when given (made before the bar, as start-up does).
 fn rig_with(cx: &mut TestAppContext, rtl: bool, width: f32, start: &str, git: Option<&FakeGit>) -> Rig {
+    rig_full(cx, rtl, width, start, git, None)
+}
+
+/// [`rig`], with these searches (query, folder) among the recent ones, newest first, in a state file of its own.
+fn rig_with_history(cx: &mut TestAppContext, start: &str, history: &[(&str, &str)]) -> Rig {
+    rig_full(cx, false, 900., start, None, Some(history))
+}
+
+fn rig_full(
+    cx: &mut TestAppContext,
+    rtl: bool,
+    width: f32,
+    start: &str,
+    git: Option<&FakeGit>,
+    history: Option<&[(&str, &str)]>,
+) -> Rig {
     cx.update(testing::init);
+    if let Some(history) = history {
+        static STATES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "glint-bar-hints-{}-{}",
+            std::process::id(),
+            STATES.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        cx.update(|cx| {
+            crate::persistence::init_at(cx, dir.join("state.json"));
+            // Oldest first, so the newest ends up on top.
+            for (at, (query, folder)) in history.iter().rev().enumerate() {
+                crate::persistence::update_app(cx, |app| app.add_to_history(query, folder, at as i64 + 1));
+            }
+        });
+    }
     // After init, which starts every test in English.
     testing::set_rtl(rtl);
     let disk = disk();
@@ -1141,4 +1173,152 @@ fn a_search_as_typed_waits_less_the_more_there_is_to_go_on() {
     assert_eq!(as_typed_after("report 2026"), Duration::from_millis(20));
     // Letters, not bytes.
     assert_eq!(as_typed_after("تق"), Duration::from_millis(60));
+}
+
+// ---- The empty search box's hints: the keys, the recent searches and their ×
+
+/// The hint rows the screen reader is told are current, by their labels.
+fn current_hints(rig: &mut Rig) -> Vec<String> {
+    rig.visual.update(|window, cx| {
+        window.render_frame(cx);
+        let mut found = Vec::new();
+        for i in 0..8_usize {
+            if let Some(item) = window.try_find(("address-recent", i)) {
+                if item.selected() == Some(true) {
+                    found.push(item.label().unwrap_or_default().to_string());
+                }
+            }
+        }
+        for i in 0..20_usize {
+            if let Some(item) = window.try_find(("address-offer", i)) {
+                if item.selected() == Some(true) {
+                    found.push(item.label().unwrap_or_default().to_string());
+                }
+            }
+        }
+        found
+    })
+}
+
+fn saved_history(rig: &mut Rig) -> Vec<String> {
+    rig.visual.update(|_, cx| {
+        crate::persistence::app(cx)
+            .map(|app| app.history.iter().map(|h| h.query.clone()).collect())
+            .unwrap_or_default()
+    })
+}
+
+fn searches() -> [(&'static str, &'static str); 3] {
+    [
+        ("invoice", "C:\\Users"),
+        ("holiday", "C:\\Users\\me"),
+        ("zip", "C:\\Users"),
+    ]
+}
+
+#[gpui_kit::test]
+fn the_arrows_step_through_the_recent_searches_then_the_filters_and_enter_takes_one(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut rig = rig_with_history(cx, "C:\\Users", &searches());
+    rig.focus_search();
+    assert!(rig.has("Search filters"));
+    assert!(
+        current_hints(&mut rig).is_empty(),
+        "nothing is current until an arrow is pressed"
+    );
+
+    // Down: the first recent search, then the next ones, then the filters.
+    rig.press("down");
+    assert_eq!(current_hints(&mut rig), ["invoice in Users"]);
+    rig.press("down");
+    assert_eq!(current_hints(&mut rig), ["holiday in me"]);
+    rig.press("down");
+    rig.press("down");
+    assert_eq!(current_hints(&mut rig), ["ext:pdf"]);
+    // Up goes back, and from the first hint to the box.
+    rig.press("up");
+    assert_eq!(current_hints(&mut rig), ["zip in Users"]);
+    for _ in 0..3 {
+        rig.press("up");
+    }
+    assert!(current_hints(&mut rig).is_empty());
+    assert!(!rig.events().contains(&AddressBarEvent::FocusFiles { first: true }));
+
+    // Enter on a filter puts its start in the box.
+    for _ in 0..4 {
+        rig.press("down");
+    }
+    rig.press("enter");
+    assert_eq!(rig.filter(), "ext:");
+
+    // Enter on a recent search runs it again: its folder opens.
+    rig.press("escape");
+    rig.focus_search();
+    rig.press("down");
+    rig.press("down");
+    rig.press("enter");
+    assert_eq!(rig.path(), "C:\\Users\\me");
+}
+
+#[gpui_kit::test]
+fn the_last_hint_stays_and_escape_still_leaves_the_box(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut rig = rig_with_history(cx, "C:\\Users", &searches());
+    rig.focus_search();
+    // 3 recent searches and 7 + 5 filters: more Downs than hints stay on the last one.
+    for _ in 0..30 {
+        rig.press("down");
+    }
+    assert_eq!(current_hints(&mut rig), ["artist:beatles"]);
+    assert!(!rig.events().contains(&AddressBarEvent::FocusFiles { first: true }));
+    rig.press("escape");
+    assert!(rig.events().contains(&AddressBarEvent::FocusFiles { first: false }));
+    // Back in the box, the hints start over.
+    rig.focus_search();
+    assert!(current_hints(&mut rig).is_empty());
+}
+
+#[gpui_kit::test]
+fn with_text_in_the_box_down_still_goes_to_the_list_and_up_to_nothing(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut rig = rig_with_history(cx, "C:\\Users", &searches());
+    rig.focus_search();
+    rig.type_text("zip");
+    rig.press("up");
+    assert!(current_hints(&mut rig).is_empty());
+    rig.press("down");
+    assert!(rig.events().contains(&AddressBarEvent::FocusFiles { first: true }));
+    // A search box with no hints open gives nothing to Delete.
+    rig.focus_search();
+    rig.press("delete");
+    assert_eq!(saved_history(&mut rig), ["invoice", "holiday", "zip"]);
+}
+
+#[gpui_kit::test]
+fn the_x_button_and_delete_forget_a_recent_search_and_what_is_saved(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut rig = rig_with_history(cx, "C:\\Users", &searches());
+    rig.focus_search();
+    assert_eq!(rig.role("Remove holiday from the recent searches"), Some(Role::Button));
+    // The × of the middle one: gone from the popup and from what is saved; it didn't run the search.
+    rig.click(("address-recent-forget", 1_usize));
+    assert!(!rig.has("Remove holiday from the recent searches"));
+    assert!(rig.has("Remove invoice from the recent searches"));
+    assert_eq!(saved_history(&mut rig), ["invoice", "zip"]);
+    assert_eq!(rig.path(), "C:\\Users", "the row's own click didn't run");
+    assert!(rig.has("Search filters"), "the popup is still there");
+
+    // Delete on the one the arrows are on.
+    rig.press("down");
+    rig.press("down");
+    assert_eq!(current_hints(&mut rig), ["zip in Users"]);
+    rig.press("delete");
+    assert_eq!(saved_history(&mut rig), ["invoice"]);
+    assert!(!rig.has("Remove zip from the recent searches"));
+    // The arrows stay on the list: the filter that took its place is current.
+    assert_eq!(current_hints(&mut rig), ["ext:pdf"]);
+    rig.press("up");
+    rig.press("delete");
+    assert!(saved_history(&mut rig).is_empty());
+    assert!(!rig.has("Recent searches"));
 }

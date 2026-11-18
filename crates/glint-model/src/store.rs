@@ -1022,8 +1022,7 @@ impl AppState {
         self.history = history;
     }
 
-    /// Forgets one search.
-    #[cfg(test)]
+    /// Forgets one search (a recent search's × button, or Delete on it).
     pub fn remove_from_history(&mut self, query: &str, path: &str) {
         self.history.retain(|h| h.query != query || h.path != path);
     }
