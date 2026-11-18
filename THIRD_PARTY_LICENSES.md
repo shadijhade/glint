@@ -671,7 +671,6 @@ SOFTWARE.
 | [parquet](https://github.com/apache/arrow-rs) (Apache Arrow's, for Rust) | 60.0.0 | Parquet files as tables | Apache-2.0 |
 | [Zstandard](https://github.com/facebook/zstd) (through `zstd-sys`) | 1.5.7 | Parquet's Zstandard pages | BSD-3-Clause |
 | [snap](https://github.com/BurntSushi/rust-snappy) | 1.1.2 | Parquet's Snappy pages | BSD-3-Clause |
-| [SQLite](https://sqlite.org) (through [rusqlite](https://github.com/rusqlite/rusqlite), built in) | 3.x (rusqlite 0.40) | SQL in the Query view | Public domain (SQLite); MIT (rusqlite) |
 | [nom-exif](https://github.com/mindeng/nom-exif) | 3.8.0 | Photos' EXIF and videos' details | MIT |
 | [lofty](https://github.com/Serial-ATA/lofty-rs) | 0.25.4 | Songs' tags and covers | MIT or Apache-2.0 |
 | [imagesize](https://github.com/Roughsketch/imagesize) | 0.15.0 | Pictures' sizes in pixels, for width: and height: | MIT |
@@ -1030,34 +1029,6 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### SQLite and rusqlite
-
-SQLite is in the public domain: "The author disclaims copyright to this source code. In place of a legal notice, here is a blessing: May you do good and not evil. May you find forgiveness for yourself and forgive others. May you share freely, never taking more than you give."
-
-rusqlite:
-
-```text
-Copyright (c) 2014 The rusqlite developers
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
-```
-
 ### nom-exif
 
 ```text
@@ -1246,14 +1217,6 @@ DEALINGS IN THE SOFTWARE.
 | [reflink-copy](https://github.com/cargo-bins/reflink-copy) | 0.1.30 | Find duplicates' Clone on ReFS and Dev Drives | MIT or Apache-2.0 |
 
 The Apache License 2.0 is reproduced in full under [pdu](#pdu) above.
-
-## Sharing (compiled into the app)
-
-| Crate | Version | Used for | License |
-| :--- | :--- | :--- | :--- |
-| [qrcode](https://github.com/kennytm/qrcode-rust) | 0.14.1 | A send's ticket, and a network share's link, as QR codes | MIT or Apache-2.0 |
-
-The Apache License 2.0 is reproduced in full under [pdu](#pdu) above. sendme and dufs themselves aren't part of Glint: each is installed with winget when it's first wanted.
 
 ## Calculator (compiled into the app)
 
