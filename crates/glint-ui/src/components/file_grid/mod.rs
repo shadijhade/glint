@@ -73,6 +73,7 @@ pub mod thumbnail;
 mod tests;
 
 use crate::actions::{GridLarger, GridReset, GridSmaller, OpenInNewTab, OpenItem, SelectAll, ShowItemMenu};
+use crate::components::row_facts::{self, RowFacts};
 use crate::explorer::{self, Explorer, ExplorerEvent, Rows, Selection, TabId};
 use crate::kit::prelude::*;
 use crate::platform::dragdrop::{Answer, DropEffect, Under};
@@ -83,13 +84,16 @@ use glint_model::grid::{
     grid_columns, grid_move, keep_place, marquee_hits, place_of, tile_layout, top_of, zoom_tiles, GridLayout,
     Point as ContentPoint,
 };
-use glint_model::paths::{droppable, is_gallery, is_recent, is_recycle_bin};
+use glint_model::paths::{droppable, is_gallery, is_recent, is_recycle_bin, is_remote_path};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use thumbnail::Thumbnails;
+
+/// How long the keyboard rests on a folder before it is read ahead, as the list waits.
+const PREFETCH_AFTER: Duration = Duration::from_millis(80);
 
 /// How far a press on a tile moves, in pixels, before it becomes a drag.
 const DRAG_AFTER: f32 = 6.0;
@@ -116,8 +120,13 @@ thread_local! {
 #[derive(Clone, Debug, PartialEq)]
 pub enum FileGridEvent {
     /// A right-click (or the menu key) on a tile: show the item menu for the selection at `position` (window
-    /// coordinates). The tile is selected.
-    ContextMenu { path: String, position: Point<Pixels> },
+    /// coordinates). The tile is selected. `shift` was held for the right-click: Windows' own menu at once, as in
+    /// File Explorer and the list.
+    ContextMenu {
+        path: String,
+        position: Point<Pixels>,
+        shift: bool,
+    },
     /// A right-click on the empty part: the folder's own menu.
     BackgroundContextMenu { position: Point<Pixels> },
     /// A press on a tile moved far enough to be a drag: drag these out of the window (or into the other pane).
@@ -226,6 +235,12 @@ pub struct FileGrid {
     press: Option<Press>,
     /// The pointer rests on a tile: the wait before its item is looked at ahead (`aware::rest_on`).
     resting: Option<Task<()>>,
+    /// The keyboard is on a folder: the wait before it is read ahead (Enter is likely next).
+    prefetch: Option<Task<()>>,
+    /// The tags of the tiles: the dots.
+    facts: Entity<RowFacts>,
+    /// The tiles the tags were last asked for, so a frame that draws the same ones asks nothing again.
+    asked: Rc<RefCell<Option<tile::Asked>>>,
     marquee: Option<Marquee>,
     /// Scrolls the body while a marquee is held at its edge; dropped with the marquee.
     marquee_scroll: Option<Task<()>>,
@@ -253,17 +268,35 @@ impl FileGrid {
     pub fn new(pane: usize, _window: &mut Window, cx: &mut Context<Self>) -> Self {
         let explorer = explorer::explorer(cx);
         let thumbs = thumbnail::thumbnails(cx);
+        let facts = row_facts::shared(cx);
+        let asked: Rc<RefCell<Option<tile::Asked>>> = Rc::default();
         let id = cx.entity_id();
+        let forget = asked.clone();
         let mut subscriptions = vec![
             cx.observe(&explorer, |_, _, cx| cx.notify()),
             // A picture arrived, or one was let go of.
             cx.observe(&thumbs, |_, _, cx| cx.notify()),
+            // Tags were read (or must be read again): the dots are drawn, and asked for.
+            cx.observe(&facts, move |_, _, cx| {
+                forget.take();
+                cx.notify();
+            }),
             // The tile size, the text size.
             cx.observe_global::<state::UiState>(|_, cx| cx.notify()),
             cx.subscribe(&explorer, |this, _, event: &ExplorerEvent, cx| {
                 if matches!(event, ExplorerEvent::TabsChanged | ExplorerEvent::PaneFocused) {
                     this.stop_pointer();
                     cx.notify();
+                }
+                // Other rows (or other tiles in them) need their tags asked for.
+                if matches!(
+                    event,
+                    ExplorerEvent::RowsChanged(_)
+                        | ExplorerEvent::ListingChanged { .. }
+                        | ExplorerEvent::TabsChanged
+                        | ExplorerEvent::ViewChanged(_)
+                ) {
+                    this.asked.take();
                 }
             }),
         ];
@@ -298,6 +331,9 @@ impl FileGrid {
             scrolled_to: None,
             press: None,
             resting: None,
+            prefetch: None,
+            facts,
+            asked,
             marquee: None,
             marquee_scroll: None,
             dragging: None,
@@ -537,6 +573,7 @@ impl FileGrid {
             cx.emit(FileGridEvent::ContextMenu {
                 path: entry.path.clone(),
                 position: event.position,
+                shift: event.modifiers.shift,
             });
         }
     }
@@ -1022,6 +1059,7 @@ impl FileGrid {
         cx.emit(FileGridEvent::ContextMenu {
             path: entry.path.clone(),
             position: point(px(x), px(y)),
+            shift: false,
         });
     }
 
@@ -1063,12 +1101,22 @@ impl FileGrid {
         let (dest, over) = match over {
             Some(path) => (path.to_string(), DropOver::Tile(path.to_string())),
             // Nothing can be dropped into an archive (it is read-only), into a folder Windows keeps closed, or
-            // into This PC or a search's results, which are no folder.
-            None if !tab.is_this_pc() && tab.find.is_none() && tab.archive().is_none() && !tab.is_closed() => {
+            // into This PC, a search's results, the Gallery or Recent, which are no folder.
+            None if !tab.is_this_pc()
+                && tab.find.is_none()
+                && tab.archive().is_none()
+                && !tab.is_closed()
+                && !is_gallery(&tab.path)
+                && !is_recent(&tab.path) =>
+            {
                 (tab.path.clone(), DropOver::Pane)
             }
             None => return None,
         };
+        // A remote place takes no drop here (its transfers have their own way in).
+        if is_remote_path(&dest) {
+            return None;
+        }
         // Where they all are already, or into one of them: nothing to do there.
         let nothing = !dragged.is_empty() && !is_recycle_bin(&dest) && droppable(dragged, &dest).is_empty();
         (!nothing).then_some((dest, over))
@@ -1394,6 +1442,23 @@ impl Render for FileGrid {
                 self.scroll_to_row(row / cols);
             }
             self.scrolled_to = focus.clone();
+            // The arrow keys landing on a folder read it ahead: Enter is likely next.
+            self.prefetch = focus
+                .as_deref()
+                .and_then(|path| rows.position_of(path))
+                .and_then(|at| rows.get(at))
+                .filter(|entry| entry.dir)
+                .map(|entry| entry.path.clone())
+                .map(|path| {
+                    cx.spawn(async move |this, cx| {
+                        cx.background_executor().timer(PREFETCH_AFTER).await;
+                        this.update(cx, |this, cx| {
+                            this.explorer
+                                .update(cx, |explorer, cx| explorer.prefetch_folder(&path, cx));
+                        })
+                        .ok();
+                    })
+                });
         }
 
         let place = place_of(self.scroll_top(), layout);
@@ -1448,6 +1513,9 @@ impl Render for FileGrid {
             scale,
             tokens: tokens.clone(),
             thumbs: self.thumbs.clone(),
+            facts: self.facts.clone(),
+            facts_key: view_key.clone(),
+            asked: self.asked.clone(),
             viewer: cx.entity_id(),
             shown: self.shown.clone(),
             arriving: Cell::new(false),
