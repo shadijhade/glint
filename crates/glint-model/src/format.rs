@@ -2,28 +2,29 @@
 //!
 //! Sizes, dates, times and durations as people read them, in their own locale.
 //!
-//! Numbers, dates and times come from Windows' own formatting (GetNumberFormatEx, GetDateFormatEx and
-//! GetTimeFormatEx) for the user's locale, which is what Intl gave the WebView. The public functions use the
-//! user's locale. The `_in` functions take a locale name such as "en-US" (or `None` for the user's locale), so
-//! the tests do not depend on this PC's settings.
+//! Dates and times come from Windows' own formatting (GetDateFormatEx and GetTimeFormatEx) for the user's
+//! locale, which is what Intl gave the WebView. Whole numbers are grouped here, with the separator and the
+//! grouping Windows gives the locale: they are drawn for every row of every frame, and asking Windows each time
+//! cost eight calls into it. The public functions use the user's locale. The `_in` functions take a locale name
+//! such as "en-US" (or `None` for the user's locale), so the tests do not depend on this PC's settings.
 //!
 //! Dates are local time, as in the TypeScript: "Today" and "Yesterday" are judged against the local midnight.
 //! Those two words go through the i18n catalog for the given `Language`; the Arabic catalog has no entry for them
 //! yet, so they stay English there until it does.
 
 use std::collections::HashMap;
-use std::sync::{Mutex, PoisonError};
+use std::fmt::Write as _;
+use std::sync::{Mutex, OnceLock, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::i18n::{translate, Language};
 use crate::js::{js_round, number_to_string, to_fixed};
 use chrono::{DateTime, Datelike, Local, NaiveDate, TimeZone, Timelike};
-use windows::core::{PCWSTR, PWSTR};
+use windows::core::PCWSTR;
 use windows::Win32::Foundation::SYSTEMTIME;
 use windows::Win32::Globalization::{
-    GetDateFormatEx, GetLocaleInfoEx, GetNumberFormatEx, GetTimeFormatEx, DATE_LONGDATE, ENUM_DATE_FORMATS_FLAGS,
-    LOCALE_SDECIMAL, LOCALE_SGROUPING, LOCALE_SLONGDATE, LOCALE_STHOUSAND, NUMBERFMTW, TIME_FORMAT_FLAGS,
-    TIME_NOSECONDS,
+    GetDateFormatEx, GetLocaleInfoEx, GetTimeFormatEx, DATE_LONGDATE, ENUM_DATE_FORMATS_FLAGS, LOCALE_SGROUPING,
+    LOCALE_SLONGDATE, LOCALE_STHOUSAND, TIME_FORMAT_FLAGS, TIME_NOSECONDS,
 };
 
 const UNITS: [&str; 6] = ["B", "KB", "MB", "GB", "TB", "PB"];
@@ -38,23 +39,36 @@ pub fn format_size(bytes: u64) -> String {
     format_size_in(bytes, None)
 }
 
+// The cells of every visible row and tile ask for this on every frame, so it costs one allocation (the text) and
+// no call into Windows: the TypeScript's toFixed and Math.round are worked out on integers, and the digits are
+// grouped from the locale's style, read once.
 fn format_size_in(bytes: u64, locale: Option<&str>) -> String {
     if bytes < 1024 {
         return format!("{bytes} B");
     }
-    let mut value = bytes as f64;
-    let mut unit = 0;
-    while value >= 1024.0 && unit < UNITS.len() - 1 {
-        value /= 1024.0;
+    // The size as the TypeScript held it, a float (whole, and exact below 2^53). Its value in a unit is that over
+    // a power of two, which a float divides exactly, so integers give the same answers without rounding errors.
+    let whole = bytes as f64 as u128;
+    let mut unit = 1;
+    while unit < UNITS.len() - 1 && whole >> (10 * (unit + 1)) != 0 {
         unit += 1;
     }
-    let number = if value < 10.0 {
-        to_fixed(value, 1)
+    let shift = 10 * unit as u32;
+    let half = 1u128 << (shift - 1);
+    let mut text = String::with_capacity(16);
+    if whole < 10 << shift {
+        // toFixed(1): the tenths closest to the exact value, the larger of two as close.
+        let tenths = u64::try_from((whole * 10 + half) >> shift).unwrap_or(u64::MAX);
+        let _ = write!(text, "{}.{}", tenths / 10, tenths % 10);
     } else {
         // Math.round for positive values: halves go up.
-        group_digits(&format!("{}", js_round(value)), locale)
-    };
-    format!("{number} {}", UNITS[unit])
+        let rounded = u64::try_from((whole + half) >> shift).unwrap_or(u64::MAX);
+        let mut digits = [0u8; 20];
+        push_grouped(&mut text, ascii_digits(rounded, &mut digits), locale);
+    }
+    text.push(' ');
+    text.push_str(UNITS[unit]);
+    text
 }
 
 /// A count in the user's own grouping: 1234 becomes "1,234" in en-US.
@@ -63,7 +77,23 @@ pub fn format_count(n: usize) -> String {
 }
 
 fn format_count_in(n: usize, locale: Option<&str>) -> String {
-    group_digits(&n.to_string(), locale)
+    let mut digits = [0u8; 20];
+    group_digits(ascii_digits(n as u64, &mut digits), locale)
+}
+
+/// `n` in plain ASCII digits, written into `buf` (20 digits hold any u64).
+fn ascii_digits(mut n: u64, buf: &mut [u8; 20]) -> &str {
+    let mut at = buf.len();
+    loop {
+        at -= 1;
+        buf[at] = b'0' + (n % 10) as u8;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    // Only ASCII digits were written.
+    std::str::from_utf8(&buf[at..]).unwrap_or_default()
 }
 
 /// 1 becomes "1 item", 3 becomes "3 items".
@@ -276,12 +306,14 @@ fn locale_string(name: &LocaleName, lctype: u32) -> Option<String> {
 }
 
 /// Windows' digit grouping string ("3;2;0", as the locale gives it) in NUMBERFMT's own form: "32". The sizes of
-/// the groups from the right, with the 0 that ends the list left out. An empty or broken string means groups of
-/// three, which is what nearly every locale uses.
+/// the groups from the right, with the 0 that ends the list left out; the last size goes on repeating. A list
+/// that starts with 0 is no grouping at all (Region settings' "123456789"), which is 0. An empty or broken
+/// string means groups of three, which is what nearly every locale uses.
 fn grouping_code(spec: &str) -> u32 {
     let mut code = 0u32;
-    for part in spec.split(';') {
+    for (i, part) in spec.split(';').enumerate() {
         match part.trim().parse::<u32>() {
+            Ok(0) if i == 0 => return 0,
             Ok(0) | Err(_) => break,
             Ok(size @ 1..=9) => code = code.saturating_mul(10).saturating_add(size),
             Ok(_) => break,
@@ -294,39 +326,79 @@ fn grouping_code(spec: &str) -> u32 {
     }
 }
 
-/// Groups the digits of a whole number the way the locale does: "1234" becomes "1,234" in en-US. `digits` is
-/// plain ASCII digits. If Windows cannot format it, the plain digits are returned.
-fn group_digits(digits: &str, locale: Option<&str>) -> String {
-    let name = LocaleName::new(locale);
-    let decimal = locale_string(&name, LOCALE_SDECIMAL).unwrap_or_else(|| ".".to_owned());
-    let thousand = locale_string(&name, LOCALE_STHOUSAND).unwrap_or_else(|| ",".to_owned());
-    let grouping = grouping_code(&locale_string(&name, LOCALE_SGROUPING).unwrap_or_default());
-    let mut decimal_wide = nul_terminated(&decimal);
-    let mut thousand_wide = nul_terminated(&thousand);
-    // No digits after the point: a whole number. Windows' own default for the locale would add ".00".
-    let number_format = NUMBERFMTW {
-        NumDigits: 0,
-        LeadingZero: 0,
-        Grouping: grouping,
-        lpDecimalSep: PWSTR(decimal_wide.as_mut_ptr()),
-        lpThousandSep: PWSTR(thousand_wide.as_mut_ptr()),
-        NegativeOrder: 0,
-    };
-    let value = nul_terminated(digits);
-    read_wide(|buf| {
-        // SAFETY: `number_format` points at the two separator buffers, which live until the call returns. `value` is a
-        // NUL-terminated copy of the digits. The name and buffer rules are as in `locale_string`.
-        unsafe {
-            GetNumberFormatEx(
-                name.ptr(),
-                0,
-                PCWSTR(value.as_ptr()),
-                Some(&number_format as *const NUMBERFMTW),
-                buf,
-            )
+/// How a locale groups the digits of whole numbers: the separator between groups, and the sizes of the groups
+/// as `grouping_code` gives them.
+struct DigitGroups {
+    separator: String,
+    grouping: u32,
+}
+
+impl DigitGroups {
+    fn read(locale: Option<&str>) -> DigitGroups {
+        let name = LocaleName::new(locale);
+        DigitGroups {
+            separator: locale_string(&name, LOCALE_STHOUSAND).unwrap_or_else(|| ",".to_owned()),
+            grouping: grouping_code(&locale_string(&name, LOCALE_SGROUPING).unwrap_or_default()),
         }
-    })
-    .unwrap_or_else(|| digits.to_owned())
+    }
+
+    /// The user's own, read once a run: a change to Windows' region settings shows from Glint's next start.
+    fn user() -> &'static DigitGroups {
+        static USER: OnceLock<DigitGroups> = OnceLock::new();
+        USER.get_or_init(|| DigitGroups::read(None))
+    }
+
+    /// Writes `digits` (plain ASCII digits) onto `out` with the separator between groups, as NUMBERFMT groups
+    /// them: the first size is the group nearest the end, each size after it the next group left, and the last
+    /// size repeats. A number no longer than the first group (any under 1,000, in every locale) is copied as is.
+    fn push(&self, out: &mut String, digits: &str) {
+        let mut sizes = [0usize; 10];
+        let mut count = 0;
+        let mut rest = self.grouping;
+        while rest > 0 && count < sizes.len() {
+            sizes[count] = (rest % 10) as usize;
+            rest /= 10;
+            count += 1;
+        }
+        // The code's first digit is the group nearest the end.
+        sizes[..count].reverse();
+        // Where separators go, counted from the start, the last one first.
+        let mut cuts = [0usize; 40];
+        let mut cut_count = 0;
+        let mut left = digits.len();
+        while count > 0 && cut_count < cuts.len() {
+            let size = sizes[cut_count.min(count - 1)];
+            if size == 0 || left <= size {
+                break;
+            }
+            left -= size;
+            cuts[cut_count] = left;
+            cut_count += 1;
+        }
+        let mut from = 0;
+        for &cut in cuts[..cut_count].iter().rev() {
+            out.push_str(&digits[from..cut]);
+            out.push_str(&self.separator);
+            from = cut;
+        }
+        out.push_str(&digits[from..]);
+    }
+}
+
+/// Writes the digits of a whole number onto `out`, grouped the way the locale does.
+fn push_grouped(out: &mut String, digits: &str, locale: Option<&str>) {
+    match locale {
+        None => DigitGroups::user().push(out, digits),
+        Some(_) => DigitGroups::read(locale).push(out, digits),
+    }
+}
+
+/// Groups the digits of a whole number the way the locale does: "1234" becomes "1,234" in en-US. `digits` is
+/// plain ASCII digits.
+fn group_digits(digits: &str, locale: Option<&str>) -> String {
+    let mut out = String::with_capacity(digits.len() + digits.len() / 2 + 4);
+    push_grouped(&mut out, digits, locale);
+    out
 }
 
 /// The local date and time, as the SYSTEMTIME that Windows formats.
@@ -619,5 +691,136 @@ mod tests {
         assert_eq!(grouping_code("3;0"), 3);
         assert_eq!(grouping_code("3;2;0"), 32);
         assert_eq!(grouping_code(""), 3);
+        // Region settings' "123456789": no grouping.
+        assert_eq!(grouping_code("0"), 0);
+        assert_eq!(grouping_code("0;0"), 0);
+    }
+
+    #[test]
+    fn groups_follow_their_sizes_from_the_right() {
+        let grouped = |grouping, digits: &str| {
+            let mut out = String::new();
+            DigitGroups {
+                separator: ",".into(),
+                grouping,
+            }
+            .push(&mut out, digits);
+            out
+        };
+        assert_eq!(grouped(3, "1234567"), "1,234,567");
+        assert_eq!(grouped(3, "123456"), "123,456");
+        assert_eq!(grouped(32, "1234567"), "12,34,567");
+        assert_eq!(grouped(32, "123456789"), "12,34,56,789");
+        assert_eq!(grouped(0, "1234567"), "1234567");
+        assert_eq!(grouped(3, "999"), "999");
+        assert_eq!(grouped(3, "0"), "0");
+    }
+
+    /// What Windows' GetNumberFormatEx makes of `digits` with the locale's separator and grouping, as Glint asked
+    /// it until the grouping was done here: what `DigitGroups::push` is checked against.
+    fn windows_grouped(digits: &str, locale: Option<&str>) -> String {
+        use windows::core::PWSTR;
+        use windows::Win32::Globalization::{GetNumberFormatEx, NUMBERFMTW};
+        let groups = DigitGroups::read(locale);
+        let name = LocaleName::new(locale);
+        let mut decimal = nul_terminated(".");
+        let mut separator = nul_terminated(&groups.separator);
+        let number_format = NUMBERFMTW {
+            NumDigits: 0,
+            LeadingZero: 0,
+            Grouping: groups.grouping,
+            lpDecimalSep: PWSTR(decimal.as_mut_ptr()),
+            lpThousandSep: PWSTR(separator.as_mut_ptr()),
+            NegativeOrder: 0,
+        };
+        let value = nul_terminated(digits);
+        read_wide(|buf| {
+            // SAFETY: `number_format` points at the two separator buffers, which live until the call returns, and
+            // `value` is a NUL-terminated copy of the digits. The name and buffer rules are as in `locale_string`.
+            unsafe {
+                GetNumberFormatEx(
+                    name.ptr(),
+                    0,
+                    PCWSTR(value.as_ptr()),
+                    Some(&number_format as *const NUMBERFMTW),
+                    buf,
+                )
+            }
+        })
+        .expect("Windows formats a whole number")
+    }
+
+    #[test]
+    fn digits_are_grouped_as_windows_groups_them() {
+        for locale in ["en-US", "de-DE", "fr-FR", "de-CH", "hi-IN", "ar-SA", "ja-JP"] {
+            for digits in [
+                "0",
+                "7",
+                "42",
+                "999",
+                "1000",
+                "1234",
+                "12345",
+                "123456",
+                "1234567",
+                "12345678901",
+                "18446744073709551615",
+            ] {
+                let mut ours = String::new();
+                DigitGroups::read(Some(locale)).push(&mut ours, digits);
+                assert_eq!(ours, windows_grouped(digits, Some(locale)), "{digits} in {locale}");
+            }
+        }
+    }
+
+    /// What a size costs to write, as every visible row and tile asks for one on every frame, against the way it
+    /// was written before (toFixed's exact expansion, and the locale read and the digits grouped by Windows on
+    /// every call). Run with --ignored --nocapture, in release.
+    #[test]
+    #[ignore]
+    fn sizes_cost_little() {
+        // Sizes spread over every unit, as a folder's files are.
+        let sizes: Vec<u64> = (0..200_000u64)
+            .map(|i| i.wrapping_mul(2_654_435_761) % (1u64 << (10 + i % 34)))
+            .collect();
+        let before = |bytes: u64| {
+            if bytes < 1024 {
+                return format!("{bytes} B");
+            }
+            let (mut value, mut unit) = (bytes as f64, 0);
+            while value >= 1024.0 && unit < UNITS.len() - 1 {
+                value /= 1024.0;
+                unit += 1;
+            }
+            let number = if value < 10.0 {
+                to_fixed(value, 1)
+            } else {
+                windows_grouped(&format!("{}", js_round(value)), None)
+            };
+            format!("{number} {}", UNITS[unit])
+        };
+        let time = |write: &dyn Fn(u64) -> String| {
+            let started = std::time::Instant::now();
+            let length: usize = sizes.iter().map(|&bytes| write(bytes).len()).sum();
+            (started.elapsed().as_nanos() as f64 / sizes.len() as f64, length)
+        };
+        assert!(
+            sizes.iter().all(|&bytes| format_size(bytes) == before(bytes)),
+            "the same text"
+        );
+        let (now, _) = time(&format_size);
+        let (then, _) = time(&before);
+        println!("a size: {now:.0} ns now, {then:.0} ns before ({:.0}x)", then / now);
+    }
+
+    #[test]
+    fn sizes_round_exactly_at_the_edges() {
+        // Just under ten units rounds up to "10.0", as toFixed did; ten units exactly is whole.
+        assert_eq!(format_size_in(10_239, Some("en-US")), "10.0 KB");
+        assert_eq!(format_size_in(10_240, Some("en-US")), "10 KB");
+        assert_eq!(format_size_in(1_048_575, Some("en-US")), "1,024 KB");
+        assert_eq!(format_size_in(1_048_576, Some("en-US")), "1.0 MB");
+        assert_eq!(format_size_in(u64::MAX, Some("en-US")), "16,384 PB");
+        assert_eq!(format_size_in(1023u64 * 1024u64.pow(5), Some("de-DE")), "1.023 PB");
     }
 }

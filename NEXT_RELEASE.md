@@ -32,6 +32,15 @@ Forward now walk places, each kept as it was left (`crates/glint-ui/src/explorer
 Tests: `explorer/history_tests.rs`, the address bar's and the window's (`Backspace`, the mouse's side buttons),
 and `tests/e2e`'s new `search-history` check with the real keyboard and side buttons.
 
+### Faster where it is felt
+
+- Sizes and counts in the list, the tiles and the status bar are written without asking Windows: the digits are
+  grouped here, with the separator and the grouping Windows gives the locale (read once a run), and toFixed and
+  Math.round are worked out on integers (`crates/glint-model/src/format.rs`). A size took eight calls into Windows
+  and eleven allocations, on every row of every frame: 38 ns now against 552 ns (`format::tests::sizes_cost_little`),
+  the same text over 200,000 sizes, and the grouping the same as Windows' own in seven locales. Region settings'
+  "123456789" (no grouping) is honoured now; a change to the region settings shows from Glint's next start.
+
 ## 0.13.2: updates that need nobody
 
 1884328. Two bugs the user met: a Glint in the tray showed a new version only after a restart (a 12-hour timer
