@@ -141,7 +141,13 @@ impl Global for SharedHealth {}
 
 /// Makes the shared model (reading nothing yet). Called once at start.
 pub fn init(cx: &mut App) {
-    let health = cx.new(|_| Health::new(core_source()));
+    init_with(cx, core_source());
+}
+
+/// [`init`] reading from `source` (tests give one that answers at once, so no drive is touched and no reading
+/// arrives while a test is looking).
+pub fn init_with(cx: &mut App, source: Source) {
+    let health = cx.new(|_| Health::new(source));
     cx.set_global(SharedHealth(health));
 }
 

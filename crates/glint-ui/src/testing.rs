@@ -34,7 +34,9 @@ pub(crate) fn init(cx: &mut App) {
     theme::apply(cx);
     actions::init(cx);
     core_bridge::init_with(cx, false);
-    dialogs::drive_health::init(cx);
+    // The drives' health is read from the real drives by default, and the answer would arrive whenever the PC
+    // gets to it: while a test looks at This PC, say, changing its tiles. Tests get an answer of nothing at once.
+    dialogs::drive_health::init_with(cx, std::sync::Arc::new(|| Box::pin(async { Ok(Vec::new()) })));
 }
 
 /// Opens a window the way the app does (`gpui_kit::open_window`, so the dialog and notification layers are
