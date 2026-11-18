@@ -35,6 +35,10 @@ pub struct Facts {
     pub path: String,
     /// It shows a search's results.
     pub find: bool,
+    /// It shows the flat view: every file below the folder as one list.
+    pub flat: bool,
+    /// Its folder can be shown flat.
+    pub can_flat: bool,
     /// List, grid or columns.
     pub view: ViewMode,
     /// Nothing in it can be changed: an archive, a remote, the Recycle Bin, a folder Windows keeps closed.
@@ -74,6 +78,8 @@ impl Facts {
             tab: None,
             path: String::new(),
             find: false,
+            flat: false,
+            can_flat: false,
             view: ViewMode::List,
             read_only: false,
             closed: false,
@@ -105,6 +111,8 @@ impl Facts {
             tab: Some(tab.id),
             path: tab.path.clone(),
             find: tab.find.is_some(),
+            flat: explorer.is_flat(tab.id),
+            can_flat: explorer.can_flatten(tab.id),
             view: tab.view,
             read_only: archive.is_some() || closed || bin || tab.is_remote(),
             closed,

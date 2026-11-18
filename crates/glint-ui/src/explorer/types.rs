@@ -331,7 +331,11 @@ pub struct Loaded {
 #[derive(Clone, Debug, Default)]
 pub struct FindRun {
     pub id: u64,
+    /// The words searched for; empty for a flat view, which lists every file below the folder instead.
     pub query: String,
+    /// A flat view (Ctrl+B): every file in the folder and its subfolders as one list, not the answer to words.
+    /// It is a search with nothing to match, so it streams, sorts, groups and renames as results do.
+    pub flat: bool,
     /// Who answers ("index", "fd", "index + fd"); empty until known.
     pub engine: String,
     /// Folder searched (with its subfolders); This PC searches every drive.

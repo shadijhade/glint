@@ -61,6 +61,7 @@ actions!(
         TogglePreview,
         GridView,
         ListView,
+        FlatView,
         ColumnsView,
         GridLarger,
         GridSmaller,
@@ -236,6 +237,12 @@ pub static BINDINGS: &[Binding] = &[
     bind!("alt-enter", "FileList", Properties, "Properties"),
     bind!("ctrl-h", "Workspace", ToggleHidden, "Hidden items"),
     bind!("alt-p", "Workspace", TogglePreview, "Preview pane"),
+    bind!(
+        "ctrl-b",
+        "Workspace",
+        FlatView,
+        "Flat view: every file in this folder and its subfolders as one list (again: back)"
+    ),
     bind!("ctrl-shift-2", "Workspace", GridView, "Grid"),
     bind!("ctrl-shift-6", "Workspace", ListView, "List"),
     // Ctrl+Shift+9 for columns (unused in File Explorer), as the command bar's tooltip says.
@@ -416,6 +423,7 @@ mod tests {
             ("menu", "FileList", "glint::ShowItemMenu"),
             // What was bound before stays.
             ("ctrl-p", "Workspace", "glint::CommandPalette"),
+            ("ctrl-b", "Workspace", "glint::FlatView"),
             ("ctrl-=", "Workspace", "glint::GridLarger"),
             ("ctrl--", "Workspace", "glint::GridSmaller"),
         ];

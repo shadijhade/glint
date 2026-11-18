@@ -730,6 +730,8 @@ pub fn read_inputs(cx: &mut App) -> Inputs {
     Inputs {
         path: tab.map(|t| t.path.clone()).unwrap_or_default(),
         finding: tab.is_some_and(|t| t.find.is_some()),
+        flat: tab.is_some_and(|t| e.is_flat(t.id)),
+        can_flat: tab.is_some_and(|t| e.can_flatten(t.id)),
         in_archive: tab.is_some_and(|t| t.archive().is_some()),
         shut: tab.is_some_and(|t| t.no_access().is_some()),
         grid: tab.is_some_and(|t| t.view == glint_model::store::ViewMode::Grid),

@@ -475,6 +475,7 @@ impl CommandBar {
         match pick {
             Pick::Hidden => action(Box::new(actions::ToggleHidden), self, window, cx),
             Pick::Preview => action(Box::new(actions::TogglePreview), self, window, cx),
+            Pick::Flat => action(Box::new(actions::FlatView), self, window, cx),
             Pick::Dual => action(Box::new(actions::DualPane), self, window, cx),
             Pick::ComparePanes => self.toggle_compare_panes(cx),
             Pick::View(view) => self.choose_view(view, cx),
@@ -1393,6 +1394,21 @@ impl CommandBar {
                         Some(f.show_hidden),
                     )
                     .on_click(cx.listener(|this, _, window, cx| this.pick(Pick::Hidden, window, cx))),
+                )
+                .child(
+                    tool(
+                        cx,
+                        t,
+                        "flat",
+                        IconName::Layers,
+                        keyed(
+                            "Flat view: every file in this folder and its subfolders as one list ({0})",
+                            &[&actions::FlatView],
+                        ),
+                        Some(f.flat),
+                    )
+                    .disabled(!(f.flat || f.can_flat))
+                    .on_click(cx.listener(|this, _, window, cx| this.pick(Pick::Flat, window, cx))),
                 )
                 .child(
                     tool(

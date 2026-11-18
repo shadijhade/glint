@@ -236,6 +236,10 @@ pub struct Inputs {
     pub path: String,
     /// The tab shows a search's results.
     pub finding: bool,
+    /// The tab shows the flat view: every file below its folder as one list.
+    pub flat: bool,
+    /// The tab's folder can be shown flat.
+    pub can_flat: bool,
     /// The tab is in an archive.
     pub in_archive: bool,
     /// The tab's folder is one Windows keeps this account out of.
@@ -605,6 +609,19 @@ pub fn actions(inputs: &Inputs) -> Vec<Command> {
             },
             if inputs.show_hidden { I::EyeOff } else { I::Eye },
             || Box::new(actions::ToggleHidden),
+        ),
+    );
+    push(
+        inputs.flat || inputs.can_flat,
+        Command::action(
+            "flat-view",
+            if inputs.flat {
+                t!("Leave the flat view, back to the folder")
+            } else {
+                t!("Flat view: every file in this folder and its subfolders as one list")
+            },
+            I::Layers,
+            || Box::new(actions::FlatView),
         ),
     );
     push(

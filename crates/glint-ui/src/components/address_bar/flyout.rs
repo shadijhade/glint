@@ -148,6 +148,15 @@ impl AddressBar {
             .map(|visit| {
                 let name = place_name(&explorer.tab_name(&visit.path));
                 match visit.search_query() {
+                    // No words: the flat view of the folder.
+                    Some("") => Suggestion {
+                        name: t!("Every file in {place}", place = name).to_string(),
+                        detail: None,
+                        path: visit.path.clone(),
+                        dir: true,
+                        archive: false,
+                        look: Look::Search,
+                    },
                     Some(query) => Suggestion {
                         name: format!("“{query}”"),
                         detail: Some(t!("in {place}", place = name).to_string()),

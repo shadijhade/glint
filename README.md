@@ -380,6 +380,7 @@ Agents that show apps (MCP Apps) draw `folder_sizes` and `largest_files` as a ma
 | `Alt+Enter` | Properties |
 | `F5` / `Ctrl+R` | Refresh |
 | `Ctrl+H` | Show or hide hidden items |
+| `Ctrl+B` | Flat view: every file in this folder and its subfolders as one list (with a Folder column), until you press it again |
 | `Alt+P` | Show or hide the preview pane |
 
 #### Disk usage map

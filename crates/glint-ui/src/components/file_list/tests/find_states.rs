@@ -261,3 +261,47 @@ fn recent_is_just_empty_when_windows_keeps_items(cx: &mut TestAppContext) {
     assert_eq!(ui.role_of("Nothing opened lately"), Some(Role::Status));
     assert_eq!(ui.role_of("Windows doesn't keep recently opened items"), None);
 }
+
+#[gpui_kit::test]
+fn the_flat_view_has_a_folder_column_and_rows_from_every_level(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let disk = small_disk();
+    let mut ui = open(cx, &disk, "C:\\x");
+    assert!(!ui.has("file-list-where"),"a folder has no Folder column");
+    let explorer = ui.explorer.clone();
+    ui.visual
+        .update(|_, cx| explorer.update(cx, |e, cx| e.toggle_flat_view(cx).detach()));
+    ui.settle_all();
+    assert!(ui.has("file-list-where"), "the Folder column says where each file is");
+    // A file two levels down is a row, with its own folder in the cell.
+    let rows = ui.explorer.read_with(&ui.visual, |e, _| {
+        e.active_tab()
+            .map(|t| t.rows.iter().map(|r| r.name.clone()).collect::<Vec<_>>())
+            .unwrap_or_default()
+    });
+    assert!(rows.iter().any(|name| name == "inner.txt") && !rows.iter().any(|name| name == "docs"));
+    assert_eq!(last(&disk).query, "files:");
+}
+
+#[gpui_kit::test]
+fn a_flat_view_of_a_folder_with_no_files_says_so_and_try_again_stays_flat(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let disk = FakeDisk::new();
+    disk.folder("C:\\empty", vec![folder("C:\\empty", "also-empty")]);
+    disk.folder("C:\\empty\\also-empty", vec![]);
+    let mut ui = open(cx, &disk, "C:\\empty");
+    let explorer = ui.explorer.clone();
+    ui.visual
+        .update(|_, cx| explorer.update(cx, |e, cx| e.toggle_flat_view(cx).detach()));
+    ui.settle_all();
+    assert_eq!(
+        ui.role_of("No files in this folder or its subfolders"),
+        Some(Role::Status)
+    );
+    // Searching every drive and the filters hint are for words; a flat view offers only what makes sense.
+    assert!(!ui.has("file-list-search-every-drive"));
+    ui.click_id("file-list-search-hidden");
+    assert_eq!(disk.finds().len(), 2);
+    assert_eq!(last(&disk).query, "files:", "wider, but still every file");
+    assert!(last(&disk).options.hidden);
+}

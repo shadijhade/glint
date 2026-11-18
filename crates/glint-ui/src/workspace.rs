@@ -2294,6 +2294,9 @@ impl Render for Workspace {
             .on_action(cx.listener(|_, _: &actions::ListView, _, cx| Self::choose_view(ViewMode::List, cx)))
             .on_action(cx.listener(|_, _: &actions::GridView, _, cx| Self::choose_view(ViewMode::Grid, cx)))
             .on_action(cx.listener(|_, _: &actions::ColumnsView, _, cx| Self::choose_view(ViewMode::Columns, cx)))
+            .on_action(cx.listener(|_, _: &actions::FlatView, _, cx| {
+                Self::explorer(cx, |e, cx| e.toggle_flat_view(cx).detach())
+            }))
             .on_action(cx.listener(|_, _: &actions::GridLarger, _, cx| Self::explorer(cx, |e, cx| e.zoom_grid(1, cx))))
             .on_action(
                 cx.listener(|_, _: &actions::GridSmaller, _, cx| Self::explorer(cx, |e, cx| e.zoom_grid(-1, cx))),

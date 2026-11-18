@@ -95,7 +95,7 @@ impl FileList {
     /// The message over the list when there is nothing to list, or None when the rows speak for themselves.
     pub(super) fn state_view(&self, view: &TabView, t: &Tokens, cx: &mut Context<Self>) -> Option<AnyElement> {
         if let Some(find) = &view.find {
-            let (tab, query, scope) = (view.id, find.query.clone(), find.scope.clone());
+            let (tab, query, scope, flat) = (view.id, find.query.clone(), find.scope.clone(), find.flat);
             if !find.error.is_empty() {
                 return Some(
                     centered(t, "file-list-search-failed")
@@ -118,7 +118,7 @@ impl FileList {
                                 .icon(IconName::RotateCw)
                                 .label(t!("Try again"))
                                 .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.search_again(tab, &query, Wider::in_scope(scope.clone()), cx)
+                                    this.search_again(tab, &query, Wider { flat, ..Wider::in_scope(scope.clone()) }, cx)
                                 })),
                         )
                         .test_support()
@@ -136,9 +136,13 @@ impl FileList {
                 if !view.show_hidden {
                     hint.push_str(&t!("Hidden files weren't searched. "));
                 }
-                hint.push_str(&t!("Filters work too: ext:pdf, size:>10mb, dm:7d."));
+                if !flat {
+                    hint.push_str(&t!("Filters work too: ext:pdf, size:>10mb, dm:7d."));
+                }
                 // The files' contents were searched too: neither a name nor a line matched.
-                let nothing = if find.inside.words.is_empty() {
+                let nothing = if flat {
+                    t!("No files in this folder or its subfolders")
+                } else if find.inside.words.is_empty() {
                     t!("Nothing named like “{query}”", query = find.query)
                 } else {
                     t!("No name and no line matches “{query}”", query = find.query)
@@ -165,7 +169,7 @@ impl FileList {
                                         .label(t!("Include hidden files"))
                                         .on_click(cx.listener(move |this, _, _, cx| {
                                             state::update(cx, |settings| settings.show_hidden = true);
-                                            this.search_again(tab, &query, Wider::in_scope(scope.clone()), cx)
+                                            this.search_again(tab, &query, Wider { flat, ..Wider::in_scope(scope.clone()) }, cx)
                                         }))
                                 }))
                                 .children((!find.skipped.is_empty()).then(|| {
@@ -177,11 +181,11 @@ impl FileList {
                                         .icon(IconName::FolderSearch)
                                         .label(t!("Search skipped folders too"))
                                         .on_click(cx.listener(move |this, _, _, cx| {
-                                            let wider = Wider::in_scope(scope.clone()).skipping_nothing();
+                                            let wider = Wider { flat, ..Wider::in_scope(scope.clone()) }.skipping_nothing();
                                             this.search_again(tab, &query, wider, cx)
                                         }))
                                 }))
-                                .children((scope != THIS_PC).then(|| {
+                                .children((scope != THIS_PC && !flat).then(|| {
                                     let query = query.clone();
                                     Button::new("file-list-search-every-drive")
                                         .outline()

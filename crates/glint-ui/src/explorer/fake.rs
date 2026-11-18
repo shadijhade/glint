@@ -1867,7 +1867,10 @@ impl Source for FakeDisk {
 /// the query's terms in it, sorted by path, cut at the result limit. The index answers instead when it has the
 /// drives.
 fn walk(state: &State, call: &FindCall) -> Vec<Found> {
-    let terms: Vec<String> = glint_model::entries::terms(&call.query.to_lowercase());
+    let mut terms: Vec<String> = glint_model::entries::terms(&call.query.to_lowercase());
+    // `files:` alone (a flat view) is every file, and no folder.
+    let files_only = terms.iter().any(|term| term == "files:");
+    terms.retain(|term| term != "files:");
     let covered = state
         .index
         .as_ref()
@@ -1891,7 +1894,7 @@ fn walk(state: &State, call: &FindCall) -> Vec<Found> {
                 .iter()
                 .any(|name| entry.name.eq_ignore_ascii_case(name));
             let veiled = entry.attrs & attr::HIDDEN != 0 && !call.options.hidden;
-            if !skipped && !veiled && terms.iter().all(|term| entry.lower.contains(term.as_str())) {
+            if !skipped && !veiled && !(files_only && entry.dir) && terms.iter().all(|term| entry.lower.contains(term.as_str())) {
                 found.push(entry.clone());
             }
         }

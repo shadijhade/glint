@@ -227,7 +227,13 @@ pub(super) fn view(empty: &Empty, tab: TabId, cx: &App) -> impl IntoElement {
             skipped,
             show_hidden,
         } => {
-            let heading = t!("Nothing named like “{query}”", query = query.clone());
+            // No words: the flat view of a folder with no files in it.
+            let flat = query.is_empty();
+            let heading = if flat {
+                t!("No files in this folder or its subfolders")
+            } else {
+                t!("Nothing named like “{query}”", query = query.clone())
+            };
             let mut hint = String::new();
             if !skipped.is_empty() {
                 hint.push_str(&t!("Skipped: {names}. ", names = skipped.join(", ")));
@@ -235,7 +241,9 @@ pub(super) fn view(empty: &Empty, tab: TabId, cx: &App) -> impl IntoElement {
             if !*show_hidden {
                 hint.push_str(&t!("Hidden files weren't searched. "));
             }
-            hint.push_str(&t!("Filters work too: ext:pdf, size:>10mb, dm:7d."));
+            if !flat {
+                hint.push_str(&t!("Filters work too: ext:pdf, size:>10mb, dm:7d."));
+            }
             let hidden = (!*show_hidden).then(|| {
                 let (scope, query) = (scope.clone(), query.clone());
                 Button::new("file-grid-search-hidden")
@@ -259,7 +267,7 @@ pub(super) fn view(empty: &Empty, tab: TabId, cx: &App) -> impl IntoElement {
                         search_again(tab, &query, Wider::in_scope(scope.clone()).skipping_nothing(), cx)
                     })
             });
-            let every_drive = (scope != THIS_PC).then(|| {
+            let every_drive = (scope != THIS_PC && !flat).then(|| {
                 let query = query.clone();
                 Button::new("file-grid-search-every-drive")
                     .outline()
@@ -436,6 +444,11 @@ pub(super) fn view(empty: &Empty, tab: TabId, cx: &App) -> impl IntoElement {
 
 /// A search again in `tab`, wider than Settings say if `wider` says so (`runFind(query, { scope, .. })`).
 fn search_again(tab: TabId, query: &str, wider: Wider, cx: &mut App) {
+    // A search with no words is the flat view of the folder.
+    let wider = Wider {
+        flat: query.is_empty(),
+        ..wider
+    };
     if let Some(explorer) = crate::explorer::try_explorer(cx) {
         explorer.update(cx, |explorer, cx| explorer.run_find_in(tab, query, wider, cx).detach());
     }
