@@ -36,11 +36,26 @@ pub fn head_of(targets: &[FileEntry], probed: Option<&Probed>, extras: &Extras) 
 
 /// The head of a folder's own menu: its name, how many items it shows, and its Git branch.
 pub fn folder_head(name: SharedString, items: Option<usize>, branch: Option<SharedString>) -> Head {
-    let line = match items {
+    folder_head_with(name, items, branch, None)
+}
+
+/// [`folder_head`] with what Aware found out about the folder: its whole size, once it is counted, after how many
+/// items it shows.
+pub fn folder_head_with(
+    name: SharedString,
+    items: Option<usize>,
+    branch: Option<SharedString>,
+    probed: Option<&Probed>,
+) -> Head {
+    let mut line = match items {
         Some(1) => t!("1 item"),
         Some(n) => t!("{n} items", n = format_count(n)),
         None => SharedString::default(),
     };
+    if let Some(inside) = probed.and_then(|probed| probed.inside).filter(|inside| inside.done && inside.bytes > 0) {
+        let size = format_size(inside.bytes);
+        line = if line.is_empty() { size.into() } else { format!("{line} · {size}").into() };
+    }
     let badges = branch
         .map(|branch| Badge {
             label: branch,

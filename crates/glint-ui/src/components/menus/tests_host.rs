@@ -706,6 +706,56 @@ fn a_menu_whose_answers_never_come_opens_when_the_breath_is_over_and_not_before(
 }
 
 #[gpui_kit::test]
+fn the_open_project_folders_menu_waits_for_its_size_and_suggests_cleaning_up_its_build_output(cx: &mut TestAppContext) {
+    let _guard = english();
+    let mut rig = rig(cx, "C:\\x");
+    let menus = rig.ui.menus.clone();
+    rig.ui.visual.update(|window, cx| {
+        menus.update(cx, |m, cx| m.open_background_menu(0, Some(at(100., 10.)), window, cx));
+    });
+    rig.ui.frame();
+    assert!(!rig.ui.is_open(), "the folder is being asked about, and the menu waits for it");
+    let call = rig.fake.call_of("C:\\x");
+    assert_eq!(rig.fake.calls.borrow()[call].lane, Lane::Now);
+    // The index answers at once: 3 GB, 2 GB of it what a build left.
+    let gb = 1024 * 1024 * 1024;
+    let inside = glint_model::aware::Inside { files: 900, folders: 40, bytes: 3 * gb, junk: 2 * gb, done: true, from_index: true };
+    rig.fake.send(call, "C:\\x", Part::Inside(inside));
+    rig.ui.frame();
+    assert!(rig.ui.is_open(), "everything it waited for is known, with the breath not over");
+    let head = rig.head();
+    assert!(head.line.contains("3.0 GB"), "the folder's size is in its head: {:?}", head.line);
+    let nodes = rig.ui.nodes();
+    let at_top = heading(&nodes).expect("a Suggested section");
+    let row = match &nodes[at_top + 1] {
+        Node::Item(entry) => entry.clone(),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(row.label.as_ref(), "Clean up…");
+    assert_eq!(row.reason.as_deref(), Some("2.0 GB of build output inside"));
+}
+
+#[gpui_kit::test]
+fn what_comes_in_after_the_folders_menu_is_open_goes_into_its_head(cx: &mut TestAppContext) {
+    let _guard = english();
+    let mut rig = rig(cx, "C:\\x");
+    let menus = rig.ui.menus.clone();
+    rig.ui.visual.update(|window, cx| {
+        menus.update(cx, |m, cx| m.open_background_menu(0, Some(at(100., 10.)), window, cx));
+    });
+    rig.ui.visual.executor().advance_clock(LOOK_FIRST + std::time::Duration::from_millis(5));
+    rig.ui.frame();
+    assert!(rig.ui.is_open(), "the breath is over");
+    assert!(!rig.head().line.contains("MB"));
+    let call = rig.fake.call_of("C:\\x");
+    let inside = glint_model::aware::Inside { files: 4, folders: 1, bytes: 5 * 1024 * 1024, junk: 0, done: true, from_index: false };
+    rig.fake.send(call, "C:\\x", Part::Inside(inside));
+    rig.ui.frame();
+    assert!(rig.head().line.contains("5.0 MB"), "{:?}", rig.head().line);
+    assert!(heading(&rig.ui.nodes()).is_none(), "the rows don't move once the menu is open");
+}
+
+#[gpui_kit::test]
 fn a_menu_asked_for_while_another_waits_is_the_one_that_opens(cx: &mut TestAppContext) {
     let _guard = english();
     let mut rig = rig(cx, "C:\\x");

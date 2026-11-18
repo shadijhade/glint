@@ -124,6 +124,9 @@ struct Open {
     shape: Shape,
     /// The items it is for (none for a folder's menu): the head follows what is found out about the one.
     targets: Vec<FileEntry>,
+    /// The open folder's head, for the folder's own menu of the folder shown: it follows what is found out about
+    /// the folder.
+    folder: Option<FolderHead>,
     _subscription: Subscription,
     /// Hears Aware's answers while the menu is open.
     _aware: Option<Subscription>,
@@ -137,6 +140,37 @@ struct Shown {
     label: SharedString,
     shape: Shape,
     targets: Vec<FileEntry>,
+    folder: Option<FolderHead>,
+}
+
+/// What a waiting menu is for.
+enum Awaited {
+    /// The menu of these items (one of them).
+    Items(Vec<FileEntry>),
+    /// The folder's own menu: the folder that is open.
+    Folder(FileEntry),
+}
+
+impl Awaited {
+    /// The one thing whose answers are waited for.
+    fn entry(&self) -> Option<&FileEntry> {
+        match self {
+            Awaited::Items(chosen) => match chosen.as_slice() {
+                [only] => Some(only),
+                _ => None,
+            },
+            Awaited::Folder(folder) => Some(folder),
+        }
+    }
+}
+
+/// What the head of the folder's own menu follows while the menu is open.
+struct FolderHead {
+    /// The open folder, as Aware keeps what it finds out about it.
+    entry: FileEntry,
+    title: SharedString,
+    items: Option<usize>,
+    branch: Option<SharedString>,
 }
 
 /// A menu asked for that waits its breath ([`LOOK_FIRST`]) for what is being found out about its one item.
@@ -144,7 +178,7 @@ struct Waiting {
     /// Which asking it is: the menu opens only if no other was asked for since.
     turn: u64,
     pane: usize,
-    chosen: Vec<FileEntry>,
+    what: Awaited,
     at: Point<Pixels>,
     /// Hears Aware's answers, so the menu opens the moment everything it waits for is known.
     _wake: Subscription,
@@ -189,6 +223,23 @@ pub struct MenuHost {
     /// Tests: stands in for Windows' own menu, which can't be shown headless.
     #[cfg(test)]
     pub(crate) shell_calls: std::rc::Rc<std::cell::RefCell<Vec<ShellCall>>>,
+}
+
+/// The folder at `path` as Aware keeps what it finds out about a folder that no list has an entry for: Aware
+/// asks about a folder by its path, and so need not know its modified time.
+fn folder_entry(path: &str) -> FileEntry {
+    let name = base_name(path).to_string();
+    FileEntry {
+        lower: name.to_lowercase(),
+        name,
+        path: path.to_string(),
+        dir: true,
+        size: 0,
+        modified: 0,
+        attrs: glint_model::entries::attr::DIRECTORY,
+        ext: String::new(),
+        origin: None,
+    }
 }
 
 impl EventEmitter<MenuEvent> for MenuHost {}
@@ -324,11 +375,12 @@ impl MenuHost {
         title: SharedString,
         items: Option<usize>,
         branch: Option<SharedString>,
+        probed: Option<&Probed>,
         cx: &App,
     ) -> (Vec<Node>, Shape) {
         let facts = aware::facts(cx, &[]);
-        let head = || head::folder_head(title, items, branch);
-        (Self::dressed(nodes, head, &facts, None, Vec::new(), cx), facts.shape)
+        let head = || head::folder_head_with(title, items, branch, probed);
+        (Self::dressed(nodes, head, &facts, probed, Vec::new(), cx), facts.shape)
     }
 
     /// A folder's name as the tabs say it, in the language shown.
@@ -347,6 +399,13 @@ impl MenuHost {
     /// Aware found out something: if the menu is for one item, its head says it (nothing else moves).
     fn follow_answers(&mut self, cx: &mut Context<Self>) {
         let Some(open) = &self.open else { return };
+        if let Some(folder) = &open.folder {
+            let probed = aware::try_shared(cx).and_then(|aware| aware.read(cx).probed(&folder.entry).cloned());
+            let head =
+                head::folder_head_with(folder.title.clone(), folder.items, folder.branch.clone(), probed.as_ref());
+            open.view.update(cx, |view, cx| view.set_head(head, cx));
+            return;
+        }
         let [entry] = open.targets.as_slice() else { return };
         let probed = Self::probed_of(&open.targets, cx);
         let head = head::head_of(&open.targets, probed.as_ref(), &Self::extras(Some(entry), cx));
@@ -474,7 +533,7 @@ impl MenuHost {
                 self.waiting = Some(Waiting {
                     turn,
                     pane,
-                    chosen,
+                    what: Awaited::Items(chosen),
                     at,
                     _wake: wake,
                 });
@@ -494,7 +553,7 @@ impl MenuHost {
         let Some(waiting) = self.waiting.as_ref().filter(|waiting| waiting.turn == turn) else {
             return;
         };
-        let [entry] = waiting.chosen.as_slice() else { return };
+        let Some(entry) = waiting.what.entry() else { return };
         if aware.read(cx).answered(entry) {
             self.open_waiting(turn, window, cx);
         }
@@ -505,8 +564,12 @@ impl MenuHost {
         if self.opening != turn {
             return;
         }
-        if let Some(Waiting { pane, chosen, at, .. }) = self.waiting.take() {
-            self.open_items(pane, chosen, at, window, cx);
+        match self.waiting.take() {
+            Some(Waiting { pane, what: Awaited::Items(chosen), at, .. }) => {
+                self.open_items(pane, chosen, at, window, cx);
+            }
+            Some(Waiting { pane, what: Awaited::Folder(_), at, .. }) => self.show_background(pane, at, window, cx),
+            None => {}
         }
     }
 
@@ -531,6 +594,7 @@ impl MenuHost {
                 label,
                 shape,
                 targets: chosen,
+                folder: None,
             },
             window,
             cx,
@@ -562,6 +626,7 @@ impl MenuHost {
                 label,
                 shape,
                 targets: entries,
+                folder: None,
             },
             window,
             cx,
@@ -570,6 +635,10 @@ impl MenuHost {
 
     /// The folder's own menu: right-click on the empty part of the list, the grid, or a folder with nothing
     /// selected for the keyboard (`backgroundMenu`).
+    ///
+    /// For a real folder on a drive, what isn't known about it yet (its size, what a build left in it) is asked
+    /// for at once, and the menu waits for it as the item menus do ([`LOOK_FIRST`]), so that its Suggested rows
+    /// can offer "Clean up…" in a project folder; what comes in later still goes into its head.
     pub fn open_background_menu(
         &mut self,
         pane: usize,
@@ -578,6 +647,45 @@ impl MenuHost {
         cx: &mut Context<Self>,
     ) {
         let at = Self::anchor(at, window);
+        self.opening = self.opening.wrapping_add(1);
+        self.waiting = None;
+        if let (Some(aware), Some(folder)) = (aware::try_shared(cx), Self::folder_shown(pane, cx)) {
+            let asked = aware.update(cx, |aware, cx| aware.look_now(std::slice::from_ref(&folder), cx));
+            if asked || aware.read(cx).settling(&folder) {
+                let turn = self.opening;
+                let wake = cx.subscribe_in(&aware, window, move |this, aware, _: &aware::Answered, window, cx| {
+                    this.wake(turn, aware, window, cx);
+                });
+                self.waiting = Some(Waiting {
+                    turn,
+                    pane,
+                    what: Awaited::Folder(folder),
+                    at,
+                    _wake: wake,
+                });
+                cx.spawn_in(window, async move |this, cx| {
+                    cx.background_executor().timer(LOOK_FIRST).await;
+                    this.update_in(cx, |this, window, cx| this.open_waiting(turn, window, cx)).ok();
+                })
+                .detach();
+                return;
+            }
+        }
+        self.show_background(pane, at, window, cx);
+    }
+
+    /// The folder `pane` shows, as Aware keeps what it finds out about it; None when it isn't a plain folder on
+    /// a drive (search results, an archive, a folder with no access, the Recycle Bin, This PC).
+    fn folder_shown(pane: usize, cx: &App) -> Option<FileEntry> {
+        let explorer = try_explorer(cx)?;
+        let ex = explorer.read(cx);
+        let tab = ex.pane_tab(pane)?;
+        let plain = tab.find.is_none() && tab.archive().is_none() && tab.no_access().is_none();
+        (plain && !tab.is_recycle_bin() && is_folder_path(&tab.path)).then(|| folder_entry(&tab.path))
+    }
+
+    /// Shows the folder's own menu at `at`, with what is known about the folder now.
+    fn show_background(&mut self, pane: usize, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
         let Some(explorer) = try_explorer(cx) else { return };
         let (folder, view, title, rows, tab_id) = {
             let ex = explorer.read(cx);
@@ -612,7 +720,17 @@ impl MenuHost {
         ctx.view = Some(view);
         let nodes = folder_menu(&folder, true, &ctx);
         let branch = git::view_of(cx, tab_id).and_then(|view| view.branch.clone()).map(SharedString::from);
-        let (nodes, shape) = Self::folder_nodes(nodes, title, Some(rows), branch, cx);
+        let entry = Self::folder_shown(pane, cx);
+        let probed = entry
+            .as_ref()
+            .and_then(|entry| aware::try_shared(cx)?.read(cx).probed(entry).cloned());
+        let follow = entry.map(|entry| FolderHead {
+            entry,
+            title: title.clone(),
+            items: Some(rows),
+            branch: branch.clone(),
+        });
+        let (nodes, shape) = Self::folder_nodes(nodes, title, Some(rows), branch, probed.as_ref(), cx);
         let label = t!("Folder menu");
         self.show(
             Shown {
@@ -622,6 +740,7 @@ impl MenuHost {
                 label,
                 shape,
                 targets: Vec::new(),
+                folder: follow,
             },
             window,
             cx,
@@ -634,7 +753,7 @@ impl MenuHost {
         let pane = try_explorer(cx).map_or(0, |e| e.read(cx).active_pane());
         let ctx = self.folder_ctx(folder, cx);
         let nodes = folder_menu(folder, false, &ctx);
-        let (nodes, shape) = Self::folder_nodes(nodes, Self::folder_title(folder, cx), None, None, cx);
+        let (nodes, shape) = Self::folder_nodes(nodes, Self::folder_title(folder, cx), None, None, None, cx);
         let label = t!("Folder menu");
         self.show(
             Shown {
@@ -644,6 +763,7 @@ impl MenuHost {
                 label,
                 shape,
                 targets: Vec::new(),
+                folder: None,
             },
             window,
             cx,
@@ -819,6 +939,7 @@ impl MenuHost {
             label,
             shape,
             targets,
+            folder,
         } = shown;
         if nodes.is_empty() {
             self.close(cx);
@@ -840,6 +961,7 @@ impl MenuHost {
             focus,
             shape,
             targets,
+            folder,
             _subscription: subscription,
             _aware: watch,
         });

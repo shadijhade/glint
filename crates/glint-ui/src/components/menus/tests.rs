@@ -1171,6 +1171,8 @@ impl Ui {
         self.visual.update(|window, cx| {
             menus.update(cx, |m, cx| m.open_background_menu(0, Some(at), window, cx));
         });
+        // The folder's menu may wait a breath for what is being found out about the folder.
+        self.visual.executor().advance_clock(std::time::Duration::from_millis(60));
         self.frame();
     }
 
