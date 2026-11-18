@@ -251,11 +251,13 @@ impl Explorer {
                 .update(cx, |this, cx| {
                     let mut last = None;
                     for made in &report.made {
-                        last = Some(this.remember_undo(
-                            format!("link “{}”", base_name(&made.path)),
-                            UndoAction::RemoveLinks(vec![made.path.clone()]),
-                            cx,
-                        ));
+                        // A clone is a file of its own that may have been changed since: back to the Recycle Bin, as
+                        // a pasted copy goes. A link is only taken away (see glint_core::links).
+                        let undo = match made.kind {
+                            glint_core::links::Kind::Clone => UndoAction::Recycle(vec![made.path.clone()]),
+                            _ => UndoAction::RemoveLinks(vec![made.path.clone()]),
+                        };
+                        last = Some(this.remember_undo(format!("link “{}”", base_name(&made.path)), undo, cx));
                     }
                     if !report.made.is_empty() {
                         cx.emit(ExplorerEvent::Operation(OpNotice::Linked {
