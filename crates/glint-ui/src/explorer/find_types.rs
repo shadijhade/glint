@@ -57,13 +57,27 @@ pub struct Wider {
     pub names_only: bool,
     /// What is inside the files too, even where that isn't done unasked (a whole drive).
     pub inside: bool,
+    /// Every file below the folder, with no words to match (the flat view, Ctrl+B).
+    pub flat: bool,
 }
+
+/// What a flat view asks the engine: every file (the index answers a filter alone, fd lists every name).
+pub const FLAT_QUERY: &str = "files:";
 
 impl Wider {
     /// The same search again where it was run (F5, "Search again").
     pub fn in_scope(scope: impl Into<String>) -> Wider {
         Wider {
             scope: Some(scope.into()),
+            ..Default::default()
+        }
+    }
+
+    /// The flat view of `scope`: every file below it.
+    pub fn flat_in(scope: impl Into<String>) -> Wider {
+        Wider {
+            scope: Some(scope.into()),
+            flat: true,
             ..Default::default()
         }
     }

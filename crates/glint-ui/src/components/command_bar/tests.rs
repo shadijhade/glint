@@ -717,6 +717,7 @@ fn folder_facts() -> Facts {
     f.tab = Some(TabId(1));
     f.path = "C:\\Work".into();
     f.in_folder = true;
+    f.can_flat = true;
     f
 }
 
@@ -843,6 +844,9 @@ fn the_tools_are_greyed_in_a_read_only_place_and_a_remote_has_no_clean_up() {
     );
 }
 
+/// The View menu's row for the flat view.
+const FLAT: &str = "Flat view: every file in this folder and its subfolders";
+
 #[test]
 fn the_view_menu_has_the_toggles_and_the_views_only_when_the_bar_is_that_narrow() {
     let _guard = testing::lock();
@@ -853,8 +857,21 @@ fn the_view_menu_has_the_toggles_and_the_views_only_when_the_bar_is_that_narrow(
     let narrow = menus::view_menu(&f, 3);
     assert_eq!(
         labels(&narrow),
-        ["Show hidden items", "Preview pane", "Dual pane", "Compare panes"]
+        [
+            "Show hidden items",
+            FLAT,
+            "Preview pane",
+            "Dual pane",
+            "Compare panes"
+        ]
     );
+    // The flat view is on offer in a folder (with its key), off while it can't be shown (This PC), and checked while on.
+    assert_eq!(entry(&narrow, FLAT).hint.as_deref(), Some("Ctrl+B"));
+    assert!(!entry(&narrow, FLAT).disabled && entry(&narrow, FLAT).check == Some(false));
+    let mut shown = f.clone();
+    shown.flat = true;
+    assert_eq!(entry(&menus::view_menu(&shown, 3), FLAT).check, Some(true));
+    assert!(entry(&menus::view_menu(&Facts::none(), 3), FLAT).disabled);
     assert_eq!(entry(&narrow, "Show hidden items").check, Some(true));
     assert_eq!(entry(&narrow, "Show hidden items").hint.as_deref(), Some("Ctrl+H"));
     assert_eq!(entry(&narrow, "Preview pane").hint.as_deref(), Some("Alt+P"));
@@ -869,6 +886,7 @@ fn the_view_menu_has_the_toggles_and_the_views_only_when_the_bar_is_that_narrow(
             "Columns",
             "-",
             "Show hidden items",
+            FLAT,
             "Preview pane",
             "Dual pane",
             "Compare panes"

@@ -73,6 +73,8 @@ pub enum Pick {
     Hidden,
     /// The preview pane, on or off.
     Preview,
+    /// The flat view of the folder (every file below it as one list), on or off.
+    Flat,
     /// Two panes, or one.
     Dual,
     /// Highlight differences between the panes, on or off.
@@ -111,6 +113,7 @@ impl Pick {
         match self {
             Pick::Hidden => "hidden".into(),
             Pick::Preview => "preview".into(),
+            Pick::Flat => "flat".into(),
             Pick::Dual => "dual".into(),
             Pick::ComparePanes => "compare-panes".into(),
             Pick::View(ViewMode::List) => "view:list".into(),
@@ -138,6 +141,7 @@ impl Pick {
         Some(match id {
             "hidden" => Pick::Hidden,
             "preview" => Pick::Preview,
+            "flat" => Pick::Flat,
             "dual" => Pick::Dual,
             "compare-panes" => Pick::ComparePanes,
             "view:list" => Pick::View(ViewMode::List),
@@ -272,7 +276,7 @@ pub fn view_menu(f: &Facts, fold: usize) -> Vec<Node> {
     nodes
 }
 
-/// The four on/off rows: hidden items, preview pane, dual pane, compare panes.
+/// The five on/off rows: hidden items, the flat view, preview pane, dual pane, compare panes.
 fn toggle_rows(f: &Facts) -> Vec<Node> {
     let rows = [
         (
@@ -280,6 +284,12 @@ fn toggle_rows(f: &Facts) -> Vec<Node> {
             Pick::Hidden,
             &crate::actions::ToggleHidden as &dyn Action,
             f.show_hidden,
+        ),
+        (
+            t!("Flat view: every file in this folder and its subfolders"),
+            Pick::Flat,
+            &crate::actions::FlatView,
+            f.flat,
         ),
         (
             t!("Preview pane"),
@@ -297,7 +307,9 @@ fn toggle_rows(f: &Facts) -> Vec<Node> {
     ];
     rows.into_iter()
         .map(|(label, pick, action, on)| {
-            let mut entry = picked(label, IconName::Check, pick, Some(action)).checked(on);
+            // The flat view is for a folder (and the way back out of it); nothing else here depends on the place.
+            let off = pick == Pick::Flat && !(f.flat || f.can_flat);
+            let mut entry = picked(label, IconName::Check, pick, Some(action)).checked(on).disabled(off);
             entry.icon = None;
             Node::Item(entry)
         })

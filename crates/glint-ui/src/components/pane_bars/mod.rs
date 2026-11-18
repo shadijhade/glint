@@ -71,6 +71,19 @@ pub struct SearchInfo {
 }
 
 impl SearchInfo {
+    /// The flat view (Ctrl+B), which lists every file below the folder: a search with no words.
+    pub fn is_flat(&self) -> bool {
+        self.query.is_empty()
+    }
+
+    /// The Wider that runs this search again where it ran.
+    fn again(&self) -> Wider {
+        Wider {
+            flat: self.is_flat(),
+            ..Wider::in_scope(self.scope.clone())
+        }
+    }
+
     /// What the folder is called in the bar: its name, or "all drives" for This PC (`scopeName`).
     pub fn scope_name(&self) -> String {
         if self.scope == THIS_PC {
@@ -154,6 +167,16 @@ const MARK: char = '\u{E000}';
 /// query and the folder's name are isolated so an Arabic name keeps its own direction inside the sentence; without
 /// it (the accessible name) they are plain.
 pub fn search_words(info: &SearchInfo, display: bool) -> (String, Range<usize>) {
+    if info.is_flat() {
+        // The folder's name is what's in bold, where the words of a search are.
+        let name = info.scope_name();
+        let name = if display { isolate(name).to_string() } else { name };
+        let template = t!("Every file in {scope} and its subfolders", scope = MARK);
+        let at = template.find(MARK).unwrap_or(0);
+        let text = template.replacen(MARK, &name, 1);
+        let end = (at + name.len()).min(text.len());
+        return (text, at..end);
+    }
     let quoted = format!("“{}”", info.query);
     let scope = info.scope_name();
     let scope = if display { isolate(scope).to_string() } else { scope };
@@ -252,11 +275,10 @@ impl PaneBars {
     /// Inside files too: the same search again, in the same place, reading what the files hold as well (a whole
     /// drive isn't read unasked).
     fn search_inside(&self, info: &SearchInfo, cx: &mut Context<Self>) {
-        let (tab, query, scope) = (info.tab, info.query.clone(), info.scope.clone());
+        let (tab, query) = (info.tab, info.query.clone());
+        let wider = info.again().inside_too();
         self.explorer.update(cx, |explorer, cx| {
-            explorer
-                .run_find_in(tab, &query, Wider::in_scope(scope).inside_too(), cx)
-                .detach();
+            explorer.run_find_in(tab, &query, wider, cx).detach();
         });
     }
 
@@ -267,11 +289,10 @@ impl PaneBars {
 
     /// Show all: the same search again, in the same folder, without the result limit.
     fn show_all(&self, info: &SearchInfo, cx: &mut Context<Self>) {
-        let (tab, query, scope) = (info.tab, info.query.clone(), info.scope.clone());
+        let (tab, query) = (info.tab, info.query.clone());
+        let wider = info.again().without_limit();
         self.explorer.update(cx, |explorer, cx| {
-            explorer
-                .run_find_in(tab, &query, Wider::in_scope(scope).without_limit(), cx)
-                .detach();
+            explorer.run_find_in(tab, &query, wider, cx).detach();
         });
     }
 
@@ -421,7 +442,8 @@ impl PaneBars {
 
         // Save (Saved once it is in the sidebar), Stop while it runs, Close.
         let chosen = info.clone();
-        let save = ghost("pane-search-save", pane)
+        // A flat view has no words to keep.
+        let save = (!info.is_flat()).then(|| ghost("pane-search-save", pane)
             .icon(if info.saved {
                 icon(IconName::BookmarkCheck).text_color(t.primary)
             } else {
@@ -433,7 +455,7 @@ impl PaneBars {
             } else {
                 t!("Keep this search in the sidebar, to run it again with one click")
             })
-            .on_click(cx.listener(move |this, _, _, cx| this.save(&chosen, cx)));
+            .on_click(cx.listener(move |this, _, _, cx| this.save(&chosen, cx))));
         let stop = info.running.then(|| {
             ghost("pane-search-stop", pane)
                 .icon(icon(IconName::Square).size_3())
@@ -465,7 +487,7 @@ impl PaneBars {
             .child(lead)
             .child(words)
             .children(limit)
-            .child(end_group().children(inside).child(save).children(stop).child(close))
+            .child(end_group().children(inside).children(save).children(stop).child(close))
             .into_any_element()
     }
 

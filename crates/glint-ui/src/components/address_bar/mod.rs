@@ -738,6 +738,11 @@ impl AddressBar {
         // The folder by the name its tab would have ("Local Disk (C:)", "Documents", "This PC").
         let name = || place_name(&self.explorer.read(cx).tab_name(&place.path));
         match (&place.query, back) {
+            // No words: the flat view of the folder.
+            (Some(query), true) if query.is_empty() => t!("Back to every file in {place} (Alt+Left)", place = name()),
+            (Some(query), false) if query.is_empty() => {
+                t!("Forward to every file in {place} (Alt+Right)", place = name())
+            }
             (Some(query), true) => t!("Back to the results for “{query}” (Alt+Left)", query = query),
             (Some(query), false) => t!("Forward to the results for “{query}” (Alt+Right)", query = query),
             (None, true) => t!("Back to {place} (Alt+Left)", place = name()),

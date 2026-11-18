@@ -21,6 +21,13 @@
 //! folder or New file puts something in the folder, [`Explorer::stop_find`], [`Explorer::leave_find`] or
 //! [`Explorer::clear_find`]. Each of those but the first tells the source to cancel the lane, as `cancelFind` did.
 //!
+//! # The flat view
+//!
+//! Ctrl+B ([`Explorer::toggle_flat_view`]) is a search with nothing to match: the same run, stream and rows, asked
+//! for every file below the folder (`FLAT_QUERY`) and marked [`FindRun::flat`]. It has no words (its query is
+//! empty), so the bars and the empty states word it as the folder's files, and Save, Search every drive and the
+//! like are not offered. Settings' result limit applies to it as to a search, and says so ("Stopped at N").
+//!
 //! # History
 //!
 //! A search is a place in the tab's Back and Forward history (`history.rs`): begun in a folder, it comes after the
@@ -32,7 +39,7 @@ use super::model::{Explorer, Prefs};
 use super::tab::Selection;
 use super::types::*;
 use glint_model::entries::{terms, FileEntry};
-use glint_model::paths::{is_recycle_bin, THIS_PC};
+use glint_model::paths::{is_folder_path, is_recycle_bin, THIS_PC};
 use glint_model::store::SavedSearch;
 use gpui_kit::{App, Context, Task};
 use std::collections::HashMap;
@@ -295,7 +302,12 @@ impl Explorer {
         scope: String,
         cx: &mut Context<Self>,
     ) -> Task<()> {
-        self.run_find_with(tab, query, Wider::in_scope(scope), false, cx)
+        // Only a flat view has no words.
+        let wider = Wider {
+            flat: query.is_empty(),
+            ..Wider::in_scope(scope)
+        };
+        self.run_find_with(tab, query, wider, false, cx)
     }
 
     /// Runs a search in `tab`. With `history`, a search begun where the tab showed its folder is a place of its own
@@ -308,7 +320,8 @@ impl Explorer {
         history: bool,
         cx: &mut Context<Self>,
     ) -> Task<()> {
-        if query.trim().is_empty() {
+        let flat = wider.flat;
+        if query.trim().is_empty() && !flat {
             self.clear_find_in(tab, cx);
             return Task::ready(());
         }
@@ -317,6 +330,12 @@ impl Explorer {
         };
         let prefs = Prefs::read(cx);
         let scope = wider.scope.clone().unwrap_or_else(|| find_scope(query, &t.path));
+        // Every file of every drive isn't a view anyone can use: a flat view is one folder's.
+        if flat && scope == THIS_PC {
+            return Task::ready(());
+        }
+        // A flat view asks the engine for every file; the run itself has no words.
+        let (asked, query) = if flat { (FLAT_QUERY, "") } else { (query, query) };
         // What's in the Recycle Bin isn't in folders to search: the box filters it as it's typed.
         if is_recycle_bin(&scope) {
             cx.emit(ExplorerEvent::Find(FindNotice::NothingBelowRecycleBin));
@@ -343,9 +362,10 @@ impl Explorer {
             } else {
                 prefs.find_max_results.and_then(|max| usize::try_from(max).ok())
             },
-            // Typos allowed when nothing matches as typed; past the limit, the best matches are what's kept.
-            fuzzy: true,
-            rank: true,
+            // Typos allowed when nothing matches as typed; past the limit, the best matches are what's kept. A flat
+            // view has nothing to rank or to mistype: past the limit it keeps the first files the engine comes to.
+            fuzzy: !flat,
+            rank: !flat,
             exclude: exclude.clone(),
         };
         let mut skipped = exclude;
@@ -377,6 +397,7 @@ impl Explorer {
             t.find = Some(FindRun {
                 id,
                 query: query.to_string(),
+                flat,
                 engine,
                 scope,
                 entries,
@@ -399,7 +420,7 @@ impl Explorer {
         self.tab_changed(tab, cx);
 
         let started = Instant::now();
-        let starting = self.source.find(&lane(tab), roots, query.to_string(), options);
+        let starting = self.source.find(&lane(tab), roots, asked.to_string(), options);
         let (finished, wait) = async_channel::bounded::<()>(1);
         let reading = cx.spawn(async move |this, cx| {
             // Dropped when the reading ends or is cancelled, which is what the returned task waits for.
@@ -455,7 +476,53 @@ impl Explorer {
             return Task::ready(());
         };
         let (query, scope) = (find.query.clone(), find.scope.clone());
-        self.run_find(&query, Wider::in_scope(scope), cx)
+        let wider = Wider {
+            flat: find.flat,
+            ..Wider::in_scope(scope)
+        };
+        self.run_find(&query, wider, cx)
+    }
+
+    // ---- The flat view ------------------------------------------------------------------------------------
+
+    /// Whether the tab shows the flat view.
+    pub fn is_flat(&self, tab: TabId) -> bool {
+        self.tabs.get(&tab).and_then(|t| t.find.as_ref()).is_some_and(|f| f.flat)
+    }
+
+    /// Whether the tab can show the flat view of its folder: a folder that has finished listing, not This PC (every
+    /// file of every drive), the Recycle Bin, Recent, the Gallery, another computer's or the inside of an archive.
+    pub fn can_flatten(&self, tab: TabId) -> bool {
+        self.tabs.get(&tab).is_some_and(|t| {
+            t.ready && is_folder_path(&t.path) && t.archive().is_none()
+        })
+    }
+
+    /// Ctrl+B, in the active tab: every file of the folder and its subfolders as one list, or, when that is
+    /// showing, back to the folder. See [`Explorer::toggle_flat_view_in`].
+    #[must_use = "dropping the task stops waiting for the listing, not the listing; `.detach()` it to let it run"]
+    pub fn toggle_flat_view(&mut self, cx: &mut Context<Self>) -> Task<()> {
+        let tab = self.active_tab_id();
+        self.toggle_flat_view_in(tab, cx)
+    }
+
+    /// The flat view of `tab`'s folder is a search for every file below it, answered by the index (or fd, for a
+    /// folder it doesn't have), so it streams in as results do, in the same rows, columns (with the folder of each
+    /// file), sort, grid and batch rename. Like a search it is a place after the folder in Back and Forward;
+    /// toggling again, Escape, Back, Up or opening a folder ends it. The task resolves when the listing ends.
+    #[must_use = "dropping the task stops waiting for the listing, not the listing; `.detach()` it to let it run"]
+    pub fn toggle_flat_view_in(&mut self, tab: TabId, cx: &mut Context<Self>) -> Task<()> {
+        if self.is_flat(tab) {
+            self.leave_find(Some(tab), cx);
+            return Task::ready(());
+        }
+        if !self.can_flatten(tab) {
+            return Task::ready(());
+        }
+        let Some(path) = self.tabs.get(&tab).map(|t| t.path.clone()) else {
+            return Task::ready(());
+        };
+        self.run_find_with(tab, "", Wider::flat_in(path), true, cx)
     }
 
     /// A saved search from the sidebar: its folder opens in this tab, with its query in the box, searched

@@ -184,6 +184,8 @@ pub(crate) enum Track {
 /// A search's run, as far as the list shows it.
 pub(crate) struct FindInfo {
     pub query: String,
+    /// The flat view: every file below the folder, with no words.
+    pub flat: bool,
     pub scope: String,
     /// The names or the files' contents are still being searched.
     pub running: bool,
@@ -668,6 +670,7 @@ impl FileList {
         let tab = explorer.pane_tab(self.pane)?;
         let find = tab.find.as_ref().map(|run: &FindRun| FindInfo {
             query: run.query.clone(),
+            flat: run.flat,
             scope: run.scope.clone(),
             running: run.running || run.inside.running,
             error: run.error.clone(),

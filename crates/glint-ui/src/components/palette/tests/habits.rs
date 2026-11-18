@@ -174,3 +174,30 @@ fn running_a_menu_command_counts_it_and_with_learning_off_counts_nothing(cx: &mu
     let used = w.cx.update(|_, cx| super::super::read_inputs(cx).used);
     assert!(used.is_empty());
 }
+
+#[test]
+fn the_palette_offers_the_flat_view_in_a_folder_and_the_way_out_of_it() {
+    let _guard = testing::lock();
+    let flat = |list: &[Command]| list.iter().find(|c| c.id == "flat-view").map(|c| c.label.to_string());
+    // A folder that can be shown flat offers it, wherever the keyboard is.
+    let folder = Inputs {
+        can_flat: true,
+        ..inputs()
+    };
+    assert_eq!(
+        flat(&commands::all(&folder)).as_deref(),
+        Some("Flat view: every file in this folder and its subfolders as one list")
+    );
+    // Showing it: the same command is the way out.
+    let showing = Inputs {
+        flat: true,
+        finding: true,
+        ..inputs()
+    };
+    assert_eq!(
+        flat(&commands::all(&showing)).as_deref(),
+        Some("Leave the flat view, back to the folder")
+    );
+    // Where it can't be shown (This PC, the Recycle Bin, an archive) it isn't offered.
+    assert_eq!(flat(&commands::all(&inputs())), None);
+}

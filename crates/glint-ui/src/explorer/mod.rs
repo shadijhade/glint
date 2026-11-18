@@ -137,6 +137,8 @@ pub(crate) mod fake;
 #[cfg(test)]
 mod find_tests;
 #[cfg(test)]
+mod flat_tests;
+#[cfg(test)]
 mod history_tests;
 #[cfg(test)]
 mod inside_tests;

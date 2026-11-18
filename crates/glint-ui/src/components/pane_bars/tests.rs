@@ -661,3 +661,33 @@ fn the_sentence_marks_the_query_in_bold_and_knows_every_wording() {
     assert!(text.is_char_boundary(bold.start) && text.is_char_boundary(bold.end));
     assert!(text[bold].contains("تقرير"));
 }
+
+#[test]
+fn the_flat_view_says_it_lists_every_file_and_has_nothing_to_save() {
+    let flat = SearchInfo {
+        query: String::new(),
+        ..info()
+    };
+    assert!(flat.is_flat());
+    let (text, bold) = search_words(&flat, false);
+    assert_eq!(text, "Every file in a and its subfolders");
+    assert_eq!(&text[bold], "a", "the folder's name is what is in bold");
+    // Run again (Show all, Inside files too) it stays flat, where it was.
+    assert!(flat.again().flat);
+    assert!(!info().again().flat);
+}
+
+#[gpui_kit::test]
+fn the_flat_view_has_a_bar_without_save_and_with_close(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut rig = rig(cx, "flat", false);
+    rig.act(|e, cx| e.toggle_flat_view(cx).detach());
+    settle(&mut rig.visual);
+    assert!(matches!(rig.bar(0), Bar::Search(ref info) if info.is_flat()));
+    assert!(rig.has(0, "Close"), "{:?}", rig.labels(0));
+    assert!(!rig.has(0, "Save") && !rig.has(0, "Saved"), "{:?}", rig.labels(0));
+    assert_eq!(
+        rig.label_of(("pane-search-text", 0)).as_deref(),
+        Some("Every file in a and its subfolders")
+    );
+}
