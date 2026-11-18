@@ -53,29 +53,23 @@
   !insertmacro ${ROW} 13 zoxide "zoxide" 4 tool zoxide ajeetdsouza.zoxide \
     "Folder history shared with your terminals" \
     "zoxide remembers the folders you go to. The folders you cd to in your terminals rank in Ctrl+K, and z finds the ones you open in Glint."
-  !insertmacro ${ROW} 14 sendme "sendme" 5 tool sendme n0-computer.sendme \
-    "Sending files to another PC" \
-    "sendme sends files and folders from PC to PC, encrypted end to end, with a ticket instead of an account."
-  !insertmacro ${ROW} 15 dufs "dufs" 5 tool dufs sigoden.dufs \
-    "Sharing a folder with a phone" \
-    "dufs serves a folder on this network. Share with a phone then gives a link that the phone's browser opens."
-  !insertmacro ${ROW} 16 rclone "rclone" 5 tool rclone rclone.rclone \
+  !insertmacro ${ROW} 14 rclone "rclone" 5 tool rclone rclone.rclone \
     "Google Drive, OneDrive, Dropbox and 60 more clouds" \
     "rclone reaches more than 60 cloud storage services. Glint then opens Google Drive, OneDrive, Dropbox, Box, MEGA, S3 and the rest like folders, signs you in to them, and keeps folders in sync with them."
-  !insertmacro ${ROW} 17 whisper "whisper.cpp" 1 tool whisper-cli whisper \
+  !insertmacro ${ROW} 15 whisper "whisper.cpp" 1 tool whisper-cli whisper \
     "Subtitles for videos and recordings" \
     "whisper.cpp runs OpenAI's Whisper on this PC. Media's Subtitles then writes what's said in videos and recordings, in any language; its model downloads the first time."
-  !insertmacro ${ROW} 18 pdfcpu "pdfcpu" 6 tool pdfcpu pdfcpu     "PDF tools: merge, split, pages, smaller, passwords"     "pdfcpu works on PDFs on this PC: merging and splitting them, keeping, taking out and turning pages, making them smaller, saving their pictures, adding or taking off a password and stamping them. Nothing is uploaded."
-  !insertmacro ${ROW} 19 duckdb "DuckDB" 6 tool duckdb duckdb.cli     "SQL over data files of any size"     "DuckDB reads CSV, JSON and Parquet files where they are, however big: Query, Profile (every column described), Query together and Convert data use it, reading only."
-  !insertmacro ${ROW} 20 exiftool "ExifTool" 6 tool exiftool oliverbetz.exiftool     "Remove personal info from photos, videos and PDFs"     "ExifTool reads and changes what files say about themselves. Remove personal info takes out where a photo was taken, the camera's serial number, names and editing history before you share; it also changes when photos were taken."
-  !insertmacro ${ROW} 21 7zip "7-Zip" 6 tool 7z 7zip.7zip     "Disk images and installers opened like folders"     "7-Zip reads ISO, VHD and VHDX, VMDK, DMG, WIM, ext4 and APFS images, installers and Linux packages. Glint opens them like folders, so you see what an installer holds without running it."
-  !insertmacro ${ROW} 22 pandoc "pandoc" 6 tool pandoc johnmacfarlane.pandoc \
+  !insertmacro ${ROW} 16 pdfcpu "pdfcpu" 6 tool pdfcpu pdfcpu     "PDF tools: merge, split, pages, smaller, passwords"     "pdfcpu works on PDFs on this PC: merging and splitting them, keeping, taking out and turning pages, making them smaller, saving their pictures, adding or taking off a password and stamping them. Nothing is uploaded."
+  !insertmacro ${ROW} 17 duckdb "DuckDB" 6 tool duckdb duckdb.cli     "SQL over data files of any size"     "DuckDB reads CSV, JSON and Parquet files where they are, however big: Query, Profile (every column described), Query together and Convert data use it, reading only."
+  !insertmacro ${ROW} 18 exiftool "ExifTool" 6 tool exiftool oliverbetz.exiftool     "Remove personal info from photos, videos and PDFs"     "ExifTool reads and changes what files say about themselves. Remove personal info takes out where a photo was taken, the camera's serial number, names and editing history before you share; it also changes when photos were taken."
+  !insertmacro ${ROW} 19 7zip "7-Zip" 6 tool 7z 7zip.7zip     "Disk images and installers opened like folders"     "7-Zip reads ISO, VHD and VHDX, VMDK, DMG, WIM, ext4 and APFS images, installers and Linux packages. Glint opens them like folders, so you see what an installer holds without running it."
+  !insertmacro ${ROW} 20 pandoc "pandoc" 6 tool pandoc johnmacfarlane.pandoc \
     "Convert document: Word, Markdown, HTML, EPUB and more" \
     "pandoc turns documents into one another: Word, OpenDocument, Markdown, HTML, EPUB, LaTeX, RTF and more, and Markdown into PowerPoint. It runs sandboxed: it reads only the document it's given."
-  !insertmacro ${ROW} 23 typst "Typst" 6 tool typst typst.typst \
+  !insertmacro ${ROW} 21 typst "Typst" 6 tool typst typst.typst \
     "Convert document: PDFs without LaTeX or Word" \
     "Typst typesets documents. Convert document makes its PDFs with it, from what pandoc writes, without LaTeX or Word."
-  !insertmacro ${ROW} 24 restic "restic" 7 tool restic restic.restic \
+  !insertmacro ${ROW} 22 restic "restic" 7 tool restic restic.restic \
     "Back up folders to a drive, a network folder or a cloud" \
     "restic backs up folders, encrypted, each backup adding only what changed. Glint backs up to a USB drive, a network folder or any cloud Remote reaches, and shows the backups in Previous versions."
 !macroend
@@ -85,7 +79,7 @@
   !insertmacro ${GROUP} 2 "Clean up and pictures"
   !insertmacro ${GROUP} 3 "Code and projects"
   !insertmacro ${GROUP} 4 "Scripts and terminal"
-  !insertmacro ${GROUP} 5 "Sharing and clouds"
+  !insertmacro ${GROUP} 5 "Clouds"
   !insertmacro ${GROUP} 6 "Documents, data and media"
   !insertmacro ${GROUP} 7 "Backups"
 !macroend

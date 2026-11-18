@@ -745,9 +745,7 @@ fn the_tools_menu_grows_as_the_bar_folds_and_is_greyed_for_what_cant_be_done() {
             "Convert the selected pictures…",
             "Folder rules: sort out what comes in…",
             "# Share",
-            "Send this folder to another PC…",
-            "Share this folder on this network…",
-            "Receive from another PC here…",
+            "Share this folder…",
             "# Check",
             "Scan this folder with Microsoft Defender",
         ]
@@ -797,8 +795,8 @@ fn the_tools_menu_speaks_of_the_selection_and_offers_its_tools_on_one_file() {
         "a jpg converts"
     );
     assert_eq!(
-        entry(&nodes, "Send the selection to another PC…").run,
-        Run::Ask(MenuEvent::SendToPc { path: one.path.clone() })
+        entry(&nodes, "Share the selection…").run,
+        Run::Ask(MenuEvent::Share { paths: vec![one.path.clone()] })
     );
     assert_eq!(
         entry(&nodes, "Scan the selection with Microsoft Defender").run,
@@ -806,11 +804,13 @@ fn the_tools_menu_speaks_of_the_selection_and_offers_its_tools_on_one_file() {
             paths: vec![one.path.clone()]
         })
     );
-    // Two items: sending and one-path checks are for one thing.
+    // Two items: they are shared together (one path checks are for one thing).
     let two = [one.clone(), file("C:\\Work", "b.txt", 1, 0)];
     let nodes = menus::tools_menu(&f, &two, 0, false);
-    assert!(entry(&nodes, "Share this folder on this network…").disabled);
-    assert!(entry(&nodes, "Send this folder to another PC…").disabled);
+    assert_eq!(
+        entry(&nodes, "Share the selection…").run,
+        Run::Ask(MenuEvent::Share { paths: vec![one.path.clone(), two[1].path.clone()] })
+    );
     assert!(!entry(&nodes, "Scan the selection with Microsoft Defender").disabled);
 }
 
@@ -823,8 +823,6 @@ fn the_tools_are_greyed_in_a_read_only_place_and_a_remote_has_no_clean_up() {
     let nodes = menus::tools_menu(&f, &[], 0, false);
     for off in [
         "Clean up this folder…",
-        "Send this folder to another PC…",
-        "Receive from another PC here…",
         "Scan this folder with Microsoft Defender",
     ] {
         assert!(entry(&nodes, off).disabled, "{off}");

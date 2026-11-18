@@ -407,12 +407,6 @@ pub fn tools_menu(f: &Facts, selected: &[FileEntry], fold: usize, sizing: bool) 
     };
     let (in_folder, read_only) = (f.in_folder, f.read_only);
     let folder = f.path.clone();
-    // The one thing selected, else the folder.
-    let one_or_folder = if paths.len() == 1 {
-        paths[0].clone()
-    } else {
-        folder.clone()
-    };
     let paths_or_folder = if paths.is_empty() {
         vec![folder.clone()]
     } else {
@@ -550,37 +544,17 @@ pub fn tools_menu(f: &Facts, selected: &[FileEntry], fold: usize, sizing: bool) 
         false,
     ));
     nodes.push(Node::Heading(t!("Share")));
-    let one_only = paths.len() > 1 || (!in_folder && paths.len() != 1);
-    let sharing_off = read_only || f.bin || one_only;
     nodes.push(ask(
-        if paths.len() == 1 {
-            t!("Send the selection to another PC…")
+        if paths.is_empty() {
+            t!("Share this folder…")
         } else {
-            t!("Send this folder to another PC…")
+            t!("Share the selection…")
         },
-        IconName::Send,
-        MenuEvent::SendToPc {
-            path: one_or_folder.clone(),
+        IconName::Share2,
+        MenuEvent::Share {
+            paths: paths_or_folder.clone(),
         },
-        sharing_off,
-    ));
-    nodes.push(ask(
-        if paths.len() == 1 {
-            t!("Share the selection on this network…")
-        } else {
-            t!("Share this folder on this network…")
-        },
-        IconName::Wifi,
-        MenuEvent::ShareOnNetwork {
-            path: one_or_folder.clone(),
-        },
-        sharing_off,
-    ));
-    nodes.push(ask(
-        t!("Receive from another PC here…"),
-        IconName::Download,
-        MenuEvent::ReceiveHere { folder: folder.clone() },
-        !in_folder || read_only || f.find,
+        f.bin || (paths.is_empty() && !in_folder),
     ));
     nodes.push(Node::Heading(t!("Check")));
     nodes.push(ask(

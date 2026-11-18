@@ -879,32 +879,9 @@ pub fn item_menu(targets: &[FileEntry], c: &ItemCtx) -> Vec<Node> {
             separator(),
             when(!fixed, || {
                 entry_node(Entry::ask(
-                    t!("Send to a phone nearby…"),
-                    IconName::Smartphone,
-                    MenuEvent::SendNearby { paths: paths.clone() },
-                ))
-            }),
-            one.filter(|_| !fixed).and_then(|e| {
-                Entry::ask(
-                    t!("Send to another PC…"),
-                    IconName::Send,
-                    MenuEvent::SendToPc { path: e.path.clone() },
-                )
-                .node()
-            }),
-            one.filter(|_| !fixed).and_then(|e| {
-                Entry::ask(
-                    t!("Share on this network…"),
-                    IconName::Wifi,
-                    MenuEvent::ShareOnNetwork { path: e.path.clone() },
-                )
-                .node()
-            }),
-            when(!fixed, || {
-                entry_node(Entry::ask(
-                    t!("Share with Windows…"),
+                    t!("Share…"),
                     IconName::Share2,
-                    MenuEvent::ShareWithWindows { paths: paths.clone() },
+                    MenuEvent::Share { paths: paths.clone() },
                 ))
             }),
         ],

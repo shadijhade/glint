@@ -55,7 +55,7 @@ pub enum Group {
     Media,
     Documents,
     Files,
-    Sharing,
+    Clouds,
     Developers,
     BuiltIn,
 }
@@ -66,7 +66,7 @@ impl Group {
         Group::Media,
         Group::Documents,
         Group::Files,
-        Group::Sharing,
+        Group::Clouds,
         Group::Developers,
         Group::BuiltIn,
     ];
@@ -78,7 +78,7 @@ impl Group {
             "ffmpeg" | "whisper" | "czkawka" | "rimage" | "exiftool" => Group::Media,
             "pdfcpu" | "pandoc" | "typst" => Group::Documents,
             "7zip" | "restic" | "duckdb" => Group::Files,
-            "rclone" | "sendme" | "dufs" => Group::Sharing,
+            "rclone" => Group::Clouds,
             _ => Group::Developers,
         }
     }
@@ -88,7 +88,7 @@ impl Group {
             Group::Media => "media",
             Group::Documents => "documents",
             Group::Files => "files",
-            Group::Sharing => "sharing",
+            Group::Clouds => "clouds",
             Group::Developers => "developers",
             Group::BuiltIn => "built-in",
         }
@@ -99,7 +99,7 @@ impl Group {
             Group::Media => t!("Photos, videos and music"),
             Group::Documents => t!("Documents and PDFs"),
             Group::Files => t!("Archives, backups and data"),
-            Group::Sharing => t!("Clouds and sharing"),
+            Group::Clouds => t!("Clouds"),
             Group::Developers => t!("For developers"),
             Group::BuiltIn => t!("Comes with Glint"),
         }
@@ -110,7 +110,7 @@ impl Group {
             Group::Media => IconName::Film,
             Group::Documents => IconName::FileText,
             Group::Files => IconName::Archive,
-            Group::Sharing => IconName::Cloud,
+            Group::Clouds => IconName::Cloud,
             Group::Developers => IconName::SquareTerminal,
             Group::BuiltIn => IconName::Zap,
         }

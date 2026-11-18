@@ -206,16 +206,8 @@ pub enum MenuEvent {
     RemovePersonalInfo { paths: Vec<String> },
     /// "Change when it was taken…" (`openMetadata(…, "date")`).
     ChangeDateTaken { paths: Vec<String> },
-    /// "Send to a phone nearby…" (`openNearby`).
-    SendNearby { paths: Vec<String> },
-    /// "Send to another PC…" (`offerToPC`).
-    SendToPc { path: String },
-    /// "Share on this network…" (`offerOnNetwork`).
-    ShareOnNetwork { path: String },
-    /// "Share with Windows…" (`windowsShare`).
-    ShareWithWindows { paths: Vec<String> },
-    /// "Receive from another PC here…" (`openReceive`).
-    ReceiveHere { folder: String },
+    /// "Share…": the Share dialog, with these files to send to a device nearby or through Windows (`openNearby`).
+    Share { paths: Vec<String> },
 
     // ---- Scripts ----
     /// A script of the Scripts folder, run on these paths in `cwd` (`runScript`): the script's file.

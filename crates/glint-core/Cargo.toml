@@ -42,7 +42,6 @@ png = "0.18"
 # Find duplicates' Clone on ReFS and Dev Drives: block clones (FSCTL_DUPLICATE_EXTENTS_TO_FILE), over the
 # windows crate already in the build.
 reflink-copy = "0.1"
-qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 # JSON, YAML and TOML as a tree: jaq's readers and JSON writer, without its filters (jq filters run in
 # the jaq program, installed on demand: compiled in, they'd add 4 MB). Run in a worker process (jq.rs).
 jaq-json = { version = "2", default-features = false, features = ["std"] }
@@ -159,16 +158,9 @@ windows = { version = "0.62", features = [
     # Files On-Demand for remotes (ondemand.rs).
     "Win32_Storage_CloudFilters",
     "Win32_System_CorrelationVector",
-    "Win32_NetworkManagement_IpHelper",
-    "Win32_NetworkManagement_Ndis",
     # A server's shares, listed at \\server (fsx.rs): NetShareEnum's answer is freed with NetApiBufferFree.
     "Win32_NetworkManagement_NetManagement",
     "Win32_NetworkManagement_WNet",
-    # Whether Windows lets other devices reach a share on this network: its firewall's rules for dufs,
-    # and the kind of network the share's address is on (lan.rs).
-    "Win32_NetworkManagement_WindowsFirewall",
-    "Win32_Networking_NetworkListManager",
-    "Win32_Networking_WinSock",
     "Win32_Security_Credentials",
     "Win32_Security_Cryptography",
     "Win32_Security_Cryptography_Catalog",

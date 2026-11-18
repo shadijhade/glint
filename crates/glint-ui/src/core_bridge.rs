@@ -138,7 +138,6 @@ pub(crate) fn init_with(cx: &mut App, housekeeping: bool) {
     cx.on_app_quit(|_| async {
         glint_core::archive::finish();
         glint_core::term::close_all();
-        glint_core::share::stop_all();
     })
     .detach();
 
@@ -178,7 +177,6 @@ fn start_housekeeping(app: &AppHandle) {
     }
     // What earlier runs extracted from archives goes, except what's still on the clipboard.
     std::thread::spawn(|| glint_core::archive::sweep(&glint_core::shell::clipboard_paths()));
-    std::thread::spawn(glint_core::share::sweep);
 }
 
 // ---- Main-thread jobs: the message-only window -------------------------------------------------

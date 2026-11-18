@@ -45,6 +45,9 @@ const RETIRED: &[&str] = &[
     // were only ever copies of what the files hold.
     "content",
     "content.json",
+    // 0.14's sendme and dufs (Send to another PC, Share on this network), as Glint downloaded them.
+    "tools/sendme",
+    "tools/dufs",
 ];
 
 /// Under Glint's roaming data folder (beside `state.json`), as [`RETIRED`] is under the local one.
@@ -111,6 +114,10 @@ mod tests {
             fs::create_dir_all(models.join(folder).join("sub")).unwrap();
             fs::write(models.join(folder).join("sub").join("weights.bin"), "w").unwrap();
         }
+        for tool in ["sendme", "dufs"] {
+            fs::create_dir_all(data.join("tools").join(tool)).unwrap();
+            fs::write(data.join("tools").join(tool).join(format!("{tool}.exe")), "x").unwrap();
+        }
         fs::create_dir_all(data.join("typst-previews").join("ab12")).unwrap();
         fs::write(data.join("typst-previews").join("ab12").join("1.png"), "p").unwrap();
         for file in ["photos.jsonl", "speech.jsonl", "media-ai.json", "devices.json"] {
@@ -136,7 +143,7 @@ mod tests {
 
         let gone = sweep_in(&data, RETIRED);
 
-        assert_eq!(gone.len(), 11, "{gone:?}");
+        assert_eq!(gone.len(), 13, "{gone:?}");
         assert_eq!(sweep_in(&roaming, RETIRED_ROAMING), [roaming.join("books.json")]);
         // A mail attachment saved to the temp folder, with the mark Windows puts on files from the internet.
         let temp = std::env::temp_dir().join(format!("glint-retired-temp-{}", std::process::id()));

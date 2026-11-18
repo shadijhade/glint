@@ -617,13 +617,6 @@ fn carry_out(run: Run, shape: Shape, window: &mut Window, cx: &mut App) {
                 .detach();
         }
         Run::Properties(path) => show_properties(path, cx),
-        Run::Share(view) => window.defer(cx, move |window, cx| {
-            let view = match view {
-                commands::ShareView::Send => crate::dialogs::share::View::Send,
-                commands::ShareView::Network => crate::dialogs::share::View::Network,
-            };
-            crate::dialogs::share::open_view(window, cx, view);
-        }),
         Run::AddRemote => window.defer(cx, crate::dialogs::remote::open_add),
         // The files are rewritten in their place, and Undo is offered in a notification over the window.
         Run::ToUtf8(paths) => window.defer(cx, move |window, cx| {
@@ -712,17 +705,12 @@ fn show_properties(path: String, cx: &mut App) {
 
 /// Reads what the list is built from: the active tab, the pinned folders, the folders used, the settings.
 ///
-/// Takes the app for writing because two of the lists are asked for (File Explorer's New menu kinds start to be read
-/// in the background; the Send, receive or share model is made if it wasn't): a kind that has not been read yet
+/// Takes the app for writing because a list is asked for (File Explorer's New menu kinds start to be read
+/// in the background): a kind that has not been read yet
 /// shows from the next time the palette opens.
 pub fn read_inputs(cx: &mut App) -> Inputs {
     let explorer = explorer(cx);
     let kinds = explorer.update(cx, |e, cx| e.new_kinds(cx));
-    let sharing = crate::dialogs::share::shared(cx);
-    let (sending, serving) = {
-        let sharing = sharing.read(cx);
-        (!sharing.sends().is_empty(), !sharing.serving().is_empty())
-    };
     let e = explorer.read(cx);
     let tab = e.active_tab();
     let app = persistence::app(cx);
@@ -800,8 +788,6 @@ pub fn read_inputs(cx: &mut App) -> Inputs {
             })
         }),
         new_kinds: kinds.iter().map(|kind| (kind.ext.clone(), kind.name.clone())).collect(),
-        sending,
-        serving,
         used: habits_used(cx),
     }
 }

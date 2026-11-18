@@ -55,8 +55,6 @@ pub mod media;
 pub mod media_tools;
 /// A file's metadata, read and cleaned (MetadataDialog.tsx).
 pub mod metadata;
-/// Sending to and receiving from phones and PCs nearby (NearbyDialog.tsx).
-pub mod nearby;
 /// A password asked for or set (PasswordDialog.tsx).
 pub mod password;
 /// PDF tools (PdfDialog.tsx).
@@ -65,7 +63,7 @@ pub mod pdf;
 pub mod remote;
 /// Folder rules (RulesDialog.tsx).
 pub mod rules;
-/// Sharing files: a link, the network, Windows' share (ShareDialog.tsx).
+/// Sharing files: to phones and PCs nearby (LocalSend), and through Windows' own Share.
 pub mod share;
 /// The keyboard shortcuts sheet (ShortcutsDialog.tsx).
 pub mod shortcuts;
