@@ -318,9 +318,12 @@ mod tests {
         let link = dir.join("b.txt.lnk");
         shortcut(&text(&source), &link).unwrap();
         assert!(link.is_file());
+        // The same file, not the same spelling: %TEMP% can be an 8.3 path (GitHub's runner has C:\Users\RUNNER~1)
+        // and a shortcut keeps the long one.
+        let target = crate::recent::link_target(&link).expect("the shortcut has a target");
         assert_eq!(
-            crate::recent::link_target(&link).map(|t| t.to_lowercase()),
-            Some(text(&source).to_lowercase())
+            std::fs::canonicalize(&target).unwrap(),
+            std::fs::canonicalize(&source).unwrap()
         );
         remove_links(&[text(&link)]).unwrap();
         assert!(!link.exists());
