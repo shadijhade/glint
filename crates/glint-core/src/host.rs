@@ -17,9 +17,19 @@ pub const IDENTIFIER: &str = "com.shado.shadui-ripgrep";
 /// stay where the Store copy already has them and are never shared with a copy the setup installed on the same PC.
 pub const STORE_IDENTIFIER: &str = "com.shado.glint.store";
 
+mod store_data;
+
 /// The identifier this copy's folders are named after: the Store copy's when it runs from an MSIX package.
+/// The first call in a Store copy also fills its folders from the shared ones once (`store_data`), so nothing
+/// reads a data folder before it has what the copy had under the shared name.
 pub fn identifier() -> &'static str {
     if crate::packaged() {
+        static FILLED: std::sync::Once = std::sync::Once::new();
+        FILLED.call_once(|| {
+            if let (Some(roaming), Some(local)) = (std::env::var_os("APPDATA"), std::env::var_os("LOCALAPPDATA")) {
+                store_data::fill(true, std::path::Path::new(&roaming), std::path::Path::new(&local));
+            }
+        });
         STORE_IDENTIFIER
     } else {
         IDENTIFIER
