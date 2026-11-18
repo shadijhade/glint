@@ -291,12 +291,17 @@ impl Aware {
         // run is still finding out asks nothing; what it hadn't answered is let go of by the stop, and is asked
         // by the next look.
         let mut planned: Vec<(&FileEntry, Want)> = Vec::new();
+        // Identical copies cost a question to the index service and a read of every candidate, so they are
+        // looked for only when there is one item to say them about (a selected or hovered file), never for
+        // each of a selection of two hundred.
+        let one = entries.len() == 1;
         if let Some(roots) = Self::roots(cx) {
             for entry in entries.iter().take(MOST_TO_LOOK_AT) {
                 if !roots.fixed(&entry.path) {
                     continue;
                 }
-                let want = self.cache.plan(entry, now);
+                let mut want = self.cache.plan(entry, now);
+                want.twins &= one;
                 if !want.is_empty() {
                     planned.push((entry, want));
                 }
