@@ -18,7 +18,6 @@
 //! **Compare** works on the pair the explorer would compare (Ctrl+M: [`crate::components::command_bar::Facts`]'s
 //! `pair`): two files selected, or one against the other pane's. It is read when the selection moves.
 
-use super::book::BookView;
 use super::cards::{ArchiveCard, FolderCard, LockedCard, Plain, PlainCard};
 use super::cast::CastView;
 use super::choose::{choose, effective_view, views, Body, Fallback, View};
@@ -295,7 +294,6 @@ impl EntryView {
             NotebookView,
             ProgramPreview,
             PdfView,
-            BookView,
             DocxView,
             ModelView,
             CastView,
@@ -390,7 +388,6 @@ impl EntryView {
             Body::Small(kind) => cx.new(|cx| SmallPreview::new(entry.clone(), kind, window, cx)).into(),
             Body::Player(kind) => cx.new(|cx| PlayerView::new(entry.clone(), kind, window, cx)).into(),
             Body::Pdf => cx.new(|cx| PdfView::new(entry.clone(), window, cx)).into(),
-            Body::Book => cx.new(|cx| BookView::new(path, window, cx)).into(),
             Body::Model => cx.new(|cx| ModelView::new(entry.clone(), window, cx)).into(),
             Body::Cast => cx.new(|cx| CastView::new(path, window, cx)).into(),
             Body::Docx => {

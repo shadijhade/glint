@@ -23,7 +23,7 @@
 //!
 //! - **HTML mail is laid out as a page** without a web view (docs/gpui/previews-native.md section 8, without
 //!   ammonia or mail-parser): [`sanitize_html`] keeps only the tags a page draws, then [`html_to_xhtml`] closes them
-//!   the way a browser would, and the book reader's XHTML-to-blocks conversion (`book::xhtml_document`) turns the
+//!   the way a browser would, and the book reader's XHTML-to-blocks conversion (`xhtml::xhtml_document`) turns the
 //!   result into the [`rich`](super::rich) model that [`RichView`] draws ([`Page`]): paragraphs, headings, lists,
 //!   tables, links, bold and italic, pictures. Scripts, styles, frames, objects and forms are dropped, never run or
 //!   drawn; of a message's styles only `direction`, `text-align`, weight, italic and decoration are kept (and the
@@ -54,7 +54,7 @@
 //! - Dates in an event or a message are written with Windows' long date (`format_full_date`), which has seconds
 //!   where the TypeScript's `timeStyle: "short"` had none; a date alone is written short.
 
-use super::book::xhtml_document;
+use super::xhtml::xhtml_document;
 use super::rich::{self, picture_of, Block, Document, Picture, RichEvent, RichView, Row, Table};
 use super::sources::{sources, Fut};
 use super::states::centered;

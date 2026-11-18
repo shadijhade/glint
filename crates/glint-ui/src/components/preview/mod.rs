@@ -37,10 +37,10 @@
 //! Nothing is marked `PORT ME(<kind>)` in the previewers now: a file the TypeScript had a previewer for either has
 //! its native one or gets what the TypeScript showed when its own previewer failed (Windows' previewer over the
 //! file's icon, or the file as text). (Wave 9 brought tables, notebooks, program headers, contacts, calendars, mail,
-//! the Changes, Query and Profile views; wave 10 the player, PDF pages, books, Word documents and 3D models; wave 11
-//! Mermaid and Graphviz diagrams, math, Typst documents and cast recordings; wave 15 the MOBI, AZW and AZW3 books,
-//! read by [`mobi`], and HTML mail laid out as a page in [`small`], with the pictures from the internet off until
-//! asked and a switch to the plain version.)
+//! the Changes, Query and Profile views; wave 10 the player, PDF pages, Word documents and 3D models; wave 11
+//! Mermaid and Graphviz diagrams, math, Typst documents and cast recordings; wave 15 HTML mail laid out as a page in
+//! [`small`], with the pictures from the internet off until asked and a switch to the plain version. 0.14 took the
+//! book reader out: books go to Windows' previewer.)
 
 /// JSON, YAML and TOML as a tree; CSV and TSV as a table (DataPreview.tsx, DataTree.tsx).
 pub mod data;
@@ -51,8 +51,6 @@ pub mod markdown;
 /// Text and code, highlighted (FilePreview.tsx's text view, highlighter.ts).
 pub mod text;
 
-/// Books: EPUB, MOBI/AZW, FB2 and comics, read page by page (BookView.tsx).
-pub mod book;
 pub mod cards;
 /// asciinema recordings played (CastPreview.tsx).
 pub mod cast;
@@ -65,8 +63,6 @@ pub mod docx;
 pub mod frame;
 /// Math in Markdown, LaTeX syntax (RaTeX).
 pub mod math;
-/// MOBI, AZW and AZW3 books: PalmDOC, HUFF/CDIC, the MOBI and EXTH headers and KF8, read for the book view (foliate's mobi.js).
-pub mod mobi;
 /// 3D models: STL, OBJ, PLY, glTF/GLB and 3MF, drawn and turned (ModelView.tsx).
 pub mod model3d;
 /// Jupyter notebooks as they read (NotebookView.tsx).
@@ -81,7 +77,7 @@ pub mod probe;
 /// A program's sections, imports and exports (BinaryPreview.tsx).
 pub mod program;
 pub mod quick_look;
-/// The rich text the book and Word previews share: blocks and runs, right to left (previews-native.md sections 2-3).
+/// The rich text the Word and mail previews share: blocks and runs, right to left (previews-native.md sections 2-3).
 pub mod rich;
 /// Workbooks and Parquet as tables (SheetPreview in FilePreview.tsx).
 pub mod sheet;
@@ -94,6 +90,8 @@ pub mod sources;
 /// SQLite databases: their tables and SQL (SqlitePreview in FilePreview.tsx).
 pub mod sqlite;
 pub mod states;
+/// What Word documents and HTML mail share: a zip, XML and XHTML read into blocks.
+pub mod xhtml;
 /// SVG drawn as a GPUI image, cached by its source and size: the pipeline diagrams and math share (previews-native.md sections 4-7).
 pub mod svg_image;
 #[cfg(test)]

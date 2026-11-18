@@ -21,8 +21,8 @@
 //! `update` calls [`sync`] after every change, so changed settings are saved soon.
 //!
 //! **The first start** imports the old app's state from WebView2's `localStorage` (a LevelDB folder under
-//! `EBWebView`): when there is no `state.json` yet, [`init`] first asks [`crate::old_settings`] to write one (and
-//! `books.json`) from it, read-only, and then loads that file like any other. See that module.
+//! `EBWebView`): when there is no `state.json` yet, [`init`] first asks [`crate::old_settings`] to write one from
+//! it, read-only, and then loads that file like any other. See that module.
 
 use glint_model::rank::Visit;
 use glint_model::store::{

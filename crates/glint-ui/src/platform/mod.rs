@@ -8,7 +8,5 @@ pub mod pickers;
 pub mod preview_host;
 /// Second windows: Glint.exe in secondary mode, started with `--window <folder>`.
 pub mod secondary;
-/// Read aloud: Windows' speech synthesis behind a small `Speaker` trait.
-pub mod speech;
 pub mod tray;
 pub mod window_state;
