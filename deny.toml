@@ -13,13 +13,9 @@ targets = ["x86_64-pc-windows-msvc"]
 # Unmaintained crates are reported for Glint's own dependencies, not for what those pull in.
 unmaintained = "workspace"
 # Advisories with no fixed version Glint can reach yet (the maintainer's decision for v0.10.0, 2026-11-11). Take
-# each out once the crate that pins the old version ships a fix.
-ignore = [
-    # crypto-bigint 0.5.5: timing variability in operations meant to be constant-time. It comes only through
-    # age 0.12's P-256 support (elliptic-curve 0.13 needs crypto-bigint 0.5; the fix is 0.7.6). Using it means
-    # timing Encrypt and Decrypt on the same PC, with a P-256 recipient.
-    { id = "RUSTSEC-2026-0387", reason = "only through age 0.12's P-256 path; no age release with elliptic-curve 0.14 yet" },
-]
+# each out once the crate that pins the old version ships a fix. (0.14 took out crypto-bigint's: it came only through
+# age, which left with Vault.)
+ignore = []
 
 [licenses]
 # A crate under several licenses (MIT OR Apache-2.0) needs one of them here.
