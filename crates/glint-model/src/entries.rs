@@ -47,8 +47,6 @@ pub mod attr {
     pub const RECYCLED: u32 = 0x0800_0000;
     /// Compressed with a method Glint can't read.
     pub const UNREADABLE: u32 = 0x1000_0000;
-    /// In an ncdu export (with `IN_ARCHIVE`): listed with its size and date, but its contents aren't there.
-    pub const LIST_ONLY: u32 = 0x2000_0000;
     /// In a zip or 7z archive: read-only, and extracted to be opened (see archive/tree.rs).
     pub const IN_ARCHIVE: u32 = 0x4000_0000;
     /// Listed from instant search's index, in a folder Windows keeps closed to this account: read-only, and it
@@ -188,11 +186,6 @@ pub fn is_recycled(e: &FileEntry) -> bool {
 /// In an archive, but can't be extracted: password-protected, or compressed in a way Glint can't read.
 pub fn is_locked(e: &FileEntry) -> bool {
     e.attrs & (attr::ENCRYPTED | attr::UNREADABLE) != 0
-}
-
-/// A file in an ncdu export: a name, a size and a date, with nothing to open or preview.
-pub fn is_list_only(e: &FileEntry) -> bool {
-    e.attrs & (attr::IN_ARCHIVE | attr::LIST_ONLY) == (attr::IN_ARCHIVE | attr::LIST_ONLY)
 }
 
 /// Hidden (the Windows attribute).
@@ -1819,24 +1812,12 @@ mod tests {
 
     #[test]
     fn archives_and_files_that_are_archives_by_another_name() {
-        let with = |name: &str, attrs: u32| {
-            let mut e = entry(name);
-            e.attrs = attrs;
-            e
-        };
         assert!(is_archive_file(&entry("x.Zip")) && is_archive_file(&entry("y.7z")));
         assert!(!is_archive_file(&entry("z.zip/")) && !is_archive_file(&entry("w.docx")));
         assert!(is_archive_file(&entry("backup.RAR")) && is_archive_file(&entry("drivers.cab")));
-        assert!(is_archive_file(&entry("disk.ncdu")));
         assert!(is_browsable(&entry("setup.msi")) && !is_archive_file(&entry("setup.msi")));
         assert!(is_browsable(&entry("report.DOCX")) && is_browsable(&entry("lib.jar")));
         assert!(!is_browsable(&entry("x.zip")) && !is_browsable(&entry("dir.docx/")));
-        // A file in an ncdu export has a name, a size and a date, and nothing to open; the bit means that
-        // only inside an archive.
-        let list_only = with("a.jpg", attr::IN_ARCHIVE | attr::LIST_ONLY);
-        assert!(is_list_only(&list_only));
-        assert!(!is_list_only(&with("b.jpg", attr::LIST_ONLY)));
-        assert!(!is_locked(&list_only));
     }
 
     #[test]

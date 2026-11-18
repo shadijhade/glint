@@ -2,7 +2,7 @@
 //! folder sizes the list shows, and what the part tells the person. Ported from `SizeRun` in
 //! src/lib/explorer.ts, `FolderSizes`, `CloudPin` and `OnDemand` in src/lib/fs.ts and src/lib/ondemand.ts, and
 //! from the toasts of `runInSandbox`, `rotatePictures`, `cloudPin`, `setWallpaper`, `forgetRecent`,
-//! `exportAsNcdu`, `runScript`, `openScriptsFolder`, `showOnDemand` and `hideOnDemand`.
+//! `runScript`, `openScriptsFolder`, `showOnDemand` and `hideOnDemand`.
 //!
 //! Nothing here touches GPUI or the disk. The wording each notice has is given in its doc, exactly as the
 //! TypeScript toasts had it (English, `{x}` marking what goes in): the workspace says it with `t!`. A name is the
@@ -252,76 +252,9 @@ pub enum ActionNotice {
     ScriptGone { path: String },
 }
 
-/// What the ncdu export tells the person while it runs and when it is over. Carried by
-/// [`ExplorerEvent::Export`](super::ExplorerEvent::Export). It follows the archive notices (`staging`): the
-/// workspace shows and updates one loading notice keyed by `id`, and drives the taskbar button.
-#[derive(Clone, Debug, PartialEq)]
-pub enum ExportNotice {
-    /// Still running after 400 ms: show a loading notice (no auto-hide) keyed by `id` with a **Stop** button
-    /// that calls [`Explorer::stop_archive_work`](super::Explorer::stop_archive_work) with `id`, and set the
-    /// taskbar button to indeterminate. The words follow [`ExportNotice::progress`] of `done` and `total`.
-    Shown {
-        id: u64,
-        name: String,
-        done: u64,
-        total: u64,
-    },
-    /// How far it has come. Taskbar: normal with `done` of `total` when `total` is known, else indeterminate.
-    /// When `shown`, replace the notice with the same id by the new label.
-    Progress {
-        id: u64,
-        name: String,
-        done: u64,
-        total: u64,
-        shown: bool,
-    },
-    /// Over: take the notice away when `was_shown`, and the taskbar progress when `idle`.
-    Ended { id: u64, was_shown: bool, idle: bool },
-    /// Error with the message as description: `Couldn't export “{name}”`. Not sent when it was stopped.
-    Failed { name: String, message: String },
-    /// Success: `Exported “{name}” as “{name of dest}”` with a button `Show` that calls
-    /// [`Explorer::reveal_in_app`](super::Explorer::reveal_in_app) with `dest`.
-    Done { name: String, dest: String },
-}
-
-impl ExportNotice {
-    /// How far an export has come, for the loading notice's words (English; the workspace says them with `t!`):
-    /// `Exporting “{name}”…` while nothing is counted, `Exporting “{name}”… {percent}%` once there is a total, and
-    /// `Exporting “{name}”… {format_count(done)} items` while the folder is still being walked (no total ahead).
-    pub fn progress(done: u64, total: u64) -> ExportProgress {
-        if total > 0 {
-            let percent = u128::from(done) * 100 / u128::from(total);
-            ExportProgress::Percent(u8::try_from(percent.min(100)).unwrap_or(100))
-        } else if done > 0 {
-            ExportProgress::Items(done)
-        } else {
-            ExportProgress::Starting
-        }
-    }
-}
-
-/// How far an export has come, for its label.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ExportProgress {
-    /// Nothing counted yet: `Exporting “{name}”…`.
-    Starting,
-    /// `Exporting “{name}”… {percent}%`.
-    Percent(u8),
-    /// `Exporting “{name}”… {count} items`.
-    Items(u64),
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn an_export_counts_items_while_it_walks_and_a_percent_when_it_knows_the_total() {
-        assert_eq!(ExportNotice::progress(0, 0), ExportProgress::Starting);
-        assert_eq!(ExportNotice::progress(1200, 0), ExportProgress::Items(1200));
-        assert_eq!(ExportNotice::progress(1, 3), ExportProgress::Percent(33));
-        assert_eq!(ExportNotice::progress(9, 3), ExportProgress::Percent(100));
-    }
 
     #[test]
     fn a_script_is_typed_to_each_shell_with_its_arguments_quoted() {

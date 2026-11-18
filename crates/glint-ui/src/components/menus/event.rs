@@ -204,8 +204,6 @@ pub enum MenuEvent {
     Cleanup { folder: String },
     /// "A rule for this folder…" (`openRules`).
     Rule { folder: String },
-    /// "Export as ncdu JSON…" (`exportAsNcdu`).
-    ExportNcdu { folder: String },
     /// "Remove personal info…" (`openMetadata(…, "scrub")`).
     RemovePersonalInfo { paths: Vec<String> },
     /// "Change when it was taken…" (`openMetadata(…, "date")`).

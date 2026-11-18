@@ -411,10 +411,6 @@ fn the_folders_own_tools_ask_about_the_folder() {
     );
     assert_eq!(folder_event("cleanup"), MenuEvent::Cleanup { folder: HERE.into() });
     assert_eq!(
-        folder_event("export-ncdu"),
-        MenuEvent::ExportNcdu { folder: HERE.into() }
-    );
-    assert_eq!(
         folder_event("receive-pc"),
         MenuEvent::ReceiveHere { folder: HERE.into() }
     );

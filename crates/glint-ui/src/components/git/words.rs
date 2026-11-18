@@ -8,7 +8,7 @@
 use super::model::{Counts, View};
 use crate::kit::prelude::*;
 use crate::t;
-use glint_model::entries::{is_list_only, is_locked, is_online_only, FileEntry, GitMark};
+use glint_model::entries::{is_locked, is_online_only, FileEntry, GitMark};
 use glint_model::format::{format_count, format_duration};
 
 // ---- Colors -------------------------------------------------------------------------------------------------
@@ -405,7 +405,7 @@ pub fn readme_of(entries: &[FileEntry]) -> Option<&FileEntry> {
             README_NAMES.iter().position(|name| *name == entry.lower)
         };
         if let Some(at) = at {
-            if at < rank && !is_online_only(entry) && !is_locked(entry) && !is_list_only(entry) {
+            if at < rank && !is_online_only(entry) && !is_locked(entry) {
                 best = Some(entry);
                 rank = at;
             }

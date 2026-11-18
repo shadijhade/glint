@@ -10,7 +10,7 @@ use super::player::Kind as PlayerKind;
 use crate::dialogs::data_tools::DUCK_READS;
 use crate::t;
 use glint_model::entries::{
-    is_archive_file, is_archived, is_closed, is_list_only, is_locked, is_online_only, FileEntry,
+    is_archive_file, is_archived, is_closed, is_locked, is_online_only, FileEntry,
 };
 use glint_model::file_types::{data_format, is_known_type, is_markdown, kind_of, PreviewKind};
 use glint_model::small_kinds::{small_kind_of, SmallKind};
@@ -81,8 +81,6 @@ pub enum Body {
     Closed,
     /// In an archive and can't be read: password-protected, or why not.
     Locked,
-    /// Listed in an ncdu export: a name, a size and a date.
-    ListOnly,
     /// An archive: what is in it, and Open like a folder.
     Archive,
     /// A picture, drawn here (from a temp copy when it is in an archive).
@@ -142,7 +140,7 @@ impl Choice {
 
 /// Whether the file's contents can be looked at (`readable`).
 pub fn readable(entry: &FileEntry) -> bool {
-    !entry.dir && !is_online_only(entry) && !is_closed(entry) && !is_locked(entry) && !is_list_only(entry)
+    !entry.dir && !is_online_only(entry) && !is_closed(entry) && !is_locked(entry)
 }
 
 fn one_of(entry: &FileEntry, list: &[&str]) -> bool {
@@ -307,9 +305,6 @@ pub fn choose(entry: &FileEntry, view: View) -> Choice {
     if is_locked(entry) {
         return Choice::of(Body::Locked);
     }
-    if is_list_only(entry) {
-        return Choice::of(Body::Icon);
-    }
     // Its Text view is the file as it is, which goes on down the chain.
     if let Some(kind) = small_of(entry).filter(|_| !source) {
         return Choice::of(Body::Small(kind));
@@ -470,10 +465,6 @@ mod tests {
         );
         assert_eq!(choose(&marked("a.png", attr::CLOSED), View::File).body, Body::Closed);
         assert_eq!(choose(&marked("a.png", attr::ENCRYPTED), View::File).body, Body::Locked);
-        assert_eq!(
-            choose(&marked("a.png", attr::IN_ARCHIVE | attr::LIST_ONLY), View::File).body,
-            Body::Icon
-        );
     }
 
     #[test]

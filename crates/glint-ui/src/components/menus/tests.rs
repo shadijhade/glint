@@ -747,7 +747,6 @@ fn the_folder_shown_has_paste_undo_new_and_the_folders_tools() {
             "Find duplicate files",
             "Clean up…",
             "A rule for this folder…",
-            "Export as ncdu JSON…",
             "-",
             "Send this folder to another PC…",
             "Share this folder on this network…",

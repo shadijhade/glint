@@ -49,8 +49,8 @@ pub type Fut<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 
 // ---- What to ask for -------------------------------------------------------------------------------------------
 
-/// A named kind of file in the picker's type list: `Filter::new("ncdu export", &["ncdu", "json"])` is "ncdu export
-/// (*.ncdu;*.json)". Extensions come without a dot; a leading `.` or `*.` is dropped, and an empty one ignored.
+/// A named kind of file in the picker's type list: `Filter::new("Text", &["txt", "md"])` is "Text
+/// (*.txt;*.md)". Extensions come without a dot; a leading `.` or `*.` is dropped, and an empty one ignored.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Filter {
     /// What the list says (translate it with `t!`).
@@ -80,7 +80,7 @@ impl Filter {
         }
     }
 
-    /// The pattern Windows takes: `*.ncdu;*.json`. A filter with no extension matches every file.
+    /// The pattern Windows takes: `*.txt;*.md`. A filter with no extension matches every file.
     pub fn spec(&self) -> String {
         if self.extensions.is_empty() {
             return "*.*".to_string();
@@ -394,7 +394,7 @@ mod tests {
 
     #[test]
     fn a_filter_is_the_patterns_windows_takes_and_cleans_its_extensions() {
-        assert_eq!(Filter::new("ncdu export", &["ncdu", "json"]).spec(), "*.ncdu;*.json");
+        assert_eq!(Filter::new("Text", &["txt", "md"]).spec(), "*.txt;*.md");
         assert_eq!(
             Filter::new("Pictures", &[".jpg", "*.png", " gif ", "", "."]).spec(),
             "*.jpg;*.png;*.gif"

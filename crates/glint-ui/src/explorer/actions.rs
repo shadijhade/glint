@@ -1,14 +1,14 @@
 //! The menus' remaining actions: open with an app, Run in Windows Sandbox, Open in new window, Open file location,
 //! Remove from Recent, Show in File Explorer, Rename items in this folder, Set as desktop background, Rotate,
-//! cloud files' pins, Export as ncdu JSON, scripts, and Show in File Explorer on demand. Ported from
-//! explorer.ts (`revealInApp`, `openInNewWindow`, `forgetRecent`, `exportAsNcdu`), Explorer.tsx (`runInSandbox`,
+//! cloud files' pins, scripts, and Show in File Explorer on demand. Ported from
+//! explorer.ts (`revealInApp`, `openInNewWindow`, `forgetRecent`), Explorer.tsx (`runInSandbox`,
 //! `setWallpaper`, `rotatePictures`, `cloudPin`, `revealArchive`, the "Open with" items), scripts.ts
 //! (`runScript`, `openScriptsFolder`) and ondemand.ts (`showOnDemand`, `hideOnDemand`, `refreshOnDemand`).
 //!
 //! **How an action runs.** Each method checks what the TypeScript checked, then spawns a task that asks the
 //! [`Source`](super::Source); the work is glint-core's (or the shell's), on its own threads, and the UI thread
-//! only awaits. The person is told with [`ExplorerEvent::Action`] (toasts), [`ExplorerEvent::Export`] (the ncdu
-//! export's progress), and sent work with [`ExplorerEvent::Request`] (a window, the terminal, a tool install).
+//! only awaits. The person is told with [`ExplorerEvent::Action`] (toasts), and sent work with
+//! [`ExplorerEvent::Request`] (a window, the terminal, a tool install).
 //! Every method returns a `Task` that resolves when it is all done; detach it to let it run.
 //! (The menu event each answers is named in the method's doc; the folder sizes are in `sizes.rs`.)
 
@@ -36,14 +36,6 @@ pub(super) struct ActionState {
     pub run_seq: u64,
     /// The remotes shown in File Explorer now (`useOnDemand.mounts`).
     pub on_demand: Vec<OnDemand>,
-}
-
-/// A name for a notice: the last part of a path, or the whole path when it has none (a drive).
-fn name_of(path: &str) -> String {
-    match base_name(path) {
-        "" => path.to_string(),
-        name => name.to_string(),
-    }
 }
 
 impl Explorer {
@@ -285,44 +277,6 @@ impl Explorer {
                 // A failure is told, and the folder is not read again (it did not change).
                 this.update(cx, |this, cx| this.say(notice, cx)).ok();
             }
-        })
-    }
-
-    // ---- Export as ncdu JSON ---------------------------------------------------------------------------------
-
-    /// What the save picker suggests for the export of `folder`: its name without `:` and `\`, or "drive", with
-    /// `.ncdu` (`exportAsNcdu`). The picker's filter is `ncdu export` (`ncdu`, `json`).
-    pub fn ncdu_file_name(folder: &str) -> String {
-        let name: String = base_name(folder).chars().filter(|c| !matches!(c, ':' | '\\')).collect();
-        format!("{}.ncdu", if name.is_empty() { "drive" } else { name.as_str() })
-    }
-
-    /// "Export as ncdu JSON…", once the person chose `dest` in the save picker: `folder` (on disk) walked into the
-    /// file ncdu, and Glint, open again; junctions and symlinks are listed, not followed. Progress and Stop come
-    /// as [`ExplorerEvent::Export`], and the result as [`ExportNotice::Done`] or [`ExportNotice::Failed`].
-    #[must_use = "dropping the task stops waiting for it; `.detach()` it to let it run"]
-    pub fn export_ncdu(&mut self, folder: &str, dest: &str, cx: &mut Context<Self>) -> Task<()> {
-        let name = name_of(folder);
-        let (folder, dest) = (folder.to_string(), dest.to_string());
-        cx.spawn(async move |this, cx| {
-            let begun = this.update(cx, |this, cx| {
-                let (id, lane, sink) = this.begin_export_work(name.clone(), cx);
-                (this.source.clone(), id, lane, sink)
-            });
-            let Ok((source, id, lane, sink)) = begun else {
-                return;
-            };
-            let result = source.export_ncdu(&folder, &dest, &lane, sink).await;
-            this.update(cx, |this, cx| {
-                this.end_archive_work(id, cx);
-                match result {
-                    Ok(_) => cx.emit(ExplorerEvent::Export(ExportNotice::Done { name, dest })),
-                    // Stopped: said by nothing.
-                    Err(message) if message == "cancelled" => {}
-                    Err(message) => cx.emit(ExplorerEvent::Export(ExportNotice::Failed { name, message })),
-                }
-            })
-            .ok();
         })
     }
 

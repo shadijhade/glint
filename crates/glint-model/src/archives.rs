@@ -16,10 +16,10 @@ pub const IMAGES_BROWSED: [&str; 25] = [
 pub const IMAGES_ON_REQUEST: [&str; 5] = ["iso", "img", "vhd", "vhdx", "exe"];
 
 /// Extensions Enter opens like a folder: archives, tars (.tar.gz ends in "gz" like a lone .gz), single
-/// compressed files, and ncdu exports. This is the TypeScript `BROWSED` list: its own names, then
+/// compressed files. This is the TypeScript `BROWSED` list: its own names, then
 /// `IMAGES_BROWSED`.
-pub const BROWSED_OWN: [&str; 16] = [
-    "zip", "7z", "rar", "tar", "tgz", "txz", "tbz", "tbz2", "tzst", "gz", "xz", "bz2", "zst", "lz4", "cab", "ncdu",
+pub const BROWSED_OWN: [&str; 15] = [
+    "zip", "7z", "rar", "tar", "tgz", "txz", "tbz", "tbz2", "tzst", "gz", "xz", "bz2", "zst", "lz4", "cab",
 ];
 
 /// Whether Enter opens a file with this extension (no dot, any case) like a folder. Covers `BROWSED`.
@@ -120,7 +120,6 @@ mod tests {
         assert!(archive_in_path("C:\\a\\B.ZIP/inside"));
         assert!(archive_in_path("C:\\a\\x.tar.gz"));
         assert!(archive_in_path("C:\\a\\setup.msm"));
-        assert!(archive_in_path("C:\\a\\disk.ncdu\\x"));
         assert!(!archive_in_path(""));
         assert!(!archive_in_path("C:\\a\\zip"));
         assert!(!archive_in_path("C:\\a\\.zip.txt"));
@@ -136,8 +135,9 @@ mod tests {
 
     #[test]
     fn extension_lists_cover_the_typescript_arrays() {
-        assert!(is_browsed_ext("DMG") && is_browsed_ext("ncdu") && is_browsed_ext("tgz"));
+        assert!(is_browsed_ext("DMG") && is_browsed_ext("tgz"));
         assert!(!is_browsed_ext("docx"));
+        assert!(!is_browsed_ext("ncdu"), "ncdu exports open like any unknown file now");
         assert!(is_on_request_ext("iso") && is_on_request_ext("EXE") && is_on_request_ext("msi"));
         assert!(!is_on_request_ext("zip"));
     }

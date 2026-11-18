@@ -342,7 +342,6 @@ impl EntryView {
             Body::Folder => cx.new(|cx| FolderCard::new(entry.clone(), window, cx)).into(),
             Body::OnlineOnly => plain(Plain::OnlineOnly, cx),
             Body::Closed => plain(Plain::Closed, cx),
-            Body::ListOnly => plain(Plain::ListOnly, cx),
             Body::Icon => plain(Plain::Icon, cx),
             Body::Locked => cx.new(|cx| LockedCard::new(entry.clone(), window, cx)).into(),
             Body::Archive => cx.new(|cx| ArchiveCard::new(entry.clone(), cx)).into(),

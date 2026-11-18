@@ -557,8 +557,6 @@ pub enum ExplorerEvent {
     // ---- Menu actions (actions_types.rs says what each carries) ----
     /// What a menu action has to tell the person: done, failed, or what it needs next.
     Action(super::ActionNotice),
-    /// The ncdu export's progress, Stop, and result.
-    Export(super::ExportNotice),
     /// Work for the workspace: a new window, a script in the terminal, a tool to install.
     Request(super::Request),
     /// A folder's sizes were measured, started, stopped or came with an archive's listing

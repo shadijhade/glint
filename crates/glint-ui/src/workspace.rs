@@ -302,9 +302,8 @@ impl Workspace {
                     Self::explorer(cx, |e, cx| e.run_archive_job(job, cx).detach())
                 }
                 ExplorerEvent::Archive(notice) => notices::archive(notice, window, cx),
-                // The menus' other actions and exports say how they went; a few ask the window for something.
+                // The menus' other actions say how they went; a few ask the window for something.
                 ExplorerEvent::Action(notice) => notices::action(notice, window, cx),
-                ExplorerEvent::Export(notice) => notices::export(notice, window, cx),
                 ExplorerEvent::Request(request) => this.on_request(request.clone(), window, cx),
                 // File Explorer's on-demand folders changed: the menus offer Show or Hide by them.
                 ExplorerEvent::OnDemandChanged => {
@@ -916,22 +915,6 @@ impl Workspace {
         tools.update(cx, |tools, cx| tools.install(tool, window, cx));
     }
 
-    /// The ncdu export: where to save it (Windows' save picker), then the export, with its progress.
-    fn export_ncdu(folder: String, window: &mut Window, cx: &mut Context<Self>) {
-        let name = explorer::Explorer::ncdu_file_name(&folder);
-        let options = pickers::Options::new()
-            .title(t!("Export"))
-            .filter(pickers::Filter::new(t!("ncdu export"), &["ncdu", "json"]))
-            .owner(pickers::owner_of(window));
-        let chosen = pickers::save_file(options, &name);
-        cx.spawn(async move |_, cx| {
-            if let Ok(Some(dest)) = chosen.await {
-                cx.update(|cx| Self::explorer(cx, |e, cx| e.export_ncdu(&folder, &dest, cx).detach()));
-            }
-        })
-        .detach();
-    }
-
     /// Whether `path` is inside an archive or on a remote connection (opening it extracts a copy first).
     fn needs_a_copy(path: &str, cx: &App) -> bool {
         path.starts_with(glint_model::paths::REMOTE)
@@ -1302,7 +1285,6 @@ impl Workspace {
                 };
                 Self::explorer(cx, |e, cx| e.cloud_pin(paths.clone(), state, cx).detach())
             }
-            MenuEvent::ExportNcdu { folder } => Self::export_ncdu(folder.clone(), window, cx),
             // Scripts and tools.
             MenuEvent::RunScript { script, cwd, paths } => {
                 Self::explorer(cx, |e, cx| e.run_script(script, cwd, paths.clone(), cx).detach())

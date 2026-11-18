@@ -9,13 +9,13 @@
 
 use crate::components::preview::player::Scrub;
 use crate::kit::prelude::*;
-use glint_model::entries::{is_archived, is_list_only, is_locked, FileEntry};
+use glint_model::entries::{is_archived, is_locked, FileEntry};
 use glint_model::file_types::is_video_entry;
 
 /// Whether a tile gets a scrub overlay: a video that is on the disk and readable, not one in an archive or an
-/// export (`isVideoEntry && !isLocked && !isListOnly && !isArchived`).
+/// export (`isVideoEntry && !isLocked && !isArchived`).
 pub(super) fn scrubbable(entry: &FileEntry) -> bool {
-    is_video_entry(entry) && !is_locked(entry) && !is_list_only(entry) && !is_archived(entry)
+    is_video_entry(entry) && !is_locked(entry) && !is_archived(entry)
 }
 
 /// The one overlay, for the tile the pointer is on.

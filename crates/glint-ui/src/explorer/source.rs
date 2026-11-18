@@ -202,9 +202,6 @@ pub trait Source {
     fn folder_sizes(&self, path: &str, lane: &str, index_only: bool) -> Fut<Result<Measured, String>>;
     /// Stops the lane's measuring (`cancelFolderSizes`). Not waited for.
     fn cancel_folder_sizes(&self, lane: &str);
-    /// Walks a folder on disk into an ncdu JSON export at `dest` (`exportNcdu`); the export is `paths[0]` of the
-    /// answer. `progress` hears how many entries are written so far (there is no total).
-    fn export_ncdu(&self, path: &str, dest: &str, lane: &str, progress: ProgressSink) -> Fut<Result<Staged, String>>;
     /// The scripts in Glint's Scripts folder (`listScripts`).
     fn scripts(&self) -> Fut<Result<Vec<Script>, String>>;
     /// The Scripts folder, made with a script to start from the first time (`scriptsFolder`).
@@ -855,16 +852,6 @@ impl Source for CoreSource {
         });
     }
 
-    fn export_ncdu(&self, path: &str, dest: &str, lane: &str, progress: ProgressSink) -> Fut<Result<Staged, String>> {
-        let running = core_bridge::run(glint_core::archive::export_ncdu(
-            path.to_string(),
-            dest.to_string(),
-            lane.to_string(),
-            counting_channel(progress),
-        ));
-        Box::pin(async move { running.await? })
-    }
-
     fn scripts(&self) -> Fut<Result<Vec<Script>, String>> {
         let running = core_bridge::run(glint_core::scripts::scripts_list());
         Box::pin(async move { Ok(running.await??.scripts) })
@@ -937,22 +924,6 @@ fn progress_channel(sink: ProgressSink) -> Channel<glint_core::archive::StagePro
         let percent = i64::from(progress.percent());
         if last.swap(percent, std::sync::atomic::Ordering::Relaxed) != percent {
             // A closed sink means the work was left; core keeps going and finishes on its own.
-            let _ = sink.try_send(progress);
-        }
-        Ok(())
-    })
-}
-
-/// A channel core's export reports to: how many entries are written so far, passed on at most every 100 ms (core
-/// reports a count as it walks, and the notice only needs to move now and then).
-fn counting_channel(sink: ProgressSink) -> Channel<glint_core::archive::StageProgress> {
-    let started = std::time::Instant::now();
-    let last = std::sync::atomic::AtomicU64::new(0);
-    Channel::new(move |progress: StageProgress| {
-        let now = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX).max(1);
-        let before = last.load(std::sync::atomic::Ordering::Relaxed);
-        if before == 0 || now.saturating_sub(before) >= 100 {
-            last.store(now, std::sync::atomic::Ordering::Relaxed);
             let _ = sink.try_send(progress);
         }
         Ok(())

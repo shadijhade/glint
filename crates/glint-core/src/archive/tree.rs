@@ -18,8 +18,6 @@ pub const ENCRYPTED: u32 = 0x4000;
 pub const IN_ARCHIVE: u32 = 0x4000_0000;
 /// Compressed with a method Glint can't read.
 pub const UNREADABLE: u32 = 0x1000_0000;
-/// Listed, but holding no data: a file in an ncdu export.
-pub const LIST_ONLY: u32 = 0x2000_0000;
 /// The attributes an archive may set on its entries (read-only, hidden, system); the rest of what
 /// it stores is left out, so nothing in an archive looks like an online-only file or a link.
 pub const KEPT_ATTRIBUTES: u32 = 0x1 | 0x2 | 0x4;
@@ -158,7 +156,7 @@ impl Tree {
                 }
             };
             let last = &last;
-            let attrs = IN_ARCHIVE | (item.attrs & (KEPT_ATTRIBUTES | ENCRYPTED | UNREADABLE | LIST_ONLY));
+            let attrs = IN_ARCHIVE | (item.attrs & (KEPT_ATTRIBUTES | ENCRYPTED | UNREADABLE));
             if item.dir {
                 let node = tree.folder(parent, last);
                 let n = &mut tree.nodes[node as usize];
