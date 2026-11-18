@@ -312,7 +312,7 @@ static KINDS: &[(&str, Kind)] = &[
         kind(
             Icon::SquareTerminal,
             "Terminal recording",
-            None,
+            Some(PreviewKind::Text),
             &G.video,
             "text-emerald-600 dark:text-emerald-400",
         ),

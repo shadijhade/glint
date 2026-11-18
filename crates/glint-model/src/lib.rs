@@ -11,7 +11,6 @@ pub mod js;
 pub mod archives;
 /// What Glint knows about what a menu or the dock is for, and what it would do next (docs/gpui/aware).
 pub mod aware;
-pub mod cast;
 pub mod cd;
 pub mod color;
 pub mod columns;
