@@ -111,7 +111,7 @@ const GB: u64 = 1 << 30;
 // ---- What the selection weighs and holds ------------------------------------------------------------------
 
 #[test]
-fn one_file_is_said_to_match_or_not_match_a_copied_checksum_after_what_else_is_known_of_it() {
+fn one_file_is_said_to_match_a_copied_checksum_after_what_else_is_known_of_it_and_never_to_differ() {
     use glint_model::aware::{copied_hash, Sums};
     let _guard = testing::lock();
     let sha = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
@@ -126,7 +126,7 @@ fn one_file_is_said_to_match_or_not_match_a_copied_checksum_after_what_else_is_k
     };
     let zero = "0".repeat(64);
     assert_eq!(said(Some(made(sha, &zero, Probed::default())), Some(&copied)).as_deref(), Some("Matches copied SHA-256"));
-    assert_eq!(said(Some(made(&zero, &zero, Probed::default())), Some(&copied)).as_deref(), Some("Checksum mismatch"));
+    assert_eq!(said(Some(made(&zero, &zero, Probed::default())), Some(&copied)), None, "a mismatch is not said in the dock");
     // After the lines it holds, and nothing before it is known.
     let with_lines = made(sha, &zero, lines(1230, false));
     assert_eq!(said(Some(with_lines), Some(&copied)).as_deref(), Some("1,230 lines · Matches copied SHA-256"));

@@ -34,7 +34,7 @@ pub fn deep(selected: &[FileEntry], probed: &dyn Fn(&FileEntry) -> Option<Probed
 }
 
 /// [`deep`], and for one selected file whether it agrees with the checksum `copied` from the clipboard, once that
-/// has been checked: "Matches copied SHA-256" or "Checksum mismatch", after what else is known.
+/// has been checked: "Matches copied SHA-256" after what else is known (a mismatch is not said here).
 pub fn deep_with(
     selected: &[FileEntry],
     probed: &dyn Fn(&FileEntry) -> Option<Probed>,
@@ -66,7 +66,9 @@ pub fn deep_with(
 fn checksum_words(probed: &Probed, copied: &CopiedHash) -> Option<SharedString> {
     match verdict(probed.sums.as_ref()?, copied)? {
         Verdict::Match(algo) => Some(t!("Matches copied {algo}", algo = algo.name())),
-        Verdict::Mismatch => Some(t!("Checksum mismatch")),
+        // A mismatch is said in the right-click menu only; here a checksum copied for something else would flag
+        // every file selected.
+        Verdict::Mismatch(_) => None,
     }
 }
 

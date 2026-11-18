@@ -39,12 +39,6 @@ impl Algo {
             Algo::Sha512 => 128,
         }
     }
-
-    /// Whether Glint can make this checksum itself. MD5 and SHA-1 aren't made by any hashing crate the engine
-    /// depends on directly, so a copied MD5 or SHA-1 is recognised but a file is never compared with it.
-    pub fn can_make(self) -> bool {
-        matches!(self, Algo::Sha256 | Algo::Sha512 | Algo::Blake3)
-    }
 }
 
 /// A checksum found on the clipboard.
@@ -72,10 +66,11 @@ impl CopiedHash {
         let mut want = SumsWant::default();
         for algo in self.candidates() {
             match algo {
+                Algo::Md5 => want.md5 = true,
+                Algo::Sha1 => want.sha1 = true,
                 Algo::Sha256 => want.sha256 = true,
                 Algo::Sha512 => want.sha512 = true,
                 Algo::Blake3 => want.blake3 = true,
-                Algo::Md5 | Algo::Sha1 => {}
             }
         }
         want
@@ -101,6 +96,8 @@ pub fn copied_hash(text: &str) -> Option<CopiedHash> {
 /// Which checksums of a file to make (one pass over the file makes them all).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SumsWant {
+    pub md5: bool,
+    pub sha1: bool,
     pub sha256: bool,
     pub sha512: bool,
     pub blake3: bool,
@@ -111,6 +108,8 @@ impl SumsWant {
     pub fn minus(self, have: Option<&Sums>) -> SumsWant {
         let have = have.cloned().unwrap_or_default();
         SumsWant {
+            md5: self.md5 && have.md5.is_none(),
+            sha1: self.sha1 && have.sha1.is_none(),
             sha256: self.sha256 && have.sha256.is_none(),
             sha512: self.sha512 && have.sha512.is_none(),
             blake3: self.blake3 && have.blake3.is_none(),
@@ -120,6 +119,8 @@ impl SumsWant {
     /// What this wants that `asked` doesn't.
     pub fn without(self, asked: SumsWant) -> SumsWant {
         SumsWant {
+            md5: self.md5 && !asked.md5,
+            sha1: self.sha1 && !asked.sha1,
             sha256: self.sha256 && !asked.sha256,
             sha512: self.sha512 && !asked.sha512,
             blake3: self.blake3 && !asked.blake3,
@@ -129,6 +130,8 @@ impl SumsWant {
     /// Everything either wants.
     pub fn and(self, other: SumsWant) -> SumsWant {
         SumsWant {
+            md5: self.md5 || other.md5,
+            sha1: self.sha1 || other.sha1,
             sha256: self.sha256 || other.sha256,
             sha512: self.sha512 || other.sha512,
             blake3: self.blake3 || other.blake3,
@@ -144,6 +147,8 @@ impl SumsWant {
 /// The checksums made of one file, in lower-case hexadecimal.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Sums {
+    pub md5: Option<String>,
+    pub sha1: Option<String>,
     pub sha256: Option<String>,
     pub sha512: Option<String>,
     pub blake3: Option<String>,
@@ -152,6 +157,12 @@ pub struct Sums {
 impl Sums {
     /// Takes in what `other` has made.
     pub fn merge(&mut self, other: Sums) {
+        if other.md5.is_some() {
+            self.md5 = other.md5;
+        }
+        if other.sha1.is_some() {
+            self.sha1 = other.sha1;
+        }
         if other.sha256.is_some() {
             self.sha256 = other.sha256;
         }
@@ -166,10 +177,11 @@ impl Sums {
     /// The checksum made with `algo`, if it was.
     pub fn get(&self, algo: Algo) -> Option<&str> {
         match algo {
+            Algo::Md5 => self.md5.as_deref(),
+            Algo::Sha1 => self.sha1.as_deref(),
             Algo::Sha256 => self.sha256.as_deref(),
             Algo::Sha512 => self.sha512.as_deref(),
             Algo::Blake3 => self.blake3.as_deref(),
-            Algo::Md5 | Algo::Sha1 => None,
         }
     }
 }
@@ -179,31 +191,23 @@ impl Sums {
 pub enum Verdict {
     /// The file's checksum made with this algorithm is the copied one.
     Match(Algo),
-    /// The file has been checked with every way the copied checksum could have been made, and none agrees.
-    Mismatch,
+    /// The file has been checked with every way the copied checksum could have been made, and none agrees. The
+    /// algorithm is the likeliest of them (SHA-256 for a sixty-four character one).
+    Mismatch(Algo),
 }
 
-/// What `sums` says about `copied`: None until the file's checksums of every candidate Glint can make are in, and
-/// always None for an MD5 or SHA-1 (it can't be compared, so nothing is claimed).
+/// What `sums` says about `copied`: None until the file's checksums of every way it could have been made are in.
 pub fn verdict(sums: &Sums, copied: &CopiedHash) -> Option<Verdict> {
-    let makeable: Vec<Algo> = copied
-        .candidates()
-        .iter()
-        .copied()
-        .filter(|algo| algo.can_make())
-        .collect();
-    if makeable.is_empty() {
-        return None;
-    }
-    for algo in &makeable {
+    let ways = copied.candidates();
+    let likeliest = *ways.first()?;
+    for algo in ways {
         if sums.get(*algo).is_some_and(|sum| sum.eq_ignore_ascii_case(&copied.hex)) {
             return Some(Verdict::Match(*algo));
         }
     }
-    makeable
-        .iter()
+    ways.iter()
         .all(|algo| sums.get(*algo).is_some())
-        .then_some(Verdict::Mismatch)
+        .then_some(Verdict::Mismatch(likeliest))
 }
 
 #[cfg(test)]
@@ -256,7 +260,7 @@ mod tests {
     }
 
     #[test]
-    fn only_what_can_be_made_is_wanted_and_md5_is_not() {
+    fn what_a_checksum_could_be_is_what_is_wanted_of_a_file() {
         fn want(text: &str) -> SumsWant {
             copied_hash(text).map(|h| h.sums_wanted()).unwrap_or_default()
         }
@@ -275,8 +279,21 @@ mod tests {
                 ..SumsWant::default()
             }
         );
-        assert!(want("d41d8cd98f00b204e9800998ecf8427e").is_empty());
-        assert!(want("da39a3ee5e6b4b0d3255bfef95601890afd80709").is_empty());
+        assert_eq!(
+            want("d41d8cd98f00b204e9800998ecf8427e"),
+            SumsWant {
+                md5: true,
+                ..SumsWant::default()
+            }
+        );
+        assert_eq!(
+            want("da39a3ee5e6b4b0d3255bfef95601890afd80709"),
+            SumsWant {
+                sha1: true,
+                ..SumsWant::default()
+            }
+        );
+        assert!(want("nothing").is_empty());
     }
 
     #[test]
@@ -291,11 +308,11 @@ mod tests {
         let b3 = copied_hash(&BLAKE3_ABC.to_uppercase()).expect("a checksum");
         assert_eq!(verdict(&sums, &b3), Some(Verdict::Match(Algo::Blake3)));
         let other = copied_hash(&"0".repeat(64)).expect("a checksum");
-        assert_eq!(verdict(&sums, &other), Some(Verdict::Mismatch));
+        assert_eq!(verdict(&sums, &other), Some(Verdict::Mismatch(Algo::Sha256)));
     }
 
     #[test]
-    fn nothing_is_said_until_every_candidate_is_made_or_when_the_checksum_cannot_be_compared() {
+    fn nothing_is_said_until_every_way_the_checksum_could_be_made_has_been() {
         let other = copied_hash(&"0".repeat(64)).expect("a checksum");
         let half = Sums {
             sha256: Some(SHA256_ABC.into()),
@@ -304,7 +321,23 @@ mod tests {
         assert_eq!(verdict(&half, &other), None, "BLAKE3 is still to come");
         assert_eq!(verdict(&Sums::default(), &other), None);
         let md5 = copied_hash("d41d8cd98f00b204e9800998ecf8427e").expect("a checksum");
-        assert_eq!(verdict(&half, &md5), None, "an MD5 can't be compared");
+        assert_eq!(verdict(&half, &md5), None, "no MD5 of the file yet");
+        let made = Sums {
+            md5: Some("d41d8cd98f00b204e9800998ecf8427e".into()),
+            ..Sums::default()
+        };
+        assert_eq!(verdict(&made, &md5), Some(Verdict::Match(Algo::Md5)));
+        let differs = Sums {
+            md5: Some("0".repeat(32)),
+            ..Sums::default()
+        };
+        assert_eq!(verdict(&differs, &md5), Some(Verdict::Mismatch(Algo::Md5)));
+        let sha1 = copied_hash("da39a3ee5e6b4b0d3255bfef95601890afd80709").expect("a checksum");
+        let sha1s = Sums {
+            sha1: Some("da39a3ee5e6b4b0d3255bfef95601890afd80709".into()),
+            ..Sums::default()
+        };
+        assert_eq!(verdict(&sha1s, &sha1), Some(Verdict::Match(Algo::Sha1)));
         let sha512 = copied_hash(&"ab".repeat(64)).expect("a checksum");
         assert_eq!(verdict(&half, &sha512), None);
         let both = Sums {
@@ -333,6 +366,7 @@ mod tests {
             sha256: true,
             sha512: true,
             blake3: true,
+            ..SumsWant::default()
         };
         assert_eq!(
             want.minus(Some(&have)),

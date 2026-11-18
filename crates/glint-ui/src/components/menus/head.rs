@@ -263,8 +263,10 @@ fn badges(entry: &FileEntry, probed: Option<&Probed>, extras: &Extras) -> Vec<Ba
                     Some(t!("Its checksum is the one on the clipboard")),
                     Run::Nothing,
                 )),
-                Some(Verdict::Mismatch) => all.push(badge(
-                    t!("Checksum mismatch"),
+                // Said only here, in the menu of one file the person asked about: a checksum on the clipboard
+                // doesn't flag every file passed over.
+                Some(Verdict::Mismatch(algo)) => all.push(badge(
+                    t!("Doesn't match the copied {algo}", algo = algo.name()),
                     IconName::ShieldAlert,
                     Tone::Warn,
                     Some(t!("Its checksum is not the one on the clipboard: the file may be damaged or not the one it names")),
