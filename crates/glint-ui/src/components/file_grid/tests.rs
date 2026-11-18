@@ -1291,6 +1291,74 @@ mod scrubbing {
         assert_eq!(over(&env), None);
     }
 
+    /// Every file's tile takes part in Aware's resting, not only folders and videos: a file the pointer stays on
+    /// is looked at ahead, one it only crosses is not, and a video still gets its scrub.
+    #[gpui_kit::test]
+    fn the_pointer_resting_on_any_file_tile_looks_at_it_ahead_and_a_video_still_scrubs(cx: &mut TestAppContext) {
+        use crate::aware::{init_with as aware_with, Sources, RESTS_FOR};
+        let _guard = testing::lock();
+        let sources = quiet_sources(Rc::new(Cell::new(0)));
+        let disk = videos();
+        // Only a fixed drive's files are looked at ahead.
+        disk.set_drives(vec![crate::explorer::Drive {
+            path: "C:\\".into(),
+            label: String::new(),
+            kind: crate::explorer::DriveKind::Fixed,
+            fs: "NTFS".into(),
+            total: 100,
+            free: 50,
+        }]);
+        cx.update(|cx| {
+            testing::init(cx);
+            init_with(cx, sources);
+        });
+        let mut env = env(cx, &disk, Rc::new(Fake::default()));
+        let drives = env.explorer.update(cx, |e, cx| e.refresh_drives(cx));
+        cx.foreground_executor().block_test(drives);
+        let looked: Rc<RefCell<Vec<String>>> = Rc::default();
+        let seen = looked.clone();
+        cx.update(|cx| {
+            aware_with(
+                cx,
+                Sources {
+                    probe: Rc::new(move |asks, _, _| {
+                        seen.borrow_mut().extend(asks.into_iter().map(|ask| ask.path));
+                        async_channel::unbounded().1
+                    }),
+                    ..Sources::still()
+                },
+            )
+        });
+        env.frame();
+        let (video, text) = (tile_of(&mut env, "a.mp4"), tile_of(&mut env, "c.txt"));
+        let pointer_on = |env: &mut Env, tile: usize| {
+            env.visual.update(|window, cx| {
+                window.render_frame(cx);
+                window.hover(("file-grid-tile", tile), cx);
+            });
+        };
+        let rest = |env: &mut Env| {
+            env.visual.executor().advance_clock(RESTS_FOR * 3);
+            env.visual.run_until_parked();
+            env.frame();
+        };
+
+        // A text file is found out about after the pointer has stayed on it.
+        pointer_on(&mut env, text);
+        rest(&mut env);
+        assert!(
+            looked.borrow().iter().any(|path| path == "C:\\x\\c.txt"),
+            "{:?}",
+            looked.borrow()
+        );
+
+        // A video is too, and its scrub is made as before.
+        pointer_on(&mut env, video);
+        rest(&mut env);
+        assert!(looked.borrow().iter().any(|path| path == "C:\\x\\a.mp4"));
+        assert_eq!(over(&env).as_deref(), Some("C:\\x\\a.mp4"));
+    }
+
     #[test]
     fn a_scrub_is_asked_for_in_device_pixels() {
         use crate::components::preview::player::Scrub;
