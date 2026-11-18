@@ -19,7 +19,6 @@
 //! | `Section`, `Row`, `SwitchRow`, `Segmented`   | [`widgets`]                                        |
 //! | `PatternEditor`                              | [`pattern::PatternEditor`]                         |
 //! | `InstantSearch`                              | [`instant::InstantSearch`]                         |
-//! | `ContentIndexSection`                        | [`content::ContentIndex`]                          |
 //! | `AgentsSection`                              | [`agents::Agents`]                                 |
 //! | `CloudsSection`                              | [`clouds::Clouds`]                                 |
 //! | `ToolsSection`                               | [`tools::Tools`]                                   |
@@ -36,7 +35,6 @@ pub mod about;
 pub mod agents;
 mod backend;
 pub mod clouds;
-pub mod content;
 mod general;
 pub mod instant;
 pub mod integration;
@@ -135,7 +133,6 @@ pub struct SettingsView {
     pub(crate) find_exclusions: Entity<pattern::PatternEditor>,
     pub(crate) exclusions: Entity<pattern::PatternEditor>,
     pub(crate) instant: Entity<instant::InstantSearch>,
-    pub(crate) content: Entity<content::ContentIndex>,
     pub(crate) agents: Entity<agents::Agents>,
     pub(crate) clouds: Entity<clouds::Clouds>,
     pub(crate) tools: Entity<tools::Tools>,
@@ -191,10 +188,6 @@ impl SettingsView {
         let instant = {
             let backend = backend.clone();
             cx.new(|cx| instant::InstantSearch::new(backend, store, window, cx))
-        };
-        let content = {
-            let backend = backend.clone();
-            cx.new(|cx| content::ContentIndex::new(backend, window, cx))
         };
         let agents = {
             let backend = backend.clone();
@@ -287,7 +280,6 @@ impl SettingsView {
             find_exclusions,
             exclusions,
             instant,
-            content,
             agents,
             clouds,
             tools,
@@ -388,7 +380,7 @@ impl SettingsView {
         &self.order
     }
 
-    /// Every section of every page, in the side list's order (the content index's whether it shows or not).
+    /// Every section of every page, in the side list's order.
     pub fn all_sections() -> Vec<&'static str> {
         Page::ALL.iter().flat_map(|page| page.sections().iter().copied()).collect()
     }

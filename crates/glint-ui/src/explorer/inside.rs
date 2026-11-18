@@ -9,11 +9,10 @@
 //! [`Explorer::run_find_in`] starts it beside the name search when the search has words to look for
 //! ([`inside_words`]) in a folder on disk ([`can_search_inside`]). A whole drive is searched only when asked
 //! ([`Wider::inside_too`], the results' bar offers it): its run says so with [`Inside::offered`]. A search as it is
-//! typed looks inside only where the content index covers the folder, since it must answer at once.
+//! typed looks only at names, since it must answer at once.
 //!
 //! Core has one content search at a time: a newer one ends the older (in any tab), which keeps what it found.
-//! Which engine answers follows the search box's switches (`persistence::app(cx).options`): the content index for
-//! plain words in a folder it covers, the documents' reader when Documents is on, else ripgrep.
+//! Which engine answers follows the search box's switches (`persistence::app(cx).options`): the documents' reader when Documents is on, else ripgrep.
 //!
 //! What core finds comes as `search-event`s ([`Explorer::inside_heard`]). One pump reads them in order: each is
 //! parsed on a background thread, the files not seen yet are read for their size and date through the [`Source`],
@@ -48,8 +47,6 @@ const FEWEST_CHARACTERS: usize = 2;
 pub enum InsideEngine {
     /// ripgrep over the files (`run_ripgrep_batched`).
     Ripgrep,
-    /// The content index, for plain words in a folder it covers (`run_content_search`).
-    Index,
     /// Documents (PDF, Office, books) and pictures' text (`run_doc_search`).
     Documents,
 }
@@ -179,7 +176,7 @@ pub(super) struct InsideJob {
     started: Instant,
     /// The files already read for their size and date, so each is read once.
     seen: HashSet<String>,
-    /// The start, which waits for the index to say whether it covers the folder. Dropped with the job.
+    /// The start, which asks core to begin. Dropped with the job.
     _starting: Task<()>,
 }
 
@@ -245,15 +242,9 @@ impl Explorer {
         self.ensure_inside_pump(cx);
         let source = self.source.clone();
         let o = options;
-        let everything = wider.skip_nothing;
         let run_id = id.clone();
         let starting = cx.spawn(async move |this, cx| {
-            // Words alone, in a folder the content index covers, are answered by the index, in milliseconds.
-            let plain = !o.documents && !o.regex && !o.case_sensitive && !o.whole_word && !everything;
-            let indexed = plain && source.inside_covers(&scope).await;
-            let engine = if indexed {
-                InsideEngine::Index
-            } else if o.documents {
+            let engine = if o.documents {
                 InsideEngine::Documents
             } else {
                 InsideEngine::Ripgrep

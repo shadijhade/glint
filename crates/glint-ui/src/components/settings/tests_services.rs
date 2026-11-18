@@ -1,4 +1,4 @@
-//! Tests of the sections that talk to the PC through the backend: instant search, the content index, photos and
+//! Tests of the sections that talk to the PC through the backend: instant search, photos and
 //! recordings, devices, tools, clouds, agents, the settings file, File Explorer's switches and About.
 
 use super::backend::{IndexState, Known};
@@ -82,49 +82,6 @@ fn instant_search_failing_to_start_keeps_offering_it(cx: &mut TestAppContext) {
         fake.calls().iter().filter(|c| *c == "index_enable").count() == 2
     });
     settle(&mut visual, |cx| !cx.update(|_, cx| instant.read(cx).working()));
-}
-
-#[gpui_kit::test]
-fn the_content_index_starts_in_documents_and_desktop_and_takes_folders_in_and_out(cx: &mut TestAppContext) {
-    let _guard = testing::lock();
-    let fake = Arc::new(Fake::new());
-    let (mut visual, view) = open_settings(cx, &fake, None);
-    go_to(&mut visual, "instant-search");
-    reveal(&mut visual, &view, "settings-switch-content-index");
-    click(&mut visual, "settings-switch-content-index");
-    settle(&mut visual, |_| {
-        fake.calls()
-            .iter()
-            .any(|c| c.starts_with("content_configure true") && c.contains("Documents") && c.contains("Desktop"))
-    });
-    settle(&mut visual, |cx| has(cx, "The text in pictures too"));
-    // A folder picked is added once; cancelling adds nothing.
-    reveal(&mut visual, &view, "settings-button-content-add");
-    lock(&fake.picks).push_back(Some("D:\\Notes".into()));
-    click(&mut visual, "settings-button-content-add");
-    settle(&mut visual, |cx| {
-        has(cx, "D:\\Notes") && cx.update(|_, _| lock(&fake.content).folders.len() == 3)
-    });
-    reveal(&mut visual, &view, "settings-button-content-add");
-    lock(&fake.picks).push_back(None);
-    click(&mut visual, "settings-button-content-add");
-    settle(&mut visual, |_| lock(&fake.picks).is_empty());
-    assert_eq!(lock(&fake.content).folders.len(), 3);
-    // Remove takes one out, named for it.
-    assert_eq!(
-        label_of(&mut visual, "settings-button-content-folder-2").as_deref(),
-        Some("Remove D:\\Notes")
-    );
-    click(&mut visual, "settings-button-content-folder-2");
-    settle(&mut visual, |_| lock(&fake.content).folders.len() == 2);
-    // The pictures switch writes `pictures`; the main switch off keeps the folders but turns it off.
-    reveal(&mut visual, &view, "settings-switch-content-pictures");
-    click(&mut visual, "settings-switch-content-pictures");
-    settle(&mut visual, |_| !lock(&fake.content).pictures);
-    reveal(&mut visual, &view, "settings-switch-content-index");
-    click(&mut visual, "settings-switch-content-index");
-    settle(&mut visual, |_| !lock(&fake.content).enabled);
-    assert_eq!(lock(&fake.content).folders.len(), 2);
 }
 
 #[gpui_kit::test]

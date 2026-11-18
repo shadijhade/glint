@@ -217,7 +217,7 @@ impl Explorer {
         }
         if known.is_some() {
             return if self.finds_as_typed(query, &path, cx) {
-                self.find_typed(tab, query, cx)
+                self.run_find_in(tab, query, Wider::default().names_only(), cx)
             } else {
                 Task::ready(())
             };
@@ -230,7 +230,7 @@ impl Explorer {
             let running = this
                 .update(cx, |this, cx| {
                     let same = this.tabs.get(&tab).is_some_and(|t| t.path == path && t.filter == query);
-                    (same && this.finds_as_typed(&query, &path, cx)).then(|| this.find_typed(tab, &query, cx))
+                    (same && this.finds_as_typed(&query, &path, cx)).then(|| this.run_find_in(tab, &query, Wider::default().names_only(), cx))
                 })
                 .ok()
                 .flatten();
@@ -238,39 +238,6 @@ impl Explorer {
                 running.await;
             }
         })
-    }
-
-    /// A search as it is typed: the names at once, and what is inside the files too where the content index
-    /// covers the folder (it answers in milliseconds, as the name index does; ripgrep waits for Enter).
-    fn find_typed(&mut self, tab: TabId, query: &str, cx: &mut Context<Self>) -> Task<()> {
-        let running = self.run_find_in(tab, query, Wider::default().names_only(), cx);
-        let run = self.tabs.get(&tab).and_then(|t| t.find.as_ref());
-        let asked = run
-            .filter(|find| !super::inside::inside_words(&find.query).is_empty())
-            .filter(|find| super::inside::inside_unasked(&find.scope))
-            .map(|find| (find.id, find.scope.clone()));
-        if let Some((id, scope)) = asked {
-            let covers = self.source.inside_covers(&scope);
-            cx.spawn(async move |this, cx| {
-                if !covers.await {
-                    return;
-                }
-                this.update(cx, |this, cx| {
-                    // Still the same search: the person hasn't typed on while the index answered.
-                    let same = this
-                        .tabs
-                        .get(&tab)
-                        .and_then(|t| t.find.as_ref())
-                        .is_some_and(|f| f.id == id);
-                    if same {
-                        this.search_inside(tab, &Wider::default(), cx);
-                    }
-                })
-                .ok();
-            })
-            .detach();
-        }
-        running
     }
 
     // ---- Running a search ---------------------------------------------------------------------------------

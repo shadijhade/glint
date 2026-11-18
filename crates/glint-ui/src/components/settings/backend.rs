@@ -12,7 +12,7 @@
 use crate::core_bridge;
 use crate::platform::pickers::{self, Filter, Options};
 use glint_core::host::{self, Manager as _};
-use glint_core::{agents, content, openers, rclone, term, verbs};
+use glint_core::{agents, openers, rclone, term, verbs};
 use std::future::Future;
 use std::pin::Pin;
 
@@ -179,9 +179,6 @@ pub trait Backend: Send + Sync + 'static {
         Box::pin(async { Err(crate::t!("Instant search isn't available here").to_string()) })
     }
     fn index_disable(&self) -> Fut<IndexInfo>;
-    // Search inside files.
-    fn content_status(&self) -> Fut<content::Status>;
-    fn content_configure(&self, enabled: bool, folders: Vec<String>, pictures: Option<bool>) -> Fut<content::Status>;
     // Tools.
     fn tools_status(&self) -> Fut<Vec<ToolInfo>>;
     fn tool_install(&self, id: String, progress: async_channel::Sender<Fetch>) -> Fut<()>;
@@ -276,14 +273,6 @@ impl Backend for CoreBackend {
             let window = Self::window(&app)?;
             glint_core::index::index_disable(window).await.map(IndexInfo::from)
         })
-    }
-
-    fn content_status(&self) -> Fut<content::Status> {
-        on_core(content::content_status())
-    }
-
-    fn content_configure(&self, enabled: bool, folders: Vec<String>, pictures: Option<bool>) -> Fut<content::Status> {
-        on_core(content::content_configure(enabled, folders, pictures))
     }
 
     fn tools_status(&self) -> Fut<Vec<ToolInfo>> {

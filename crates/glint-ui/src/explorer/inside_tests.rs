@@ -351,7 +351,7 @@ fn a_content_search_that_fails_says_why_and_keeps_the_names(cx: &mut TestAppCont
 }
 
 #[gpui_kit::test]
-fn a_search_as_it_is_typed_looks_inside_only_where_the_content_index_answers(cx: &mut TestAppContext) {
+fn a_search_as_it_is_typed_looks_at_names_only(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let r = rig(cx);
     // The name index has the drive, so names are searched as they are typed.
@@ -371,18 +371,6 @@ fn a_search_as_it_is_typed_looks_inside_only_where_the_content_index_answers(cx:
     cx.run_until_parked();
     assert!(r.run_of(cx).entries.len() == 1, "the names came");
     assert!(r.disk.inside_searches().is_empty(), "ripgrep waits for Enter");
-
-    // With the content index covering the folder, the contents are asked as typed too, of the index.
-    r.disk.set_inside_covered(true);
-    let typed = r.explorer.update(cx, |e, cx| {
-        e.set_filter("needles", None, cx);
-        e.find_as_typed("needles", cx)
-    });
-    cx.foreground_executor().block_test(typed);
-    cx.run_until_parked();
-    let asked = r.disk.inside_searches();
-    assert_eq!(asked.len(), 1);
-    assert_eq!(asked[0].0, InsideEngine::Index);
 }
 
 #[gpui_kit::test]

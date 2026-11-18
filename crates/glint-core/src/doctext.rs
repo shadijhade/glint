@@ -616,7 +616,7 @@ fn walk(folder: &Path, search: &DocSearch, run: u64, paths: mpsc::SyncSender<Pat
 }
 
 /// A document's lines, read by a worker process of its own (kept for the next one), as Documents search
-/// reads them: the content index's way to read documents without risking the app on a hostile one.
+/// reads them: the way to read a document without risking the app on a hostile one (the PDF preview's too).
 pub fn read_isolated(path: &Path) -> Result<Lines, String> {
     static READER: Mutex<Option<Reader>> = Mutex::new(None);
     let mut slot = READER.lock().unwrap_or_else(|e| e.into_inner());
@@ -773,9 +773,8 @@ fn read_all(queue: mpsc::Receiver<PathBuf>, run: u64, found: mpsc::Sender<Docume
     failed.into_inner()
 }
 
-/// A line of a document (or of a text file, from the content index) that matched: its number, the place in the
-/// document as its label ("p. 3"; none for a plain text file's line, which the window then shows by its number),
-/// and the hits, byte ranges of `text`.
+/// A line of a document that matched: its number, the place in the document as its label ("p. 3"; none for a
+/// plain text file's line, which the window then shows by its number), and the hits, byte ranges of `text`.
 pub(crate) fn text_match(path: &Path, line: usize, label: &str, text: &str, spans: &[(usize, usize)]) -> crate::TextMatch {
     crate::TextMatch {
         path: path.to_string_lossy().into_owned(),
@@ -904,7 +903,7 @@ mod tests {
             crate::TextMatch { path: r"C:\d\a.pdf".into(), text: Some("find é here\n".into()), line_number: Some(7), hits: vec![(5, 7)], label: Some("p. 2".into()) }
         );
         assert_eq!(&found.text.as_deref().unwrap()[5..7], "é");
-        // A text file's line (the content index's) has no label: the window shows its number.
+        // A text file's line has no label: the window shows its number.
         let plain = text_match(Path::new(r"C:\d\a.txt"), 3, "", "the needle", &[(4, 10)]);
         assert_eq!((plain.label, plain.line_number), (None, Some(3)));
     }

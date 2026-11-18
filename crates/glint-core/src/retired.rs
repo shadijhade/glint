@@ -1,6 +1,6 @@
 //! What removed features left on users' PCs: 0.12's photo, speech and meaning search's downloads and what they
 //! learned, paired devices' key and pairings, and the built-in Typst's previews; 0.13's retired tools; 0.14's book
-//! reader's saved places and the mail viewer's saved attachments. [`sweep`] deletes exactly those,
+//! reader's saved places and the mail viewer's saved attachments; 0.14's content index. [`sweep`] deletes exactly those,
 //! once per start, on a background thread (startup.rs in glint-ui), and nothing else. Whisper's model
 //! (`models\whisper-base`) stays: Media's Subtitles still uses it (whisper.rs).
 
@@ -41,6 +41,10 @@ const RETIRED: &[&str] = &[
     "tools/ab-av1",
     "tools/libjxl",
     "tools/ghostscript",
+    // The content index (Search inside files instantly): tantivy's files and the list of folders it kept, which
+    // were only ever copies of what the files hold.
+    "content",
+    "content.json",
 ];
 
 /// Under Glint's roaming data folder (beside `state.json`), as [`RETIRED`] is under the local one.
@@ -118,18 +122,21 @@ mod tests {
         fs::create_dir_all(&roaming).unwrap();
         fs::write(roaming.join("books.json"), "{}").unwrap();
         fs::write(roaming.join("state.json"), "{}").unwrap();
-        // What stays: Subtitles' model, the tools, the state, the content index, a model of someone else's.
+        // What stays: Subtitles' model, the tools, the state, a model of someone else's.
         fs::create_dir_all(models.join("whisper-base")).unwrap();
         fs::write(models.join("whisper-base").join("ggml-base-q5_1.bin"), "m").unwrap();
         fs::create_dir_all(models.join("mine")).unwrap();
         fs::create_dir_all(data.join("tools").join("jaq")).unwrap();
-        fs::create_dir_all(data.join("content")).unwrap();
+        // What the content index left, with the list of folders it kept.
+        fs::create_dir_all(data.join("content").join("meta")).unwrap();
+        fs::write(data.join("content").join("meta").join("segment.idx"), "i").unwrap();
+        fs::write(data.join("content.json"), "{}").unwrap();
         fs::write(data.join("state.json"), "{}").unwrap();
         fs::write(data.join("ondemand.json"), "[]").unwrap();
 
         let gone = sweep_in(&data, RETIRED);
 
-        assert_eq!(gone.len(), 9, "{gone:?}");
+        assert_eq!(gone.len(), 11, "{gone:?}");
         assert_eq!(sweep_in(&roaming, RETIRED_ROAMING), [roaming.join("books.json")]);
         // A mail attachment saved to the temp folder, with the mark Windows puts on files from the internet.
         let temp = std::env::temp_dir().join(format!("glint-retired-temp-{}", std::process::id()));
@@ -149,7 +156,6 @@ mod tests {
             "models/whisper-base/ggml-base-q5_1.bin",
             "models/mine",
             "tools/jaq",
-            "content",
             "state.json",
             "ondemand.json",
         ] {

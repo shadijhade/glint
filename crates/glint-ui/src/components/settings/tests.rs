@@ -4,7 +4,7 @@
 use super::backend::{Backend, Fut, IndexInfo, IndexState, Known, McpSetup, ToolInfo, Volume};
 use super::*;
 use crate::testing;
-use glint_core::{agents, content, openers, rclone, term, verbs};
+use glint_core::{agents, openers, rclone, term, verbs};
 use glint_model::store::{Backdrop, Theme};
 use gpui_kit::test::{TestQueryExt as _, TestWindowExt as _};
 use gpui_kit::{TestAppContext, VisualTestContext};
@@ -30,7 +30,6 @@ pub struct Fake {
     pub remotes: Mutex<Vec<rclone::Remote>>,
     /// The next answers of the pickers, in order (`None` is "cancelled").
     pub picks: Mutex<VecDeque<Option<String>>>,
-    pub content: Mutex<content::Status>,
     pub integration_available: bool,
     pub fail_next: Mutex<Option<String>>,
 }
@@ -55,10 +54,6 @@ impl Fake {
             rclone_locked: Mutex::new(false),
             remotes: Mutex::new(Vec::new()),
             picks: Mutex::new(VecDeque::new()),
-            content: Mutex::new(content::Status {
-                pictures: true,
-                ..Default::default()
-            }),
             integration_available: true,
             fail_next: Mutex::new(None),
         }
@@ -129,21 +124,6 @@ impl Backend for Fake {
         index.state = IndexState::Off;
         index.volumes.clear();
         ready(Ok(index.clone()))
-    }
-
-    fn content_status(&self) -> Fut<content::Status> {
-        ready(Ok(lock(&self.content).clone()))
-    }
-
-    fn content_configure(&self, enabled: bool, folders: Vec<String>, pictures: Option<bool>) -> Fut<content::Status> {
-        self.said(format!("content_configure {enabled} {folders:?} {pictures:?}"));
-        let mut status = lock(&self.content);
-        status.enabled = enabled;
-        status.folders = folders;
-        if let Some(pictures) = pictures {
-            status.pictures = pictures;
-        }
-        ready(Ok(status.clone()))
     }
 
     fn tools_status(&self) -> Fut<Vec<ToolInfo>> {
@@ -541,12 +521,12 @@ fn settings_opens_as_a_named_dialog_with_every_section_listed(cx: &mut TestAppCo
     assert_eq!(role_of(&mut visual, "Settings sections"), Some(Role::Navigation));
     assert!(!has(&mut visual, "Check"), "Check went with YARA-X");
     assert!(!has(&mut visual, "Text search skips") || view.read_with(&visual, |v, _| v.page()) == Page::Inside);
-    // It opens on the Overview, one page at a time; Inside files has the content index first, once it answered.
+    // It opens on the Overview, one page at a time; Inside files has ripgrep's section first.
     assert_eq!(view.read_with(&visual, |v, _| v.page()), Page::Overview);
     assert_eq!(view.read_with(&visual, |v, _| v.sections().to_vec()), ["overview"]);
     go_to(&mut visual, "search-text-ripgrep");
     let order = visual.update(|_, cx| view.read(cx).sections().to_vec());
-    assert_eq!(order, ["search-inside-files-instantly", "search-text-ripgrep", "text-search-skips"]);
+    assert_eq!(order, ["search-text-ripgrep", "text-search-skips"]);
     assert_eq!(SettingsView::all_sections().last().copied(), Some("about"));
 }
 

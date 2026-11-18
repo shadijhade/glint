@@ -87,8 +87,6 @@ encoding_rs = "0.8"
 zip = { version = "9.0.4", default-features = false, features = ["deflate-flate2-zlib-rs", "deflate64", "bzip2", "lzma", "xz", "ppmd", "legacy-zip", "aes-crypto"] }
 sevenz-rust2 = { version = "0.24.0", default-features = false, features = ["bzip2", "ppmd", "deflate", "lz4", "aes256", "compress"] }
 ruzstd = "0.9.1"
-# Search inside files instantly: the content index (content.rs).
-tantivy = { version = "0.27", default-features = false, features = ["mmap", "lz4-compression"] }
 # age encryption (Encrypt… on a file's menu, vault.rs): the format of age and rage, in Rust.
 age = { version = "0.12.1", default-features = false }
 # Nearby (localsend.rs): the LocalSend protocol's small HTTP server and its multicast, with what Glint has already.
