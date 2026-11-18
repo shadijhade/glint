@@ -139,6 +139,17 @@ struct Shown {
     targets: Vec<FileEntry>,
 }
 
+/// A menu asked for that waits its breath ([`LOOK_FIRST`]) for what is being found out about its one item.
+struct Waiting {
+    /// Which asking it is: the menu opens only if no other was asked for since.
+    turn: u64,
+    pane: usize,
+    chosen: Vec<FileEntry>,
+    at: Point<Pixels>,
+    /// Hears Aware's answers, so the menu opens the moment everything it waits for is known.
+    _wake: Subscription,
+}
+
 /// The window's menu host, kept where the commands' island can ask it what it would suggest.
 struct SharedHost(WeakEntity<MenuHost>);
 
@@ -174,7 +185,7 @@ pub struct MenuHost {
     /// Counts the menus asked for: one that waited a breath opens only if no other was asked for meanwhile.
     opening: u64,
     /// A menu was asked for and waits its breath ([`LOOK_FIRST`]): it is as good as open to what is under it.
-    waiting: bool,
+    waiting: Option<Waiting>,
     /// Tests: stands in for Windows' own menu, which can't be shown headless.
     #[cfg(test)]
     pub(crate) shell_calls: std::rc::Rc<std::cell::RefCell<Vec<ShellCall>>>,
@@ -196,7 +207,7 @@ impl MenuHost {
             sources,
             read_at: None,
             opening: 0,
-            waiting: false,
+            waiting: None,
             #[cfg(test)]
             shell_calls: Default::default(),
         };
@@ -349,7 +360,7 @@ impl MenuHost {
 
     /// Whether a menu is on screen or about to be (it waits a breath for what is being found out).
     pub fn is_showing(&self) -> bool {
-        self.open.is_some() || self.waiting
+        self.open.is_some() || self.waiting.is_some()
     }
 
     /// The menu on screen, for tests and screen-reader checks.
@@ -370,7 +381,7 @@ impl MenuHost {
     /// Closes the menu without choosing anything.
     pub fn close(&mut self, cx: &mut Context<Self>) {
         self.opening = self.opening.wrapping_add(1);
-        self.waiting = false;
+        self.waiting = None;
         if self.open.take().is_some() {
             Self::rest_aware(cx);
             cx.emit(MenuEvent::Closed);
@@ -449,28 +460,54 @@ impl MenuHost {
             return self.show_windows_menu(paths, at, window, cx);
         }
         // One item about which something is still being found out: it is asked for at once, and the menu waits
-        // a breath for it ([`LOOK_FIRST`]). What is suggested is decided once, when the menu opens.
+        // for it, at most [`LOOK_FIRST`]: it opens the moment the item's answers are in, or when the run that
+        // looks for them has ended. What is suggested is decided once, when the menu opens.
         self.opening = self.opening.wrapping_add(1);
+        self.waiting = None;
         if let (Some(aware), [entry]) = (aware::try_shared(cx), chosen.as_slice()) {
             let asked = aware.update(cx, |aware, cx| aware.look_now(std::slice::from_ref(entry), cx));
             if asked || aware.read(cx).settling(entry) {
                 let turn = self.opening;
-                self.waiting = true;
+                let wake = cx.subscribe_in(&aware, window, move |this, aware, _: &aware::Answered, window, cx| {
+                    this.wake(turn, aware, window, cx);
+                });
+                self.waiting = Some(Waiting {
+                    turn,
+                    pane,
+                    chosen,
+                    at,
+                    _wake: wake,
+                });
                 cx.spawn_in(window, async move |this, cx| {
                     cx.background_executor().timer(LOOK_FIRST).await;
-                    this.update_in(cx, |this, window, cx| {
-                        if this.opening == turn {
-                            this.waiting = false;
-                            this.open_items(pane, chosen, at, window, cx);
-                        }
-                    })
-                    .ok();
+                    this.update_in(cx, |this, window, cx| this.open_waiting(turn, window, cx)).ok();
                 })
                 .detach();
                 return;
             }
         }
         self.open_items(pane, chosen, at, window, cx);
+    }
+
+    /// Aware has kept answers or finished a run: the waiting menu opens if what it waits for is all known.
+    fn wake(&mut self, turn: u64, aware: &Entity<aware::Aware>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(waiting) = self.waiting.as_ref().filter(|waiting| waiting.turn == turn) else {
+            return;
+        };
+        let [entry] = waiting.chosen.as_slice() else { return };
+        if aware.read(cx).answered(entry) {
+            self.open_waiting(turn, window, cx);
+        }
+    }
+
+    /// The menu that waited is shown, unless another was asked for (or this one closed) since.
+    fn open_waiting(&mut self, turn: u64, window: &mut Window, cx: &mut Context<Self>) {
+        if self.opening != turn {
+            return;
+        }
+        if let Some(Waiting { pane, chosen, at, .. }) = self.waiting.take() {
+            self.open_items(pane, chosen, at, window, cx);
+        }
     }
 
     /// Shows the item menu for `chosen` (never empty) at `at`.
@@ -774,7 +811,7 @@ impl MenuHost {
     fn show(&mut self, shown: Shown, window: &mut Window, cx: &mut Context<Self>) {
         // A menu that was waiting a breath gives way to this one.
         self.opening = self.opening.wrapping_add(1);
-        self.waiting = false;
+        self.waiting = None;
         let Shown {
             nodes,
             at,

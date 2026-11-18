@@ -38,7 +38,8 @@ const SELECTION_SETTLES: Duration = Duration::from_millis(150);
 /// How long the pointer rests on a row or a tile before what isn't known about its item is asked for: long
 /// enough that a pointer crossing the list asks nothing, short enough to be done before the click.
 pub const RESTS_FOR: Duration = Duration::from_millis(60);
-/// Answers are applied at most once in this long: a frame.
+/// The views are told of answers at most once in this long: a frame. The answers themselves are kept the moment
+/// they arrive.
 const FRAME: Duration = Duration::from_millis(16);
 /// "Changing now" goes away this long after the last change (ten seconds, and a little more).
 const CHANGING_ENDS: Duration = Duration::from_millis(10_500);
@@ -94,6 +95,11 @@ impl Sources {
     }
 }
 
+/// Said by [`Aware`] the moment answers were kept, or a run ended, with nothing waited for. A menu that waits for
+/// what is being found out listens for it; views redraw on the entity's own notice, which comes at most once a
+/// frame.
+pub struct Answered;
+
 /// A set of asks on its way: the flag that ends it, whether it has finished by itself, and what it asked.
 struct Run {
     stop: Arc<AtomicBool>,
@@ -115,9 +121,15 @@ pub struct Aware {
     settle: Option<Task<()>>,
     /// The wait that tells the views "changing now" is over; replaced by the next change.
     changing_ends: Option<Task<()>>,
+    /// When the views were last told of answers.
+    noticed_at: Option<Instant>,
+    /// The notice of answers that came in within a frame of the last one, due at the end of that frame.
+    notice_owed: Option<Task<()>>,
     _clip_watch: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
+
+impl EventEmitter<Answered> for Aware {}
 
 struct Shared(Entity<Aware>);
 
@@ -176,6 +188,8 @@ impl Aware {
             pulses: Pulses::default(),
             settle: None,
             changing_ends: None,
+            noticed_at: None,
+            notice_owed: None,
             _clip_watch: Some(clip::watch(cx)),
             _subscriptions: subscriptions,
         }
@@ -216,6 +230,18 @@ impl Aware {
     /// Forgets what is known about `path` (it was unblocked, renamed, written to).
     pub fn forget(&mut self, path: &str) {
         self.cache.forget(path);
+    }
+
+    /// Whether everything asked about `entry` that can be answered has been: every part a run that is still going
+    /// was asked has come in (a folder's inside, when it has finished counting), or the runs are over (what
+    /// didn't come then can't be known). A menu waiting for the item opens as soon as this is true.
+    pub fn answered(&self, entry: &FileEntry) -> bool {
+        if !self.settling(entry) {
+            return true;
+        }
+        let asked = self.pending(Lane::Quiet, &entry.path).and(self.pending(Lane::Now, &entry.path));
+        let counting = asked.inside && !self.probed(entry).and_then(|probed| probed.inside).is_some_and(|inside| inside.done);
+        !counting && self.cache.unanswered(entry, asked).is_empty()
     }
 
     /// What is on the clipboard.
@@ -380,6 +406,8 @@ impl Aware {
             Lane::Now => self.now = Some(run),
         }
         // One task per run: answers that arrive together are applied together, and the views hear of them once.
+        // Nothing waits between batches: an answer is kept the moment it arrives, and only the views' notice is
+        // held to a frame ([`Aware::noticed`]).
         cx.spawn(async move |this, cx| {
             while let Ok(first) = receiver.recv().await {
                 let mut batch = vec![first];
@@ -395,18 +423,48 @@ impl Aware {
                         any |= this.cache.take(&answer.path, answer.part);
                     }
                     if any {
-                        cx.notify();
+                        this.noticed(cx);
+                        cx.emit(Answered);
                     }
                 });
                 if applied.is_err() {
                     return;
                 }
-                cx.background_executor().timer(FRAME).await;
             }
             done.store(true, Ordering::SeqCst);
+            // What never answered never will: whoever waits for it can stop.
+            this.update(cx, |_, cx| cx.emit(Answered)).ok();
         })
         .detach();
         true
+    }
+
+    /// Tells the views answers were kept: at once when the last notice is a frame old or more, otherwise at the
+    /// end of that frame, once for everything that came in meanwhile (R4).
+    fn noticed(&mut self, cx: &mut Context<Self>) {
+        if self.notice_owed.is_some() {
+            return;
+        }
+        let now = Instant::now();
+        let since = self.noticed_at.map(|at| now.saturating_duration_since(at));
+        match since {
+            Some(since) if since < FRAME => {
+                let wait = FRAME - since;
+                self.notice_owed = Some(cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(wait).await;
+                    this.update(cx, |this, cx| {
+                        this.notice_owed = None;
+                        this.noticed_at = Some(Instant::now());
+                        cx.notify();
+                    })
+                    .ok();
+                }));
+            }
+            _ => {
+                self.noticed_at = Some(now);
+                cx.notify();
+            }
+        }
     }
 
     /// The selection of the active tab changed: look at it once it has stayed the same for a moment.

@@ -640,6 +640,71 @@ fn a_right_click_on_what_the_pointer_was_resting_on_asks_what_is_left_for_now_an
     assert!(rig.ui.visual.update(|_, cx| super::showing(cx)));
 }
 
+/// Asks for the menu of the program, which waits its breath for what is being found out about it.
+fn right_click_setup(rig: &mut Rig) {
+    rig.ui.select(&[SETUP]);
+    let menus = rig.ui.menus.clone();
+    rig.ui.visual.update(|window, cx| {
+        menus.update(cx, |m, cx| m.open_list_menu(0, Some(SETUP), Some(at(100., 10.)), false, window, cx));
+    });
+    rig.ui.frame();
+    assert!(!rig.ui.is_open(), "it waits for what is being found out");
+}
+
+#[gpui_kit::test]
+fn a_menu_opens_the_moment_everything_it_waits_for_is_known_not_when_the_breath_is_over(cx: &mut TestAppContext) {
+    let _guard = english();
+    let mut rig = rig(cx, "C:\\apps");
+    right_click_setup(&mut rig);
+    let call = rig.fake.call_of(SETUP);
+    let origin = Part::Origin(glint_model::aware::Origin { host: "github.com".into(), blocked: true });
+    let known = [
+        origin,
+        Part::LockedBy(Vec::new()),
+        Part::OpensWith("Notepad".into()),
+        Part::Signer(glint_model::aware::Signer::Unsigned),
+    ];
+    for part in known {
+        rig.fake.send(call, SETUP, part);
+        rig.ui.frame();
+        assert!(!rig.ui.is_open(), "one part is still to come");
+    }
+    // The last one, and not a millisecond of the breath has passed.
+    rig.fake.send(call, SETUP, Part::Twins(Vec::new()));
+    rig.ui.frame();
+    assert!(rig.ui.is_open(), "all five were answered");
+    let nodes = rig.ui.nodes();
+    assert!(find(&nodes, "Run in Windows Sandbox").is_some(), "{:?}", labels(&nodes));
+}
+
+#[gpui_kit::test]
+fn a_menu_opens_when_the_run_ends_with_parts_that_cannot_be_known(cx: &mut TestAppContext) {
+    let _guard = english();
+    let mut rig = rig(cx, "C:\\apps");
+    right_click_setup(&mut rig);
+    let call = rig.fake.call_of(SETUP);
+    // Part of it comes in, and the engine is done: what didn't come can't be known.
+    rig.fake.send(call, SETUP, Part::OpensWith("Notepad".into()));
+    rig.ui.frame();
+    assert!(!rig.ui.is_open());
+    rig.fake.senders.borrow_mut().clear();
+    rig.ui.frame();
+    assert!(rig.ui.is_open(), "nothing more will come, so the menu doesn't wait out the breath");
+}
+
+#[gpui_kit::test]
+fn a_menu_whose_answers_never_come_opens_when_the_breath_is_over_and_not_before(cx: &mut TestAppContext) {
+    let _guard = english();
+    let mut rig = rig(cx, "C:\\apps");
+    right_click_setup(&mut rig);
+    rig.ui.visual.executor().advance_clock(LOOK_FIRST - std::time::Duration::from_millis(1));
+    rig.ui.frame();
+    assert!(!rig.ui.is_open());
+    rig.ui.visual.executor().advance_clock(std::time::Duration::from_millis(2));
+    rig.ui.frame();
+    assert!(rig.ui.is_open());
+}
+
 #[gpui_kit::test]
 fn a_menu_asked_for_while_another_waits_is_the_one_that_opens(cx: &mut TestAppContext) {
     let _guard = english();
