@@ -541,8 +541,9 @@ impl FileGrid {
         }
     }
 
-    /// Hovering a folder tile reads it ahead; leaving it lets go (`hoverFolder`, `leaveFolder`). A video tile gets
-    /// its scrub overlay while the pointer is on it, and only then.
+    /// Resting on any tile finds out what isn't known about its item (`aware::rest_on`). Hovering a folder tile
+    /// reads it ahead; leaving it lets go (`hoverFolder`, `leaveFolder`). A video tile gets its scrub overlay
+    /// while the pointer is on it, and only then.
     fn tile_hover(&mut self, index: usize, hovered: bool, window: &Window, cx: &mut Context<Self>) {
         let Some((rows, _)) = self.snapshot(cx) else {
             return;
@@ -566,6 +567,10 @@ impl FileGrid {
             } else if self.scrub.leave(&path) {
                 cx.notify();
             }
+            return;
+        }
+        // The other files only rest (above): there is nothing to read ahead.
+        if !entry.dir {
             return;
         }
         self.explorer.update(cx, |explorer, cx| {

@@ -431,10 +431,9 @@ fn tile(frame: &Rc<Frame>, i: usize, entry: &FileEntry, cx: &App) -> AnyElement 
                     cx.stop_propagation();
                     on_up(&(i, event.clone()), window, cx)
                 })
-                // Hovering a folder reads it ahead (`hoverFolder` and `leaveFolder`).
-                .when(entry.dir || super::scrub::scrubbable(entry), |tile| {
-                    tile.on_hover(move |hovered, window, cx| on_hover(&(i, *hovered), window, cx))
-                })
+                // Resting on any tile finds out about its item for the menu; hovering a folder also reads it ahead
+                // (`hoverFolder` and `leaveFolder`), and a video gets its scrub overlay.
+                .on_hover(move |hovered, window, cx| on_hover(&(i, *hovered), window, cx))
                 // Not over the box being typed in.
                 .when(!renaming, |tile| {
                     tile.tooltip(move |window, cx| {
