@@ -6,7 +6,7 @@
 //!
 //! | Area                    | View                                                                 |
 //! |-------------------------|----------------------------------------------------------------------|
-//! | The bar (the title bar) | gpui-component's `TitleBar` (snap layouts), holding Glint's mark (the app's menu: Settings, the palette, the shortcut sheet, Drive health), the [`AddressBar`] (Back, Forward, Up, and one field: where you are, and the search of names and of what the files hold), Sharing, Update |
+//! | The bar (the title bar) | gpui-component's `TitleBar` (snap layouts), holding Glint's mark (the app's menu: Settings, the palette, the shortcut sheet, Drive health), the [`AddressBar`] (Back, Forward, Up, and one field: where you are, and the search of names and of what the files hold), Update |
 //! | The rail                | the open tabs ([`TabStrip`], a list), then the [`Sidebar`]: places and the folder tree |
 //! | The sheet               | each pane: [`ThisPc`], the [`DiskUsage`] map, the [`FileGrid`], the [`FileList`] or the [`ColumnsView`]; [`FrequentFolders`] above Recent, [`GalleryMonths`] beside the Gallery; the preview pane at the end edge; the terminal under the panes |
 //! | The dock                | the [`StatusBar`] at its two ends and the [`CommandBar`]'s island in its middle (New, Cut, Copy, Paste, views, tools) |
@@ -161,8 +161,6 @@ pub struct Workspace {
     /// The first pane and, once dual-pane view first opens, the second: its ten views are made then, not at
     /// start (each observes the explorer, and so worked on every key press with one pane shown).
     panes: [Option<PaneViews>; 2],
-    /// What is shared or being sent, for the toolbar's Sharing button (None without core, as in tests).
-    sharing: Option<Entity<dialogs::share::Sharing>>,
     /// The command bar above the panes.
     command_bar: Entity<CommandBar>,
     /// The sidebar's width, as dragged (within [`SIDEBAR`]); it starts at [`SIDEBAR_START`].
@@ -257,18 +255,6 @@ impl Workspace {
         // A tab's map turned on or off changes what its pane shows.
         let usage = disk_usage::shared(cx);
         subscriptions.push(cx.observe_in(&usage, window, |this, _, window, cx| this.follow_panes(window, cx)));
-        // The Sharing button follows what is shared; back in front, what keeps other devices out is read again.
-        let sharing = cx.has_global::<core_bridge::Core>().then(|| dialogs::share::shared(cx));
-        if let Some(sharing) = &sharing {
-            subscriptions.push(cx.observe(sharing, |_, _, cx| cx.notify()));
-            subscriptions.push(cx.observe_window_activation(window, |this, window, cx| {
-                if window.is_window_active() {
-                    if let Some(sharing) = this.sharing.clone() {
-                        sharing.update(cx, |sharing, cx| sharing.recheck(cx));
-                    }
-                }
-            }));
-        }
         // Back in front: Windows' "Animation effects" switch is read again (someone who turns it off in Settings
         // comes back to a Glint that has stopped moving).
         subscriptions.push(cx.observe_window_activation(window, |_, window, cx| {
@@ -337,7 +323,6 @@ impl Workspace {
             settings_events: None,
             preview: None,
             panes: [Some(first), None],
-            sharing,
             command_bar,
             sidebar_width: SIDEBAR_START,
             sidebar_drag: None,
@@ -1221,14 +1206,10 @@ impl Workspace {
                 dialogs::metadata::open(window, cx, paths.clone(), dialogs::metadata::Mode::Date)
             }
             MenuEvent::BackUp { folder } => dialogs::backup::open(window, cx, folder.clone()),
-            // Sending and sharing.
-            MenuEvent::SendNearby { paths } => {
-                dialogs::nearby::open(window, cx, paths.clone());
+            // Sharing: one dialog, for nearby devices and Windows' Share.
+            MenuEvent::Share { paths } => {
+                dialogs::share::open(window, cx, paths.clone());
             }
-            MenuEvent::SendToPc { path } => dialogs::share::offer_to_pc(window, cx, path.clone()),
-            MenuEvent::ShareOnNetwork { path } => dialogs::share::offer_on_network(window, cx, path.clone()),
-            MenuEvent::ShareWithWindows { paths } => dialogs::share::share_with_windows(window, cx, paths.clone()),
-            MenuEvent::ReceiveHere { folder } => dialogs::share::open_receive(window, cx, folder.clone()),
             // Opening, showing, Recent.
             MenuEvent::OpenWithItsApp {
                 path,
@@ -1738,27 +1719,8 @@ impl Workspace {
             .flex_none()
             .gap(space(0.5))
             .px(space(1.))
-            .children(self.sharing_button(cx))
             // 'Update' while a newer Glint is ready (a spinner while it downloads).
             .children(crate::updater::update_button(cx))
-    }
-
-    /// What is shared or being sent right now, opening its dialog (the web app's `SharingButton`); nothing when
-    /// nothing is.
-    fn sharing_button(&self, cx: &App) -> Option<AnyElement> {
-        let (label, view) = self.sharing.as_ref()?.read(cx).button()?;
-        Some(
-            Button::new("sharing")
-                .ghost()
-                .small()
-                .icon(IconName::Share2)
-                .label(label)
-                .tooltip(t!("What you're sending or sharing: its ticket or link, and Stop"))
-                .on_click(move |_, window, cx| {
-                    dialogs::share::open_view(window, cx, view);
-                })
-                .into_any_element(),
-        )
     }
 
     /// What pane `pane` shows, as its stage tells one view from the next.

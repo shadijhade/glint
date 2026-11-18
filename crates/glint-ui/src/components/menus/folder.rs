@@ -372,30 +372,12 @@ pub fn folder_menu(folder: &str, current: bool, c: &FolderCtx) -> Vec<Node> {
             when(reads && folder_path, || {
                 Node::Item(Entry::ask(
                     if current {
-                        t!("Send this folder to another PC…")
+                        t!("Share this folder…")
                     } else {
-                        t!("Send to another PC…")
+                        t!("Share…")
                     },
-                    IconName::Send,
-                    MenuEvent::SendToPc { path: owned.clone() },
-                ))
-            }),
-            when(reads && folder_path, || {
-                Node::Item(Entry::ask(
-                    if current {
-                        t!("Share this folder on this network…")
-                    } else {
-                        t!("Share on this network…")
-                    },
-                    IconName::Wifi,
-                    MenuEvent::ShareOnNetwork { path: owned.clone() },
-                ))
-            }),
-            when(current && reads && !find && folder_path, || {
-                Node::Item(Entry::ask(
-                    t!("Receive from another PC here…"),
-                    IconName::Download,
-                    MenuEvent::ReceiveHere { folder: owned.clone() },
+                    IconName::Share2,
+                    MenuEvent::Share { paths: vec![owned.clone()] },
                 ))
             }),
         ],

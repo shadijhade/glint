@@ -78,15 +78,6 @@ pub enum Change {
     MoveTab(TabId),
 }
 
-/// Which part of the Send, receive or share dialog a row opens (`showShare`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ShareView {
-    /// What is being sent to other PCs: the tickets, and Stop.
-    Send,
-    /// What is shared on this network: the links, and Stop.
-    Network,
-}
-
 /// What choosing a result does. The view carries it out after closing the palette.
 #[derive(Clone, Debug)]
 pub enum Run {
@@ -134,8 +125,6 @@ pub enum Run {
     Rules(Option<String>),
     /// Windows' own Properties dialog for this path (`properties`).
     Properties(String),
-    /// The Send, receive or share dialog on one of its parts (`showShare`).
-    Share(ShareView),
     /// These text files rewritten as UTF-8, each read as detected, the originals recycled (`convertToUtf8`).
     ToUtf8(Vec<String>),
 }
@@ -321,10 +310,6 @@ pub struct Inputs {
     pub archive_top: Option<ArchiveTop>,
     /// File Explorer's New menu kinds on this PC: extension with its dot, and name (`newKinds`).
     pub new_kinds: Vec<(String, String)>,
-    /// Something is being sent to another PC.
-    pub sending: bool,
-    /// Something is shared on this network.
-    pub serving: bool,
     /// What the person has done before: a menu row's key (`do:compress:zip`) and its weight over every kind of
     /// thing, today. Empty when learning or suggesting is off.
     pub used: std::collections::HashMap<String, f64>,
@@ -829,7 +814,7 @@ pub fn actions(inputs: &Inputs) -> Vec<Command> {
         inputs.dual && inputs.uneven,
         Command::change("even-panes", t!("Even out the panes"), I::Columns2, Change::EvenPanes),
     );
-    for command in nearby_and_files(inputs, &place) {
+    for command in share_and_files(inputs, &place) {
         push(true, command);
     }
     if let Some(top) = &inputs.archive_top {
@@ -968,7 +953,7 @@ pub fn actions(inputs: &Inputs) -> Vec<Command> {
             }),
         ),
     );
-    for command in inspect_and_share(inputs, &place) {
+    for command in inspect_and_clean(inputs, &place) {
         push(true, command);
     }
     if let Some(outer) = &inputs.archive_outer {
@@ -1129,9 +1114,9 @@ fn paths_of(entries: &[FileEntry]) -> Vec<String> {
     entries.iter().map(|e| e.path.clone()).collect()
 }
 
-/// "Send to a phone nearby", and what the selection can be turned into: compressed, extracted, converted,
+/// "Share", and what the selection can be turned into: compressed, extracted, converted,
 /// encrypted, cleaned, merged, subtitled…
-fn nearby_and_files(inputs: &Inputs, place: &Place) -> Vec<Command> {
+fn share_and_files(inputs: &Inputs, place: &Place) -> Vec<Command> {
     use IconName as I;
     let entries = inputs.chosen_entries.as_slice();
     let all = paths_of(entries);
@@ -1147,14 +1132,14 @@ fn nearby_and_files(inputs: &Inputs, place: &Place) -> Vec<Command> {
     add(
         true,
         menu(
-            "nearby",
+            "share",
             if entries.is_empty() {
-                t!("Phones and computers nearby (LocalSend): send or receive")
+                t!("Share: send to phones and computers nearby (LocalSend), or receive")
             } else {
-                t!("Send the selection to a phone nearby (LocalSend)")
+                t!("Share the selection: send it to a phone nearby (LocalSend) or through Windows")
             },
-            I::Radar,
-            MenuEvent::SendNearby { paths: all.clone() },
+            I::Share2,
+            MenuEvent::Share { paths: all.clone() },
         ),
     );
     add(
@@ -1506,23 +1491,13 @@ fn tools(inputs: &Inputs, place: &Place) -> Vec<Command> {
     out
 }
 
-/// X-Ray, comparing, the folder's history, duplicates, cleaning up, sending and sharing, locks, scans.
-fn inspect_and_share(inputs: &Inputs, place: &Place) -> Vec<Command> {
+/// X-Ray, comparing, the folder's history, duplicates, cleaning up, locks, scans.
+fn inspect_and_clean(inputs: &Inputs, place: &Place) -> Vec<Command> {
     use IconName as I;
-    let entries = inputs.chosen_entries.as_slice();
     let folder = inputs.path.clone();
     let chosen = inputs.chosen;
     let on_disk_only = !inputs.in_archive && !place.remote;
     let here = place.writable && !place.shut;
-    let sendable = on_disk_only
-        && !place.closed_items
-        && !place.bin
-        && !place.shut
-        && (entries.len() == 1 || (place.in_folder && !chosen));
-    let sent = match entries {
-        [only] => only.path.clone(),
-        _ => folder.clone(),
-    };
     let mut out: Vec<Command> = Vec::new();
     let mut add = |condition: bool, command: Command| {
         if condition {
@@ -1586,59 +1561,6 @@ fn inspect_and_share(inputs: &Inputs, place: &Place) -> Vec<Command> {
             t!("Clean up this folder: build output and package caches"),
             I::BrushCleaning,
             MenuEvent::Cleanup { folder: folder.clone() },
-        ),
-    );
-    add(
-        sendable,
-        menu(
-            "send-pc",
-            match entries {
-                [only] => t!("Send “{name}” to another PC", name = only.name),
-                _ => t!("Send this folder to another PC"),
-            },
-            I::Send,
-            MenuEvent::SendToPc { path: sent.clone() },
-        ),
-    );
-    add(
-        sendable,
-        menu(
-            "share-network",
-            match entries {
-                [only] => t!("Share “{name}” on this network: a link for a phone", name = only.name),
-                _ => t!("Share this folder on this network: a link for a phone"),
-            },
-            I::Wifi,
-            MenuEvent::ShareOnNetwork { path: sent },
-        ),
-    );
-    add(
-        here && !inputs.finding,
-        menu(
-            "receive-pc",
-            t!("Receive from another PC here"),
-            I::Download,
-            MenuEvent::ReceiveHere { folder: folder.clone() },
-        ),
-    );
-    add(
-        inputs.sending,
-        Command::new(
-            "sending",
-            t!("Sending to another PC: the tickets, and Stop"),
-            I::Send,
-            Kind::Action,
-            Run::Share(ShareView::Send),
-        ),
-    );
-    add(
-        inputs.serving,
-        Command::new(
-            "serving",
-            t!("Shared on this network: the links, and Stop"),
-            I::Wifi,
-            Kind::Action,
-            Run::Share(ShareView::Network),
         ),
     );
     let targets = if chosen {

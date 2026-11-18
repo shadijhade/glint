@@ -354,7 +354,6 @@ fn a_closed_folder_a_search_and_an_archive_take_the_tools_away() {
         "duplicates",
         "cleanup",
         "rule-here",
-        "receive-pc",
     ] {
         assert!(find(&commands, id).is_none(), "{id} in a closed folder");
     }
@@ -363,7 +362,7 @@ fn a_closed_folder_a_search_and_an_archive_take_the_tools_away() {
     finding.finding = true;
     let commands = actions(&finding);
     assert!(find(&commands, &format!("run:{HERE}:npm run build")).is_none());
-    assert!(find(&commands, "receive-pc").is_none() && find(&commands, "paste-queued").is_none());
+    assert!(find(&commands, "paste-queued").is_none());
     let mut archive = tools_inputs();
     archive.in_archive = true;
     let commands = actions(&archive);
@@ -374,7 +373,6 @@ fn a_closed_folder_a_search_and_an_archive_take_the_tools_away() {
         "who-locks",
         "defender",
         "secrets",
-        "send-pc",
     ] {
         assert!(find(&commands, id).is_none(), "{id} in an archive");
     }
@@ -408,28 +406,15 @@ fn the_folders_own_tools_ask_about_the_folder() {
         MenuEvent::Duplicates { folder: HERE.into() }
     );
     assert_eq!(folder_event("cleanup"), MenuEvent::Cleanup { folder: HERE.into() });
-    assert_eq!(
-        folder_event("receive-pc"),
-        MenuEvent::ReceiveHere { folder: HERE.into() }
-    );
     assert_eq!(folder_event("rule-here"), MenuEvent::Rule { folder: HERE.into() });
     assert_eq!(
         folder_event("paste-queued"),
         MenuEvent::PasteQueued { folder: HERE.into() }
     );
-    assert_eq!(folder_event("send-pc"), MenuEvent::SendToPc { path: HERE.into() });
-    assert_eq!(
-        folder_event("share-network"),
-        MenuEvent::ShareOnNetwork { path: HERE.into() }
-    );
-    assert_eq!(
-        find(&commands, "send-pc").unwrap().label.as_ref(),
-        "Send this folder to another PC"
-    );
 }
 
 #[test]
-fn one_selected_item_is_what_x_ray_sends_and_shares_name() {
+fn one_selected_item_is_what_x_ray_names() {
     let mut inputs = with_selected(&["a.txt"]);
     inputs.focus_path = Some(path("a.txt"));
     let commands = actions(&inputs);
@@ -437,17 +422,6 @@ fn one_selected_item_is_what_x_ray_sends_and_shares_name() {
         menu_event(find(&commands, "file-xray").unwrap()),
         MenuEvent::XRay { path: path("a.txt") }
     );
-    assert_eq!(
-        find(&commands, "send-pc").unwrap().label.as_ref(),
-        "Send “a.txt” to another PC"
-    );
-    assert_eq!(
-        menu_event(find(&commands, "share-network").unwrap()),
-        MenuEvent::ShareOnNetwork { path: path("a.txt") }
-    );
-    // Two items: no single subject to send or share.
-    let commands = actions(&with_selected(&["a.txt", "b.txt"]));
-    assert!(find(&commands, "send-pc").is_none() && find(&commands, "share-network").is_none());
     // Nothing on the keyboard or selected: nothing to X-Ray.
     assert!(find(&actions(&with_selected(&[])), "file-xray").is_none());
 }
@@ -498,7 +472,6 @@ fn locks_and_scans_name_the_selection_and_remote_places_get_none() {
     for id in [
         "who-locks",
         "defender",
-        "send-pc",
         "compress",
         "terminal",
     ] {
@@ -507,23 +480,23 @@ fn locks_and_scans_name_the_selection_and_remote_places_get_none() {
 }
 
 #[test]
-fn connections_and_rules_are_always_there_and_nearby_follows_the_selection() {
+fn connections_and_rules_are_always_there_and_share_follows_the_selection() {
     let commands = actions(&Inputs::default());
     assert!(matches!(&find(&commands, "add-remote").unwrap().run, Run::AddRemote));
     assert!(matches!(&find(&commands, "rules").unwrap().run, Run::Rules(None)));
     assert_eq!(
-        find(&commands, "nearby").unwrap().label.as_ref(),
-        "Phones and computers nearby (LocalSend): send or receive"
+        find(&commands, "share").unwrap().label.as_ref(),
+        "Share: send to phones and computers nearby (LocalSend), or receive"
     );
     let commands = actions(&with_selected(&["a.txt"]));
-    let nearby = find(&commands, "nearby").unwrap();
+    let share = find(&commands, "share").unwrap();
     assert_eq!(
-        nearby.label.as_ref(),
-        "Send the selection to a phone nearby (LocalSend)"
+        share.label.as_ref(),
+        "Share the selection: send it to a phone nearby (LocalSend) or through Windows"
     );
     assert_eq!(
-        menu_event(nearby),
-        MenuEvent::SendNearby {
+        menu_event(share),
+        MenuEvent::Share {
             paths: vec![path("a.txt")]
         }
     );

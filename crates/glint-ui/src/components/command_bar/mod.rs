@@ -114,8 +114,8 @@ const SAME_PRESS: Duration = Duration::from_millis(300);
 pub enum CommandBarEvent {
     /// A menu row chose something a dialog or another part does: hand it to the window's `MenuEvent` handler
     /// (`Workspace::on_menu_event`), which already knows every one the bar sends: the Tools menu's dialogs
-    /// (`XRay`, `Locks`, `Timeline`, `History`, `Duplicates`, `Cleanup`, `ConvertPictures`, `Rule`, `SendToPc`,
-    /// `ShareOnNetwork`, `ReceiveHere`, `Defender`), the New menu's kinds (`NewTextDocument`,
+    /// (`XRay`, `Locks`, `Timeline`, `History`, `Duplicates`, `Cleanup`, `ConvertPictures`, `Rule`, `Share`,
+    /// `Defender`), the New menu's kinds (`NewTextDocument`,
     /// `NewOfKind`), `Compare`, `EmptyRecycleBin` and `InstallTool` (a project needs a tool Glint can fetch).
     Menu(MenuEvent),
     /// Folder sizes: measure every folder here (`stop` false), or stop measuring (`stop` true, when the bar said

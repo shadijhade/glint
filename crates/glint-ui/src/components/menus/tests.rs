@@ -164,15 +164,7 @@ fn a_file_gets_the_typescripts_items_in_its_order() {
             "With a password…"
         ]
     );
-    assert_eq!(
-        labels(submenu(&menu, "Clean up & share")),
-        [
-            "Send to a phone nearby…",
-            "Send to another PC…",
-            "Share on this network…",
-            "Share with Windows…"
-        ]
-    );
+    assert_eq!(labels(submenu(&menu, "Clean up & share")), ["Share…"]);
 }
 
 #[test]
@@ -746,9 +738,7 @@ fn the_folder_shown_has_paste_undo_new_and_the_folders_tools() {
             "Clean up…",
             "A rule for this folder…",
             "-",
-            "Send this folder to another PC…",
-            "Share this folder on this network…",
-            "Receive from another PC here…",
+            "Share this folder…",
         ]
     );
     assert_eq!(
@@ -814,14 +804,14 @@ fn a_place_or_tile_opens_pastes_into_and_pins_but_has_no_new_or_select_all() {
     assert!(
         matches!(find(&menu, "Paste into folder").map(|e| &e.run), Some(Run::Ask(MenuEvent::PasteInto { folder })) if folder == "C:\\x\\docs")
     );
-    // Pinned: the strip says unpin. And the folder's own "Send to another PC…" has the short words.
+    // Pinned: the strip says unpin. And the folder's own "Share…" has the short words.
     let pinned = FolderCtx {
         pinned: vec!["C:\\x\\docs".into()],
         ..FolderCtx::default()
     };
     let menu = folder_menu("C:\\x\\docs", false, &pinned);
     assert_eq!(find(&menu, "Unpin from sidebar").map(|e| e.active), Some(true));
-    assert!(find(&menu, "Send to another PC…").is_some());
+    assert!(find(&menu, "Share…").is_some());
 }
 
 #[test]

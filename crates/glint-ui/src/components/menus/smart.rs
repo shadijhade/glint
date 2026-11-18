@@ -170,11 +170,7 @@ fn event_key(event: &MenuEvent) -> Option<String> {
         MenuEvent::Rule { .. } => "do:rule",
         MenuEvent::RemovePersonalInfo { .. } => "do:remove-personal-info",
         MenuEvent::ChangeDateTaken { .. } => "do:change-date-taken",
-        MenuEvent::SendNearby { .. } => "do:send-nearby",
-        MenuEvent::SendToPc { .. } => "do:send-to-pc",
-        MenuEvent::ShareOnNetwork { .. } => "do:share-on-network",
-        MenuEvent::ShareWithWindows { .. } => "do:share-with-windows",
-        MenuEvent::ReceiveHere { .. } => "do:receive-here",
+        MenuEvent::Share { .. } => "do:share",
         MenuEvent::RunScript { script, .. } => {
             return Some(format!("do:script:{}", base_name(script).to_lowercase()));
         }

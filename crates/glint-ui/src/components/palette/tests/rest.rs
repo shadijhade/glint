@@ -3,7 +3,7 @@
 //! properties, and the Sending / Shared rows. Each is listed exactly when it applies and yields what its menu item
 //! or button does.
 
-use super::super::commands::{actions, ArchiveTop, Change, Command, Inputs, Run, ShareView};
+use super::super::commands::{actions, ArchiveTop, Change, Command, Inputs, Run};
 use crate::actions as keys;
 use crate::components::menus::MenuEvent;
 use crate::explorer::TabId;
@@ -219,17 +219,4 @@ fn extract_all_and_archive_properties_are_for_the_archive_shown() {
     // Inside the archive's folders only the properties stay.
     inputs.archive_top = None;
     assert!(!listed(&inputs, "extract-all") && listed(&inputs, "archive-properties"));
-}
-
-#[test]
-fn sending_and_sharing_rows_show_only_while_there_is_something() {
-    let mut inputs = in_folder();
-    assert!(!listed(&inputs, "sending") && !listed(&inputs, "serving"));
-    inputs.sending = true;
-    assert!(matches!(run_of(&inputs, "sending"), Some(Run::Share(ShareView::Send))));
-    inputs.serving = true;
-    assert!(matches!(
-        run_of(&inputs, "serving"),
-        Some(Run::Share(ShareView::Network))
-    ));
 }
