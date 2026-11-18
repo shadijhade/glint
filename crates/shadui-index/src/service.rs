@@ -77,6 +77,9 @@ fn updater(stop: &Arc<Stop>) -> Option<Arc<Updater>> {
 /// in as they're read), then stops the workers, which save their snapshots. `installed` when it's the
 /// Windows service, which can update itself.
 pub fn run(stop: &Arc<Stop>, allowed: &[String], only: Option<Vec<char>>, echo: bool, installed: bool, ready: impl FnOnce()) -> io::Result<()> {
+    // The pool's threads go through every name for each search: at high quality of service, so Windows
+    // lets them use every core (win::high_qos). Built before anything uses it.
+    let _ = rayon::ThreadPoolBuilder::new().start_handler(|_| win::high_qos()).build_global();
     let engine = Engine::start(win::data_dir()?, only, echo);
     engine.log.line(&format!("allowed users: {}", if allowed.is_empty() { "administrators only".to_string() } else { allowed.join(", ") }));
     let updater = if installed { updater(stop) } else { None };
