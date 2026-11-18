@@ -47,6 +47,15 @@ and `tests/e2e`'s new `search-history` check with the real keyboard and side but
   its count of files, and of folders too: 0.3 ms for a folder of 10,000 files and 0.9 ms for a whole 2.2-million-file
   drive in the service's code (`tree::tests::counting_below_a_folder_costs_little`). A service from before answers
   without counts, and the hover searches as it did until the service updates itself.
+- A search with a typo (close matches) takes half the service's time or less: each name is looked at in one pass
+  without branches for its letters and where its words start, ASCII names are read where they are rather than laid
+  out, and an edit table stops at the first column past the typos allowed (`crates/shadui-index/src/query.rs`). Over
+  this PC's 3.35 million real names: `kernal32` 13.6 → 6.2 ms, `reprot` 18 → 7.6 ms, `screenshto` 23.6 → 10.7 ms,
+  the same matches. A search with a typo first looks as typed (about 3 ms here), and the service's own figures
+  will only show once it updates itself.
+
+Not tried end to end: the hover's counts and the close matches through the installed service, which stays 0.13.2
+until a release updates it (the tests run the service's code in a test and through a pipe of its own).
 
 ## 0.13.2: updates that need nobody
 
