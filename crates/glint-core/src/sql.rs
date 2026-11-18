@@ -1,45 +1,43 @@
-//! SQL in the preview, reading only: a SQLite database's own tables, opened read-only and immutable
-//! (nothing is locked, journaled or written), or a table file loaded into an in-memory SQLite: a CSV,
-//! TSV or JSON-lines file or a Parquet file as `data`, a workbook's sheets by their names (the first one
-//! as `data` too). One statement at a time, and only one that reads: SQLite's authorizer allows reading
-//! and functions (and a few pragmas that describe tables), nothing else, so no ATTACH, no VACUUM INTO.
-//! A query is interrupted after 10 seconds or when a newer one starts, SQLite holds at most 1 GB, and
-//! 1,000 rows come back. The file loaded stays loaded for the next query, until another one is.
+//! SQL in the preview and for agents, reading only, answered by DuckDB (duck.rs, a tool Glint installs). What a file
+//! is decides how DuckDB gets at it: a CSV, TSV, JSON-lines, JSON or Parquet file is read where it is (the table
+//! `data`); a SQLite database is attached read-only through DuckDB's `sqlite` extension (its own tables); a
+//! workbook's sheets are written as CSV files for the length of the query and read from those (a table named after
+//! each sheet, the first also `data`), then the copies are deleted. Without DuckDB there is no SQL, and the error
+//! says so, for the window to offer the install; the schema and the rows of a database, a workbook or a table file
+//! are shown without it (data_lens.rs, sheet.rs).
+//!
+//! One statement at a time, and only one that reads (duck.rs locks the session down). A newer query stops the one
+//! running, and 1,000 rows come back. A workbook read stays in memory for the next query, until another one is.
 
 use crate::data_lens::TableColumn;
+use crate::duck::{self, Source};
 use crate::fsx::blocking;
-use crate::sheet::{self, Cell, Kind, Loaded};
-use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
-use rusqlite::types::{Value, ValueRef};
-use rusqlite::{Connection, InterruptHandle, OpenFlags};
-use std::sync::{Mutex, Once};
-use std::time::{Duration, Instant, SystemTime};
+use crate::sheet::{self, Cell, Loaded};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Instant, SystemTime};
 
-/// A table file bigger than this isn't loaded.
+/// A workbook bigger than this isn't loaded.
 const MAX_LOAD_BYTES: u64 = 256 << 20;
 const MAX_LOAD_ROWS: usize = 1_000_000;
-const MAX_BACK: usize = 1000;
-const DEADLINE: Duration = Duration::from_secs(10);
-/// What SQLite may allocate in all (it's only used here).
-const HEAP: i64 = 1 << 30;
 const DATABASES: &[&str] = &["sqlite", "sqlite3", "db", "db3", "s3db", "sl3"];
 
-/// The file loaded (or database open): which, as of when, its connection and its tables.
-struct Session {
+/// The workbook read (which file, as of when), kept for the next query.
+struct Book {
     key: (String, Option<SystemTime>, u64),
-    conn: Connection,
-    tables: Vec<String>,
+    sheets: Arc<Vec<Loaded>>,
 }
 
-static SESSION: Mutex<Option<Session>> = Mutex::new(None);
-/// The query running, for a newer one to interrupt.
-static RUNNING: Mutex<Option<InterruptHandle>> = Mutex::new(None);
+static BOOK: Mutex<Option<Book>> = Mutex::new(None);
+/// The query running, for a newer one to stop.
+static RUNNING: Mutex<Option<Arc<AtomicBool>>> = Mutex::new(None);
 
 pub struct SqlTables {
     pub tables: Vec<String>,
-    /// Who answers: "DuckDB" for data files once it's installed (duck.rs), else "SQLite".
+    /// Who answers: always "DuckDB" now.
     pub engine: &'static str,
-    /// Loading the file took this long (0 when it was loaded already, or is a database).
+    /// Loading the file took this long (0 when it was loaded already, or needed no loading).
     pub load_ms: f64,
 }
 
@@ -58,128 +56,89 @@ fn key_of(path: &str) -> Result<(String, Option<SystemTime>, u64), String> {
     Ok((path.to_lowercase(), meta.modified().ok(), meta.len()))
 }
 
-/// The session for `path`, loading it unless it's the one loaded; and how long loading took.
-fn session<'a>(slot: &'a mut Option<Session>, path: &str) -> Result<(&'a mut Session, f64), String> {
-    let key = key_of(path)?;
-    let mut load_ms = 0.0;
-    if slot.as_ref().is_none_or(|s| s.key != key) {
-        *slot = None;
-        let started = Instant::now();
-        let (mut conn, tables) = open(path)?;
-        guard(&mut conn)?;
-        load_ms = started.elapsed().as_secs_f64() * 1000.0;
-        *slot = Some(Session { key, conn, tables });
-    }
-    Ok((slot.as_mut().expect("set above"), load_ms))
+/// What a query over one file reads, and what has to be cleaned up afterwards: the folder a workbook's sheets were
+/// written to, deleted when this goes.
+struct Prepared {
+    source: Source,
+    folder: Option<PathBuf>,
+    load_ms: f64,
 }
 
-/// The tables there are to query in a file, loading it.
-pub async fn sql_tables(path: String) -> Result<SqlTables, String> {
-    blocking(move || {
-        // A data file DuckDB reads where it is, however big.
-        if crate::duck::takes(&path) {
-            return Ok(crate::duck::tables(std::slice::from_ref(&path)));
-        }
-        let mut slot = SESSION.lock().unwrap_or_else(|e| e.into_inner());
-        let (session, load_ms) = session(&mut slot, &path)?;
-        Ok(SqlTables { tables: session.tables.clone(), engine: "SQLite", load_ms })
-    })
-    .await
-}
-
-/// Runs one query that reads over a file (loading it first if it isn't), giving its first 1,000 rows.
-pub async fn sql_run(path: String, sql: String) -> Result<SqlAnswer, String> {
-    // A newer query stops the one running.
-    if let Some(running) = RUNNING.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
-        running.interrupt();
-    }
-    blocking(move || {
-        if crate::duck::takes(&path) {
-            return crate::duck::query(std::slice::from_ref(&path), &sql);
-        }
-        let mut slot = SESSION.lock().unwrap_or_else(|e| e.into_inner());
-        let (session, load_ms) = session(&mut slot, &path)?;
-        *RUNNING.lock().unwrap_or_else(|e| e.into_inner()) = Some(session.conn.get_interrupt_handle());
-        let answer = run(&mut session.conn, &sql);
-        *RUNNING.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        answer.map(|answer| SqlAnswer { load_ms, ..answer })
-    })
-    .await
-}
-
-/// One query over a file, outside the preview's session (the MCP server's query_data): DuckDB's for data
-/// files once it's installed, else loaded into SQLite as the preview loads it.
-pub(crate) fn query_file(path: &str, sql: &str) -> Result<SqlAnswer, String> {
-    if crate::duck::takes(path) {
-        return crate::duck::query(&[path.to_string()], sql);
-    }
-    let (mut conn, _) = open(path)?;
-    guard(&mut conn)?;
-    run(&mut conn, sql)
-}
-
-/// A database file's URI, read-only and immutable: `file:///C:/a%20b/x.db?mode=ro&immutable=1`.
-fn database_uri(path: &str) -> String {
-    let mut out = String::from("file:///");
-    for byte in path.replace('\\', "/").bytes() {
-        if byte.is_ascii_alphanumeric() || b"-._~/:".contains(&byte) {
-            out.push(byte as char);
-        } else {
-            out.push_str(&format!("%{byte:02X}"));
+impl Drop for Prepared {
+    fn drop(&mut self) {
+        if let Some(folder) = &self.folder {
+            let _ = std::fs::remove_dir_all(folder);
         }
     }
-    out + "?mode=ro&immutable=1"
 }
 
-fn open(path: &str) -> Result<(Connection, Vec<String>), String> {
-    static HEAP_LIMIT: Once = Once::new();
-    // SQLite's own allocations, process-wide: nothing else in Glint uses it.
-    HEAP_LIMIT.call_once(|| unsafe {
-        rusqlite::ffi::sqlite3_hard_heap_limit64(HEAP);
-    });
+/// How a file is read for SQL, by its extension.
+#[derive(Debug, PartialEq, Eq)]
+enum Kind {
+    /// DuckDB reads it where it is.
+    Data,
+    Database,
+    Workbook,
+}
+
+fn kind_of_file(path: &str) -> Kind {
     let ext = sheet::extension(path);
     if DATABASES.contains(&ext.as_str()) {
-        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
-        // A share's path isn't a URI SQLite takes; read-only is enough there.
-        let conn = if path.starts_with("\\\\") { Connection::open_with_flags(path, flags) } else { Connection::open_with_flags(database_uri(path), flags | OpenFlags::SQLITE_OPEN_URI) };
-        let conn = conn.map_err(|e| format!("This database can't be opened: {e}"))?;
-        let tables = conn
-            .prepare("SELECT name FROM sqlite_schema WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' ORDER BY type = 'view', name")
-            .and_then(|mut s| s.query_map([], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>())
-            .map_err(|e| format!("This database can't be read: {e}"))?;
-        return Ok((conn, tables));
+        Kind::Database
+    } else if duck::READS.contains(&ext.as_str()) {
+        Kind::Data
+    } else {
+        Kind::Workbook
     }
-    let size = std::fs::metadata(path).map_err(|e| e.to_string())?.len();
-    if size > MAX_LOAD_BYTES {
+}
+
+/// `path` made ready to query. DuckDB must be there (the caller checked); nothing here runs it.
+fn prepare(path: &str) -> Result<Prepared, String> {
+    match kind_of_file(path) {
+        Kind::Database => Ok(Prepared { source: Source::Sqlite(path.to_string()), folder: None, load_ms: 0.0 }),
+        Kind::Data => Ok(Prepared { source: Source::Files(vec![path.to_string()]), folder: None, load_ms: 0.0 }),
+        Kind::Workbook => {
+            let started = Instant::now();
+            let (sheets, loaded_now) = workbook(path)?;
+            let folder = scratch_folder()?;
+            // The folder is the guard's from here on: whatever goes wrong next, it is deleted.
+            let mut prepared = Prepared { source: Source::Sheets(Vec::new()), folder: Some(folder.clone()), load_ms: 0.0 };
+            let names = distinct(&sheets.iter().map(|s| s.name.clone()).collect::<Vec<_>>());
+            let mut files = Vec::new();
+            for (n, (sheet, name)) in sheets.iter().zip(names).enumerate() {
+                let file = folder.join(format!("sheet-{n}.csv"));
+                std::fs::write(&file, csv_of(sheet)).map_err(|e| e.to_string())?;
+                files.push((name, file.to_string_lossy().into_owned()));
+            }
+            prepared.source = Source::Sheets(files);
+            prepared.load_ms = if loaded_now { started.elapsed().as_secs_f64() * 1000.0 } else { 0.0 };
+            Ok(prepared)
+        }
+    }
+}
+
+/// The workbook at `path`, read unless it's the one kept; and whether it was read just now.
+fn workbook(path: &str) -> Result<(Arc<Vec<Loaded>>, bool), String> {
+    let key = key_of(path)?;
+    let mut slot = BOOK.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(book) = slot.as_ref().filter(|b| b.key == key) {
+        return Ok((book.sheets.clone(), false));
+    }
+    *slot = None;
+    if key.2 > MAX_LOAD_BYTES {
         return Err(format!("This file is over {} MB, too big to load for SQL.", MAX_LOAD_BYTES >> 20));
     }
-    let tables = match ext.as_str() {
-        "csv" | "tsv" | "tab" | "psv" | "txt" => vec![delimited(path, &ext)?],
-        "jsonl" | "ndjson" => vec![json_lines(path)?],
-        "parquet" => vec![sheet::load_parquet(path, "data", MAX_LOAD_ROWS)?],
-        _ => sheet::load_workbook(path, MAX_LOAD_ROWS)?,
-    };
-    load(tables)
+    let sheets = Arc::new(sheet::load_workbook(path, MAX_LOAD_ROWS)?);
+    *slot = Some(Book { key, sheets: sheets.clone() });
+    Ok((sheets, true))
 }
 
-/// Lets a statement only read: tables, functions, recursion, and the pragmas that describe tables.
-fn guard(conn: &mut Connection) -> Result<(), String> {
-    conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true).map_err(|e| e.to_string())?;
-    conn.authorizer(Some(|ctx: AuthContext<'_>| match ctx.action {
-        AuthAction::Select | AuthAction::Read { .. } | AuthAction::Function { .. } | AuthAction::Recursive => Authorization::Allow,
-        AuthAction::Pragma { pragma_name, .. }
-            if ["table_info", "table_xinfo", "table_list", "index_list", "index_info", "index_xinfo", "foreign_key_list"].contains(&pragma_name.to_ascii_lowercase().as_str()) =>
-        {
-            Authorization::Allow
-        }
-        _ => Authorization::Deny,
-    }))
-    .map_err(|e| e.to_string())
-}
-
-/// A name SQL takes as one, in double quotes.
-fn quoted(name: &str) -> String {
-    format!("\"{}\"", name.replace('"', "\"\""))
+/// A new folder in the temp folder for one query's copies of a workbook's sheets.
+fn scratch_folder() -> Result<PathBuf, String> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let folder = std::env::temp_dir().join(format!("glint-sql-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+    std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
+    Ok(folder)
 }
 
 /// Names made distinct (a second "id" is "id_2") and never empty.
@@ -201,336 +160,131 @@ fn distinct(names: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// Tables into an in-memory database: number columns NUMERIC, the rest TEXT (booleans as 1 and 0).
-fn load(tables: Vec<Loaded>) -> Result<(Connection, Vec<String>), String> {
-    let conn = Connection::open_in_memory().map_err(|e| e.to_string())?;
-    let names = distinct(&tables.iter().map(|t| t.name.clone()).collect::<Vec<_>>());
-    let too_big = |e: rusqlite::Error| {
-        if e.sqlite_error_code() == Some(rusqlite::ErrorCode::OutOfMemory) {
-            "This file needs more memory than SQL in a preview has (1 GB).".to_string()
-        } else {
-            e.to_string()
-        }
-    };
-    for (table, name) in tables.iter().zip(&names) {
-        let columns = distinct(&table.columns);
-        let kinds: Vec<Kind> = (0..columns.len()).map(|c| sheet::kind_of(table.rows.iter().filter_map(|r| r.get(c)))).collect();
-        let definition = columns.iter().zip(&kinds).map(|(c, k)| format!("{} {}", quoted(c), if *k == Kind::Number { "NUMERIC" } else { "TEXT" })).collect::<Vec<_>>().join(", ");
-        conn.execute(&format!("CREATE TABLE {} ({definition})", quoted(name)), []).map_err(too_big)?;
-        let insert = format!("INSERT INTO {} VALUES ({})", quoted(name), vec!["?"; columns.len()].join(", "));
-        conn.execute("BEGIN", []).map_err(too_big)?;
-        {
-            let mut statement = conn.prepare(&insert).map_err(too_big)?;
-            for row in &table.rows {
-                let values = (0..columns.len()).map(|c| match row.get(c) {
-                    None | Some(Cell::Empty) => Value::Null,
-                    Some(Cell::Text(s)) => Value::Text(s.clone()),
-                    Some(Cell::Int(i)) => Value::Integer(*i),
-                    Some(Cell::Float(f)) => Value::Real(*f),
-                    Some(Cell::Bool(b)) => Value::Integer(*b as i64),
-                });
-                statement.execute(rusqlite::params_from_iter(values)).map_err(too_big)?;
-            }
-        }
-        conn.execute("COMMIT", []).map_err(too_big)?;
+/// One field of a CSV file: in double quotes when it holds a comma, a quote, a line break or spaces at either end.
+fn csv_field(text: &str) -> String {
+    if text.contains([',', '"', '\n', '\r']) || text.starts_with(' ') || text.ends_with(' ') {
+        format!("\"{}\"", text.replace('"', "\"\""))
+    } else {
+        text.to_string()
     }
-    if names.first().is_some_and(|first| first != "data") && !names.iter().any(|n| n.eq_ignore_ascii_case("data")) {
-        conn.execute(&format!("CREATE VIEW data AS SELECT * FROM {}", quoted(&names[0])), []).map_err(|e| e.to_string())?;
-    }
-    Ok((conn, names))
 }
 
-/// A table file's text: UTF-8 (or UTF-16 by its mark), without a byte order mark.
-fn text_of(path: &str) -> Result<String, String> {
-    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
-    Ok(match bytes.as_slice() {
-        [0xFF, 0xFE, rest @ ..] => String::from_utf16_lossy(&rest.as_chunks::<2>().0.iter().map(|&p| u16::from_le_bytes(p)).collect::<Vec<_>>()),
-        [0xFE, 0xFF, rest @ ..] => String::from_utf16_lossy(&rest.as_chunks::<2>().0.iter().map(|&p| u16::from_be_bytes(p)).collect::<Vec<_>>()),
-        [0xEF, 0xBB, 0xBF, rest @ ..] => String::from_utf8_lossy(rest).into_owned(),
-        _ => String::from_utf8_lossy(&bytes).into_owned(),
+/// A sheet as a CSV file: its column names (made distinct) and then its rows, numbers as they are.
+fn csv_of(sheet: &Loaded) -> String {
+    let columns = distinct(&sheet.columns);
+    let mut out = columns.iter().map(|c| csv_field(c)).collect::<Vec<_>>().join(",");
+    out.push('\n');
+    for row in &sheet.rows {
+        let line = (0..columns.len())
+            .map(|c| match row.get(c) {
+                None | Some(Cell::Empty) => String::new(),
+                Some(Cell::Text(s)) => csv_field(s),
+                Some(Cell::Int(i)) => i.to_string(),
+                Some(Cell::Float(f)) => f.to_string(),
+                Some(Cell::Bool(b)) => b.to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        out.push_str(&line);
+        out.push('\n');
+    }
+    out
+}
+
+/// The tables there are to query in a file, loading it.
+pub async fn sql_tables(path: String) -> Result<SqlTables, String> {
+    blocking(move || {
+        duck::available()?;
+        let prepared = prepare(&path)?;
+        let mut found = duck::tables_of(&prepared.source)?;
+        found.load_ms = found.load_ms.max(prepared.load_ms);
+        Ok(found)
     })
+    .await
 }
 
-/// A CSV-like file's records: a quoted field may hold the delimiter, doubled quotes and line breaks.
-fn records(text: &str, delim: char) -> Vec<Vec<String>> {
-    let mut records = Vec::new();
-    let (mut record, mut field) = (Vec::new(), String::new());
-    let (mut quoted, mut was_quoted) = (false, false);
-    let mut chars = text.chars().peekable();
-    while let Some(c) = chars.next() {
-        if quoted {
-            if c == '"' {
-                if chars.peek() == Some(&'"') {
-                    field.push('"');
-                    chars.next();
-                } else {
-                    quoted = false;
-                }
-            } else {
-                field.push(c);
-            }
-        } else if c == '"' && field.trim().is_empty() {
-            field.clear();
-            quoted = true;
-            was_quoted = true;
-        } else if c == delim {
-            record.push(if was_quoted { std::mem::take(&mut field) } else { std::mem::take(&mut field).trim().to_string() });
-            was_quoted = false;
-        } else if c == '\n' || c == '\r' {
-            if c == '\r' && chars.peek() == Some(&'\n') {
-                chars.next();
-            }
-            record.push(if was_quoted { std::mem::take(&mut field) } else { std::mem::take(&mut field).trim().to_string() });
-            was_quoted = false;
-            if record.iter().any(|f| !f.is_empty()) || record.len() > 1 {
-                records.push(std::mem::take(&mut record));
-            } else {
-                record.clear();
-            }
-            if records.len() > MAX_LOAD_ROWS {
-                return records;
-            }
-        } else {
-            field.push(c);
+/// Runs one query that reads over a file (loading it first if it isn't), giving its first 1,000 rows.
+pub async fn sql_run(path: String, sql: String) -> Result<SqlAnswer, String> {
+    // A newer query stops the one running.
+    let stop = Arc::new(AtomicBool::new(false));
+    if let Some(older) = RUNNING.lock().unwrap_or_else(|e| e.into_inner()).replace(stop.clone()) {
+        older.store(true, Ordering::SeqCst);
+    }
+    blocking(move || {
+        let answer = run(&path, &sql, &stop);
+        let mut running = RUNNING.lock().unwrap_or_else(|e| e.into_inner());
+        if running.as_ref().is_some_and(|ours| Arc::ptr_eq(ours, &stop)) {
+            *running = None;
         }
-    }
-    if !field.is_empty() || !record.is_empty() {
-        record.push(if was_quoted { field } else { field.trim().to_string() });
-        records.push(record);
-    }
-    records
+        answer
+    })
+    .await
 }
 
-/// Text as the number it says, if it says one.
-fn numeric(text: &str) -> Option<Cell> {
-    let t = text.trim();
-    if t.is_empty() || t.starts_with('+') || (t.len() > 1 && t.starts_with('0') && !t.starts_with("0.")) {
-        return None;
-    }
-    t.parse::<i64>().map(Cell::Int).ok().or_else(|| t.parse::<f64>().ok().filter(|f| f.is_finite()).map(Cell::Float))
+/// One query over a file, outside the preview's session (the MCP server's query_data).
+pub(crate) fn query_file(path: &str, sql: &str) -> Result<SqlAnswer, String> {
+    run(path, sql, &AtomicBool::new(false))
 }
 
-/// A CSV, TSV or other delimited file as `data`, its first record the header; a column that's all
-/// numbers is numbers.
-fn delimited(path: &str, ext: &str) -> Result<Loaded, String> {
-    let text = text_of(path)?;
-    let first = text.lines().next().unwrap_or("");
-    let delim = match ext {
-        "tsv" | "tab" => '\t',
-        "psv" => '|',
-        _ if first.contains('\t') => '\t',
-        _ => [',', ';', '|'].into_iter().max_by_key(|&d| first.matches(d).count()).unwrap_or(','),
-    };
-    let mut records = records(&text, delim).into_iter();
-    let columns = records.next().ok_or("This file is empty.")?;
-    let width = columns.len().max(1);
-    let mut rows: Vec<Vec<Cell>> = records
-        .take(MAX_LOAD_ROWS)
-        .map(|r| {
-            let mut row: Vec<Cell> = r.into_iter().take(width).map(|f| if f.is_empty() { Cell::Empty } else { Cell::Text(f) }).collect();
-            row.resize(width, Cell::Empty);
-            row
-        })
-        .collect();
-    for c in 0..width {
-        let all_numbers = rows.iter().all(|r| match &r[c] {
-            Cell::Text(t) => numeric(t).is_some(),
-            _ => true,
-        });
-        if all_numbers {
-            for row in &mut rows {
-                if let Cell::Text(t) = &row[c] {
-                    row[c] = numeric(t).unwrap_or(Cell::Empty);
-                }
-            }
-        }
-    }
-    Ok(Loaded { name: "data".into(), columns, rows, first: 2, header: true })
-}
-
-/// A JSON-lines file as `data`: each line an object, its keys the columns (in the order first seen).
-fn json_lines(path: &str) -> Result<Loaded, String> {
-    let text = text_of(path)?;
-    let mut columns: Vec<String> = Vec::new();
-    let mut objects = Vec::new();
-    for line in text.lines().filter(|l| !l.trim().is_empty()).take(MAX_LOAD_ROWS) {
-        let Ok(serde_json::Value::Object(object)) = serde_json::from_str::<serde_json::Value>(line) else { continue };
-        for key in object.keys() {
-            if columns.len() < 200 && !columns.contains(key) {
-                columns.push(key.clone());
-            }
-        }
-        objects.push(object);
-    }
-    if columns.is_empty() {
-        return Err("No JSON objects in this file.".into());
-    }
-    let rows = objects
-        .iter()
-        .map(|o| {
-            columns
-                .iter()
-                .map(|k| match o.get(k) {
-                    None | Some(serde_json::Value::Null) => Cell::Empty,
-                    Some(serde_json::Value::Bool(b)) => Cell::Bool(*b),
-                    Some(serde_json::Value::Number(n)) => n.as_i64().map(Cell::Int).unwrap_or_else(|| Cell::Float(n.as_f64().unwrap_or(f64::NAN))),
-                    Some(serde_json::Value::String(s)) => Cell::Text(sheet::cut(s)),
-                    Some(other) => Cell::Text(sheet::cut(&other.to_string())),
-                })
-                .collect()
-        })
-        .collect();
-    Ok(Loaded { name: "data".into(), columns, rows, first: 1, header: false })
-}
-
-/// What a statement read: its columns' names and kinds, its rows, and whether there were more.
-type ReadRows = (Vec<String>, Vec<Kind>, Vec<Vec<String>>, bool);
-
-/// Runs one statement that only reads, giving its first 1,000 rows.
-fn run(conn: &mut Connection, sql: &str) -> Result<SqlAnswer, String> {
-    let started = Instant::now();
-    let sql = sql.trim().trim_end_matches(';').trim();
-    if sql.is_empty() {
+fn run(path: &str, sql: &str, stop: &AtomicBool) -> Result<SqlAnswer, String> {
+    if sql.trim().trim_end_matches(';').trim().is_empty() {
         return Err("Type a query, such as SELECT * FROM data".into());
     }
-    let explain = |e: rusqlite::Error| match e.sqlite_error_code() {
-        Some(rusqlite::ErrorCode::OperationInterrupted) => format!("The query was stopped (after {} seconds, or for a newer one).", DEADLINE.as_secs()),
-        Some(rusqlite::ErrorCode::AuthorizationForStatementDenied) => "Only queries that read run here: SELECT, WITH and the like.".to_string(),
-        Some(rusqlite::ErrorCode::OutOfMemory) => "The query needed more memory than SQL in a preview has (1 GB).".to_string(),
-        _ => match e {
-            rusqlite::Error::MultipleStatement => "One statement at a time.".to_string(),
-            rusqlite::Error::SqliteFailure(_, Some(message)) => message,
-            other => other.to_string(),
-        },
-    };
-    // The deadline's handler goes on first (rusqlite takes it through `&mut`, and the statement borrows the
-    // connection) and comes off once the rows are read.
-    let deadline = started + DEADLINE;
-    conn.progress_handler(1000, Some(move || Instant::now() > deadline)).map_err(|e| e.to_string())?;
-    let read = (|| -> Result<ReadRows, String> {
-        let mut statement = conn.prepare(sql).map_err(explain)?;
-        if !statement.readonly() {
-            return Err("Only queries that read run here: SELECT, WITH and the like.".into());
-        }
-        let names: Vec<String> = statement.column_names().map(String::from).collect();
-        let mut kinds = vec![Kind::Empty; names.len()];
-        let mut rows = Vec::new();
-        let mut truncated = false;
-        let mut found = statement.query([]).map_err(explain)?;
-        while let Some(row) = found.next().map_err(explain)? {
-            if rows.len() == MAX_BACK {
-                truncated = true;
-                break;
-            }
-            let mut line = Vec::with_capacity(names.len());
-            for (c, kind) in kinds.iter_mut().enumerate() {
-                let (text, k) = match row.get_ref(c).map_err(explain)? {
-                    ValueRef::Null => (String::new(), Kind::Empty),
-                    ValueRef::Integer(i) => (i.to_string(), Kind::Number),
-                    ValueRef::Real(f) => (sheet::number(f), Kind::Number),
-                    ValueRef::Text(t) => (sheet::cut(&String::from_utf8_lossy(t)), Kind::Text),
-                    ValueRef::Blob(b) => (format!("({} bytes)", b.len()), Kind::Text),
-                };
-                *kind = match (*kind, k) {
-                    (seen, Kind::Empty) => seen,
-                    (Kind::Empty, k) => k,
-                    (seen, k) if seen == k => seen,
-                    _ => Kind::Text,
-                };
-                line.push(text);
-            }
-            rows.push(line);
-        }
-        Ok((names, kinds, rows, truncated))
-    })();
-    let _ = conn.progress_handler(0, None::<fn() -> bool>);
-    let (names, kinds, rows, truncated) = read?;
-    Ok(SqlAnswer {
-        engine: "SQLite",
-        columns: names.into_iter().zip(&kinds).map(|(name, k)| TableColumn { name, kind: sheet::kind_name(*k).into() }).collect(),
-        rows,
-        truncated,
-        elapsed_ms: started.elapsed().as_secs_f64() * 1000.0,
-        load_ms: 0.0,
-    })
+    duck::available()?;
+    let prepared = prepare(path)?;
+    duck::query_over(&prepared.source, sql, stop)
+        .map(|answer| SqlAnswer { load_ms: prepared.load_ms, ..answer })
+        .map_err(|e| if e == "cancelled" { "The query was stopped for a newer one.".to_string() } else { e })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn temp(name: &str, text: &str) -> (std::path::PathBuf, String) {
-        let dir = std::env::temp_dir().join(format!("glint-sql-{}-{name}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join(name);
-        std::fs::write(&path, text).unwrap();
-        (dir, path.to_string_lossy().into())
+    fn loaded(columns: &[&str], rows: Vec<Vec<Cell>>) -> Loaded {
+        Loaded { name: "Sheet1".into(), columns: columns.iter().map(|c| c.to_string()).collect(), rows, first: 1, header: true }
     }
 
     #[test]
-    fn reads_csv_records_with_quotes_and_line_breaks() {
-        assert_eq!(records("a,b\n1,\"x, \"\"y\"\"\nz\"\n\n2, w \r\n", ','), [vec!["a", "b"], vec!["1", "x, \"y\"\nz"], vec!["2", "w"]]);
-        assert_eq!(numeric("12"), Some(Cell::Int(12)));
-        assert_eq!(numeric("-1.5"), Some(Cell::Float(-1.5)));
-        assert_eq!(numeric("007"), None, "a code with leading zeros stays text");
-        assert_eq!(numeric("inf"), None);
+    fn a_file_is_read_by_what_its_extension_says() {
+        assert_eq!(kind_of_file(r"C:\d\people.DB"), Kind::Database);
+        assert_eq!(kind_of_file(r"C:\d\a.sqlite3"), Kind::Database);
+        for data in ["a.csv", "a.tsv", "a.jsonl", "a.parquet", "a.TXT"] {
+            assert_eq!(kind_of_file(data), Kind::Data, "{data}");
+        }
+        for book in ["a.xlsx", "a.xls", "a.ods"] {
+            assert_eq!(kind_of_file(book), Kind::Workbook, "{book}");
+        }
         assert_eq!(distinct(&["id".into(), "".into(), "ID".into(), "id".into()]), ["id", "col_2", "ID_2", "id_3"], "as SQL compares names: without case");
-        assert_eq!(database_uri("C:\\My Data\\x#1.db"), "file:///C:/My%20Data/x%231.db?mode=ro&immutable=1");
     }
 
     #[test]
-    fn queries_a_csv_file_loaded_into_memory() {
-        let (dir, path) = temp("sales.csv", "region,amount,code\nNorth,10,007\nSouth,2.5,010\nNorth,7,011\n");
-        let (mut conn, tables) = open(&path).unwrap();
-        guard(&mut conn).unwrap();
-        assert_eq!(tables, ["data"]);
-        let answer = run(&mut conn, "SELECT region, sum(amount) AS total FROM data GROUP BY region ORDER BY total DESC;").unwrap();
-        assert_eq!(answer.rows, [["North", "17"], ["South", "2.5"]]);
-        assert_eq!(answer.columns.iter().map(|c| c.kind.as_str()).collect::<Vec<_>>(), ["text", "number"]);
-        assert_eq!(run(&mut conn, "SELECT code FROM data").unwrap().rows[0], ["007"]);
-        // Nothing but reading.
-        for refused in ["DELETE FROM data", "CREATE TABLE x(a)", "ATTACH DATABASE 'x.db' AS x", "VACUUM INTO 'x.db'", "PRAGMA writable_schema = ON", "SELECT 1; SELECT 2"] {
-            assert!(run(&mut conn, refused).is_err(), "{refused} ran");
-        }
-        assert!(!std::path::Path::new("x.db").exists());
-        assert!(run(&mut conn, "PRAGMA table_info(data)").unwrap().rows.len() == 3);
-        let many = run(&mut conn, "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 5000) SELECT i FROM n").unwrap();
-        assert_eq!((many.rows.len(), many.truncated), (MAX_BACK, true));
-        let _ = std::fs::remove_dir_all(&dir);
+    fn a_sheet_is_written_as_csv_with_quotes_where_they_are_needed() {
+        let sheet = loaded(
+            &["name", "amount", "name", "note"],
+            vec![
+                vec![Cell::Text("Ada, the first".into()), Cell::Float(2.5), Cell::Bool(true), Cell::Text("say \"hi\"\nthere".into())],
+                vec![Cell::Text(" padded ".into()), Cell::Int(7), Cell::Empty],
+            ],
+        );
+        assert_eq!(csv_of(&sheet), "name,amount,name_2,note\n\"Ada, the first\",2.5,true,\"say \"\"hi\"\"\nthere\"\n\" padded \",7,,\n");
     }
 
     #[test]
-    fn stops_a_query_that_never_ends() {
-        let mut conn = Connection::open_in_memory().unwrap();
-        guard(&mut conn).unwrap();
-        let handle = conn.get_interrupt_handle();
-        std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(200));
-            handle.interrupt();
-        });
-        let started = Instant::now();
-        let e = run(&mut conn, "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n) SELECT count(*) FROM n").err().unwrap();
-        assert!(e.contains("stopped"), "{e}");
-        assert!(started.elapsed() < Duration::from_secs(5));
+    fn a_workbook_query_leaves_no_copy_of_the_sheets_behind() {
+        let folder = scratch_folder().unwrap();
+        std::fs::write(folder.join("sheet-0.csv"), "a\n1\n").unwrap();
+        let other = scratch_folder().unwrap();
+        assert_ne!(folder, other, "each query has a folder of its own");
+        let prepared = Prepared { source: Source::Sheets(Vec::new()), folder: Some(folder.clone()), load_ms: 0.0 };
+        assert!(folder.join("sheet-0.csv").exists());
+        drop(prepared);
+        assert!(!folder.exists(), "the copies went with the query");
+        let _ = std::fs::remove_dir_all(other);
     }
 
     #[test]
-    fn opens_a_database_without_writing_to_it() {
-        let (dir, path) = temp("t.db", "");
-        std::fs::remove_file(&path).unwrap();
-        {
-            let db = Connection::open(&path).unwrap();
-            db.execute_batch("PRAGMA journal_mode = WAL; CREATE TABLE people(name TEXT, age INTEGER); INSERT INTO people VALUES ('Ada', 36), ('Alan', 41);").unwrap();
-        }
-        let before: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
-        let (mut conn, tables) = open(&path).unwrap();
-        guard(&mut conn).unwrap();
-        assert_eq!(tables, ["people"]);
-        assert_eq!(run(&mut conn, "SELECT name FROM people WHERE age > 40").unwrap().rows, [["Alan"]]);
-        assert!(run(&mut conn, "INSERT INTO people VALUES ('x', 1)").is_err());
-        drop(conn);
-        let after: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
-        assert_eq!(before, after, "no journal, WAL or lock file appeared");
-        let _ = std::fs::remove_dir_all(&dir);
+    fn an_empty_query_is_asked_for_before_anything_starts() {
+        assert_eq!(run(r"C:\d\a.csv", "  ; ", &AtomicBool::new(false)).err().as_deref(), Some("Type a query, such as SELECT * FROM data"));
     }
 }
