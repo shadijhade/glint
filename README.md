@@ -31,7 +31,7 @@ A native Windows app written in Rust. Free, open source, and no account.
 -   **Any file on any drive, as you type.** Turn on instant search and a small service reads each NTFS drive's Master File Table once, the way Everything does, then follows every change: every `kernel32.dll` on three drives, among 3 million names, in 7.7 ms. Without it, fd streams results as it finds them.
 -   **One search for names and contents.** ripgrep reads inside the files from the same box, and a file found by what it holds is a row like any other, with the lines that matched under it. PDFs, Office documents and the text in pictures too.
 -   **A preview for nearly every file.** `Space` shows it full size: code, Markdown, PDFs, Word documents without Office, spreadsheets and databases you can query with SQL, videos, and every file's bytes.
--   **More to do with files.** Trim and shrink videos, merge and split PDFs, query CSV and Parquet files of any size, convert documents, take personal info out of photos, encrypt with age, rename hundreds of files at once, and take it all back with `Ctrl+Z`.
+-   **More to do with files.** Trim and shrink videos, merge and split PDFs, query CSV and Parquet files of any size, convert documents, take personal info out of photos, rename hundreds of files at once, and take it all back with `Ctrl+Z`.
 -   **Tabs, two panes, a terminal and Git.** Each pane has its own tabs, two folders compare and sync down through every subfolder, a terminal under the files follows the folder you're in, and every file shows its Git status.
 -   **Still Windows.** Copy, move and delete run on Windows' own file engine, with its progress, *Replace or Skip*, Recycle Bin and UAC. The clipboard, drag and drop and Windows' own context menu work with File Explorer and every other app.
 -   **AI agents use it too.** Through its [MCP server](#ai-agents), Claude, Copilot, Cursor and other agents find files on every drive in milliseconds, measure folders and search inside files.
@@ -219,7 +219,7 @@ A tour of what Glint does. **Every feature, in detail: [docs/features.md](docs/f
 -   **Make smaller.** Videos re-encoded to look the same, smaller photos, PNGs, PDFs and the pictures inside Office files. Nothing that comes out bigger is kept.
 -   **PDF tools** ([pdfcpu](https://github.com/pdfcpu/pdfcpu)), **data files of any size** ([DuckDB](https://duckdb.org)), **Convert document** ([pandoc](https://pandoc.org)) and **Convert pictures** ([rimage](https://github.com/vlad-salone/rimage)).
 -   **Archives and disk images open like folders.** Zip, 7z, RAR, tar and the rest, ISO, VHDX and WIM images and installers, read-only, with nothing extracted until a file's bytes are needed. Compress to zip, 7z or tar.zst, a zip or a 7z with a password.
--   **Remove personal info** from photos, videos, PDFs and Office files, **Encrypt** with [age](https://age-encryption.org), **Compress in place** with Windows' own compression, and **Batch rename** with a live preview.
+-   **Remove personal info** from photos, videos, PDFs and Office files, **Compress in place** with Windows' own compression, and **Batch rename** with a live preview.
 
 [More about media, documents and data →](docs/features.md#media-documents-and-data) · [Archives →](docs/features.md#archives-and-disk-images)
 

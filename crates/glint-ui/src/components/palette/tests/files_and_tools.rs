@@ -99,7 +99,6 @@ fn a_video_is_offered_the_media_tools_and_a_pdf_is_not() {
         "media-subtitles",
         "media-volume",
         "shrink",
-        "encrypt",
     ] {
         assert!(find(&commands, id).is_some(), "{id} applies to a video");
     }
@@ -116,7 +115,6 @@ fn a_video_is_offered_the_media_tools_and_a_pdf_is_not() {
         "convert",
         "convert-data",
         "song-details",
-        "decrypt",
     ] {
         assert!(find(&commands, id).is_none(), "{id} does not apply to a video");
     }
@@ -125,7 +123,7 @@ fn a_video_is_offered_the_media_tools_and_a_pdf_is_not() {
 #[test]
 fn nothing_selected_offers_none_of_the_selection_commands() {
     let commands = actions(&with_selected(&[]));
-    for id in ["compress", "shrink", "encrypt", "convert-doc", "copy-other"] {
+    for id in ["compress", "shrink", "convert-doc", "copy-other"] {
         assert!(find(&commands, id).is_none(), "{id}");
     }
     // With nothing chosen the folder is the subject.

@@ -534,36 +534,6 @@ pub fn item_menu(targets: &[FileEntry], c: &ItemCtx) -> Vec<Node> {
     if !fixed {
         m.push(Some(tags_menu(&paths, &c.data)));
     }
-    if !fixed && targets.iter().all(is_age_file) {
-        m.push(
-            Entry::ask(
-                if n > 1 {
-                    t!("Decrypt {n} files…", n = n)
-                } else {
-                    t!("Decrypt…")
-                },
-                IconName::LockOpen,
-                MenuEvent::Vault {
-                    paths: paths.clone(),
-                    decrypt: true,
-                },
-            )
-            .node(),
-        );
-    }
-    if !fixed && targets.iter().any(can_encrypt) {
-        m.push(
-            Entry::ask(
-                t!("Encrypt…"),
-                IconName::Lock,
-                MenuEvent::Vault {
-                    paths: paths.clone(),
-                    decrypt: false,
-                },
-            )
-            .node(),
-        );
-    }
     if !fixed {
         let compress = |label: SharedString, format| {
             Entry::ask(

@@ -79,7 +79,6 @@ pub mod thumbs;
 pub mod timeline;
 pub mod tools;
 pub mod usage;
-pub mod vault;
 pub mod wof;
 pub mod verbs;
 pub mod versions;

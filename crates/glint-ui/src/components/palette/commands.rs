@@ -1287,30 +1287,6 @@ fn nearby_and_files(inputs: &Inputs, place: &Place) -> Vec<Command> {
         ),
     );
     add(
-        any(can_encrypt),
-        menu(
-            "encrypt",
-            t!("Encrypt the selection with a passphrase (age)"),
-            I::Lock,
-            MenuEvent::Vault {
-                paths: all.clone(),
-                decrypt: false,
-            },
-        ),
-    );
-    add(
-        any(is_age_file),
-        menu(
-            "decrypt",
-            t!("Decrypt the selected .age files"),
-            I::LockOpen,
-            MenuEvent::Vault {
-                paths: all.clone(),
-                decrypt: true,
-            },
-        ),
-    );
-    add(
         any(can_clean),
         menu(
             "remove-personal-info",

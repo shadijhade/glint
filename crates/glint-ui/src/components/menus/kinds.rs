@@ -1,7 +1,7 @@
 //! Which items a file gets in the menus: the predicates the TypeScript took from each tool's dialog.
 //!
 //! Ported from `canConvert` (ConvertDialog.tsx), `isPdfFile` (PdfDialog.tsx), `isDataFile` (DataTools.tsx),
-//! `canClean` / `canRedate` (MetadataDialog.tsx), `canEncrypt` / `isAgeFile` (VaultDialog.tsx), `canShrink` /
+//! `canClean` / `canRedate` (MetadataDialog.tsx), `canShrink` /
 //! `isJxl` (ShrinkDialog.tsx), `canCompressInPlace`, `canConvertDoc` / `isTypst` (DocConvertDialog.tsx),
 //! `isSong`, `canBackUp`, `isMediaFile` / `isVideoFile` (studio.ts) and `canWallpaper` / `canRotate`
 //! (Explorer.tsx).
@@ -115,16 +115,6 @@ pub fn can_redate(e: &FileEntry) -> bool {
     !e.dir && readable(e) && has(DATED, &e.ext)
 }
 
-/// What Encrypt takes: files and folders on disk (`canEncrypt`).
-pub fn can_encrypt(e: &FileEntry) -> bool {
-    readable(e) && !e.name.to_lowercase().ends_with(".age")
-}
-
-/// An age file, to decrypt (`isAgeFile`).
-pub fn is_age_file(e: &FileEntry) -> bool {
-    readable(e) && !e.dir && e.name.to_lowercase().ends_with(".age")
-}
-
 /// A file Make smaller works on (`canShrink`).
 pub fn can_shrink(e: &FileEntry) -> bool {
     readable(e) && !e.dir && has(SHRINKS, &ext_of(&e.name))
@@ -221,12 +211,7 @@ mod tests {
     }
 
     #[test]
-    fn encryption_skips_age_files_and_back_up_wants_a_drive_folder() {
-        assert!(can_encrypt(&file("C:\\x", "a.txt", 1, 0)));
-        assert!(can_encrypt(&folder("C:\\x", "docs")));
-        assert!(!can_encrypt(&file("C:\\x", "a.txt.AGE", 1, 0)));
-        assert!(is_age_file(&file("C:\\x", "a.txt.age", 1, 0)));
-        assert!(!is_age_file(&folder("C:\\x", "x.age")));
+    fn back_up_wants_a_drive_folder() {
         assert!(can_back_up(&folder("C:\\x", "docs")));
         assert!(!can_back_up(&file("C:\\x", "a.txt", 1, 0)));
         let mut share = folder("C:\\x", "docs");

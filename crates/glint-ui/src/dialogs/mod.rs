@@ -77,8 +77,6 @@ pub mod song;
 pub mod tags;
 /// Recent changes on a drive (TimelineDialog.tsx).
 pub mod timeline;
-/// Encrypting and decrypting with age (VaultDialog.tsx).
-pub mod vault;
 /// Previous versions of a file or folder (VersionsDialog.tsx).
 pub mod versions;
 /// A file's X-Ray (XRayDialog.tsx).
