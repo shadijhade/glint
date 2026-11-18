@@ -14,11 +14,8 @@
 //! - **The mouse** selects (drag, double click for a word, triple for a line, Alt for a block), scrolls the
 //!   scrollback or the program (arrows in full-screen programs, wheel reports when it asked for the mouse),
 //!   reports clicks to programs that ask, and Ctrl+click opens the link under the pointer.
-//!
-//! A playback terminal ([`TerminalView::playback`]) is the same screen and element with no shell: the cast
-//! preview feeds it.
 
-use super::element::{Fit, Geometry, TerminalElement};
+use super::element::{Geometry, TerminalElement};
 use super::emu::{Hooks, LinkSpan, LinkTarget, Palette, Pick, Screen, Signal};
 use super::keys::{self, Button, Mods, Mouse};
 use super::session::{self, Backend, Msg, Outbox, SessionEvent, Spawn, Waker};
@@ -27,9 +24,9 @@ use crate::platform::dragdrop::{Answer, Under};
 use crate::{t, theme};
 use alacritty_terminal::term::TermMode;
 use gpui_kit::{
-    Bounds, ClipboardItem, DragMoveEvent, EntityInputHandler, EventEmitter, ExternalPaths, KeyDownEvent, Keystroke,
-    Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Role, ScrollEvent,
-    Subscription, Task, UTF16Selection,
+    Bounds, ClipboardItem, DragMoveEvent, EntityInputHandler, EventEmitter, ExternalPaths, Keystroke, Modifiers,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Role, ScrollEvent, Subscription, Task,
+    UTF16Selection,
 };
 use std::cell::Cell;
 use std::ops::Range;
@@ -62,7 +59,7 @@ pub enum TerminalEvent {
     Rtl(bool),
 }
 
-/// The live part of a terminal: its shell.
+/// What a terminal needs of its shell.
 struct Live {
     backend: Backend,
     outbox: Outbox,
@@ -90,7 +87,7 @@ enum Drag {
 /// A terminal.
 pub struct TerminalView {
     screen: Screen,
-    live: Option<Live>,
+    live: Live,
     name: SharedString,
     shell_name: SharedString,
     focus: FocusHandle,
@@ -167,36 +164,15 @@ impl TerminalView {
             started: false,
             tx: tx.clone(),
         };
-        Self::build(screen, Some(live), shell_name.into(), waker, tx, rx, window, cx)
+        Self::build(screen, live, shell_name.into(), waker, rx, window, cx)
     }
 
-    /// A terminal with no shell, showing a screen something else feeds: `cols` x `rows`, no scrollback. A
-    /// recording plays in one.
-    pub fn playback(
-        cols: usize,
-        rows: usize,
-        name: impl Into<SharedString>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        let (tx, rx) = async_channel::unbounded();
-        let waker = Waker::new(tx.clone());
-        let wake = waker.clone();
-        let hooks = Hooks {
-            wake: Arc::new(move || wake.wake()),
-            ..Hooks::none()
-        };
-        let screen = Screen::fixed(cols, rows, hooks);
-        Self::build(screen, None, name.into(), waker, tx, rx, window, cx)
-    }
-
-    #[allow(clippy::too_many_arguments)] // The pieces `live` and `playback` have each made, put together.
+    /// The pieces `live` has made, put together.
     fn build(
         screen: Screen,
-        live: Option<Live>,
+        live: Live,
         name: SharedString,
         waker: Waker,
-        _tx: async_channel::Sender<Msg>,
         rx: async_channel::Receiver<Msg>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -254,7 +230,7 @@ impl TerminalView {
 
     // ---- What the pane reads and does
 
-    /// The screen: a recording feeds it.
+    /// The screen.
     pub fn screen(&self) -> &Screen {
         &self.screen
     }
@@ -269,9 +245,9 @@ impl TerminalView {
         window.focus(&self.focus, cx);
     }
 
-    /// The shell's id, if this is a live terminal.
-    pub fn shell(&self) -> Option<&str> {
-        self.live.as_ref().map(|live| live.shell.as_str())
+    /// The shell's id.
+    pub fn shell(&self) -> &str {
+        &self.live.shell
     }
 
     /// The title the program set, if any.
@@ -306,10 +282,8 @@ impl TerminalView {
     }
 
     fn write(&self, text: String) {
-        if let Some(live) = &self.live {
-            if self.exited.is_none() {
-                live.outbox.write(text);
-            }
+        if self.exited.is_none() {
+            self.live.outbox.write(text);
         }
     }
 
@@ -398,7 +372,7 @@ impl TerminalView {
 
     /// The element measured the grid: the first time starts the shell at that size, later ones resize it.
     fn resized(&mut self, cols: u16, rows: u16, _window: &mut Window, cx: &mut Context<Self>) {
-        let Some(live) = self.live.as_mut() else { return };
+        let live = &mut self.live;
         if live.started {
             live.outbox.resize(cols, rows);
             return;
@@ -417,15 +391,7 @@ impl TerminalView {
         let name = self.shell_name.clone();
         self._start = cx.spawn(async move |this, cx| match starting.await {
             Ok(id) => {
-                let kept = this
-                    .update(cx, |this, _| match this.live.as_mut() {
-                        Some(live) => {
-                            live.id = Some(id);
-                            true
-                        }
-                        None => false,
-                    })
-                    .unwrap_or(false);
+                let kept = this.update(cx, |this, _| this.live.id = Some(id)).is_ok();
                 match commands {
                     Some(commands) if kept => session::start_writer(id, commands, backend),
                     // The tab was closed while the shell was starting.
@@ -523,10 +489,10 @@ impl TerminalView {
     /// space apart (as pasted, so a program that asked for bracketed paste gets them so). A shell that has ended
     /// takes nothing.
     pub fn drop_paths(&mut self, paths: &[String], cx: &mut Context<Self>) {
-        let Some(live) = self.live.as_ref().filter(|_| self.exited.is_none()) else {
+        if self.exited.is_some() {
             return;
-        };
-        let text = glint_model::cd::quoted_paths(&live.shell, paths);
+        }
+        let text = glint_model::cd::quoted_paths(&self.live.shell, paths);
         if text.is_empty() {
             return;
         }
@@ -536,7 +502,7 @@ impl TerminalView {
 
     /// Whether a drop would be taken: a shell that is running.
     fn takes_drops(&self) -> bool {
-        self.live.is_some() && self.exited.is_none()
+        self.exited.is_none()
     }
 
     // ---- The keyboard
@@ -545,9 +511,6 @@ impl TerminalView {
     /// stops the app's shortcuts from seeing it). Text a person types is left to the input handler, which is how
     /// input methods get it; everything else is encoded here.
     pub fn key(&mut self, keystroke: &Keystroke, _window: &mut Window, cx: &mut Context<Self>) -> bool {
-        if self.live.is_none() {
-            return false;
-        }
         let m = &keystroke.modifiers;
         if m.platform
             || m.function
@@ -607,9 +570,6 @@ impl TerminalView {
 
     /// Sends what the person typed: the view goes back to the bottom, and the terminal is busy.
     fn send(&mut self, text: String, cx: &mut Context<Self>) {
-        if self.live.is_none() {
-            return;
-        }
         if glint_model::cd::is_typing(&text) {
             self.idle = false;
         }
@@ -654,14 +614,6 @@ impl TerminalView {
         }
         let sequence = keys::paste_text(&text, self.mode());
         self.send(sequence, cx);
-    }
-
-    /// Ctrl+C copies a selection in a recording's screen.
-    fn playback_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
-        let k = &event.keystroke;
-        if k.modifiers.control && (k.key == "c" || k.key == "insert") && self.copy_selection(cx) {
-            cx.stop_propagation();
-        }
     }
 
     // ---- The mouse
@@ -717,7 +669,7 @@ impl TerminalView {
                 return;
             }
         }
-        let reporting = self.live.is_some() && self.mode().intersects(TermMode::MOUSE_MODE) && !event.modifiers.shift;
+        let reporting = self.mode().intersects(TermMode::MOUSE_MODE) && !event.modifiers.shift;
         if reporting {
             if let Some(button) = Self::button_of(event.button) {
                 self.report(Mouse::Press(button), col, row, &event.modifiers);
@@ -738,12 +690,12 @@ impl TerminalView {
                 cx.notify();
             }
             // As Windows Terminal does: right-click copies a selection, else pastes.
-            MouseButton::Right if self.live.is_some() => {
+            MouseButton::Right => {
                 if !self.copy_selection(cx) {
                     self.paste(cx);
                 }
             }
-            MouseButton::Middle if self.live.is_some() => self.paste(cx),
+            MouseButton::Middle => self.paste(cx),
             _ => {}
         }
     }
@@ -779,7 +731,7 @@ impl TerminalView {
                     return;
                 }
                 let (col, row, _) = geometry.cell_at(event.position);
-                if self.live.is_some() && self.mode().contains(TermMode::MOUSE_MOTION) && !event.modifiers.shift {
+                if self.mode().contains(TermMode::MOUSE_MOTION) && !event.modifiers.shift {
                     self.report(Mouse::Move(None), col, row, &event.modifiers);
                 }
                 // The link under the pointer lights while Ctrl is held.
@@ -827,15 +779,12 @@ impl TerminalView {
         let mode = self.mode();
         let up = notches > 0;
         let count = notches.unsigned_abs() as usize;
-        if self.live.is_some() && mode.intersects(TermMode::MOUSE_MODE) && !event.modifiers.shift {
+        if mode.intersects(TermMode::MOUSE_MODE) && !event.modifiers.shift {
             let (col, row, _) = geometry.cell_at(event.position);
             for _ in 0..count {
                 self.report(Mouse::Wheel { up }, col, row, &event.modifiers);
             }
-        } else if self.live.is_some()
-            && mode.contains(TermMode::ALT_SCREEN)
-            && mode.contains(TermMode::ALTERNATE_SCROLL)
-        {
+        } else if mode.contains(TermMode::ALT_SCREEN) && mode.contains(TermMode::ALTERNATE_SCROLL) {
             self.write(keys::wheel_as_arrows(up, count, mode));
         } else if self.screen.with(|emu| emu.scroll_by(notches)) {
             cx.notify();
@@ -878,9 +827,7 @@ impl TerminalView {
 impl Drop for TerminalView {
     fn drop(&mut self) {
         // The shell ends with its tab.
-        if let Some(live) = &self.live {
-            live.outbox.close();
-        }
+        self.live.outbox.close();
     }
 }
 
@@ -972,7 +919,7 @@ impl EntityInputHandler for TerminalView {
     }
 
     fn accepts_text_input(&self, _window: &mut Window, _cx: &mut Context<Self>) -> bool {
-        self.live.is_some() && self.exited.is_none()
+        self.exited.is_none()
     }
 }
 
@@ -985,20 +932,11 @@ impl Render for TerminalView {
             self.palette_id += 1;
         }
         let focused = self.focus.is_focused(window);
-        let on_size = self.live.is_some().then(|| {
-            let tx = self.live.as_ref().map(|live| live.tx.clone());
+        let on_size = {
+            let tx = self.live.tx.clone();
             Rc::new(move |cols: u16, rows: u16| {
-                if let Some(tx) = &tx {
-                    let _ = tx.try_send(Msg::Resized(cols, rows));
-                }
+                let _ = tx.try_send(Msg::Resized(cols, rows));
             }) as Rc<dyn Fn(u16, u16)>
-        });
-        let fit = match self.live {
-            Some(_) => Fit::Fill,
-            None => {
-                let (cols, rows) = self.screen.with(|emu| emu.size());
-                Fit::Fixed { cols, rows }
-            }
         };
         let element = TerminalElement {
             screen: self.screen.clone(),
@@ -1006,9 +944,8 @@ impl Render for TerminalView {
             palette_id: self.palette_id,
             family: theme::mono_font(cx),
             rems: FONT_REMS,
-            fit,
             geometry: self.geometry.clone(),
-            on_size,
+            on_size: Some(on_size),
             focus: Some(self.focus.clone()),
             focused,
             cursor_on: self.cursor_on,
@@ -1032,29 +969,24 @@ impl Render for TerminalView {
             .min_h_0()
             .overflow_hidden()
             .bg(gpui_kit::rgb(self.palette.background));
-        if self.live.is_some() {
-            root.on_drag_move(cx.listener(move |this, event: &DragMoveEvent<ExternalPaths>, _, cx| {
-                // Files held over the terminal: a drop pastes their paths, and the drag's picture says so.
-                if this.takes_drops() && event.bounds.contains(&event.event.position) {
-                    crate::drops::answer(
-                        cx,
-                        Answer::Accept(Under {
-                            name: this.shell_name.to_string(),
-                            copy: t!("Paste the path into %1").to_string(),
-                            moves: t!("Paste the path into %1").to_string(),
-                            always_move: false,
-                        }),
-                    );
-                }
-            }))
-            .on_drop(cx.listener(|this, dropped: &ExternalPaths, window, cx| {
-                this.drop_paths(&crate::drops::paths(dropped), cx);
-                this.focus(window, cx);
-            }))
-            .child(element)
-        } else {
-            root.on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| this.playback_key(event, cx)))
-                .child(element)
-        }
+        root.on_drag_move(cx.listener(move |this, event: &DragMoveEvent<ExternalPaths>, _, cx| {
+            // Files held over the terminal: a drop pastes their paths, and the drag's picture says so.
+            if this.takes_drops() && event.bounds.contains(&event.event.position) {
+                crate::drops::answer(
+                    cx,
+                    Answer::Accept(Under {
+                        name: this.shell_name.to_string(),
+                        copy: t!("Paste the path into %1").to_string(),
+                        moves: t!("Paste the path into %1").to_string(),
+                        always_move: false,
+                    }),
+                );
+            }
+        }))
+        .on_drop(cx.listener(|this, dropped: &ExternalPaths, window, cx| {
+            this.drop_paths(&crate::drops::paths(dropped), cx);
+            this.focus(window, cx);
+        }))
+        .child(element)
     }
 }
