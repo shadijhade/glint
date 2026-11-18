@@ -275,7 +275,7 @@ fn a_file_is_said_to_match_or_not_match_the_checksum_copied_and_the_head_follows
     rig.fake.send(call, BETA, made(&"1".repeat(64)));
     rig.ui.frame();
     rig.opened_on(BETA);
-    assert!(labels_of(&mut rig).contains(&("Checksum mismatch".to_string(), Tone::Warn)), "{:?}", rig.head());
+    assert!(labels_of(&mut rig).contains(&("Doesn't match the copied SHA-256".to_string(), Tone::Warn)), "{:?}", rig.head());
 }
 
 #[gpui_kit::test]
@@ -292,9 +292,9 @@ fn a_checksum_file_suggests_checking_the_files_it_lists_and_choosing_it_asks_for
     let run = find(&nodes, "Check files in this folder").expect("the row").run.clone();
     assert_eq!(run, Run::Ask(MenuEvent::CheckSums { path: "C:\\sums\\pack.sha256".into() }));
     rig.ui.press("escape");
-    // An MD5 file can't be checked here, so nothing is offered for it.
+    // An MD5 file is checked too (Windows makes the sums).
     rig.opened_on("C:\\sums\\pack.md5");
-    assert!(find(&rig.ui.nodes(), "Check files in this folder").is_none(), "{:?}", labels(&rig.ui.nodes()));
+    assert!(find(&rig.ui.nodes(), "Check files in this folder").is_some(), "{:?}", labels(&rig.ui.nodes()));
 }
 
 #[gpui_kit::test]

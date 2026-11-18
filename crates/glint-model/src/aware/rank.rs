@@ -68,7 +68,7 @@ fn rules(facts: &Facts, probed: Option<&Probed>, available: &[&str]) -> Vec<(&'s
         out.push(("do:extract-here", 9.0, Why::Plain));
     }
     // 2b: a checksum file: its files are checked against it (the row is in the menu only for the kinds that can be).
-    if !facts.fixed && facts.count == 1 && matches!(facts.ext.as_deref(), Some("sha256" | "sha256sum" | "sha512" | "sha512sum" | "b3sum" | "blake3")) {
+    if !facts.fixed && facts.count == 1 && matches!(facts.ext.as_deref(), Some("md5" | "md5sum" | "sha1" | "sha1sum" | "sha256" | "sha256sum" | "sha512" | "sha512sum" | "b3sum" | "blake3")) {
         out.push(("do:check-sums", 8.8, Why::Plain));
     }
     // 3
@@ -326,12 +326,11 @@ mod tests {
     #[test]
     fn a_checksum_file_offers_to_check_the_files_beside_it() {
         let sums = |ext: &str, fixed: bool| Facts { ext: Some(ext.into()), fixed, ..facts(Shape::File) };
-        for ext in ["sha256", "sha512", "b3sum"] {
+        for ext in ["md5", "sha1", "sha256", "sha512", "b3sum"] {
             let picks = run(&sums(ext, false), None, &all());
             assert_eq!(first(&picks), Some(("do:check-sums", 8.8, &Why::Plain)), "{ext}");
         }
         assert!(!has(&run(&sums("sha256", true), None, &all()), "do:check-sums"), "not inside an archive");
-        assert!(!has(&run(&sums("md5", false), None, &all()), "do:check-sums"), "an MD5 can't be checked");
         assert!(!has(&run(&sums("txt", false), None, &all()), "do:check-sums"));
         let two = Facts { count: 2, ..sums("sha256", false) };
         assert!(!has(&run(&two, None, &all()), "do:check-sums"));

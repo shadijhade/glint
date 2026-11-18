@@ -571,8 +571,9 @@ fn a_file_that_matches_the_copied_checksum_says_so_and_one_that_does_not_warns()
     assert_eq!(matches.len(), 1);
     assert_eq!((matches[0].label.as_ref(), matches[0].tone), ("Matches copied SHA-256", Tone::Good));
     assert_eq!(badges(Some(Verdict::Match(Algo::Blake3)))[0].label, "Matches copied BLAKE3");
-    let wrong = badges(Some(Verdict::Mismatch));
-    assert_eq!((wrong[0].label.as_ref(), wrong[0].tone), ("Checksum mismatch", Tone::Warn));
+    let wrong = badges(Some(Verdict::Mismatch(Algo::Sha256)));
+    assert_eq!((wrong[0].label.as_ref(), wrong[0].tone), ("Doesn't match the copied SHA-256", Tone::Warn));
+    assert_eq!(badges(Some(Verdict::Mismatch(Algo::Md5)))[0].label, "Doesn't match the copied MD5");
     assert!(badges(None).is_empty(), "unknown is nothing at all");
 }
 
@@ -581,7 +582,8 @@ fn a_checksum_files_menu_has_check_files_in_this_folder_only_for_the_kinds_that_
     let _guard = english();
     let has = |name: &str| keys(&item_menu(&[text(name)], &ctx())).iter().any(|k| k == "do:check-sums");
     assert!(has("pack.sha256") && has("PACK.SHA512") && has("sums.b3sum"));
-    assert!(!has("pack.md5") && !has("pack.sha1") && !has("notes.txt") && !has("SHA256SUMS"));
+    assert!(has("pack.md5") && has("pack.sha1") && has("pack.md5sum") && has("pack.sha1sum"));
+    assert!(!has("notes.txt") && !has("SHA256SUMS"));
     let mut remote = text("pack.sha256");
     remote.attrs |= attr::REMOTE;
     assert!(!keys(&item_menu(&[remote], &ctx())).iter().any(|k| k == "do:check-sums"), "not on a remote");

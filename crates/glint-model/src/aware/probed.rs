@@ -218,7 +218,7 @@ mod tests {
             target: true,
             opens_with: true,
             extracted: true,
-            sums: SumsWant { sha256: true, sha512: true, blake3: true },
+            sums: SumsWant { md5: true, sha1: true, sha256: true, sha512: true, blake3: true },
         }
     }
 

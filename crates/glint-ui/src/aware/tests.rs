@@ -740,6 +740,22 @@ fn only_one_file_of_a_size_worth_reading_is_checked_against_a_copied_checksum(cx
 }
 
 #[gpui_kit::test]
+fn a_copied_md5_or_sha1_has_the_file_read_for_that_one_checksum(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let fake = Fake::new();
+    let world = world(cx, &fake, &empty_disk(), "C:\\x");
+    let (mut visual, _) = testing::open_window(cx, |_, cx| cx.new(|_| Blank));
+    visual.update(|window, _| window.activate_window());
+    let sums_of_last = |fake: &Fake| fake.calls.borrow().last().expect("a call").wants[0].sums;
+    copy_text(&mut visual, &fake, "d41d8cd98f00b204e9800998ecf8427e");
+    look_ahead(cx, &world, &[a_file("m.bin")]);
+    assert_eq!(sums_of_last(&fake), SumsWant { md5: true, ..SumsWant::default() });
+    copy_text(&mut visual, &fake, "da39a3ee5e6b4b0d3255bfef95601890afd80709");
+    look_ahead(cx, &world, &[a_file("n.bin")]);
+    assert_eq!(sums_of_last(&fake), SumsWant { sha1: true, ..SumsWant::default() });
+}
+
+#[gpui_kit::test]
 fn a_menu_does_not_wait_for_a_file_that_is_being_read_for_its_checksums(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let fake = Fake::new();

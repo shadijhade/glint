@@ -2,8 +2,8 @@
 //!
 //! Aware uses [`digest`] to compare a file with a checksum copied from a download page; the "Check files in this
 //! folder" row uses [`check`] on a `.sha256`, `.sha512` or `.b3sum` file. Hashing is RustCrypto's SHA-2 and
-//! BLAKE3, which the engine already builds for File X-Ray and the duplicate finder. MD5 and SHA-1 sums files are
-//! not checked: no hashing crate the engine depends on makes them.
+//! BLAKE3, which the engine already builds for File X-Ray and the duplicate finder. MD5 and SHA-1, which no such
+//! crate makes, are made by Windows' own CNG (`bcrypt.dll`).
 
 use glint_model::aware::{Algo, Sums, SumsWant};
 use rayon::prelude::*;
@@ -14,6 +14,102 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 /// How much of a file is read at once; `stop` is looked at between pieces.
 const PIECE: usize = 1024 * 1024;
+
+/// MD5 and SHA-1 by Windows' CNG, a piece at a time. Every failure is a `None`, never a panic.
+#[cfg(windows)]
+mod cng {
+    use windows::core::PCWSTR;
+    use windows::Win32::Security::Cryptography::{
+        BCryptCloseAlgorithmProvider, BCryptCreateHash, BCryptDestroyHash, BCryptFinishHash, BCryptHashData,
+        BCryptOpenAlgorithmProvider, BCRYPT_ALG_HANDLE, BCRYPT_HASH_HANDLE, BCRYPT_MD5_ALGORITHM,
+        BCRYPT_OPEN_ALGORITHM_PROVIDER_FLAGS, BCRYPT_SHA1_ALGORITHM,
+    };
+
+    /// One hash being made, and the provider it comes from; both are given back when it is dropped.
+    pub struct Hasher {
+        provider: BCRYPT_ALG_HANDLE,
+        hash: BCRYPT_HASH_HANDLE,
+        /// How long the finished hash is.
+        len: usize,
+    }
+
+    impl Hasher {
+        /// MD5 (`md5`) or SHA-1.
+        pub fn new(md5: bool) -> Option<Hasher> {
+            let (name, len): (PCWSTR, usize) = if md5 {
+                (BCRYPT_MD5_ALGORITHM, 16)
+            } else {
+                (BCRYPT_SHA1_ALGORITHM, 20)
+            };
+            let mut provider = BCRYPT_ALG_HANDLE::default();
+            // SAFETY: `provider` is a valid place for the handle, `name` is one of CNG's static algorithm names
+            // and a null implementation asks for the default one.
+            let opened = unsafe {
+                BCryptOpenAlgorithmProvider(
+                    &mut provider,
+                    name,
+                    PCWSTR::null(),
+                    BCRYPT_OPEN_ALGORITHM_PROVIDER_FLAGS(0),
+                )
+            };
+            if opened.is_err() {
+                return None;
+            }
+            let mut hash = BCRYPT_HASH_HANDLE::default();
+            // SAFETY: `provider` was opened above; CNG allocates the hash object itself when no buffer is given.
+            let created = unsafe { BCryptCreateHash(provider, &mut hash, None, None, 0) };
+            if created.is_err() {
+                // SAFETY: `provider` is open and nothing else uses it.
+                let _ = unsafe { BCryptCloseAlgorithmProvider(provider, 0) };
+                return None;
+            }
+            Some(Hasher { provider, hash, len })
+        }
+
+        /// Adds `piece`; false when CNG refuses it.
+        pub fn update(&mut self, piece: &[u8]) -> bool {
+            // SAFETY: `self.hash` is a live hash handle and `piece` is a valid slice for the call.
+            unsafe { BCryptHashData(self.hash, piece, 0) }.is_ok()
+        }
+
+        /// The hash of everything added, or None when CNG can't finish it.
+        pub fn finish(self) -> Option<Vec<u8>> {
+            let mut out = vec![0u8; self.len];
+            // SAFETY: `self.hash` is live and `out` is exactly the hash's length.
+            unsafe { BCryptFinishHash(self.hash, &mut out, 0) }
+                .is_ok()
+                .then_some(out)
+        }
+    }
+
+    impl Drop for Hasher {
+        fn drop(&mut self) {
+            // SAFETY: both handles were made by `new` and are given back once, here.
+            unsafe {
+                let _ = BCryptDestroyHash(self.hash);
+                let _ = BCryptCloseAlgorithmProvider(self.provider, 0);
+            }
+        }
+    }
+}
+
+/// MD5 and SHA-1 where there is no CNG: nothing can be made.
+#[cfg(not(windows))]
+mod cng {
+    pub struct Hasher;
+
+    impl Hasher {
+        pub fn new(_md5: bool) -> Option<Hasher> {
+            None
+        }
+        pub fn update(&mut self, _piece: &[u8]) -> bool {
+            false
+        }
+        pub fn finish(self) -> Option<Vec<u8>> {
+            None
+        }
+    }
+}
 
 /// The checksums `want` asks for, made in one pass over the file, in lower-case hexadecimal. None when the file
 /// can't be read, isn't `most` bytes long or less (when given), changed length while it was read, `stop` was set,
@@ -28,6 +124,13 @@ pub fn digest(path: &Path, want: SumsWant, most: Option<u64>, stop: &AtomicBool)
         return None;
     }
     let (mut sha256, mut sha512, mut blake3) = (Sha256::new(), Sha512::new(), blake3::Hasher::new());
+    // A provider that can't be opened is a file that can't be checked.
+    let mut md5 = if want.md5 { Some(cng::Hasher::new(true)?) } else { None };
+    let mut sha1 = if want.sha1 {
+        Some(cng::Hasher::new(false)?)
+    } else {
+        None
+    };
     let mut buffer = vec![0u8; PIECE];
     let mut total: u64 = 0;
     loop {
@@ -48,6 +151,11 @@ pub fn digest(path: &Path, want: SumsWant, most: Option<u64>, stop: &AtomicBool)
         if want.blake3 {
             blake3.update(piece);
         }
+        for cng in [md5.as_mut(), sha1.as_mut()].into_iter().flatten() {
+            if !cng.update(piece) {
+                return None;
+            }
+        }
         total = total.saturating_add(read as u64);
     }
     // A file that grew or shrank while it was read has no checksum worth comparing.
@@ -55,6 +163,14 @@ pub fn digest(path: &Path, want: SumsWant, most: Option<u64>, stop: &AtomicBool)
         return None;
     }
     Some(Sums {
+        md5: match md5 {
+            Some(hasher) => Some(hex(&hasher.finish()?)),
+            None => None,
+        },
+        sha1: match sha1 {
+            Some(hasher) => Some(hex(&hasher.finish()?)),
+            None => None,
+        },
         sha256: want.sha256.then(|| hex(&sha256.finalize())),
         sha512: want.sha512.then(|| hex(&sha512.finalize())),
         blake3: want.blake3.then(|| blake3.finalize().to_hex().to_string()),
@@ -68,6 +184,8 @@ fn hex(bytes: &[u8]) -> String {
 /// The checksum of the one kind `algo` is, for `want`'s pick.
 fn want_of(algo: Algo) -> SumsWant {
     SumsWant {
+        md5: algo == Algo::Md5,
+        sha1: algo == Algo::Sha1,
         sha256: algo == Algo::Sha256,
         sha512: algo == Algo::Sha512,
         blake3: algo == Algo::Blake3,
@@ -78,6 +196,8 @@ fn want_of(algo: Algo) -> SumsWant {
 pub fn algo_of(sums_file: &str) -> Option<Algo> {
     let ext = Path::new(sums_file).extension()?.to_string_lossy().to_lowercase();
     match ext.as_str() {
+        "md5" | "md5sum" => Some(Algo::Md5),
+        "sha1" | "sha1sum" => Some(Algo::Sha1),
         "sha256" | "sha256sum" => Some(Algo::Sha256),
         "sha512" | "sha512sum" => Some(Algo::Sha512),
         "b3sum" | "blake3" => Some(Algo::Blake3),
@@ -138,10 +258,11 @@ fn parse_bsd(line: &str, algo: Algo) -> Option<Line> {
     let (tag, rest) = line.split_once(" (")?;
     let tag = tag.trim().replace('-', "").to_ascii_uppercase();
     let wanted = match algo {
+        Algo::Md5 => "MD5",
+        Algo::Sha1 => "SHA1",
         Algo::Sha256 => "SHA256",
         Algo::Sha512 => "SHA512",
         Algo::Blake3 => "BLAKE3",
-        Algo::Md5 | Algo::Sha1 => return None,
     };
     if tag != wanted {
         return None;
@@ -300,6 +421,8 @@ mod tests {
 
     const SHA256_ABC: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
     const BLAKE3_ABC: &str = "6437b3ac38465133ffb63b75273a8db548c558465d79db03fd359c6cd5bd9d85";
+    const MD5_ABC: &str = "900150983cd24fb0d6963f7d28e17f72";
+    const SHA1_ABC: &str = "a9993e364706816aba3e25717850c26c9cd0d89d";
     const SHA512_ABC: &str = "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f";
 
     fn never() -> AtomicBool {
@@ -311,11 +434,15 @@ mod tests {
         let dir = Scratch::new();
         let file = dir.write("abc.txt", b"abc");
         let all = SumsWant {
+            md5: true,
+            sha1: true,
             sha256: true,
             sha512: true,
             blake3: true,
         };
         let made = digest(Path::new(&file), all, None, &never()).expect("readable");
+        assert_eq!(made.md5.as_deref(), Some(MD5_ABC), "one pass makes CNG's too");
+        assert_eq!(made.sha1.as_deref(), Some(SHA1_ABC));
         assert_eq!(made.sha256.as_deref(), Some(SHA256_ABC));
         assert_eq!(made.sha512.as_deref(), Some(SHA512_ABC));
         assert_eq!(made.blake3.as_deref(), Some(BLAKE3_ABC));
@@ -377,14 +504,27 @@ mod tests {
         let made = made.expect("readable");
         assert_eq!(made.sha256.as_deref(), Some(hex(&Sha256::digest(&bytes)).as_str()));
         assert_eq!(made.blake3.as_deref(), Some(blake3::hash(&bytes).to_hex().as_str()));
+        // CNG's, fed piece by piece, agree with CNG's fed the whole file at once.
+        let both = SumsWant {
+            md5: true,
+            sha1: true,
+            ..SumsWant::default()
+        };
+        let cng = digest(Path::new(&file), both, None, &never()).expect("readable");
+        let mut whole = cng::Hasher::new(true).expect("CNG");
+        assert!(whole.update(&bytes));
+        assert_eq!(cng.md5, whole.finish().map(|h| hex(&h)));
+        assert_eq!(cng.sha1.as_deref().map(str::len), Some(40));
     }
 
     #[test]
-    fn sums_files_are_told_by_their_extension_and_md5_is_not_one_we_check() {
+    fn sums_files_are_told_by_their_extension() {
         assert_eq!(algo_of("C:\\d\\a.SHA256"), Some(Algo::Sha256));
         assert_eq!(algo_of("a.sha512"), Some(Algo::Sha512));
         assert_eq!(algo_of("a.b3sum"), Some(Algo::Blake3));
-        for no in ["a.md5", "a.sha1", "a.txt", "SHA256SUMS", ""] {
+        assert_eq!(algo_of("a.md5"), Some(Algo::Md5));
+        assert_eq!(algo_of("a.SHA1SUM"), Some(Algo::Sha1));
+        for no in ["a.txt", "SHA256SUMS", ""] {
             assert_eq!(algo_of(no), None, "{no}");
             assert!(!is_sums_file(no));
         }
@@ -457,8 +597,14 @@ mod tests {
         dir.write("abc.txt", b"abc");
         let b3 = dir.write("x.b3sum", format!("{BLAKE3_ABC}  abc.txt\n").as_bytes());
         assert!(check(&b3, &never()).expect("a sums file").all_good());
-        let md5 = dir.write("x.md5", b"d41d8cd98f00b204e9800998ecf8427e  abc.txt\n");
-        assert!(check(&md5, &never()).is_err());
+        let md5 = dir.write("x.md5", b"900150983cd24fb0d6963f7d28e17f72  abc.txt\n");
+        assert!(check(&md5, &never()).expect("a sums file").all_good());
+        let sha1 = dir.write("x.sha1", b"SHA1 (abc.txt) = a9993e364706816aba3e25717850c26c9cd0d89d\n");
+        assert!(check(&sha1, &never()).expect("a sums file").all_good());
+        let bad = dir.write("y.md5", b"900150983cd24fb0d6963f7d28e17f73  abc.txt\n");
+        assert_eq!(check(&bad, &never()).expect("a sums file").mismatched, ["abc.txt"]);
+        let txt = dir.write("x.txt", b"x");
+        assert!(check(&txt, &never()).is_err(), "not a checksum file");
         assert!(check(&dir.0.join("gone.sha256").to_string_lossy(), &never()).is_err());
         let sums = dir.write("s.sha256", format!("{SHA256_ABC}  abc.txt\n").as_bytes());
         assert_eq!(check(&sums, &AtomicBool::new(true)), Err("Stopped".to_string()));
