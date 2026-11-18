@@ -59,8 +59,8 @@ use crate::components::file_grid::thumbnail::{self, Thumbnails};
 use crate::components::git;
 use crate::components::row_facts::{self, Media, RowFacts, Want};
 use crate::explorer::{
-    self, Comparison, Explorer, ExplorerEvent, FindRun, LoadState, NavOptions, NoAccess, Rows, Selection, TabId,
-    ViewMode,
+    self, Comparison, Explorer, ExplorerEvent, FindRun, LoadState, NavOptions, NoAccess, OpenHow, Rows, Selection,
+    TabId, ViewMode,
 };
 use crate::kit::prelude::*;
 use crate::theme::{self, Tokens};
@@ -69,7 +69,7 @@ use glint_model::columns::{ColumnId, FolderKind, GridTrack};
 use glint_model::entries::{is_archive_file, is_recycled, FileEntry, GitMarks, Sort};
 use glint_model::grid::grid_move;
 use glint_model::groups::GroupBy;
-use glint_model::paths::{is_gallery, is_recent, same_path, THIS_PC};
+use glint_model::paths::{in_archive_path, is_gallery, is_recent, same_path, THIS_PC};
 use glint_model::store::Column;
 use incoming::DropAt;
 use pointer::{layout_rows, Marquee};
@@ -443,6 +443,9 @@ pub struct FileList {
     /// The folder the pointer is on, while it is: only its row builds the words of what it holds, since only a
     /// row the pointer or the keyboard is on shows them.
     hovered_folder: Option<String>,
+    /// When a "more matching lines" line was last pressed: the second press of its double-click lands on the line
+    /// that took its place, and is not a request to open that one.
+    expanded_at: Option<Instant>,
     /// This list, for the listeners the window calls back (a drag that leaves the list).
     this: WeakEntity<Self>,
     /// The thumbnail service: the pictures in the icon cell.
@@ -587,6 +590,7 @@ impl FileList {
             prefetch: None,
             resting: None,
             hovered_folder: None,
+            expanded_at: None,
             this: cx.weak_entity(),
             thumbs,
             viewer,
@@ -1216,6 +1220,58 @@ impl FileList {
         if let Some(entry) = entry {
             self.resting = crate::aware::rest_on(entry, cx);
         }
+    }
+
+    /// A press on a line under a file's row (a line of it that matched the search): the file's row is pressed, and
+    /// the file's preview shows the line (`spot`: the file and its line). Pressed twice, the line opens in the
+    /// editor Settings names, at that line. The "more matching lines" line (`expands`: the file) lists the rest of
+    /// them under the row instead.
+    fn hit_down(
+        &mut self,
+        row: usize,
+        event: &MouseDownEvent,
+        spot: Option<&(String, u64)>,
+        expands: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let after_expanding = self.expanded_at.is_some_and(|at| at.elapsed() < Duration::from_millis(600));
+        if let (MouseButton::Left, true, false, Some((path, line))) =
+            (event.button, event.click_count >= 2, after_expanding, spot)
+        {
+            if !in_archive_path(path) {
+                cx.stop_propagation();
+                self.take_focus(window, cx);
+                self.open_at_line(path, *line, cx);
+                return;
+            }
+        }
+        self.row_down(row, event, window, cx);
+        if event.button != MouseButton::Left {
+            return;
+        }
+        if let Some((path, line)) = spot {
+            crate::components::preview::spot(cx, path, *line);
+        }
+        if let Some(path) = expands {
+            self.expanded_at = Some(Instant::now());
+            let tab = self.explorer.read(cx).pane_tab(self.pane).map(|tab| tab.id);
+            if let Some(tab) = tab {
+                self.explorer.update(cx, |explorer, cx| explorer.expand_hits(tab, path, cx));
+            }
+        }
+    }
+
+    /// Opens `path` in the editor Settings names, at `line` (from 1); with none named, in the file's own app.
+    fn open_at_line(&mut self, path: &str, line: u64, cx: &mut Context<Self>) {
+        let editor = crate::state::settings(cx).editor_path.trim().to_string();
+        let how = if editor.is_empty() {
+            OpenHow::Default
+        } else {
+            OpenHow::EditorAt { editor, line }
+        };
+        self.explorer
+            .update(cx, |explorer, cx| explorer.open_on_disk(path, how, cx).detach());
     }
 
     fn row_down(&mut self, i: usize, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {

@@ -307,6 +307,29 @@ impl Explorer {
         }
     }
 
+    /// Lists every line of `path` that matched the search in `tab`, under its row, where only the first few were
+    /// ("3 more matching lines" pressed). A file that is not one of the search's, or is listed in full already,
+    /// changes nothing.
+    pub fn expand_hits(&mut self, tab: TabId, path: &str, cx: &mut Context<Self>) {
+        let mut changed = false;
+        self.update_tab(tab, |t| {
+            let Some(find) = t.find.as_mut().filter(|find| find.inside.hits.contains_key(path)) else {
+                return;
+            };
+            if !find.inside.expanded.contains(path) {
+                let mut all = (*find.inside.expanded).clone();
+                all.insert(path.to_string());
+                find.inside.expanded = Arc::new(all);
+                changed = true;
+            }
+        });
+        if changed {
+            self.rebuild_rows(tab, cx);
+            cx.emit(ExplorerEvent::TabChanged(tab));
+            cx.notify();
+        }
+    }
+
     /// A tab's search went away (left, replaced, its tab closed or moved to another folder): its content search
     /// ends with it.
     pub(super) fn inside_left(&mut self, tab: TabId) {

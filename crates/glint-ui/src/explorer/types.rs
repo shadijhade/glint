@@ -376,6 +376,9 @@ pub struct Inside {
     /// The files found by what is in them and not by their names.
     pub only: Arc<std::collections::HashSet<String>>,
     pub hits: Arc<Hits>,
+    /// The files whose every matching line is listed under their row, not only the first few
+    /// ([`Explorer::expand_hits`]).
+    pub expanded: Arc<std::collections::HashSet<String>>,
     /// How many lines matched in all.
     pub matches: usize,
     pub running: bool,

@@ -610,12 +610,16 @@ impl Source for CoreSource {
                 Box::pin(async move { running.await? })
             }
             // The program starts on a blocking thread; it isn't waited for.
-            OpenHow::Editor(editor) => {
+            OpenHow::Editor(editor) | OpenHow::EditorAt { editor, .. } => {
                 let editor = editor.clone();
+                let args = match how {
+                    OpenHow::EditorAt { line, .. } => glint_model::editor::editor_args(&editor, &path, *line),
+                    _ => vec![path],
+                };
                 let running = core_bridge::run(async move {
                     glint_core::fsx::blocking(move || {
                         std::process::Command::new(&editor)
-                            .arg(&path)
+                            .args(&args)
                             .spawn()
                             .map(drop)
                             .map_err(|e| e.to_string())

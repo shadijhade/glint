@@ -15,6 +15,7 @@ pub mod cast;
 pub mod cd;
 pub mod color;
 pub mod columns;
+pub mod editor;
 pub mod entries;
 pub mod file_types;
 pub mod format;
