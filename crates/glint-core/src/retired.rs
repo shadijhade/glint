@@ -1,5 +1,6 @@
 //! What removed features left on users' PCs: 0.12's photo, speech and meaning search's downloads and what they
-//! learned, paired devices' key and pairings, and the built-in Typst's previews; 0.13's retired tools. [`sweep`] deletes exactly those,
+//! learned, paired devices' key and pairings, and the built-in Typst's previews; 0.13's retired tools; 0.14's book
+//! reader's saved places. [`sweep`] deletes exactly those,
 //! once per start, on a background thread (startup.rs in glint-ui), and nothing else. Whisper's model
 //! (`models\whisper-base`) stays: Media's Subtitles still uses it (whisper.rs).
 
@@ -42,17 +43,27 @@ const RETIRED: &[&str] = &[
     "tools/ghostscript",
 ];
 
-/// Deletes what the removed features left in Glint's data folder, if it's there.
+/// Under Glint's roaming data folder (beside `state.json`), as [`RETIRED`] is under the local one.
+const RETIRED_ROAMING: &[&str] = &[
+    // The e-book reader's last places and text size (book_places.rs), and its temporary copy.
+    "books.json",
+    "books.json.tmp",
+];
+
+/// Deletes what the removed features left in Glint's data folders, if they're there.
 pub fn sweep() {
     if let Some(data) = crate::tools::data_dir() {
-        sweep_in(&data);
+        sweep_in(&data, RETIRED);
+    }
+    if let Ok(roaming) = crate::host::PathResolver.app_data_dir() {
+        sweep_in(&roaming, RETIRED_ROAMING);
     }
 }
 
-/// Deletes [`RETIRED`]'s paths under `data`; returns those it deleted. A link is deleted, never what it points to.
-fn sweep_in(data: &Path) -> Vec<PathBuf> {
+/// Deletes `retired`'s paths under `data`; returns those it deleted. A link is deleted, never what it points to.
+fn sweep_in(data: &Path, retired: &[&str]) -> Vec<PathBuf> {
     let mut gone = Vec::new();
-    for relative in RETIRED {
+    for relative in retired {
         let path = relative
             .split('/')
             .fold(data.to_path_buf(), |path, part| path.join(part));
@@ -96,6 +107,12 @@ mod tests {
         for file in ["photos.jsonl", "speech.jsonl", "media-ai.json", "devices.json"] {
             fs::write(data.join(file), "{}").unwrap();
         }
+        // The book reader's places live in the roaming folder, which has state.json in it.
+        let roaming = std::env::temp_dir().join(format!("glint-retired-roaming-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&roaming);
+        fs::create_dir_all(&roaming).unwrap();
+        fs::write(roaming.join("books.json"), "{}").unwrap();
+        fs::write(roaming.join("state.json"), "{}").unwrap();
         // What stays: Subtitles' model, the tools, the state, the content index, a model of someone else's.
         fs::create_dir_all(models.join("whisper-base")).unwrap();
         fs::write(models.join("whisper-base").join("ggml-base-q5_1.bin"), "m").unwrap();
@@ -105,9 +122,12 @@ mod tests {
         fs::write(data.join("state.json"), "{}").unwrap();
         fs::write(data.join("ondemand.json"), "[]").unwrap();
 
-        let gone = sweep_in(&data);
+        let gone = sweep_in(&data, RETIRED);
 
         assert_eq!(gone.len(), 9, "{gone:?}");
+        assert_eq!(sweep_in(&roaming, RETIRED_ROAMING), [roaming.join("books.json")]);
+        assert!(roaming.join("state.json").exists(), "the state stays");
+        fs::remove_dir_all(&roaming).unwrap();
         for relative in RETIRED {
             assert!(!data.join(relative).exists(), "{relative} is still there");
         }
@@ -121,7 +141,7 @@ mod tests {
         ] {
             assert!(data.join(kept).exists(), "{kept} went");
         }
-        assert!(sweep_in(&data).is_empty(), "a second start has nothing to delete");
+        assert!(sweep_in(&data, RETIRED).is_empty(), "a second start has nothing to delete");
         fs::remove_dir_all(&data).unwrap();
     }
 
@@ -129,9 +149,9 @@ mod tests {
     fn a_data_folder_without_them_is_left_as_it_is() {
         let data = std::env::temp_dir().join(format!("glint-retired-none-{}", std::process::id()));
         let _ = fs::remove_dir_all(&data);
-        assert!(sweep_in(&data).is_empty(), "no data folder at all");
+        assert!(sweep_in(&data, RETIRED).is_empty(), "no data folder at all");
         fs::create_dir_all(data.join("models")).unwrap();
-        assert!(sweep_in(&data).is_empty());
+        assert!(sweep_in(&data, RETIRED).is_empty());
         assert!(data.join("models").is_dir());
         fs::remove_dir_all(&data).unwrap();
     }

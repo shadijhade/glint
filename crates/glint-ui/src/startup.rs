@@ -379,9 +379,6 @@ fn ask_before_quitting(window: &mut Window, cx: &mut App, then: AfterYes) {
 
 /// Closes the main window after the questions: the hidden Quick Search window goes too, and the app quits.
 fn quit_now(window: &mut Window, cx: &mut App) {
-    if !secondary::is_secondary() {
-        crate::book_places::shared().flush();
-    }
     quick_search::close(cx);
     window.remove_window();
 }
@@ -709,9 +706,6 @@ fn configure_tray(cx: &mut App, in_tray: bool) {
 /// The tray menu's Quit Glint: the window's place is kept (a hidden one's was as it hid), then GPUI quits,
 /// which saves the state.
 fn quit(cx: &mut App) {
-    if !secondary::is_secondary() {
-        crate::book_places::shared().flush();
-    }
     if let Some(hwnd) = main_hwnd() {
         window_state::save_hwnd(hwnd);
     }

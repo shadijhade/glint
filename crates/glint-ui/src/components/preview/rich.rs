@@ -1,8 +1,8 @@
-//! The rich text the book and Word previews share: blocks and runs, right to left (previews-native.md sections 2-3).
+//! The rich text the Word and mail previews share: blocks and runs, right to left (previews-native.md sections 2-3).
 //!
 //! An EPUB chapter, an FB2 section and a Word document are all read into the same small model ([`Document`]: a
 //! list of [`Block`]s, each holding [`Text`] made of styled [`Span`]s), and one view ([`RichView`]) draws it.
-//! The readers (`book.rs`, `docx.rs`) know their file formats; this file knows nothing about them.
+//! The readers (`docx.rs`, `xhtml.rs`) know their file formats; this file knows nothing about them.
 //!
 //! | What a reader makes                             | Here                                                        |
 //! |-------------------------------------------------|-------------------------------------------------------------|
@@ -102,7 +102,7 @@ pub struct Style {
     pub script: Script,
     /// `0xrrggbb`, when the file sets one (a color too close to the background is ignored when drawn).
     pub color: Option<u32>,
-    /// Where a click goes: a web address, `mailto:`, or `#id` / `file#id` inside the book.
+    /// Where a click goes: a web address, `mailto:`, or `#id` / `file#id` inside the document.
     pub link: Option<Arc<str>>,
     /// The run's own direction when it differs from its paragraph's (Word's `w:rtl`).
     pub dir: Dir,

@@ -9,7 +9,6 @@
 //! | localStorage key                  | where it comes from                          | where it goes                                    |
 //! |-----------------------------------|----------------------------------------------|--------------------------------------------------|
 //! | `shadui-ripgrep-storage`          | the zustand store (`src/lib/store.ts`)       | `state.json`, through `persistence::save_to`     |
-//! | `glint-book-places`, `-size`      | `BookView.tsx`                               | `books.json`, through `book_places::import_old`  |
 //! | `glint-recent-tags`               | `src/lib/tags.ts`                            | [`OldData::recent_tags`] (see below)             |
 //! | `last-version`                    | `src/lib/updater.ts`                         | [`OldData::last_version`]                        |
 //! | `offer-instant-search`, `service-update-notice`, `update-notice`, `quick-shortcut-taken` | `firstNotice` in `src/lib/utils.ts` | [`OldData::notices`] |
@@ -22,8 +21,7 @@
 //!
 //! **When it runs** ([`import_at_first_start`], called by `persistence::init` before it loads `state.json`):
 //! only in the main window, only when there is no `state.json` yet, and only if the old folder is there. Then
-//! `state.json` is written (once: from then on the file exists and nothing imports again), `books.json` too if
-//! there isn't one, and what the old app knew is kept for this run in [`imported`]. Any failure is logged and
+//! `state.json` is written (once: from then on the file exists and nothing imports again), and what the old app knew is kept for this run in [`imported`]. Any failure is logged and
 //! the app starts with its defaults; a failure writes nothing, so the next start tries again.
 //!
 //! **Read-only, and a busy folder.** Nothing in `EBWebView` is ever written, moved or deleted. If the old app
@@ -31,9 +29,6 @@
 //! afterwards). Files that are only ever listed or read are `.log`, `.ldb` and `.sst`; `LOCK` is never touched.
 //!
 //! **What isn't carried over exactly:**
-//! - A book's place was a CFI (an EPUB position); this app keeps a chapter and a block. The CFI's spine step
-//!   gives the chapter (`/6/14` is the 7th chapter) and the block is 0, so a book reopens at the top of the
-//!   chapter it was left in. See [`place_from_cfi`].
 //! - Recent tags and the rest of [`OldData`] are not saved anywhere by this module: the recent tags are the
 //!   starting point of `dialogs::tags::Tags` (which has nowhere of its own to keep them yet), and the first-notice
 //!   flags and the last version are for whoever remembers notices. They exist for the run that imported, and
@@ -44,20 +39,13 @@
 pub mod leveldb;
 pub mod snappy;
 
-use crate::book_places::Place;
 use glint_model::store::{load_persisted, PERSIST_VERSION, STORAGE_KEY};
-use serde::de::{Deserializer, MapAccess, Visitor};
-use serde::Deserialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 
-/// The book reader's places (`PLACES` in BookView.tsx).
-const PLACES_KEY: &str = "glint-book-places";
-/// The book reader's text size (`SIZE` in BookView.tsx).
-const SIZE_KEY: &str = "glint-book-size";
 /// The recent tags (`RECENT_KEY` in tags.ts).
 const RECENT_TAGS_KEY: &str = "glint-recent-tags";
 /// The version that last ran (updater.ts).
@@ -80,10 +68,6 @@ pub struct OldData {
     /// The zustand store: the text `{"state": {...}, "version": 0}`, if it was there and had that shape. Load
     /// it with `glint_model::store::load_persisted`.
     pub store: Option<String>,
-    /// Where each book was left, as the old CFI: lower-case path and CFI, the oldest book first.
-    pub book_places: Vec<(String, String)>,
-    /// The book reader's text size, percent, if one was saved (not clamped).
-    pub book_size: Option<u32>,
     /// The tags used lately, most recent first.
     pub recent_tags: Vec<String>,
     /// The Glint version that last ran (`last-version`).
@@ -306,17 +290,6 @@ fn old_data(db: leveldb::Db) -> OldData {
             ));
         }
     }
-    if let Some(text) = get(PLACES_KEY) {
-        match serde_json::from_str::<Places>(&text) {
-            Ok(Places(places)) => data.book_places = places,
-            Err(e) => data.problems.push(format!("{PLACES_KEY}: {e}")),
-        }
-    }
-    // `Number(localStorage.getItem(SIZE)) || 100`: text that isn't a number, or 0, means the default.
-    data.book_size = get(SIZE_KEY)
-        .and_then(|text| text.trim().parse::<f64>().ok())
-        .filter(|n| n.is_finite() && *n >= 1.0)
-        .map(|n| n.min(1e6).round() as u32);
     if let Some(text) = get(RECENT_TAGS_KEY) {
         match serde_json::from_str::<Vec<Value>>(&text) {
             Ok(tags) => {
@@ -350,55 +323,6 @@ fn is_saved_state(text: &str) -> bool {
     }
 }
 
-/// The book places object `{"c:\\a.epub": "epubcfi(...)", ...}` in the order it was written in (the oldest book
-/// first, since the old code deleted a book before adding it again), which a plain JSON map would lose.
-struct Places(Vec<(String, String)>);
-
-impl<'de> Deserialize<'de> for Places {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct InOrder;
-        impl<'de> Visitor<'de> for InOrder {
-            type Value = Places;
-
-            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                f.write_str("an object of book places")
-            }
-
-            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Places, A::Error> {
-                let mut places: Vec<(String, String)> = Vec::new();
-                while let Some((path, cfi)) = map.next_entry::<String, Value>()? {
-                    if let Value::String(cfi) = cfi {
-                        places.retain(|(p, _)| *p != path);
-                        places.push((path, cfi));
-                    }
-                }
-                Ok(Places(places))
-            }
-        }
-        deserializer.deserialize_map(InOrder)
-    }
-}
-
-/// The place in a book the old reader's CFI stands for. An EPUB CFI starts with the spine step: `epubcfi(/6/14!...)`
-/// is the 7th item of the spine (`/6` is the spine, `/14` its 7th item: steps count 2, 4, 6...). That is the
-/// chapter; the position inside it (a path into the XHTML) can't be mapped onto this reader's blocks, so the
-/// block is 0 and the book reopens at the top of that chapter. None for a CFI of another shape.
-pub fn place_from_cfi(cfi: &str) -> Option<Place> {
-    let rest = cfi.trim();
-    let rest = rest.strip_prefix("epubcfi(").unwrap_or(rest);
-    let rest = rest.strip_prefix("/6/")?;
-    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
-    let step: usize = digits.parse().ok()?;
-    // Even steps are elements; the spine's first item is step 2.
-    if step < 2 || !step.is_multiple_of(2) {
-        return None;
-    }
-    Some(Place {
-        chapter: step / 2 - 1,
-        block: 0,
-    })
-}
-
 // ---- The first start ---------------------------------------------------------------------------------------------
 
 /// What the first-start import did.
@@ -408,8 +332,6 @@ pub struct Imported {
     pub data: OldData,
     /// `state.json` was written.
     pub state_written: bool,
-    /// `books.json` was written, with this many books' places.
-    pub books_written: Option<usize>,
 }
 
 static IMPORTED: OnceLock<Imported> = OnceLock::new();
@@ -419,7 +341,7 @@ static IMPORTED: OnceLock<Imported> = OnceLock::new();
 ///
 /// For whoever remembers notices and recent tags: [`OldData::notices`] (the first-notice flags, for example
 /// `offer-instant-search` = `1` once the offer was made), [`OldData::last_version`] and [`OldData::recent_tags`] are
-/// not saved by the import (only `state.json` and `books.json` are); take them from here at start and keep them
+/// not saved by the import (only `state.json` is); take them from here at start and keep them
 /// in the new app's own saved state.
 pub fn imported() -> Option<&'static OldData> {
     IMPORTED.get().map(|imported| &imported.data)
@@ -428,18 +350,15 @@ pub fn imported() -> Option<&'static OldData> {
 /// The import at the first start, for `persistence::init`: before the state file is loaded, with the real folders.
 /// Logs what it did or why it didn't; never fails the start.
 pub fn import_at_first_start(state_file: &Path) {
-    let books_file = crate::book_places::file_path();
-    match first_start_at(default_dir().as_deref(), state_file, books_file.as_deref()) {
+    match first_start_at(default_dir().as_deref(), state_file) {
         Ok(Some(done)) => {
             eprintln!(
-                "glint: imported the old app's settings{}{}",
+                "glint: imported the old app's settings{}",
                 if done.state_written {
                     " (state.json written)"
                 } else {
                     ""
                 },
-                done.books_written
-                    .map_or(String::new(), |n| format!(", {n} books' places")),
             );
             for problem in &done.data.problems {
                 eprintln!("glint: old settings: {problem}");
@@ -452,15 +371,11 @@ pub fn import_at_first_start(state_file: &Path) {
 }
 
 /// The import itself, on the given folders: `old_dir` the old LevelDB (or the folder around it), `state_file` the
-/// state to make, `books_file` the book places to make. `Ok(None)` when it isn't the first start (`state_file`
+/// state to make. `Ok(None)` when it isn't the first start (`state_file`
 /// exists, or can't be looked at), when this is a secondary window, or when there is no old storage; an error
 /// when the old storage couldn't be read or the state couldn't be written (nothing is written then, or only
 /// what was complete).
-fn first_start_at(
-    old_dir: Option<&Path>,
-    state_file: &Path,
-    books_file: Option<&Path>,
-) -> Result<Option<Imported>, String> {
+fn first_start_at(old_dir: Option<&Path>, state_file: &Path) -> Result<Option<Imported>, String> {
     if crate::platform::secondary::is_secondary() {
         return Ok(None);
     }
@@ -481,19 +396,9 @@ fn first_start_at(
     let state = data.store.as_deref().map(load_persisted).unwrap_or_default();
     crate::persistence::save_to(state_file, &state)?;
 
-    let places: Vec<(String, Place)> = data
-        .book_places
-        .iter()
-        .filter_map(|(path, cfi)| place_from_cfi(cfi).map(|place| (path.clone(), place)))
-        .collect();
-    let books_written = match books_file {
-        Some(file) if crate::book_places::import_old(file, &places, data.book_size) => Some(places.len()),
-        _ => None,
-    };
     Ok(Some(Imported {
         data,
         state_written: true,
-        books_written,
     }))
 }
 
@@ -559,15 +464,11 @@ mod tests {
     fn old_folder(name: &str) -> Folder {
         let folder = Folder::new(name);
         let k_state = key(ORIGIN, STORAGE_KEY);
-        let k_places = key(ORIGIN, PLACES_KEY);
-        let k_size = key(ORIGIN, SIZE_KEY);
         let k_tags = key(ORIGIN, RECENT_TAGS_KEY);
         let k_version = key(ORIGIN, LAST_VERSION_KEY);
         let k_notice = key(ORIGIN, "offer-instant-search");
         let k_gone = key(ORIGIN, "service-update-notice");
         let v_old = latin1(&saved_state("C:\\\\Old"));
-        let v_places =
-            latin1(r#"{"c:\\books\\a.epub":"epubcfi(/6/14!/4/2/1:0)","c:\\books\\b.epub":"epubcfi(/6/4!/4)"}"#);
         let v_gone = latin1("0.9.5");
         let k_meta = b"META:http://tauri.localhost".to_vec();
         let v_meta = [8, 1];
@@ -576,7 +477,6 @@ mod tests {
         let ldb = table(
             &[
                 (&k_state, 1, Some(&v_old[..])),
-                (&k_places, 2, Some(&v_places[..])),
                 (&k_gone, 3, Some(&v_gone[..])),
                 (&k_meta, 4, Some(&v_meta[..])),
                 (&k_other, 5, Some(&v_other[..])),
@@ -586,7 +486,7 @@ mod tests {
             true,
         );
         std::fs::write(folder.path("000005.ldb"), ldb).expect("writes");
-        // The log: a newer state (with an Arabic folder, so UTF-16), a size, tags, a version and a notice; the
+        // The log: a newer state (with an Arabic folder, so UTF-16), tags, a version and a notice; the
         // notice the table had is deleted.
         let v_new = utf16(&saved_state("C:\\\\مجلد"));
         let v_tags = latin1(r#"["Work","Café",7,""]"#);
@@ -597,7 +497,6 @@ mod tests {
                     10,
                     &[
                         Op::Put(&k_state, &v_new),
-                        Op::Put(&k_size, &latin1("130")),
                         Op::Put(&k_tags, &v_tags),
                     ],
                 ),
@@ -676,7 +575,6 @@ mod tests {
         let store = data.store.clone().expect("store");
         assert!(store.contains("مجلد") && !store.contains("Old"), "{store}");
         assert_eq!(load_persisted(&store).pinned, vec!["C:\\مجلد".to_string()]);
-        assert_eq!(data.book_size, Some(130));
         assert_eq!(data.recent_tags, vec!["Work".to_string(), "Café".to_string()]);
         assert_eq!(data.last_version.as_deref(), Some("0.9.5"));
         assert_eq!(data.notices.get("offer-instant-search").map(String::as_str), Some("1"));
@@ -684,9 +582,6 @@ mod tests {
             !data.notices.contains_key("service-update-notice"),
             "deleted in the log"
         );
-        // The places keep the order they were written in.
-        let paths: Vec<&str> = data.book_places.iter().map(|(p, _)| p.as_str()).collect();
-        assert_eq!(paths, ["c:\\books\\a.epub", "c:\\books\\b.epub"]);
         // Reading changed nothing.
         assert_eq!(contents(&folder.0), before);
         // The folder around it works as well, and a missing one is an error.
@@ -701,75 +596,27 @@ mod tests {
     }
 
     #[test]
-    fn a_book_place_is_the_chapter_the_cfi_names() {
-        let place = |cfi: &str| place_from_cfi(cfi).map(|p| (p.chapter, p.block));
-        assert_eq!(place("epubcfi(/6/14!/4/2/1:0)"), Some((6, 0)));
-        assert_eq!(place("epubcfi(/6/2[cover]!/4)"), Some((0, 0)));
-        assert_eq!(place("epubcfi(/6/4!/4/2,/1:0,/1:5)"), Some((1, 0)));
-        assert_eq!(place("/6/8"), Some((3, 0)));
-        assert_eq!(place("epubcfi(/6/0!/4)"), None);
-        assert_eq!(place("epubcfi(/6/7!/4)"), None);
-        assert_eq!(place("epubcfi(/4/2)"), None);
-        assert_eq!(place(""), None);
-        assert_eq!(place("epubcfi(/6/99999999999999999999999999)"), None);
-    }
-
-    #[test]
-    fn the_size_is_read_as_the_old_code_did() {
-        let one = |text: &str| {
-            let mut db = leveldb::Db::new(is_page_key);
-            db.read_log(&log(&[batch(1, &[Op::Put(&key(ORIGIN, SIZE_KEY), &latin1(text))])]));
-            old_data(db).book_size
-        };
-        assert_eq!(one("130"), Some(130));
-        assert_eq!(one("85.5"), Some(86));
-        assert_eq!(one("0"), None, "Number('0') || 100 is 100");
-        assert_eq!(one("big"), None);
-        assert_eq!(one(""), None);
-    }
-
-    #[test]
-    fn the_import_writes_state_and_books_once_and_never_touches_the_old_folder() {
+    fn the_import_writes_state_once_and_never_touches_the_old_folder() {
         let old = old_folder("import");
         let new = Folder::new("import-new");
-        let (state_file, books_file) = (new.path("state.json"), new.path("books.json"));
+        let state_file = new.path("state.json");
         let before = contents(&old.0);
 
-        let done = first_start_at(Some(&old.0), &state_file, Some(&books_file))
+        let done = first_start_at(Some(&old.0), &state_file)
             .expect("imports")
             .expect("it was the first start");
         assert!(done.state_written);
-        assert_eq!(done.books_written, Some(2));
         let loaded = crate::persistence::load_from(&state_file);
         assert_eq!(loaded.state.pinned, vec!["C:\\مجلد".to_string()]);
         assert_eq!(loaded.state.settings.theme, glint_model::store::Theme::Dark);
-        let books = crate::book_places::BookPlaces::load(Some(books_file.clone()));
-        assert_eq!(books.text_size(), 130);
-        assert_eq!(books.place("C:\\Books\\A.epub"), Some(Place { chapter: 6, block: 0 }));
-        assert_eq!(books.place("c:\\books\\b.epub"), Some(Place { chapter: 1, block: 0 }));
         assert_eq!(done.data.recent_tags, vec!["Work".to_string(), "Café".to_string()]);
 
         // A later start never imports again, whatever the files hold now.
         std::fs::write(&state_file, "changed since").expect("writes");
-        std::fs::write(&books_file, "changed too").expect("writes");
-        assert_eq!(first_start_at(Some(&old.0), &state_file, Some(&books_file)), Ok(None));
+        assert_eq!(first_start_at(Some(&old.0), &state_file), Ok(None));
         assert_eq!(std::fs::read_to_string(&state_file).expect("reads"), "changed since");
-        assert_eq!(std::fs::read_to_string(&books_file).expect("reads"), "changed too");
         // And the old folder is as it was.
         assert_eq!(contents(&old.0), before);
-    }
-
-    #[test]
-    fn books_that_are_already_there_are_not_replaced() {
-        let old = old_folder("books-there");
-        let new = Folder::new("books-there-new");
-        let books_file = new.path("books.json");
-        std::fs::write(&books_file, r#"{"size": 90, "places": []}"#).expect("writes");
-        let done = first_start_at(Some(&old.0), &new.path("state.json"), Some(&books_file))
-            .expect("imports")
-            .expect("first start");
-        assert_eq!(done.books_written, None);
-        assert_eq!(crate::book_places::BookPlaces::load(Some(books_file)).text_size(), 90);
     }
 
     #[test]
@@ -789,7 +636,6 @@ mod tests {
         let data = read_old_with(&old.0, &locked).expect("reads");
         assert!(data.problems.is_empty(), "{:?}", data.problems);
         assert_eq!(data, read_old(&old.0).expect("reads"));
-        assert_eq!(data.book_size, Some(130));
         assert_eq!(contents(&old.0), before, "the original is untouched");
     }
 
@@ -814,18 +660,12 @@ mod tests {
     #[test]
     fn a_missing_or_damaged_folder_starts_clean() {
         let new = Folder::new("clean-new");
-        let (state_file, books_file) = (new.path("state.json"), new.path("books.json"));
+        let state_file = new.path("state.json");
         // No old folder at all, and one that is not a LevelDB: nothing happens, nothing is written.
-        assert_eq!(first_start_at(None, &state_file, Some(&books_file)), Ok(None));
+        assert_eq!(first_start_at(None, &state_file), Ok(None));
         let missing = Folder::new("clean-missing");
-        assert_eq!(
-            first_start_at(Some(&missing.path("nope")), &state_file, Some(&books_file)),
-            Ok(None)
-        );
-        assert_eq!(
-            first_start_at(Some(&missing.0), &state_file, Some(&books_file)),
-            Ok(None)
-        );
+        assert_eq!(first_start_at(Some(&missing.path("nope")), &state_file), Ok(None));
+        assert_eq!(first_start_at(Some(&missing.0), &state_file), Ok(None));
         // A LevelDB made of noise: an error saying why, no state.json (the next start may try again).
         let damaged = Folder::new("clean-damaged");
         let noise: Vec<u8> = (0..3000u32)
@@ -833,9 +673,9 @@ mod tests {
             .collect();
         std::fs::write(damaged.path("000003.log"), &noise).expect("writes");
         std::fs::write(damaged.path("000005.ldb"), &noise).expect("writes");
-        let error = first_start_at(Some(&damaged.0), &state_file, Some(&books_file)).expect_err("damaged");
+        let error = first_start_at(Some(&damaged.0), &state_file).expect_err("damaged");
         assert!(error.contains("000005.ldb"), "{error}");
-        assert!(!state_file.exists() && !books_file.exists());
+        assert!(!state_file.exists());
         // The app then loads the defaults.
         assert_eq!(
             crate::persistence::load_from(&state_file).state,
@@ -852,7 +692,7 @@ mod tests {
         )
         .expect("writes");
         let new = Folder::new("empty-new");
-        let done = first_start_at(Some(&old.0), &new.path("state.json"), None)
+        let done = first_start_at(Some(&old.0), &new.path("state.json"))
             .expect("imports")
             .expect("first start");
         assert!(done.state_written && done.data.store.is_none());
@@ -860,7 +700,7 @@ mod tests {
             crate::persistence::load_from(&new.path("state.json")).state,
             glint_model::store::AppState::default()
         );
-        assert_eq!(first_start_at(Some(&old.0), &new.path("state.json"), None), Ok(None));
+        assert_eq!(first_start_at(Some(&old.0), &new.path("state.json")), Ok(None));
     }
 
     #[test]
@@ -870,7 +710,7 @@ mod tests {
         let old = old_folder("secondary");
         let new = Folder::new("secondary-new");
         assert_eq!(
-            first_start_at(Some(&old.0), &new.path("state.json"), Some(&new.path("books.json"))),
+            first_start_at(Some(&old.0), &new.path("state.json")),
             Ok(None)
         );
         assert!(contents(&new.0).is_empty());
@@ -914,10 +754,9 @@ mod tests {
                     );
                     println!("theme {:?}", state.settings.theme);
                 }
-                println!("places {:?}", data.book_places);
                 println!(
-                    "size {:?}, tags {:?}, last-version {:?}",
-                    data.book_size, data.recent_tags, data.last_version
+                    "tags {:?}, last-version {:?}",
+                    data.recent_tags, data.last_version
                 );
                 println!("notices {:?}", data.notices);
                 println!("problems {:?}", data.problems);

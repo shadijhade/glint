@@ -1176,13 +1176,13 @@ fn a_window_without_a_handle_has_no_previewer_and_says_nothing(cx: &mut TestAppC
 }
 
 #[gpui_kit::test]
-fn a_mobi_book_gets_the_book_view_not_windows_previewer(cx: &mut TestAppContext) {
+fn an_e_book_is_left_to_windows_previewer(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let mut env = setup(cx);
-    // The MOBI family is read here (preview::mobi); Windows' previewer is not asked.
+    // Glint has no book reader: Windows' previewer is asked, over the file's icon.
     env.select("book.mobi");
-    assert_eq!(env.body(), Some(Body::Book));
-    assert!(!env
+    assert_eq!(env.body(), Some(Body::Shell(super::choose::Fallback::Icon)));
+    assert!(env
         .fake
         .logged()
         .contains(&format!("show {PANE} {}", env.path("book.mobi"))));

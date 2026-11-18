@@ -4,7 +4,7 @@
 //! chosen view, so it is tested without a window. [`choose`] says what is drawn ([`Body`]); where the
 //! TypeScript had a previewer that the port doesn't have yet, the `later` field names it (the `PORT ME` kinds)
 //! and the body is the TypeScript's own fallback for it (Windows' previewer over the file's icon, or the
-//! file as text). No kind is waiting on a previewer through it now (the MOBI family was the last), so `later` is always `None`.
+//! file as text). No kind is waiting on a previewer through it now, so `later` is always `None`.
 
 use super::player::Kind as PlayerKind;
 use crate::dialogs::data_tools::DUCK_READS;
@@ -18,8 +18,6 @@ use gpui_kit::SharedString;
 
 /// Word documents laid out without Office, up to a size (`DOCX_EXTS`, `DOCX_MAX`).
 const DOCX_EXTS: [&str; 4] = ["docx", "docm", "dotx", "dotm"];
-/// E-books the reader opens (`BOOKS`).
-const BOOKS: [&str; 7] = ["epub", "mobi", "azw3", "azw", "fb2", "fbz", "cbz"];
 /// 3D formats (`MODEL_EXTS`).
 const MODELS: [&str; 6] = ["stl", "obj", "glb", "gltf", "ply", "3mf"];
 /// Databases (`SQLITE_EXTS`).
@@ -120,8 +118,6 @@ pub enum Body {
     Player(PlayerKind),
     /// PDF pages drawn with Windows.Data.Pdf (`preview::pdf`; a copy first for one in an archive).
     Pdf,
-    /// A book read page by page: EPUB, MOBI/AZW/AZW3, FB2, comics (`preview::book`, `preview::mobi`).
-    Book,
     /// A Word document laid out without Office (`preview::docx`).
     Docx,
     /// A 3D model drawn and turned (`preview::model3d`).
@@ -139,7 +135,7 @@ pub enum Body {
 pub struct Choice {
     pub body: Body,
     /// `PORT ME(<kind>)`: the TypeScript showed something better for this file; the body is its fallback. Nothing
-    /// is waiting on a previewer now (the MOBI family was the last), so it is always `None`; a kind that is not
+    /// is waiting on a previewer now, so it is always `None`; a kind that is not
     /// ported yet sets it with `Choice { body, later: Some("kind") }`.
     pub later: Option<&'static str>,
 }
@@ -213,8 +209,7 @@ pub fn views(entry: &FileEntry, changed: bool) -> Vec<ViewChoice> {
     let notebook = is_notebook(entry);
     let small = small_of(entry);
     let sheet = is_sheet(entry);
-    // E-books and comics, 3D models and asciinema recordings have one view of their own, named for what it does.
-    let book = readable(entry) && !is_archived(entry) && one_of(entry, &BOOKS);
+    // 3D models and asciinema recordings have one view of their own, named for what it does.
     let model = readable(entry) && !is_archived(entry) && one_of(entry, &MODELS);
     let cast = readable(entry) && entry.ext == "cast";
     let choice = |view, label: SharedString, title: SharedString| ViewChoice { view, label, title };
@@ -225,8 +220,6 @@ pub fn views(entry: &FileEntry, changed: bool) -> Vec<ViewChoice> {
             t!("The notebook as it reads, its outputs included"),
         ));
         views.push(choice(View::Source, t!("Source"), t!("The notebook's JSON as written")));
-    } else if book {
-        views.push(choice(View::File, t!("Book"), t!("The book, to read")));
     } else if small.is_some() {
         views.push(choice(
             View::File,
@@ -330,10 +323,6 @@ pub fn choose(entry: &FileEntry, view: View) -> Choice {
     }
     if is_list_only(entry) {
         return Choice::of(Body::Icon);
-    }
-    // Every e-book, the MOBI family (MOBI, AZW, AZW3) included: `preview::mobi` reads them for `preview::book`.
-    if readable && !archived && one_of(entry, &BOOKS) && super::book::can_read(&entry.ext) {
-        return Choice::of(Body::Book);
     }
     // Its Text view is the file as it is, which goes on down the chain.
     if let Some(kind) = small_of(entry).filter(|_| !source) {
@@ -447,21 +436,20 @@ mod tests {
     }
 
     #[test]
-    fn no_kind_is_waiting_on_a_previewer_and_the_mobi_family_has_the_book_view() {
+    fn no_kind_is_waiting_on_a_previewer_and_e_books_go_to_windows_previewer() {
         let later = |name: &str| choose(&file("C:\\x", name, 10, 1), View::File);
-        // The MOBI family has the book view too, not Windows' previewer over the icon.
-        for book in ["book.mobi", "book.azw", "book.azw3"] {
-            assert_eq!(later(book).body, Body::Book, "{book}");
+        // Glint has no book reader: the kinds it knows are Windows' previewer over the icon, with no view of
+        // their own beyond the file as it is.
+        for book in ["book.epub", "book.mobi", "book.azw3", "comic.cbz"] {
+            assert_eq!(later(book).body, Body::Shell(Fallback::Icon), "{book}");
             assert_eq!(later(book).later, None, "{book}");
+            let entry = file("C:\\x", book, 10, 1);
+            assert_eq!(labels(&entry, false), pairs(&[(View::File, "File"), (View::Hex, "Hex")]), "{book}");
         }
-        assert_eq!(later("book.fb2").body, Body::Book);
-        assert_eq!(later("book.fbz").body, Body::Book);
         // What has its previewer now says nothing is missing.
         assert_eq!(later("movie.mp4").body, Body::Player(PlayerKind::Video));
         assert_eq!(later("song.mp3").body, Body::Player(PlayerKind::Audio));
         assert_eq!(later("paper.pdf").body, Body::Pdf);
-        assert_eq!(later("book.epub").body, Body::Book);
-        assert_eq!(later("comic.cbz").body, Body::Book);
         assert_eq!(later("model.stl").body, Body::Model);
         assert_eq!(later("letter.docx").body, Body::Docx);
         for ready in [
@@ -474,7 +462,6 @@ mod tests {
             "movie.mp4",
             "song.mp3",
             "paper.pdf",
-            "book.epub",
             "model.stl",
             "letter.docx",
         ] {
@@ -607,10 +594,8 @@ mod tests {
     }
 
     #[test]
-    fn books_models_and_recordings_have_a_view_named_for_what_it_does() {
+    fn models_and_recordings_have_a_view_named_for_what_it_does() {
         for (name, label, title) in [
-            ("a.epub", "Book", "The book, to read"),
-            ("a.cbz", "Book", "The book, to read"),
             ("m.stl", "Model", "The model, drawn"),
             ("m.glb", "Model", "The model, drawn"),
             ("c.cast", "Play", "The recording, played"),
@@ -621,7 +606,7 @@ mod tests {
             assert_eq!(first.label, label, "{name}");
             assert_eq!(first.title, title, "{name}");
         }
-        // A recording is also text; a book and a model are read as they are.
+        // A recording is also text; a model is read as it is.
         let cast = file("C:\\x", "c.cast", 10, 1);
         assert_eq!(
             labels(&cast, false),
@@ -629,12 +614,8 @@ mod tests {
         );
         assert_eq!(choose(&cast, View::File).body, Body::Cast);
         assert_eq!(choose(&cast, View::Source).body, Body::Text);
-        assert_eq!(
-            labels(&file("C:\\x", "a.epub", 10, 1), false),
-            pairs(&[(View::File, "Book"), (View::Hex, "Hex")])
-        );
         // Inside an archive they aren't read from disk: the plain File view.
-        let inside = marked("a.epub", attr::IN_ARCHIVE);
+        let inside = marked("a.stl", attr::IN_ARCHIVE);
         assert_eq!(views(&inside, false)[0].label, "File");
     }
 
