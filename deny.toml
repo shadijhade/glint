@@ -15,7 +15,12 @@ unmaintained = "workspace"
 # Advisories with no fixed version Glint can reach yet (the maintainer's decision for v0.10.0, 2026-11-11). Take
 # each out once the crate that pins the old version ships a fix. (0.14 took out crypto-bigint's: it came only through
 # age, which left with Vault.)
-ignore = []
+ignore = [
+    # chrono 0.4: RUSTSEC-2026-0543 says it is unmaintained (not a vulnerability; no version fixes it). glint-core,
+    # glint-model and the vendored GPUI use it. 0.14.0 ships with it at the maintainer's word (2026-11-18), to move to
+    # jiff or time in a later release.
+    { id = "RUSTSEC-2026-0543", reason = "unmaintained, not a vulnerability; glint-core, glint-model and the vendored GPUI use it until they move to jiff or time" },
+]
 
 [licenses]
 # A crate under several licenses (MIT OR Apache-2.0) needs one of them here.
