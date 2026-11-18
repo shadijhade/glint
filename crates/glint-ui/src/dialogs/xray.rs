@@ -1618,6 +1618,10 @@ mod tests {
         settle(&mut visual, "not checked", |cx| {
             has(cx, "Not checked: hash the whole file first")
         });
+        // The whole file's hashing waits until its status has been seen: answered at once, as the fake does, it
+        // could be over before the status is looked for, on a busy PC.
+        let (release, gate) = async_channel::bounded::<()>(1);
+        *fake.gate.lock().unwrap() = Some(gate);
         visual.update(|window, cx| {
             window.render_frame(cx);
             window.click("xray-hash-all", cx);
@@ -1627,6 +1631,7 @@ mod tests {
         });
         assert_eq!(*fake.inspected.lock().unwrap(), [false, true]);
         assert_eq!(role_of(&mut visual, "Hashing the whole file…"), Some(Role::Status));
+        drop(release);
     }
 
     #[gpui_kit::test]
