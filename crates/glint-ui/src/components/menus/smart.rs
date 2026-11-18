@@ -101,6 +101,7 @@ fn event_key(event: &MenuEvent) -> Option<String> {
         MenuEvent::Compare { .. } => "do:compare",
         MenuEvent::SetTags { .. } => "do:tags",
         MenuEvent::EditTags { .. } => "do:edit-tags",
+        MenuEvent::CheckSums { .. } => "do:check-sums",
         MenuEvent::FolderSizes => "do:folder-sizes",
         MenuEvent::NewTextDocument => "do:new-text-document",
         MenuEvent::NewOfKind { ext } => return Some(format!("do:new:{}", ext.to_lowercase())),

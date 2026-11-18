@@ -7,9 +7,9 @@ use super::*;
 use crate::explorer::fake::{file, folder, FakeDisk};
 use crate::explorer::{Drive, NavOptions};
 use crate::testing;
-use glint_model::aware::{Origin, Part};
+use glint_model::aware::{verdict, Algo, Origin, Part, Sums, Verdict};
 use glint_model::entries::attr;
-use gpui_kit::TestAppContext;
+use gpui_kit::{TestAppContext, VisualTestContext};
 use std::cell::{Cell, RefCell};
 
 // ---- Fakes -------------------------------------------------------------------------------------------------
@@ -504,12 +504,12 @@ fn a_folders_inside_is_asked_again_only_once_its_answer_is_old() {
     let mut cache = Cache::default();
     let docs = folder("C:\\x", "docs");
     let start = Instant::now();
-    let first = cache.plan(&docs, start);
+    let first = cache.plan(&docs, start, SumsWant::default());
     assert!(first.inside);
     cache.asking(&docs, first, start);
     assert!(cache.take("C:\\x\\docs", Part::Pages(1)));
-    assert!(!cache.plan(&docs, start + Duration::from_secs(5)).inside, "asked a moment ago");
-    assert!(cache.plan(&docs, start + INSIDE_FRESH).inside, "old enough to ask again");
+    assert!(!cache.plan(&docs, start + Duration::from_secs(5), SumsWant::default()).inside, "asked a moment ago");
+    assert!(cache.plan(&docs, start + INSIDE_FRESH, SumsWant::default()).inside, "old enough to ask again");
     assert!(cache.probed(&docs).is_some(), "the old answer stays meanwhile");
 }
 
@@ -519,7 +519,7 @@ fn only_the_most_recently_asked_paths_are_kept_and_forgetting_is_not_case_sensit
     let now = Instant::now();
     for n in 0..(MOST_KEPT + 100) {
         let entry = file("C:\\x", &format!("f{n}.bin"), 5000, 0);
-        let want = cache.plan(&entry, now);
+        let want = cache.plan(&entry, now, SumsWant::default());
         cache.asking(&entry, want, now);
     }
     assert!(cache.len() <= MOST_KEPT);
@@ -654,6 +654,119 @@ fn the_clipboard_is_read_when_its_count_moves_and_not_otherwise(cx: &mut TestApp
     visual.run_until_parked();
     assert_eq!(fake.clip_reads.get(), 2);
     assert_eq!(heard.get(), 1, "the same clipboard again tells nobody");
+}
+
+const SHA256_ABC: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+
+/// Puts `text` on the clipboard as the system holds it, and tells the fake the clipboard is text and changed.
+fn copy_text(cx: &mut VisualTestContext, fake: &Fake, text: &str) {
+    cx.update(|_, cx| cx.write_to_clipboard(ClipboardItem::new_string(text.to_string())));
+    *fake.clip.borrow_mut() = Clip::Text;
+    fake.seq.set(fake.seq.get() + 1);
+    cx.executor().advance_clock(Duration::from_millis(800));
+    cx.run_until_parked();
+}
+
+#[gpui_kit::test]
+fn a_checksum_on_the_clipboard_has_the_one_selected_file_checked_on_the_quiet_lane(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let fake = Fake::new();
+    let world = world(cx, &fake, &empty_disk(), "C:\\x");
+    let (mut visual, _) = testing::open_window(cx, |_, cx| cx.new(|_| Blank));
+    visual.update(|window, _| window.activate_window());
+    let entry = a_file("a.bin");
+    world.explorer.update(&mut visual, |e, cx| e.select_only(Some("C:\\x\\a.bin"), cx));
+    visual.executor().advance_clock(SELECTION_SETTLES + Duration::from_millis(10));
+    visual.run_until_parked();
+    let first = fake.asked();
+    assert!(fake.calls.borrow().iter().all(|call| call.wants.iter().all(|w| w.sums.is_empty())), "nothing to compare with");
+
+    // The person copies the checksum from the download page: the selected file is looked at again for it.
+    copy_text(&mut visual, &fake, &format!("  {}\r\n", SHA256_ABC.to_uppercase()));
+    assert!(world.aware.read_with(&visual, |a, _| a.copied().is_some()));
+    assert_eq!(fake.asked(), first + 1);
+    {
+        let calls = fake.calls.borrow();
+        let call = calls.last().expect("a call");
+        assert_eq!(call.lane, Lane::Quiet);
+        assert_eq!(call.wants.len(), 1);
+        assert!(call.wants[0].sums.sha256 && call.wants[0].sums.blake3 && !call.wants[0].sums.sha512);
+        assert!(!call.wants[0].origin, "only what wasn't asked about before");
+    }
+    // Its checksums come in, and the file agrees.
+    let call = fake.asked() - 1;
+    fake.send(call, "C:\\x\\a.bin", Part::Sums(Sums { sha256: Some(SHA256_ABC.into()), blake3: Some("0".repeat(64)), ..Sums::default() }));
+    visual.run_until_parked();
+    let said = world.aware.read_with(&visual, |a, _| {
+        verdict(a.probed(&entry)?.sums.as_ref()?, a.copied()?)
+    });
+    assert_eq!(said, Some(Verdict::Match(Algo::Sha256)));
+
+    // Text that is not a checksum takes the comparison away.
+    copy_text(&mut visual, &fake, "hello");
+    assert!(world.aware.read_with(&visual, |a, _| a.copied().is_none()));
+}
+
+#[gpui_kit::test]
+fn only_one_file_of_a_size_worth_reading_is_checked_against_a_copied_checksum(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let fake = Fake::new();
+    let world = world(cx, &fake, &empty_disk(), "C:\\x");
+    let (mut visual, _) = testing::open_window(cx, |_, cx| cx.new(|_| Blank));
+    visual.update(|window, _| window.activate_window());
+    copy_text(&mut visual, &fake, SHA256_ABC);
+    assert!(world.aware.read_with(&visual, |a, _| a.copied().is_some()));
+    let sums_asked = |fake: &Fake| fake.calls.borrow().iter().flat_map(|c| c.wants.iter()).filter(|w| !w.sums.is_empty()).count();
+    // Many files, folders and a file past the cap ask nothing for it.
+    let many: Vec<FileEntry> = (0..5).map(|n| a_file(&format!("m{n}.bin"))).collect();
+    look_ahead(cx, &world, &many);
+    let huge = file("C:\\x", "huge.iso", HASH_CAP + 1, 0);
+    look_ahead(cx, &world, std::slice::from_ref(&huge));
+    look_ahead(cx, &world, &[folder("C:\\x", "d")]);
+    assert_eq!(sums_asked(&fake), 0);
+    // One file at the cap is checked; the same file again, and the right-click's look for now, ask nothing more.
+    let edge = file("C:\\x", "edge.iso", HASH_CAP, 0);
+    look_ahead(cx, &world, std::slice::from_ref(&edge));
+    assert_eq!(sums_asked(&fake), 1);
+    let quiet = fake.asked() - 1;
+    look_ahead(cx, &world, std::slice::from_ref(&edge));
+    assert_eq!(fake.asked(), quiet + 1, "the same file again asks nothing");
+    // The menu's look takes over the other parts, not the checksums, and the run reading the file goes on.
+    assert!(look_now(cx, &world, std::slice::from_ref(&edge)));
+    assert_eq!(fake.asked(), quiet + 2);
+    assert_eq!(fake.calls.borrow()[quiet + 1].lane, Lane::Now);
+    assert_eq!(sums_asked(&fake), 1, "the checksums stay with the quiet run");
+    assert!(!fake.stopped(quiet), "and it is not ended");
+}
+
+#[gpui_kit::test]
+fn a_menu_does_not_wait_for_a_file_that_is_being_read_for_its_checksums(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let fake = Fake::new();
+    let world = world(cx, &fake, &empty_disk(), "C:\\x");
+    let (mut visual, _) = testing::open_window(cx, |_, cx| cx.new(|_| Blank));
+    visual.update(|window, _| window.activate_window());
+    copy_text(&mut visual, &fake, SHA256_ABC);
+    let entry = a_file("a.bin");
+    look_ahead(cx, &world, std::slice::from_ref(&entry));
+    let wants = fake.calls.borrow().last().expect("a call").wants[0];
+    // Everything but the checksums comes in.
+    let call = fake.asked() - 1;
+    if wants.origin {
+        fake.send(call, "C:\\x\\a.bin", Part::Origin(Origin { host: String::new(), blocked: false }));
+    }
+    if wants.locked_by {
+        fake.send(call, "C:\\x\\a.bin", Part::LockedBy(Vec::new()));
+    }
+    if wants.opens_with {
+        fake.send(call, "C:\\x\\a.bin", Part::OpensWith("Notepad".into()));
+    }
+    if wants.twins {
+        fake.send(call, "C:\\x\\a.bin", Part::Twins(Vec::new()));
+    }
+    visual.run_until_parked();
+    assert!(world.aware.read_with(&visual, |a, _| a.settling(&entry)), "still reading it");
+    assert!(world.aware.read_with(&visual, |a, _| a.answered(&entry)), "but nothing a menu shows waits for that");
 }
 
 #[test]

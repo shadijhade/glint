@@ -4,7 +4,7 @@
 //! to let go of. [`super::Aware`] drives it. Everything takes the time as an argument so a test can say what
 //! "thirty seconds later" is.
 
-use glint_model::aware::{want_for, Part, Probed, Want};
+use glint_model::aware::{want_for, Part, Probed, SumsWant, Want};
 use glint_model::entries::FileEntry;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -42,14 +42,15 @@ fn key(path: &str) -> String {
 }
 
 impl Cache {
-    /// What is still to ask about `entry`: what is worth knowing about it, less what is known and what was asked
-    /// already. A file that changed since it was last asked about is forgotten first. A folder's inside comes
+    /// What is still to ask about `entry`: what is worth knowing about it (and `sums`, the checksums to compare it
+    /// with a copied one), less what is known and what was asked already. A file that changed since it was last asked about is forgotten first. A folder's inside comes
     /// round again once its last ask is older than [`INSIDE_FRESH`].
-    pub(super) fn plan(&mut self, entry: &FileEntry, now: Instant) -> Want {
-        let wanted = want_for(entry);
+    pub(super) fn plan(&mut self, entry: &FileEntry, now: Instant, sums: SumsWant) -> Want {
+        let mut wanted = want_for(entry);
         if wanted.is_empty() {
             return wanted;
         }
+        wanted.sums = sums;
         let id = key(&entry.path);
         if self.kept.get(&id).is_some_and(|k| k.size != entry.size || k.modified != entry.modified) {
             self.kept.remove(&id);

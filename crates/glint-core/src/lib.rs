@@ -7,6 +7,7 @@ pub mod actions;
 pub mod agents;
 pub mod archive;
 pub mod aware;
+pub mod checksums;
 pub mod backup;
 pub mod bench;
 pub mod batch_rename;

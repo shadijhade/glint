@@ -7,7 +7,7 @@ use super::event::MenuEvent;
 use super::spec::{Badge, Head, HeadPicture, Run, Task, Tone};
 use crate::kit::prelude::*;
 use crate::{i18n, t};
-use glint_model::aware::{Probed, Signer};
+use glint_model::aware::{Probed, Signer, Verdict};
 use glint_model::entries::{attr, cloud_state, is_hidden, CloudState, FileEntry};
 use glint_model::file_types::{kind_of, type_label};
 use glint_model::format::{format_count, format_date, format_size};
@@ -20,6 +20,8 @@ pub struct Extras {
     pub now: i64,
     /// Git's word for the one target: "Changed" or "New".
     pub git: Option<SharedString>,
+    /// Whether the one file agrees with the checksum on the clipboard, when it has been checked.
+    pub checksum: Option<Verdict>,
 }
 
 /// How many identical copies' paths a badge's tooltip lists.
@@ -251,6 +253,23 @@ fn badges(entry: &FileEntry, probed: Option<&Probed>, extras: &Extras) -> Vec<Ba
                         x_ray(),
                     ));
                 }
+                None => {}
+            }
+            match extras.checksum {
+                Some(Verdict::Match(algo)) => all.push(badge(
+                    t!("Matches copied {algo}", algo = algo.name()),
+                    IconName::ShieldCheck,
+                    Tone::Good,
+                    Some(t!("Its checksum is the one on the clipboard")),
+                    Run::Nothing,
+                )),
+                Some(Verdict::Mismatch) => all.push(badge(
+                    t!("Checksum mismatch"),
+                    IconName::ShieldAlert,
+                    Tone::Warn,
+                    Some(t!("Its checksum is not the one on the clipboard: the file may be damaged or not the one it names")),
+                    Run::Nothing,
+                )),
                 None => {}
             }
             if let Some(folder) = probed.extracted.as_ref().and_then(Option::as_ref) {

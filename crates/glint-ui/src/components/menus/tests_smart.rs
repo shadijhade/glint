@@ -5,7 +5,7 @@ use super::smart::{dress, keys, reason, row_for, zone};
 use super::tests::{ctx, english, find, labels, text};
 use super::*;
 use crate::explorer::fake::{file, folder};
-use glint_model::aware::{Inside, Media, Origin, Pick, Probed, Shape, Signer, Text, Why};
+use glint_model::aware::{Algo, Inside, Media, Origin, Pick, Probed, Shape, Signer, Text, Verdict, Why};
 use glint_model::entries::attr;
 
 fn pick(key: &str, why: Why) -> Pick {
@@ -289,7 +289,7 @@ fn line(head: &Head) -> String {
 fn a_file_with_no_answers_says_its_type_and_size_and_when_it_changed() {
     let _guard = english();
     let entry = file("C:\\x", "notes.txt", 2048, 1_700_000_000_000);
-    let head = head_of(std::slice::from_ref(&entry), None, &Extras { now: 1_700_100_000_000, git: None });
+    let head = head_of(std::slice::from_ref(&entry), None, &Extras { now: 1_700_100_000_000, git: None, checksum: None });
     assert_eq!(head.title, "notes.txt");
     assert_eq!(line(&head), format!("{} · 2.0 KB", glint_model::file_types::type_label(&entry)));
     assert!(head.badges.is_empty());
@@ -353,6 +353,7 @@ fn each_badge_alone_has_its_label_tone_and_run() {
         let extras = Extras {
             now: 0,
             git: git.map(|g| g.to_string().into()),
+            checksum: None,
         };
         head_of(std::slice::from_ref(entry), Some(&probed), &extras).badges
     };
@@ -482,6 +483,7 @@ fn all_the_badges_come_in_the_tables_order() {
     let extras = Extras {
         now: 0,
         git: Some("New".into()),
+        checksum: None,
     };
     let head = head_of(&[entry], Some(&probed), &extras);
     let got: Vec<&str> = head.badges.iter().map(|b| b.label.as_ref()).collect();
@@ -558,10 +560,38 @@ fn an_archives_menu_has_open_extracted_folder_before_extract_here_only_once_it_w
 }
 
 #[test]
+fn a_file_that_matches_the_copied_checksum_says_so_and_one_that_does_not_warns() {
+    let _guard = english();
+    let entry = file("C:\\x", "setup.exe", 5000, 0);
+    let badges = |verdict: Option<Verdict>| {
+        let extras = Extras { now: 0, git: None, checksum: verdict };
+        head_of(std::slice::from_ref(&entry), Some(&Probed::default()), &extras).badges
+    };
+    let matches = badges(Some(Verdict::Match(Algo::Sha256)));
+    assert_eq!(matches.len(), 1);
+    assert_eq!((matches[0].label.as_ref(), matches[0].tone), ("Matches copied SHA-256", Tone::Good));
+    assert_eq!(badges(Some(Verdict::Match(Algo::Blake3)))[0].label, "Matches copied BLAKE3");
+    let wrong = badges(Some(Verdict::Mismatch));
+    assert_eq!((wrong[0].label.as_ref(), wrong[0].tone), ("Checksum mismatch", Tone::Warn));
+    assert!(badges(None).is_empty(), "unknown is nothing at all");
+}
+
+#[test]
+fn a_checksum_files_menu_has_check_files_in_this_folder_only_for_the_kinds_that_can_be_checked() {
+    let _guard = english();
+    let has = |name: &str| keys(&item_menu(&[text(name)], &ctx())).iter().any(|k| k == "do:check-sums");
+    assert!(has("pack.sha256") && has("PACK.SHA512") && has("sums.b3sum"));
+    assert!(!has("pack.md5") && !has("pack.sha1") && !has("notes.txt") && !has("SHA256SUMS"));
+    let mut remote = text("pack.sha256");
+    remote.attrs |= attr::REMOTE;
+    assert!(!keys(&item_menu(&[remote], &ctx())).iter().any(|k| k == "do:check-sums"), "not on a remote");
+}
+
+#[test]
 fn an_archive_that_was_extracted_says_so_in_its_head_and_the_badge_opens_the_folder() {
     let _guard = english();
     let zip = file("C:\\x", "pack.zip", 5000, 0);
-    let extras = Extras { now: 0, git: None };
+    let extras = Extras { now: 0, git: None, checksum: None };
     let known = |extracted| Probed { extracted: Some(extracted), ..Probed::default() };
     let folder = "C:\\x\\pack".to_string();
     let head = head_of(std::slice::from_ref(&zip), Some(&known(Some(folder.clone()))), &extras);

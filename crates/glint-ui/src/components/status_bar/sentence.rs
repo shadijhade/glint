@@ -8,7 +8,7 @@
 use super::summary::{counts, Summary};
 use crate::kit::prelude::*;
 use crate::t;
-use glint_model::aware::{Media, Probed};
+use glint_model::aware::{verdict, CopiedHash, Media, Probed, Verdict};
 use glint_model::entries::FileEntry;
 use glint_model::format::{format_count, format_size};
 
@@ -30,6 +30,16 @@ pub const MOST: usize = 64;
 
 /// What is known about `selected`, given what was found out about each.
 pub fn deep(selected: &[FileEntry], probed: &dyn Fn(&FileEntry) -> Option<Probed>) -> Deep {
+    deep_with(selected, probed, None)
+}
+
+/// [`deep`], and for one selected file whether it agrees with the checksum `copied` from the clipboard, once that
+/// has been checked: "Matches copied SHA-256" or "Checksum mismatch", after what else is known.
+pub fn deep_with(
+    selected: &[FileEntry],
+    probed: &dyn Fn(&FileEntry) -> Option<Probed>,
+    copied: Option<&CopiedHash>,
+) -> Deep {
     if selected.is_empty() || selected.len() > MOST {
         return Deep::default();
     }
@@ -37,9 +47,26 @@ pub fn deep(selected: &[FileEntry], probed: &dyn Fn(&FileEntry) -> Option<Probed
     if selected.iter().any(|entry| entry.dir) {
         return folders_deep(selected, &answers);
     }
+    let detail = detail_of(&answers);
+    let said = match (selected, answers.as_slice(), copied) {
+        ([only], [Some(probed)], Some(copied)) if !only.dir => checksum_words(probed, copied),
+        _ => None,
+    };
+    let detail = match (detail, said) {
+        (Some(detail), Some(said)) => Some(format!("{detail} · {said}").into()),
+        (detail, said) => detail.or(said),
+    };
     Deep {
-        detail: detail_of(&answers),
+        detail,
         ..Deep::default()
+    }
+}
+
+/// What a file's checksums say about the one copied: None until they have been compared.
+fn checksum_words(probed: &Probed, copied: &CopiedHash) -> Option<SharedString> {
+    match verdict(probed.sums.as_ref()?, copied)? {
+        Verdict::Match(algo) => Some(t!("Matches copied {algo}", algo = algo.name())),
+        Verdict::Mismatch => Some(t!("Checksum mismatch")),
     }
 }
 

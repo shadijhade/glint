@@ -4,7 +4,7 @@
 
 use super::chips::{insight, Insight};
 use super::index::{Index, Source, State};
-use super::sentence::{counts_deep, deep, Deep, MOST};
+use super::sentence::{counts_deep, deep, deep_with, Deep, MOST};
 use super::summary::{counts, Summary};
 use super::{StatusBar, StatusBarEvent};
 use crate::aware::{self, Sources};
@@ -109,6 +109,36 @@ fn drive(path: &str, kind: DriveKind, total: u64, free: u64) -> Drive {
 const GB: u64 = 1 << 30;
 
 // ---- What the selection weighs and holds ------------------------------------------------------------------
+
+#[test]
+fn one_file_is_said_to_match_or_not_match_a_copied_checksum_after_what_else_is_known_of_it() {
+    use glint_model::aware::{copied_hash, Sums};
+    let _guard = testing::lock();
+    let sha = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    let copied = copied_hash(sha).expect("a checksum");
+    let made = |sha256: &str, blake3: &str, more: Probed| Probed {
+        sums: Some(Sums { sha256: Some(sha256.into()), blake3: Some(blake3.into()), ..Sums::default() }),
+        ..more
+    };
+    let one = [a_file("setup.exe")];
+    let said = |answer: Option<Probed>, copied: Option<&glint_model::aware::CopiedHash>| {
+        deep_with(&one, &|_| answer.clone(), copied).detail.map(|d| d.to_string())
+    };
+    let zero = "0".repeat(64);
+    assert_eq!(said(Some(made(sha, &zero, Probed::default())), Some(&copied)).as_deref(), Some("Matches copied SHA-256"));
+    assert_eq!(said(Some(made(&zero, &zero, Probed::default())), Some(&copied)).as_deref(), Some("Checksum mismatch"));
+    // After the lines it holds, and nothing before it is known.
+    let with_lines = made(sha, &zero, lines(1230, false));
+    assert_eq!(said(Some(with_lines), Some(&copied)).as_deref(), Some("1,230 lines · Matches copied SHA-256"));
+    assert_eq!(said(Some(Probed::default()), Some(&copied)), None, "not compared yet");
+    assert_eq!(said(None, Some(&copied)), None);
+    assert_eq!(said(Some(made(sha, &zero, Probed::default())), None).as_deref(), None, "nothing copied");
+    // Two files, or a folder, are not compared with it.
+    let two = [a_file("a.exe"), a_file("b.exe")];
+    let both = |_: &FileEntry| Some(made(sha, &zero, Probed::default()));
+    assert_eq!(deep_with(&two, &both, Some(&copied)).detail, None);
+    assert_eq!(deep_with(&[a_folder("d")], &both, Some(&copied)).detail, None);
+}
 
 #[test]
 fn nothing_selected_and_too_many_selected_are_known_about_not_at_all() {

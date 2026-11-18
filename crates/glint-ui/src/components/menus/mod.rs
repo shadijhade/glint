@@ -332,9 +332,16 @@ impl MenuHost {
             _ if git::has_changes_view(cx, entry) => Some(t!("Changed")),
             _ => None,
         });
+        // What the one file's checksums say about the checksum on the clipboard.
+        let checksum = one.and_then(|entry| {
+            let aware = aware::try_shared(cx)?;
+            let aware = aware.read(cx);
+            glint_model::aware::verdict(aware.probed(entry)?.sums.as_ref()?, aware.copied()?)
+        });
         head::Extras {
             now: i64::try_from(now).unwrap_or(i64::MAX),
             git: git_word,
+            checksum,
         }
     }
 
@@ -524,8 +531,8 @@ impl MenuHost {
         self.opening = self.opening.wrapping_add(1);
         self.waiting = None;
         if let (Some(aware), [entry]) = (aware::try_shared(cx), chosen.as_slice()) {
-            let asked = aware.update(cx, |aware, cx| aware.look_now(std::slice::from_ref(entry), cx));
-            if asked || aware.read(cx).settling(entry) {
+            aware.update(cx, |aware, cx| aware.look_now(std::slice::from_ref(entry), cx));
+            if !aware.read(cx).answered(entry) {
                 let turn = self.opening;
                 let wake = cx.subscribe_in(&aware, window, move |this, aware, _: &aware::Answered, window, cx| {
                     this.wake(turn, aware, window, cx);
@@ -650,8 +657,8 @@ impl MenuHost {
         self.opening = self.opening.wrapping_add(1);
         self.waiting = None;
         if let (Some(aware), Some(folder)) = (aware::try_shared(cx), Self::folder_shown(pane, cx)) {
-            let asked = aware.update(cx, |aware, cx| aware.look_now(std::slice::from_ref(&folder), cx));
-            if asked || aware.read(cx).settling(&folder) {
+            aware.update(cx, |aware, cx| aware.look_now(std::slice::from_ref(&folder), cx));
+            if !aware.read(cx).answered(&folder) {
                 let turn = self.opening;
                 let wake = cx.subscribe_in(&aware, window, move |this, aware, _: &aware::Answered, window, cx| {
                     this.wake(turn, aware, window, cx);

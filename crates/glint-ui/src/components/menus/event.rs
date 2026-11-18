@@ -170,6 +170,8 @@ pub enum MenuEvent {
     // ---- Inspecting ----
     /// "File X-Ray" (`inspectXRay`).
     XRay { path: String },
+    /// "Check files in this folder": every file the checksum file at `path` lists, checked in the background.
+    CheckSums { path: String },
     /// "Recent changes" in a folder (`inspectTimeline`).
     Timeline { folder: String },
     /// "Moved and deleted here" (`openHistory`).
