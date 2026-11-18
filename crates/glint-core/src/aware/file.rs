@@ -143,34 +143,47 @@ pub fn text(path: &str, stop: &AtomicBool) -> Option<Text> {
 }
 
 /// A PDF's page count, from Windows' own reader. `None` for one with a password or one Windows can't read.
+///
+/// The reader's calls are waited on, which Windows allows only in the multithreaded apartment. The probe lanes'
+/// threads are in it already (`pool::begin_thread`), so there the work runs where it is; any other thread (a
+/// lane that couldn't be made, a test) gets a scoped thread of its own, as ocr.rs does.
 #[cfg(windows)]
 pub fn pages(path: &str) -> Option<u32> {
     use windows::core::HSTRING;
-    use windows::Data::Pdf::PdfDocument;
-    use windows::Storage::StorageFile;
     use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
 
     let path = HSTRING::from(path);
-    // A thread of its own in the multithreaded apartment, where the calls' waits are allowed (as ocr.rs does).
-    std::thread::scope(|scope| {
-        scope
-            .spawn(|| -> windows::core::Result<Option<u32>> {
-                // SAFETY: plain COM initialisation of this scoped thread.
-                unsafe {
-                    let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-                }
-                let file = StorageFile::GetFileFromPathAsync(&path)?.join()?;
-                let document = PdfDocument::LoadFromFileAsync(&file)?.join()?;
-                if document.IsPasswordProtected()? {
-                    return Ok(None);
-                }
-                Ok(Some(document.PageCount()?))
-            })
-            .join()
-            .ok()
-    })?
-    .ok()?
-    .filter(|&n| n > 0)
+    let count = if super::pool::in_mta() {
+        count_pages(&path)
+    } else {
+        std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    // SAFETY: plain COM initialisation of this scoped thread.
+                    unsafe {
+                        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+                    }
+                    count_pages(&path)
+                })
+                .join()
+                .ok()
+        })?
+    };
+    count.ok()?.filter(|&n| n > 0)
+}
+
+/// The page count of the PDF at `path`; `Ok(None)` when it has a password. Must run in the MTA.
+#[cfg(windows)]
+fn count_pages(path: &windows::core::HSTRING) -> windows::core::Result<Option<u32>> {
+    use windows::Data::Pdf::PdfDocument;
+    use windows::Storage::StorageFile;
+
+    let file = StorageFile::GetFileFromPathAsync(path)?.join()?;
+    let document = PdfDocument::LoadFromFileAsync(&file)?.join()?;
+    if document.IsPasswordProtected()? {
+        return Ok(None);
+    }
+    Ok(Some(document.PageCount()?))
 }
 
 #[cfg(not(windows))]
@@ -294,6 +307,58 @@ mod tests {
         let path = dir.write("t.txt", b"a\nb\n");
         assert_eq!(text(&path, &AtomicBool::new(true)), None);
         assert_eq!(text(&dir.0.join("missing.txt").to_string_lossy(), &AtomicBool::new(false)), None);
+    }
+
+    /// A one-page PDF Windows' reader accepts (its cross-reference table is written out properly).
+    fn tiny_pdf() -> Vec<u8> {
+        let objects = [
+            "<< /Type /Catalog /Pages 2 0 R >>",
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] >>",
+        ];
+        let mut pdf = String::from("%PDF-1.4
+");
+        let mut offsets = Vec::new();
+        for (n, body) in objects.iter().enumerate() {
+            offsets.push(pdf.len());
+            pdf.push_str(&format!("{} 0 obj
+{body}
+endobj
+", n + 1));
+        }
+        let table = pdf.len();
+        pdf.push_str(&format!("xref
+0 {}
+0000000000 65535 f 
+", objects.len() + 1));
+        for offset in offsets {
+            pdf.push_str(&format!("{offset:010} 00000 n 
+"));
+        }
+        pdf.push_str(&format!("trailer
+<< /Size {} /Root 1 0 R >>
+startxref
+{table}
+%%EOF
+", objects.len() + 1));
+        pdf.into_bytes()
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_pdfs_pages_are_counted_on_a_lane_thread_and_on_any_other() {
+        let dir = Scratch::new();
+        let path = dir.write("one.pdf", &tiny_pdf());
+        let not_pdf = dir.write("not.pdf", b"just words");
+        // On a thread of its own (a test thread isn't in the MTA): the scoped-thread path.
+        assert!(!super::super::pool::in_mta());
+        let elsewhere = pages(&path);
+        assert_eq!(pages(&not_pdf), None);
+        assert_eq!(pages(&dir.0.join("missing.pdf").to_string_lossy()), None);
+        // On a lane's thread: straight on it.
+        let on_lane = super::super::pool::install(super::super::Lane::Now, || (pages(&path), pages(&not_pdf)));
+        assert_eq!(on_lane, (elsewhere, None));
+        assert_eq!(elsewhere, Some(1));
     }
 
     fn mark(dir: &Scratch, name: &str, zone: &str) -> Option<String> {

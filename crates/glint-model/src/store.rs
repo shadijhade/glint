@@ -974,16 +974,22 @@ pub fn persisted_json(state: &AppState) -> Result<String, serde_json::Error> {
 /// that isn't a saved state, or one of another version (zustand would refuse it, having no `migrate`),
 /// gives the defaults.
 pub fn load_persisted(text: &str) -> AppState {
-    let mut state = match serde_json::from_str::<PersistedIn>(text) {
-        Ok(PersistedIn {
-            state,
-            version: Some(PERSIST_VERSION),
-        }) => state.unwrap_or_default(),
-        _ => AppState::default(),
+    parse_persisted(text).unwrap_or_default()
+}
+
+/// [`load_persisted`] that says whether `text` was a saved state of this version with a state in it: None for
+/// anything else. One parse of the text, so a caller that must know which it was doesn't read it twice.
+pub fn parse_persisted(text: &str) -> Option<AppState> {
+    let PersistedIn {
+        state: Some(mut state),
+        version: Some(PERSIST_VERSION),
+    } = serde_json::from_str::<PersistedIn>(text).ok()?
+    else {
+        return None;
     };
     // A connection of a retired kind loads with no id: it goes (see `RETIRED_REMOTE_KINDS`).
     state.remotes.retain(|remote| !remote.id.is_empty());
-    state
+    Some(state)
 }
 
 impl AppState {
@@ -1315,6 +1321,10 @@ mod tests {
         assert_eq!(load_persisted(r#"{"state":{"query":"x"}}"#), AppState::default());
         assert_eq!(load_persisted("not json"), AppState::default());
         assert_eq!(load_persisted(""), AppState::default());
+        assert!(parse_persisted(r#"{"state":{"query":"x"},"version":0}"#).is_some_and(|s| s.query == "x"));
+        for text in [r#"{"version":0}"#, r#"{"state":{"query":"x"},"version":1}"#, r#"{"state":{"query":"x"}}"#, r#"{"state":null,"version":0}"#, "not json", ""] {
+            assert!(parse_persisted(text).is_none(), "{text}");
+        }
     }
 
     #[test]

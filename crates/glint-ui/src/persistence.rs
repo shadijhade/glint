@@ -84,6 +84,13 @@ fn is_saved_state(text: &str) -> bool {
     }
 }
 
+/// The state in `text`, if it is a saved state. One parse into the state itself for a file this app wrote; only
+/// text that parse refused is looked at again, by [`is_saved_state`], which can still call it a saved state (one
+/// whose state has a part that doesn't fit: the defaults then, and the file stays).
+fn saved_state(text: &str) -> Option<AppState> {
+    glint_model::store::parse_persisted(text).or_else(|| is_saved_state(text).then(|| load_persisted(text)))
+}
+
 /// Seconds since 1970, for names.
 fn unix_secs() -> u64 {
     std::time::SystemTime::now()
@@ -126,16 +133,15 @@ pub fn load_read_only(path: &Path) -> Loaded {
     };
     let text = String::from_utf8_lossy(&bytes);
     let text = text.trim_start_matches('\u{feff}');
-    if is_saved_state(text) {
-        Loaded {
-            state: load_persisted(text),
+    match saved_state(text) {
+        Some(state) => Loaded {
+            state,
             ..Loaded::default()
-        }
-    } else {
-        Loaded {
+        },
+        None => Loaded {
             keep_file: true,
             ..Loaded::default()
-        }
+        },
     }
 }
 
@@ -153,9 +159,9 @@ pub fn load_from(path: &Path) -> Loaded {
     };
     let text = String::from_utf8_lossy(&bytes);
     let text = text.trim_start_matches('\u{feff}');
-    if is_saved_state(text) {
+    if let Some(state) = saved_state(text) {
         return Loaded {
-            state: load_persisted(text),
+            state,
             set_aside: None,
             keep_file: false,
         };
@@ -520,7 +526,7 @@ fn read_saved(path: &Path) -> Option<AppState> {
     let bytes = std::fs::read(path).ok()?;
     let text = String::from_utf8_lossy(&bytes);
     let text = text.trim_start_matches('\u{feff}');
-    is_saved_state(text).then(|| load_persisted(text))
+    saved_state(text)
 }
 
 /// Watches `path` and takes each new copy of it ([`apply_reloaded`]), read off the UI thread. None when Windows
@@ -1152,6 +1158,53 @@ mod tests {
         // No temp file is left behind.
         assert_eq!(std::fs::read_dir(&dir).expect("lists").count(), 1);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A state as big as a heavy user's: years of folders opened and searches made.
+    fn heavy() -> AppState {
+        let mut s = sample();
+        for n in 0..4000 {
+            s.visits.insert(format!(r"C:\Users\someone\Projects\folder-{n}\src"), Visit { count: n as u64 + 1, last: 1_700_000_000_000 + n });
+        }
+        s.history = (0..200)
+            .map(|n| HistoryItem { query: format!("search {n}"), path: format!(r"C:\Users\someone\Documents\{n}"), timestamp: n })
+            .collect();
+        s.pinned = (0..30).map(|n| format!(r"D:\Pinned\{n}")).collect();
+        s
+    }
+
+    #[test]
+    fn a_heavy_state_loads_in_one_parse_and_what_is_not_a_saved_state_is_refused() {
+        let state = heavy();
+        let json = glint_model::store::persisted_json(&state).expect("encodes");
+        assert_eq!(saved_state(&json), Some(state));
+        assert_eq!(saved_state("{\"state\":{},\"version\":0}"), Some(AppState::default()));
+        for text in ["", "[]", "{\"state\":{},\"version\":3}", "{\"state\":null,\"version\":0}", "{\"version\":0}"] {
+            assert_eq!(saved_state(text), None, "{text}");
+        }
+    }
+
+    /// Run with `cargo test -p glint-ui --release --lib persistence::tests::loading_a_heavy_state -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "a speed measurement, not a check"]
+    fn loading_a_heavy_state_costs_one_parse() {
+        let json = glint_model::store::persisted_json(&heavy()).expect("encodes");
+        let best = |work: &dyn Fn() -> AppState| {
+            (0..30)
+                .map(|_| {
+                    let start = Instant::now();
+                    std::hint::black_box(work());
+                    start.elapsed()
+                })
+                .min()
+                .expect("runs")
+        };
+        let twice = best(&|| {
+            assert!(is_saved_state(&json));
+            load_persisted(&json)
+        });
+        let once = best(&|| saved_state(&json).expect("a saved state"));
+        println!("state.json of {} KB: parsed twice {twice:?}, once {once:?}", json.len() / 1024);
     }
 
     #[test]
