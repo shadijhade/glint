@@ -127,6 +127,8 @@ struct Tab {
     said: String,
     /// What it was started to run (a task, a script), which its tab says; a shell's tab says where it is.
     title: Option<String>,
+    /// What the program in it set as its title, when that says something (`usable_title`).
+    program_title: Option<String>,
     exited: Option<u32>,
     /// What is typed at its prompt once its shell first says where it is, Enter included.
     run: Option<String>,
@@ -136,17 +138,28 @@ struct Tab {
 }
 
 impl Tab {
-    /// The tab's text: the task's name, else the folder.
+    /// The tab's text: the task's name, else the title the program in it set, else the folder.
     fn label(&self) -> String {
-        self.title.clone().unwrap_or_else(|| {
-            let name = base_name(&self.cwd);
-            if name.is_empty() {
-                self.cwd.clone()
-            } else {
-                name.to_string()
-            }
-        })
+        self.title
+            .clone()
+            .or_else(|| self.program_title.clone())
+            .unwrap_or_else(|| {
+                let name = base_name(&self.cwd);
+                if name.is_empty() {
+                    self.cwd.clone()
+                } else {
+                    name.to_string()
+                }
+            })
     }
+}
+
+/// The title a program set, as a tab's text: `None` when it says nothing the tab doesn't (empty, or the path of
+/// the shell's own program, which is what a console sets before anything else does).
+fn usable_title(title: &str) -> Option<String> {
+    let title = title.trim();
+    let program = title.to_ascii_lowercase().ends_with(".exe");
+    (!title.is_empty() && !program).then(|| title.to_string())
 }
 
 /// The shell picker while it is open.
@@ -457,6 +470,7 @@ impl TerminalPane {
             said: wanted.cwd.clone(),
             cwd: wanted.cwd,
             title: wanted.job.map(|job| job.title),
+            program_title: None,
             exited: None,
             run,
             rtl: false,
@@ -517,7 +531,12 @@ impl TerminalPane {
                 cx.notify();
             }
             TerminalEvent::OpenPath(path) => self.open_path(path.clone(), cx),
-            TerminalEvent::Title(_) => {}
+            TerminalEvent::Title(title) => {
+                if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.key == key) {
+                    tab.program_title = title.as_deref().and_then(usable_title);
+                }
+                cx.notify();
+            }
         }
     }
 
