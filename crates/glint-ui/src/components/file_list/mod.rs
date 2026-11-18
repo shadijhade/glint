@@ -42,7 +42,7 @@ pub(crate) mod fake_git;
 mod header;
 mod incoming;
 mod layout;
-mod pointer;
+pub(crate) mod pointer;
 mod rename;
 mod states;
 #[cfg(test)]

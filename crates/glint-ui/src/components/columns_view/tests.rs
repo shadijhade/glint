@@ -543,3 +543,137 @@ fn a_pane_in_another_view_reads_nothing_for_its_columns_and_keeps_nothing(cx: &m
         .update(|_, cx| rig.view.read(cx).parent_path().map(str::to_string));
     assert_eq!(above.as_deref(), Some(PROJECTS));
 }
+
+// ---- The pointer: menus, middle-click, dragging out, dropping in, the inspector ---------------------------------
+
+use crate::components::menus::{MenuHost, Sources};
+use gpui_kit::test::{ClickOptions, TestEventExt as _};
+use gpui_kit::{point, px, MouseButton};
+
+/// A menu host the right-click can reach (`menus::host` finds it while this is alive).
+fn menus_for(rig: &mut Rig) -> Entity<MenuHost> {
+    rig.visual.update(|_, cx| cx.new(|cx| MenuHost::with_sources(Sources::empty(), cx)))
+}
+
+fn row_id(which: Which, index: usize) -> (&'static str, usize) {
+    match which {
+        Which::Parent => ("columns-parent-row", index),
+        Which::Next => ("columns-next-row", index),
+    }
+}
+
+#[gpui_kit::test]
+fn a_right_click_on_a_row_opens_that_items_menu_and_on_the_empty_part_the_columns_folder_menu(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut rig = setup(cx, false);
+    let host = menus_for(&mut rig);
+    rig.frame();
+    let index = rig.index_of(Which::Parent, "الصور");
+    rig.visual.update(|window, cx| window.right_click(row_id(Which::Parent, index), cx));
+    settle(&mut rig.visual);
+    assert!(host.read_with(&rig.visual, |h, _| h.is_open()), "the item menu is open");
+    rig.visual.update(|_, cx| host.update(cx, |h, cx| h.close(cx)));
+    assert!(!host.read_with(&rig.visual, |h, _| h.is_open()));
+    // Below the last row: the menu of the folder the column lists.
+    rig.frame();
+    rig.visual.update(|window, cx| window.right_click("columns-parent-box", cx));
+    settle(&mut rig.visual);
+    assert!(host.read_with(&rig.visual, |h, _| h.is_open()), "the folder menu is open");
+    assert_eq!(rig.path(), PROJECTS, "a right-click goes nowhere");
+}
+
+#[gpui_kit::test]
+fn a_middle_click_opens_a_folder_in_a_new_tab_and_a_file_in_none(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut rig = setup(cx, false);
+    let tabs = |rig: &Rig| rig.explorer.read_with(&rig.visual, |e, _| e.panes()[0].tabs.len());
+    let before = tabs(&rig);
+    rig.frame();
+    let folder = rig.index_of(Which::Parent, "الصور");
+    rig.visual.update(|window, cx| {
+        window.click_with_options(row_id(Which::Parent, folder), ClickOptions::new().with_button(MouseButton::Middle), cx)
+    });
+    settle(&mut rig.visual);
+    assert_eq!(tabs(&rig), before + 1);
+    let file = rig.index_of(Which::Parent, "ملاحظات.txt");
+    rig.visual.update(|window, cx| {
+        window.click_with_options(row_id(Which::Parent, file), ClickOptions::new().with_button(MouseButton::Middle), cx)
+    });
+    settle(&mut rig.visual);
+    assert_eq!(tabs(&rig), before + 1, "a plain file opens no tab");
+}
+
+#[gpui_kit::test]
+fn a_press_that_moves_six_pixels_drags_the_item_out_and_one_that_does_not_does_not(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut rig = setup(cx, false);
+    let index = rig.index_of(Which::Parent, "ملاحظات.txt");
+    crate::components::file_list::pointer::STARTED.with(|s| s.borrow_mut().clear());
+    rig.visual.update(|window, cx| {
+        window.render_frame(cx);
+        let from = window.find(row_id(Which::Parent, index)).bounds().center();
+        window.pointer_down(from, MouseButton::Left, cx);
+        window.pointer_move(from + point(px(2.), px(0.)), Some(MouseButton::Left), cx);
+    });
+    assert!(crate::components::file_list::pointer::STARTED.with(|s| s.borrow().is_empty()), "not yet");
+    rig.visual.update(|window, cx| {
+        let from = window.find(row_id(Which::Parent, index)).bounds().center();
+        window.pointer_move(from + point(px(12.), px(0.)), Some(MouseButton::Left), cx);
+        window.pointer_up(from + point(px(12.), px(0.)), MouseButton::Left, cx);
+    });
+    settle(&mut rig.visual);
+    let started = crate::components::file_list::pointer::STARTED.with(|s| s.borrow().clone());
+    assert_eq!(started, [(vec![NOTES_IN_ME.to_string()], false)]);
+}
+
+const NOTES_IN_ME: &str = r"C:\Users\me\ملاحظات.txt";
+
+#[gpui_kit::test]
+fn files_dropped_go_into_the_folder_row_under_the_pointer_else_the_columns_folder(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut rig = setup(cx, false);
+    rig.frame();
+    let (view, which) = (rig.view.clone(), Which::Parent);
+    let elsewhere = vec![r"D:\Elsewhere\a.txt".to_string()];
+    let (over_folder, over_empty, same_place) = rig.visual.update(|window, cx| {
+        window.render_frame(cx);
+        let index = view.read(cx).side(which).shown.iter().position(|&i| {
+            view.read(cx).side(which).raw.as_ref().is_some_and(|r| r[i].name == "الصور")
+        });
+        let list = window.find("columns-parent-drop").bounds();
+        view.update(cx, |v, _| v.side_mut(which).list_at = list);
+        let height = f32::from(space(7.).to_pixels(window.rem_size()));
+        let row_at = |i: usize| point(list.origin.x + px(20.), list.origin.y + px(height * (i as f32 + 0.5)));
+        let v = view.read(cx);
+        (
+            v.drop_target(which, row_at(index.unwrap()), list, &elsewhere, window),
+            v.drop_target(which, point(list.origin.x + px(20.), list.origin.y + list.size.height - px(4.)), list, &elsewhere, window),
+            v.drop_target(which, point(list.origin.x + px(20.), list.origin.y + list.size.height - px(4.)), list, &[r"C:\Users\me\x.txt".to_string()], window),
+        )
+    });
+    assert!(matches!(over_folder, Some((DropOver::Row(Which::Parent, _), ref dest)) if dest.ends_with("الصور")), "{over_folder:?}");
+    assert_eq!(over_empty, Some((DropOver::Column(Which::Parent), ME.to_string())));
+    // A file already in the column's folder, dropped on its empty part: nowhere to go.
+    assert!(same_place.is_none(), "{same_place:?}");
+}
+
+#[gpui_kit::test]
+fn the_inspector_shows_the_thumbnail_and_what_the_menus_head_says(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut rig = setup(cx, false);
+    rig.focus_item(NOTES);
+    rig.frame();
+    assert_eq!(rig.role("notes.txt, details"), Some(Role::Group));
+    assert_eq!(rig.role("notes.txt"), Some(Role::Image), "the thumbnail square is named");
+    // The type and the size, from the entry itself; nothing is said that isn't known.
+    let said = rig.visual.update(|window, cx| {
+        window.render_frame(cx);
+        window.find("columns-file-facts").label().map(|l| l.to_string())
+    });
+    let said = said.expect("facts are there");
+    assert!(said.contains("1.5 KB"), "{said}");
+    // Looking at another folder lets the thumbnail go.
+    rig.focus_item(REPORTS);
+    let held = rig.view.read_with(&rig.visual, |v, _| v.thumb_of.clone());
+    assert_eq!(held, None);
+}
