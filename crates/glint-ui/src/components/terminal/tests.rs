@@ -891,3 +891,228 @@ fn a_real_command_prompt_runs_and_its_output_lands_on_the_screen() {
     assert!(rows.iter().any(|row| row == "glint-works"), "{rows:?}");
     assert!(cwd.is_some(), "the prompt said where it is");
 }
+
+// ---- The cursor's blink rests when idle
+
+impl Env {
+    /// The window is active (so focus reaches the terminal) and Windows' animations are on, which tests keep off.
+    fn animate(&mut self) {
+        self.cx.update(|window, cx| {
+            window.activate_window();
+            cx.set_reduce_motion(false);
+        });
+    }
+
+    /// Whether the blink timer is running, and whether the cursor is shown now.
+    fn blink(&mut self) -> (bool, bool) {
+        let view = self.view();
+        self.cx.update(|_, cx| {
+            let view = view.read(cx);
+            (view.is_blinking(), view.cursor_shown())
+        })
+    }
+
+    /// Lets `time` pass on the fake clock, in steps of a blink.
+    fn wait(&mut self, time: std::time::Duration) {
+        let step = std::time::Duration::from_millis(530);
+        let mut left = time;
+        while !left.is_zero() {
+            let now = left.min(step);
+            self.cx.executor().advance_clock(now);
+            self.cx.run_until_parked();
+            left -= now;
+        }
+    }
+}
+
+#[gpui_kit::test]
+fn the_cursor_blinks_for_ten_seconds_after_the_last_thing_and_then_rests_shown(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut env = open(cx, &SHELLS);
+    env.animate();
+    env.start();
+    env.input("a");
+    assert!(env.blink().0, "a key starts the blink");
+    let shown: Vec<bool> = (0..4)
+        .map(|_| {
+            env.wait(Duration::from_millis(530));
+            env.blink().1
+        })
+        .collect();
+    assert_eq!(shown, [false, true, false, true], "it blinks");
+    // 18 blinks in, 9.5 s have gone: still going. The 19th makes it ten, and it rests, shown.
+    env.input("b");
+    env.wait(Duration::from_millis(530 * 18));
+    assert!(env.blink().0);
+    env.wait(Duration::from_millis(530));
+    assert_eq!(env.blink(), (false, true));
+    // Nothing is waiting for anything now: a long time later it is still so.
+    env.wait(Duration::from_secs(60));
+    assert_eq!(env.blink(), (false, true));
+}
+
+#[gpui_kit::test]
+fn typing_output_and_focus_start_the_blink_again(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut env = open(cx, &SHELLS);
+    env.animate();
+    env.start();
+    env.input("a");
+    env.wait(Duration::from_secs(11));
+    assert!(!env.blink().0);
+
+    // Output: the shell prints, and the cursor goes on blinking.
+    env.print("hello");
+    settle(&mut env.cx, |env| env.update(|_, _| true));
+    let view = env.view();
+    settle(&mut env.cx, move |cx| cx.update(|_, cx| view.read(cx).is_blinking()));
+    env.wait(Duration::from_secs(11));
+    assert!(!env.blink().0);
+
+    // Typing.
+    env.input("b");
+    assert_eq!(env.blink(), (true, true));
+    env.wait(Duration::from_secs(11));
+    assert!(!env.blink().0);
+
+    // Focus: away, and back. Away, there is nothing to blink (and output doesn't start it).
+    let view = env.view();
+    env.cx.update(|window, cx| {
+        let elsewhere = cx.focus_handle();
+        window.focus(&elsewhere, cx);
+    });
+    env.cx.run_until_parked();
+    assert_eq!(env.blink(), (false, true));
+    env.print("more");
+    settle(&mut env.cx, |env| env.update(|_, _| true));
+    assert!(!env.blink().0, "an unfocused terminal doesn't blink");
+    env.cx.update(|window, cx| {
+        let handle = view.read(cx).focus_handle().clone();
+        window.focus(&handle, cx);
+    });
+    env.cx.run_until_parked();
+    assert!(env.blink().0, "focus starts it");
+}
+
+#[gpui_kit::test]
+fn no_blink_once_the_shell_has_ended_or_when_windows_animations_are_off(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut env = open(cx, &SHELLS);
+    env.animate();
+    env.start();
+    env.input("a");
+    assert!(env.blink().0);
+    env.log.exit(0);
+    let view = env.view();
+    settle(&mut env.cx, |cx| cx.update(|_, cx| view.read(cx).exited() == Some(0)));
+    assert_eq!(env.blink(), (false, true), "an ended shell leaves its cursor alone");
+
+    // Animations off (the same setting everything else in Glint follows): the cursor stays solid.
+    let mut env = open(cx, &SHELLS);
+    env.cx.update(|window, cx| {
+        window.activate_window();
+        cx.set_reduce_motion(true);
+    });
+    env.start();
+    env.input("a");
+    env.wait(Duration::from_secs(2));
+    assert_eq!(env.blink(), (false, true));
+}
+
+// ---- Files dropped on the terminal
+
+impl Env {
+    /// Drops `paths` on the middle of the terminal, as Windows hands them over: held over it, then let go.
+    fn drop_files(&mut self, paths: &[&str]) {
+        use gpui_kit::{ExternalPaths, FileDropEvent, PlatformInput};
+        let centre = self.cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.find("terminal").bounds().center()
+        });
+        let paths = ExternalPaths(paths.iter().map(std::path::PathBuf::from).collect());
+        self.cx.update(|window, cx| {
+            window.dispatch_event(
+                PlatformInput::FileDrop(FileDropEvent::Entered {
+                    position: centre,
+                    paths,
+                }),
+                cx,
+            );
+            window.dispatch_event(PlatformInput::FileDrop(FileDropEvent::Pending { position: centre }), cx);
+            window.dispatch_event(PlatformInput::FileDrop(FileDropEvent::Submit { position: centre }), cx);
+        });
+        self.cx.run_until_parked();
+    }
+}
+
+#[gpui_kit::test]
+fn files_dropped_on_the_terminal_put_their_quoted_paths_at_the_prompt(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut env = open(cx, &SHELLS);
+    env.start();
+    // PowerShell quotes with single quotes (a quote in a name is doubled); several are a space apart; nothing is
+    // run: there is no Enter.
+    env.drop_files(&["C:\\My Files\\it's.txt", "D:\\تقارير"]);
+    env.wait_written("'C:\\My Files\\it''s.txt' 'D:\\تقارير'");
+    // The program asked for bracketed paste: they come as one.
+    env.print("\x1b[?2004h");
+    settle(&mut env.cx, |_| true);
+    env.drop_files(&["C:\\a b"]);
+    env.wait_written("'C:\\My Files\\it''s.txt' 'D:\\تقارير'\x1b[200~'C:\\a b'\x1b[201~");
+}
+
+#[gpui_kit::test]
+fn a_command_prompt_gets_double_quotes_and_an_ended_shell_takes_nothing(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut env = open(cx, &[("cmd", "Command Prompt")]);
+    env.start();
+    env.drop_files(&["C:\\Program Files\\x.exe"]);
+    env.wait_written("\"C:\\Program Files\\x.exe\"");
+    env.log.exit(1);
+    let view = env.view();
+    settle(&mut env.cx, |cx| cx.update(|_, cx| view.read(cx).exited() == Some(1)));
+    env.drop_files(&["C:\\later"]);
+    assert_eq!(env.log.written(), "\"C:\\Program Files\\x.exe\"");
+}
+
+// ---- The tab's title follows the program's
+
+#[gpui_kit::test]
+fn a_title_the_program_sets_is_the_tabs_text_unless_it_is_only_the_shells_own_program(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut env = open(cx, &SHELLS);
+    env.start();
+    let folder = env.tab_label();
+    env.print("\x1b]0;Build: glint\x07");
+    settle(&mut env.cx, |cx| {
+        cx.update(|window, _| window.try_find_by_label("Build: glint").is_some())
+    });
+    assert_eq!(env.tab_label(), "Build: glint");
+    assert_eq!(env.role_of("Build: glint"), Some(Role::Tab));
+    // A console's own title (the shell's program) says nothing: the folder is back.
+    env.print("\x1b]0;C:\\Windows\\System32\\cmd.exe\x07");
+    settle(&mut env.cx, |cx| {
+        cx.update(|window, _| window.try_find_by_label("Build: glint").is_none())
+    });
+    assert_eq!(env.tab_label(), folder);
+}
+
+impl Env {
+    /// What the first tab says.
+    fn tab_label(&mut self) -> String {
+        let pane = self.pane.clone();
+        self.cx.update(|_, cx| pane.read(cx).tabs[0].label())
+    }
+}
+
+#[test]
+fn only_a_title_that_says_something_is_used() {
+    assert_eq!(usable_title("  vim notes.txt "), Some("vim notes.txt".to_string()));
+    assert_eq!(usable_title("تقرير"), Some("تقرير".to_string()));
+    assert_eq!(usable_title(""), None);
+    assert_eq!(usable_title("   "), None);
+    assert_eq!(
+        usable_title("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.EXE"),
+        None
+    );
+}

@@ -58,6 +58,30 @@ pub fn run_line(shell: &str, program: &str, args: &[&str]) -> String {
     }
 }
 
+/// `path` (a Windows path) as a word the shell reads as that path, quoted for it: what a file dropped on a
+/// terminal puts at the prompt. PowerShell and cmd take it as it is; a Unix-style shell is given the path
+/// through the tool that converts it (as [`cd_command`] does), since `C:\a` is not a path there.
+pub fn quoted_path(shell: &str, path: &str) -> String {
+    match shell {
+        "pwsh" | "powershell" => format!("'{}'", single_quoted_pwsh(path)),
+        // A Windows path can't hold a double quote.
+        "cmd" => format!("\"{}\"", path.replace('"', "")),
+        "bash" => format!("\"$(cygpath -u {})\"", single_quoted_bash(path)),
+        "wsl" => format!("\"$(wslpath {})\"", single_quoted_bash(path)),
+        "nu" => format!("\"{}\"", nu_inside_quotes(path)),
+        _ => format!("\"{}\"", path.replace('"', "")),
+    }
+}
+
+/// Several dropped paths, each quoted for the shell, one space between.
+pub fn quoted_paths(shell: &str, paths: &[String]) -> String {
+    paths
+        .iter()
+        .map(|path| quoted_path(shell, path))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Whether what a terminal sends is the person typing, rather than its own reports: focus in and out
 /// (ESC [I, ESC [O) and the cursor's position (ESC [row;colR).
 ///
@@ -117,6 +141,26 @@ mod tests {
         assert_eq!(cd_command("bash", "C:\\it's"), "cd \"$(cygpath -u 'C:\\it'\\''s')\"\r");
         // nushell doubles each backslash inside its double quotes.
         assert_eq!(cd_command("nu", "C:\\a b"), "cd \"C:\\\\a b\"\r");
+    }
+
+    #[test]
+    fn dropped_paths_are_quoted_for_each_shell_and_joined_with_spaces() {
+        let path = "C:\\My Files\\it's.txt";
+        assert_eq!(quoted_path("pwsh", path), "'C:\\My Files\\it''s.txt'");
+        assert_eq!(quoted_path("powershell", "D:\\a"), "'D:\\a'");
+        assert_eq!(quoted_path("cmd", path), "\"C:\\My Files\\it's.txt\"");
+        assert_eq!(
+            quoted_path("bash", path),
+            "\"$(cygpath -u 'C:\\My Files\\it'\\''s.txt')\""
+        );
+        assert_eq!(quoted_path("wsl", "D:\\a b"), "\"$(wslpath 'D:\\a b')\"");
+        assert_eq!(quoted_path("nu", "C:\\a \"b"), "\"C:\\\\a \\\"b\"");
+        assert_eq!(quoted_path("fish", "C:\\a b"), "\"C:\\a b\"");
+        // Arabic names go through as they are.
+        assert_eq!(quoted_path("pwsh", "C:\\تقارير\\ملف.txt"), "'C:\\تقارير\\ملف.txt'");
+        let two = ["C:\\a b".to_string(), "D:\\c".to_string()];
+        assert_eq!(quoted_paths("cmd", &two), "\"C:\\a b\" \"D:\\c\"");
+        assert_eq!(quoted_paths("cmd", &[]), "");
     }
 
     #[test]

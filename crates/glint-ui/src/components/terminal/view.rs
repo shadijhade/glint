@@ -23,11 +23,13 @@ use super::emu::{Hooks, LinkSpan, LinkTarget, Palette, Pick, Screen, Signal};
 use super::keys::{self, Button, Mods, Mouse};
 use super::session::{self, Backend, Msg, Outbox, SessionEvent, Spawn, Waker};
 use crate::kit::prelude::*;
+use crate::platform::dragdrop::{Answer, Under};
 use crate::{t, theme};
 use alacritty_terminal::term::TermMode;
 use gpui_kit::{
-    Bounds, ClipboardItem, EntityInputHandler, EventEmitter, KeyDownEvent, Keystroke, Modifiers, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Role, ScrollEvent, Subscription, Task, UTF16Selection,
+    Bounds, ClipboardItem, DragMoveEvent, EntityInputHandler, EventEmitter, ExternalPaths, KeyDownEvent, Keystroke,
+    Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Role, ScrollEvent,
+    Subscription, Task, UTF16Selection,
 };
 use std::cell::Cell;
 use std::ops::Range;
@@ -39,6 +41,9 @@ use std::time::Duration;
 const FRAME: Duration = Duration::from_millis(16);
 /// How long the cursor shows and hides when it blinks.
 const BLINK: Duration = Duration::from_millis(530);
+/// How long it keeps blinking with nothing typed, no output and no change of focus; then it rests, shown, and
+/// nothing wakes up for it any more (an idle terminal costs no CPU).
+const BLINK_FOR: Duration = Duration::from_secs(10);
 /// The font size in rems: 13 px at the usual 16 (`fontSize: 13`).
 pub const FONT_REMS: f32 = 13. / 16.;
 
@@ -100,6 +105,9 @@ pub struct TerminalView {
     composition: Option<SharedString>,
     cursor_on: bool,
     blink: Option<Task<()>>,
+    /// How long the blink has gone on since something last happened (a key, output, focus).
+    quiet: Duration,
+    focused: bool,
     idle: bool,
     exited: Option<u32>,
     title: Option<String>,
@@ -230,6 +238,8 @@ impl TerminalView {
             composition: None,
             cursor_on: true,
             blink: None,
+            quiet: Duration::ZERO,
+            focused: false,
             idle: false,
             exited: None,
             title: None,
@@ -333,6 +343,7 @@ impl TerminalView {
             }
         }
         if redraw {
+            self.output_seen(cx);
             self.check_rtl(cx);
             self.arm_sync(cx);
             cx.notify();
@@ -345,6 +356,9 @@ impl TerminalView {
             return;
         }
         self.exited = Some(code);
+        // Nothing is left to blink.
+        self.blink = None;
+        self.cursor_on = true;
         let with = if code == 0 {
             String::new()
         } else {
@@ -435,6 +449,7 @@ impl TerminalView {
     // ---- Focus and the cursor's blink
 
     fn focus_changed(&mut self, focused: bool, cx: &mut Context<Self>) {
+        self.focused = focused;
         self.screen.with(|emu| emu.set_focused(focused));
         if self.mode().contains(TermMode::FOCUS_IN_OUT) {
             self.write(if focused { "\x1b[I" } else { "\x1b[O" }.to_string());
@@ -448,21 +463,80 @@ impl TerminalView {
         cx.notify();
     }
 
-    /// The cursor shows solid, and blinks again after the next pause.
+    /// The cursor shows solid, and blinks again after the next pause, for [`BLINK_FOR`] unless something happens
+    /// meanwhile. It doesn't blink at all when the shell has ended or Windows' animations are off.
     fn restart_blink(&mut self, cx: &mut Context<Self>) {
         self.cursor_on = true;
+        self.quiet = Duration::ZERO;
+        self.blink = None;
+        if self.exited.is_some() || cx.reduce_motion() {
+            return;
+        }
         self.blink = Some(cx.spawn(async move |this, cx| loop {
             cx.background_executor().timer(BLINK).await;
-            if this
-                .update(cx, |this, cx| {
-                    this.cursor_on = !this.cursor_on;
+            let more = this.update(cx, |this, cx| {
+                this.quiet += BLINK;
+                if this.quiet >= BLINK_FOR {
+                    // Rests with the cursor shown, and the timer is over.
+                    this.cursor_on = true;
+                    this.blink = None;
                     cx.notify();
-                })
-                .is_err()
-            {
+                    return false;
+                }
+                this.cursor_on = !this.cursor_on;
+                cx.notify();
+                true
+            });
+            if !more.unwrap_or(false) {
                 break;
             }
         }));
+    }
+
+    /// Output came (a redraw is due): a terminal that has the keyboard blinks again, or keeps blinking, from now.
+    fn output_seen(&mut self, cx: &mut Context<Self>) {
+        if !self.focused || self.exited.is_some() {
+            return;
+        }
+        if self.blink.is_some() {
+            self.quiet = Duration::ZERO;
+        } else {
+            self.restart_blink(cx);
+        }
+    }
+
+    /// Whether the blink timer is running (tests: an idle terminal has none).
+    #[cfg(test)]
+    pub fn is_blinking(&self) -> bool {
+        self.blink.is_some()
+    }
+
+    /// Whether the cursor is shown at this moment of its blink (tests).
+    #[cfg(test)]
+    pub fn cursor_shown(&self) -> bool {
+        self.cursor_on
+    }
+
+    // ---- Files dropped on the terminal
+
+    /// Files or folders dropped on the terminal: their paths are typed at the prompt, quoted for the shell and a
+    /// space apart (as pasted, so a program that asked for bracketed paste gets them so). A shell that has ended
+    /// takes nothing.
+    pub fn drop_paths(&mut self, paths: &[String], cx: &mut Context<Self>) {
+        let Some(live) = self.live.as_ref().filter(|_| self.exited.is_none()) else {
+            return;
+        };
+        let text = glint_model::cd::quoted_paths(&live.shell, paths);
+        if text.is_empty() {
+            return;
+        }
+        let sequence = keys::paste_text(&text, self.mode());
+        self.send(sequence, cx);
+    }
+
+    /// Whether a drop would be taken: a shell that is running.
+    fn takes_drops(&self) -> bool {
+        self.live.is_some() && self.exited.is_none()
     }
 
     // ---- The keyboard
@@ -959,7 +1033,25 @@ impl Render for TerminalView {
             .overflow_hidden()
             .bg(gpui_kit::rgb(self.palette.background));
         if self.live.is_some() {
-            root.child(element)
+            root.on_drag_move(cx.listener(move |this, event: &DragMoveEvent<ExternalPaths>, _, cx| {
+                // Files held over the terminal: a drop pastes their paths, and the drag's picture says so.
+                if this.takes_drops() && event.bounds.contains(&event.event.position) {
+                    crate::drops::answer(
+                        cx,
+                        Answer::Accept(Under {
+                            name: this.shell_name.to_string(),
+                            copy: t!("Paste the path into %1").to_string(),
+                            moves: t!("Paste the path into %1").to_string(),
+                            always_move: false,
+                        }),
+                    );
+                }
+            }))
+            .on_drop(cx.listener(|this, dropped: &ExternalPaths, window, cx| {
+                this.drop_paths(&crate::drops::paths(dropped), cx);
+                this.focus(window, cx);
+            }))
+            .child(element)
         } else {
             root.on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| this.playback_key(event, cx)))
                 .child(element)
