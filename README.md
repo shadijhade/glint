@@ -62,7 +62,7 @@ Glint needs Windows 10 or 11, 64-bit, and nothing else: it draws its own window,
 
 ## What's new
 
-**0.14.0** (coming soon) is quicker, sharper and lighter. **Back** brings back your searches, `Ctrl+B` lays a whole folder tree out as one list, and `Glint.exe` is 11 MB smaller, built from 179 fewer crates: a few big features you may never have opened made way for small ones you'll use every day.
+**0.14.0** (November 18, 2026) is quicker, sharper and lighter. **Back** brings back your searches, `Ctrl+B` lays a whole folder tree out as one list, and `Glint.exe` is 11 MB smaller, built from 179 fewer crates: a few big features you may never have opened made way for small ones you'll use every day.
 
 -   **Back that remembers.** A search is a place in **Back** and **Forward** now: open a folder from the results and **Back** brings them back as you left them, without searching again, the folder selected. Every place keeps its selection and scroll, `Backspace` goes up when there's nothing to go back to, and a right-click on the arrows lists the places to jump to.
 -   **Flat view.** `Ctrl+B` shows every file in a folder and its subfolders as one list, straight from the instant search index: sort a whole tree by size or date, see every photo below a folder in the grid, rename across subfolders. `Ctrl+B` again, or `Esc`, and you're back.
