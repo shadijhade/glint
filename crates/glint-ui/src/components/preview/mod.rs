@@ -38,7 +38,7 @@
 //! its native one or gets what the TypeScript showed when its own previewer failed (Windows' previewer over the
 //! file's icon, or the file as text). (Wave 9 brought tables, notebooks, program headers, contacts, calendars, mail,
 //! the Changes, Query and Profile views; wave 10 the player, PDF pages and Word documents; wave 11
-//! Mermaid and Graphviz diagrams, math, Typst documents and cast recordings; wave 15 HTML mail laid out as a page in
+//! Mermaid and Graphviz diagrams, math, Typst documents and cast recordings (the diagrams and the math went in 0.14); wave 15 HTML mail laid out as a page in
 //! [`small`]. 0.14 took the book reader and the mail viewer out: books go to Windows' previewer, mail is text.)
 
 /// JSON, YAML and TOML as a tree; CSV and TSV as a table (DataPreview.tsx, DataTree.tsx).
@@ -55,13 +55,9 @@ pub mod cards;
 pub mod cast;
 pub mod choose;
 pub mod details;
-/// Graphviz diagrams, in Markdown and as files (layout-rs).
-pub mod diagram;
 /// Word documents laid out without Office (DocxView.tsx).
 pub mod docx;
 pub mod frame;
-/// Math in Markdown, LaTeX syntax (RaTeX).
-pub mod math;
 /// Jupyter notebooks as they read (NotebookView.tsx).
 pub mod notebook;
 pub mod pane;
@@ -81,7 +77,7 @@ pub mod sheet;
 pub mod shell;
 /// Who signed a program, and whether Windows trusts it (SignatureChip.tsx).
 pub mod signature;
-/// Contacts, calendars, design files and Graphviz sources (SmallPreviews.tsx).
+/// Contacts, calendars and design files (SmallPreviews.tsx).
 pub mod small;
 pub mod sources;
 /// SQLite databases: their tables and SQL (SqlitePreview in FilePreview.tsx).
@@ -89,8 +85,6 @@ pub mod sqlite;
 pub mod states;
 /// What Word documents read their zip and XML with.
 pub mod zipxml;
-/// SVG drawn as a GPUI image, cached by its source and size: the pipeline diagrams and math share (previews-native.md sections 4-7).
-pub mod svg_image;
 #[cfg(test)]
 mod tests;
 

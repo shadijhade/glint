@@ -17,8 +17,6 @@ pub enum SmallKind {
     Calendar,
     /// Paint and design files that are archives of layers (.kra, .ora, .procreate, .sketch).
     Design,
-    /// Graphviz graphs (.dot, .gv).
-    Graphviz,
 }
 
 /// The small preview kind of a file extension, or `None` when no small preview handles it.
@@ -35,7 +33,6 @@ pub fn small_kind_of(ext: &str) -> Option<SmallKind> {
         "vcf" | "vcard" => Some(SmallKind::Contact),
         "ics" | "ical" => Some(SmallKind::Calendar),
         "kra" | "ora" | "procreate" | "sketch" => Some(SmallKind::Design),
-        "dot" | "gv" => Some(SmallKind::Graphviz),
         _ => None,
     }
 }
@@ -58,9 +55,9 @@ mod tests {
         assert_eq!(small_kind_of("ora"), Some(SmallKind::Design));
         assert_eq!(small_kind_of("procreate"), Some(SmallKind::Design));
         assert_eq!(small_kind_of("sketch"), Some(SmallKind::Design));
-        assert_eq!(small_kind_of("dot"), Some(SmallKind::Graphviz));
-        assert_eq!(small_kind_of("gv"), Some(SmallKind::Graphviz));
-        // Mermaid files are text since 0.12.
+        // Graphviz and Mermaid files are text since 0.14 and 0.12.
+        assert_eq!(small_kind_of("dot"), None);
+        assert_eq!(small_kind_of("gv"), None);
         assert_eq!(small_kind_of("mmd"), None);
     }
 
@@ -76,8 +73,8 @@ mod tests {
     #[test]
     fn small_kind_serializes_to_the_ts_names() {
         assert_eq!(
-            serde_json::to_string(&SmallKind::Graphviz).ok().as_deref(),
-            Some("\"graphviz\"")
+            serde_json::to_string(&SmallKind::Calendar).ok().as_deref(),
+            Some("\"calendar\"")
         );
         assert_eq!(
             serde_json::from_str::<SmallKind>("\"design\"").ok(),

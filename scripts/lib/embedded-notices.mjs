@@ -3,16 +3,16 @@
 // read) doesn't cover. The texts are read from the crates' sources in Cargo's registry (found with
 // `cargo metadata`), at the versions Cargo.lock names, so a crate update changes them with it:
 //
-//   * the KaTeX fonts (SIL OFL 1.1), embedded by ratex-svg's `embed-fonts` through ratex-katex-fonts
 //   * the Lucide icons (ISC, and MIT for the ones from Feather), embedded by gpui-kit-assets for gpui-kit
 //   * two-face's syntax definitions and themes (each with its own license), embedded for code highlighting
 //   * jiff-tzdb's time zone database (public domain)
 //
-// (Typst's assets, hayagriva's citation styles and hypher's hyphenation patterns left with the built-in Typst in 0.12.)
+// (Typst's assets, hayagriva's citation styles and hypher's hyphenation patterns left with the built-in Typst in 0.12,
+// and the KaTeX fonts with the math previews in 0.14.)
 //
 // Anything else that embeds a font, icon set or data and isn't listed here: add it to SOURCES below.
 
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { inflateSync } from "node:zlib";
 import { windowsPackages } from "./metadata.mjs";
@@ -30,31 +30,6 @@ function crateFolders() {
 const read = (path) => readFileSync(path, "utf8").replace(/\r\n/g, "\n").trimEnd();
 /** A text in a fence that no license text can end early (it uses five backticks). */
 const fence = (text) => `\`\`\`\`\`text\n${text}\n\`\`\`\`\`\n`;
-
-/** The copyright strings (name table entry 0) of TrueType fonts, without repeats. */
-function fontCopyrights(files) {
-    const found = new Set();
-    for (const file of files) {
-        const font = readFileSync(file);
-        const tables = font.readUInt16BE(4);
-        for (let i = 0; i < tables; i++) {
-            const record = 12 + 16 * i;
-            if (font.toString("latin1", record, record + 4) !== "name") continue;
-            const table = font.readUInt32BE(record + 8);
-            const count = font.readUInt16BE(table + 2);
-            const strings = table + font.readUInt16BE(table + 4);
-            for (let n = 0; n < count; n++) {
-                const entry = table + 6 + 12 * n;
-                if (font.readUInt16BE(entry + 6) !== 0) continue;
-                const [platform, length, offset] = [font.readUInt16BE(entry), font.readUInt16BE(entry + 8), font.readUInt16BE(entry + 10)];
-                const raw = font.subarray(strings + offset, strings + offset + length);
-                const text = platform === 3 || platform === 0 ? Buffer.from(raw).swap16().toString("utf16le") : raw.toString("latin1");
-                if (text.trim()) found.add(text.trim());
-            }
-        }
-    }
-    return [...found];
-}
 
 /** two-face's acknowledgements: a zlib-compressed bincode list of { license type, text, path }, syntaxes then themes. */
 function twoFaceLicenses(dir) {
@@ -86,11 +61,6 @@ function twoFaceLicenses(dir) {
 
 /** Each section: [title, what it is, (folders) => the license texts as markdown]. */
 const SOURCES = [
-    ["KaTeX fonts", "The math in Markdown and LaTeX previews is drawn with the KaTeX fonts, embedded in Glint.exe by ratex-svg (`embed-fonts`, through ratex-katex-fonts) under the SIL Open Font License 1.1.", (get) => {
-        const { dir } = get("ratex-katex-fonts");
-        const fonts = readdirSync(join(dir, "fonts")).filter((f) => f.endsWith(".ttf")).map((f) => join(dir, "fonts", f));
-        return `${read(join(dir, "fonts", "FONT_NOTICE.txt"))}\n\nThe fonts' own copyright notices:\n\n${fontCopyrights(fonts).map((c) => `- ${c.replace(/\s*\n\s*/g, "; ")}`).join("\n")}\n\n${fence(read(join(dir, "fonts", "OFL.txt")))}`;
-    }],
     ["Lucide icons", "Glint's icons are Lucide's, embedded in Glint.exe by gpui-kit-assets (ISC; the icons that come from Feather are MIT).", (get) => fence(read(join(get("gpui-kit-assets").dir, "LICENSE-LUCIDE")))],
     ["Syntax definitions and themes (two-face)", "Code and text previews are highlighted with the syntax definitions and themes two-face embeds (the sets of the `bat` program). Each keeps its own license, reproduced here once with every file it covers.", (get) => {
         const groups = new Map();

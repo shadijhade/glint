@@ -102,7 +102,7 @@ pub enum Body {
     Notebook,
     /// A program's sections, imports and exports (`preview::program`).
     Program,
-    /// Contacts, calendars, design files and Graphviz sources (`preview::small`).
+    /// Contacts, calendars and design files (`preview::small`).
     Small(SmallKind),
     /// What Git changed in the file since the last commit (`git::changes`).
     Changes,
@@ -421,7 +421,9 @@ mod tests {
         assert_eq!(body("mail.eml"), Body::Text);
         assert_eq!(body("mail.msg"), Body::Text);
         assert_eq!(body("art.kra"), Body::Small(SmallKind::Design));
-        assert_eq!(body("graph.dot"), Body::Small(SmallKind::Graphviz));
+        // Graphviz sources are text: shown highlighted, not drawn.
+        assert_eq!(body("graph.dot"), Body::Text);
+        assert_eq!(body("graph.gv"), Body::Text);
         assert_eq!(body("flow.mmd"), Body::Text);
         assert_eq!(body("letter.doc"), Body::Shell(Fallback::Icon));
         assert_eq!(body("font.ttf"), Body::Shell(Fallback::Icon));

@@ -1,7 +1,7 @@
 // Writes THIRD_PARTY_CRATES.md: the crates in Glint's Windows build, each license's text with the crates
 // it covers, by cargo-about from the root Cargo.lock with about.toml and about.hbs, then (scripts/lib/
 // embedded-notices.mjs) the fonts, icons and data those crates embed under licenses cargo-about can't see:
-// the KaTeX fonts, the Lucide icons, two-face's syntaxes and themes, Typst's assets, CSL styles... The
+// the Lucide icons, two-face's syntaxes and themes... The
 // installer and the Store package ship it, so run this when crates change.
 //
 // Usage: npm run licenses [-- --check | --embedded]
