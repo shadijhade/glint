@@ -19,7 +19,6 @@
 //! `pair`): two files selected, or one against the other pane's. It is read when the selection moves.
 
 use super::cards::{ArchiveCard, FolderCard, LockedCard, Plain, PlainCard};
-use super::cast::CastView;
 use super::choose::{choose, effective_view, views, Body, Fallback, View};
 use super::data::DataPreview;
 use super::details::{has_details, map_link, rows};
@@ -294,7 +293,6 @@ impl EntryView {
             ProgramPreview,
             PdfView,
             DocxView,
-            CastView,
             SmallPreview
         );
         false
@@ -386,7 +384,6 @@ impl EntryView {
             Body::Small(kind) => cx.new(|cx| SmallPreview::new(entry.clone(), kind, window, cx)).into(),
             Body::Player(kind) => cx.new(|cx| PlayerView::new(entry.clone(), kind, window, cx)).into(),
             Body::Pdf => cx.new(|cx| PdfView::new(entry.clone(), window, cx)).into(),
-            Body::Cast => cx.new(|cx| CastView::new(path, window, cx)).into(),
             Body::Docx => {
                 // A document Glint can't lay out falls back to Windows' previewer over the icon, as in the web app.
                 let view = cx.new(|cx| DocxView::new(path, window, cx));

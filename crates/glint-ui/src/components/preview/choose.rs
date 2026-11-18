@@ -118,8 +118,6 @@ pub enum Body {
     Pdf,
     /// A Word document laid out without Office (`preview::docx`).
     Docx,
-    /// An asciinema recording played (`preview::cast`).
-    Cast,
     /// Windows' own previewer for the type, over `fallback`.
     Shell(Fallback),
     /// The kind's icon and nothing else.
@@ -205,8 +203,6 @@ pub fn views(entry: &FileEntry, changed: bool) -> Vec<ViewChoice> {
     let notebook = is_notebook(entry);
     let small = small_of(entry);
     let sheet = is_sheet(entry);
-    // Asciinema recordings have one view of their own, named for what it does.
-    let cast = readable(entry) && entry.ext == "cast";
     let choice = |view, label: SharedString, title: SharedString| ViewChoice { view, label, title };
     if notebook {
         views.push(choice(
@@ -249,9 +245,6 @@ pub fn views(entry: &FileEntry, changed: bool) -> Vec<ViewChoice> {
                 t!("As Windows' previewer for it shows it (Excel's, with Office installed)"),
             ));
         }
-    } else if cast {
-        views.push(choice(View::File, t!("Play"), t!("The recording, played")));
-        views.push(choice(View::Source, t!("Text"), t!("The file as written")));
     } else {
         views.push(choice(View::File, t!("File"), t!("The file as it is")));
     }
@@ -356,9 +349,6 @@ pub fn choose(entry: &FileEntry, view: View) -> Choice {
     }
     if data_kind(entry) {
         return Choice::of(if source { Body::Text } else { Body::Data });
-    }
-    if readable && entry.ext == "cast" {
-        return Choice::of(if source { Body::Text } else { Body::Cast });
     }
     if readable && !archived && one_of(entry, &DOCX_EXTS) && entry.size <= DOCX_MAX {
         return Choice::of(Body::Docx);
@@ -596,20 +586,11 @@ mod tests {
     }
 
     #[test]
-    fn recordings_have_a_view_named_for_what_it_does() {
-        let entry = file("C:\\x", "c.cast", 10, 1);
-        let first = &views(&entry, false)[0];
-        assert_eq!(first.view, View::File);
-        assert_eq!(first.label, "Play");
-        assert_eq!(first.title, "The recording, played");
-        // A recording is also text.
+    fn a_terminal_recording_is_text() {
+        // Glint has no player for asciinema recordings: a .cast file is highlighted text, with the usual views.
         let cast = file("C:\\x", "c.cast", 10, 1);
-        assert_eq!(
-            labels(&cast, false),
-            pairs(&[(View::File, "Play"), (View::Source, "Text"), (View::Hex, "Hex")])
-        );
-        assert_eq!(choose(&cast, View::File).body, Body::Cast);
-        assert_eq!(choose(&cast, View::Source).body, Body::Text);
+        assert_eq!(choose(&cast, View::File).body, Body::Text);
+        assert_eq!(labels(&cast, false), pairs(&[(View::File, "File"), (View::Hex, "Hex")]));
     }
 
     #[test]

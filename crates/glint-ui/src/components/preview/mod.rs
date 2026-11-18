@@ -38,8 +38,9 @@
 //! its native one or gets what the TypeScript showed when its own previewer failed (Windows' previewer over the
 //! file's icon, or the file as text). (Wave 9 brought tables, notebooks, program headers, contacts, calendars, mail,
 //! the Changes, Query and Profile views; wave 10 the player, PDF pages and Word documents; wave 11
-//! Mermaid and Graphviz diagrams, math, Typst documents and cast recordings (the diagrams and the math went in 0.14); wave 15 HTML mail laid out as a page in
-//! [`small`]. 0.14 took the book reader and the mail viewer out: books go to Windows' previewer, mail is text.)
+//! Mermaid and Graphviz diagrams, math, Typst documents and cast recordings; wave 15 HTML mail laid out as a page in
+//! [`small`]. 0.14 took the book reader, the 3D models, the mail viewer, the diagrams, the math and the cast player
+//! out: books go to Windows' previewer, and mail, Graphviz and recordings are text.)
 
 /// JSON, YAML and TOML as a tree; CSV and TSV as a table (DataPreview.tsx, DataTree.tsx).
 pub mod data;
@@ -51,8 +52,6 @@ pub mod markdown;
 pub mod text;
 
 pub mod cards;
-/// asciinema recordings played (CastPreview.tsx).
-pub mod cast;
 pub mod choose;
 pub mod details;
 /// Word documents laid out without Office (DocxView.tsx).
