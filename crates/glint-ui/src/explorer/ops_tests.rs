@@ -393,6 +393,65 @@ fn a_failed_copy_is_told_and_changes_nothing(cx: &mut TestAppContext) {
     assert_eq!(h.next_undo(cx), None);
 }
 
+// ---- Paste as link ---------------------------------------------------------------------------------------------
+
+#[gpui_kit::test]
+fn paste_as_link_links_what_is_on_the_clipboard_and_each_link_is_its_own_undo_step(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let h = harness(cx);
+    let runner = cx.update(FakeUndoRunner::install);
+    assert!(h.go(cx, "C:\\b"));
+    // Nothing on the clipboard.
+    h.task(cx, |e, cx| e.paste_as_links(None, cx));
+    assert_eq!(h.said(), [OpNotice::NoFilesOnClipboard]);
+    assert!(h.disk.linked().is_empty());
+
+    h.disk.set_clipboard(&["C:\\a\\one.txt", "C:\\a\\two.txt"], false);
+    h.task(cx, |e, cx| e.paste_as_links(None, cx));
+    assert_eq!(
+        h.disk.linked(),
+        [(vec!["C:\\a\\one.txt".to_string(), "C:\\a\\two.txt".to_string()], "C:\\b".to_string())]
+    );
+    // Two links, no Undo button on the toast (it could only take one back), and the clipboard is as it was.
+    assert!(h.said().iter().any(|n| matches!(n, OpNotice::Linked { count: 2, undo: None, .. })));
+    assert!(h.disk.clipboard().is_some());
+    assert_eq!(h.selected(cx), ["one.txt", "two.txt"]);
+
+    // Ctrl+Z takes the last link away, then the one before: the links only, through the links' own undo.
+    h.task(cx, |e, cx| e.undo(None, cx));
+    assert_eq!(runner.links_removed(), [vec!["C:\\b\\two.txt".to_string()]]);
+    h.task(cx, |e, cx| e.undo(None, cx));
+    assert_eq!(runner.links_removed().len(), 2);
+    assert_eq!(runner.links_removed()[1], ["C:\\b\\one.txt".to_string()]);
+    assert!(h.disk.ops().iter().all(|op| !matches!(op, FileOp::Delete { .. })), "nothing was recycled");
+    assert_eq!(h.next_undo(cx), None);
+}
+
+#[gpui_kit::test]
+fn paste_as_link_into_a_place_that_cannot_hold_files_does_nothing(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let h = harness(cx);
+    h.disk.set_clipboard(&["C:\\a\\one.txt"], false);
+    h.task(cx, |e, cx| e.paste_as_links(Some("remote:abc\\x"), cx));
+    assert!(matches!(h.notices().last(), Some(Notice::ReadOnly { .. })));
+    assert!(h.disk.linked().is_empty());
+}
+
+#[gpui_kit::test]
+fn a_failed_link_is_told_and_leaves_no_undo_step(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let h = harness(cx);
+    assert!(h.go(cx, "C:\\b"));
+    h.disk.set_clipboard(&["C:\\a\\one.txt"], false);
+    h.disk.fail_next("This drive can't hold a junction");
+    h.task(cx, |e, cx| e.paste_as_links(None, cx));
+    assert!(h.said().contains(&OpNotice::Failed {
+        what: Failing::Link,
+        message: "This drive can't hold a junction".into()
+    }));
+    assert_eq!(h.next_undo(cx), None);
+}
+
 // ---- The copy queue -------------------------------------------------------------------------------------------
 
 #[gpui_kit::test]

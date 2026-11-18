@@ -217,6 +217,78 @@ impl Explorer {
     }
 }
 
+impl Explorer {
+    /// Paste as link: what is on the clipboard linked into `dest` (the open folder by default) instead of copied: a
+    /// junction for a folder, a hardlink for a file on the same drive, a shortcut across drives. Nothing on the
+    /// clipboard moves, even a cut. Every link made is a step of its own for Ctrl+Z, which removes the link only.
+    #[must_use = "dropping the task stops waiting for it; `.detach()` it to let it run"]
+    pub fn paste_as_links(&mut self, dest: Option<&str>, cx: &mut Context<Self>) -> Task<()> {
+        let dest = dest.map_or_else(|| self.current_path().to_string(), str::to_string);
+        let Some(tab) = self.paste_target(&dest, cx) else {
+            return Task::ready(());
+        };
+        let reading = self.source.clipboard_get_files();
+        cx.spawn(async move |this, cx| {
+            let files = match reading.await {
+                Ok(files) => files.filter(|f| !f.paths.is_empty()),
+                Err(message) => return notify_failed(&this, cx, Failing::ReadClipboard, message),
+            };
+            let Some(files) = files else {
+                this.update(cx, |_, cx| {
+                    cx.emit(ExplorerEvent::Operation(OpNotice::NoFilesOnClipboard))
+                })
+                .ok();
+                return;
+            };
+            let Ok(linking) = this.update(cx, |this, _| this.source.paste_as_links(files.paths, dest.clone())) else {
+                return;
+            };
+            let report = match linking.await {
+                Ok(report) => report,
+                Err(message) => return notify_failed(&this, cx, Failing::Link, message),
+            };
+            let navigation = this
+                .update(cx, |this, cx| {
+                    let mut last = None;
+                    for made in &report.made {
+                        last = Some(this.remember_undo(
+                            format!("link “{}”", base_name(&made.path)),
+                            UndoAction::RemoveLinks(vec![made.path.clone()]),
+                            cx,
+                        ));
+                    }
+                    if !report.made.is_empty() {
+                        cx.emit(ExplorerEvent::Operation(OpNotice::Linked {
+                            count: report.made.len(),
+                            dest: dest.clone(),
+                            undo: last.filter(|_| report.made.len() == 1),
+                        }));
+                    }
+                    if !report.failed.is_empty() {
+                        // Up to three reasons, as the copy queue's errors do.
+                        let detail = report.failed.iter().take(3).map(|(_, why)| why.as_str()).collect::<Vec<_>>();
+                        cx.emit(ExplorerEvent::Operation(OpNotice::Failed {
+                            what: Failing::Link,
+                            message: detail.join("
+"),
+                        }));
+                    }
+                    let shows = this
+                        .tabs
+                        .get(&tab)
+                        .is_some_and(|t| same_path(&dest, &t.path) && t.find.is_none());
+                    let select: Vec<String> = report.made.iter().map(|m| m.path.clone()).collect();
+                    (shows && !select.is_empty()).then(|| this.show_in(tab, &dest, Some(select), cx))
+                })
+                .ok()
+                .flatten();
+            if let Some(navigation) = navigation {
+                navigation.await;
+            }
+        })
+    }
+}
+
 /// What was cut has been pasted: it shows normal again, and the clipboard is emptied.
 async fn forget_cut(this: &WeakEntity<Explorer>, cx: &mut AsyncApp) {
     let Ok(source) = this.update(cx, |this, cx| {

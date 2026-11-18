@@ -1151,6 +1151,9 @@ impl Workspace {
             ),
             MenuEvent::PasteInto { folder } => Self::explorer(cx, |e, cx| e.paste(Some(folder), cx).detach()),
             MenuEvent::PasteQueued { folder } => Self::explorer(cx, |e, cx| e.paste_queued(Some(folder), cx).detach()),
+            MenuEvent::PasteAsLink { folder } => {
+                Self::explorer(cx, |e, cx| e.paste_as_links(Some(folder), cx).detach())
+            }
             MenuEvent::CopyToOtherPane { paths, moving } => Self::explorer(cx, |e, cx| {
                 e.copy_to_other_pane(*moving, Some(paths.clone()), cx).detach()
             }),

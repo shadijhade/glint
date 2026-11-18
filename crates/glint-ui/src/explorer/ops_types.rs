@@ -144,6 +144,10 @@ pub enum UndoAction {
     /// the run's `Report::undo` id, which glint-core's `wof_undo` takes (once: a second try says it has been
     /// undone already).
     Wof(u64),
+    /// Links made by Paste as link taken away again: only the links go, never what they point to (junctions are
+    /// removed as links, see `glint_core::links`). Not Windows' file engine: it would recycle, and a junction in
+    /// the Recycle Bin is not a promise Glint can keep.
+    RemoveLinks(Vec<String>),
     /// Several actions taken back as one step, one Ctrl+Z and one label: undone last-recorded first (a run that
     /// replaced files records `[Restore(replaced), Recycle(made)]`: what was made is recycled, then the
     /// originals come back).
@@ -159,6 +163,8 @@ pub enum UndoRun {
     RenameBatch(Vec<BatchPair>),
     /// Through glint-core's `wof_undo`.
     Wof(u64),
+    /// Through glint-core's `undo_links`.
+    RemoveLinks(Vec<String>),
 }
 
 impl UndoAction {
@@ -168,6 +174,7 @@ impl UndoAction {
             UndoAction::Sequence(actions) => actions.iter().rev().flat_map(UndoAction::runs).collect(),
             UndoAction::RenameBatch(pairs) => vec![UndoRun::RenameBatch(pairs.clone())],
             UndoAction::Wof(id) => vec![UndoRun::Wof(*id)],
+            UndoAction::RemoveLinks(paths) => vec![UndoRun::RemoveLinks(paths.clone())],
             single => single.op().map(UndoRun::File).into_iter().collect(),
         }
     }
@@ -188,7 +195,10 @@ impl UndoAction {
     /// (which has several: use [`UndoAction::ops`]).
     pub fn op(&self) -> Option<FileOp> {
         match self {
-            UndoAction::Sequence(_) | UndoAction::RenameBatch(_) | UndoAction::Wof(_) => None,
+            UndoAction::Sequence(_)
+            | UndoAction::RenameBatch(_)
+            | UndoAction::Wof(_)
+            | UndoAction::RemoveLinks(_) => None,
             UndoAction::Recycle(paths) => Some(FileOp::Delete {
                 paths: paths.clone(),
                 permanent: false,
@@ -245,6 +255,8 @@ pub trait UndoRunner: Send + Sync {
     fn rename_batch(&self, pairs: Vec<BatchPair>) -> UndoFut<Result<(), String>>;
     /// Decompresses the files that compression run `id` compressed (`wof_undo`).
     fn wof_undo(&self, id: u64) -> UndoFut<Result<WofUndone, String>>;
+    /// Removes links Paste as link made, and only the links (`glint_core::links::undo_links`).
+    fn remove_links(&self, paths: Vec<String>) -> UndoFut<Result<(), String>>;
 }
 
 /// An [`UndoRunner`] for tests: it writes down what it was asked and answers as told.
@@ -255,6 +267,8 @@ pub struct FakeUndoRunner {
     pub batches: std::sync::Mutex<Vec<Vec<BatchPair>>>,
     /// Every compression run it was asked to take back, in order.
     pub wofs: std::sync::Mutex<Vec<u64>>,
+    /// Every set of links it was asked to remove, in order.
+    pub links: std::sync::Mutex<Vec<Vec<String>>>,
     /// What the next call says, once: it fails with this.
     pub fail: std::sync::Mutex<Option<String>>,
     /// What a taken-back compression leaves undone.
@@ -275,6 +289,11 @@ impl FakeUndoRunner {
         self.batches.lock().map(|b| b.clone()).unwrap_or_default()
     }
 
+    /// The links asked to be removed, in order.
+    pub fn links_removed(&self) -> Vec<Vec<String>> {
+        self.links.lock().map(|l| l.clone()).unwrap_or_default()
+    }
+
     /// The compression runs asked for, in order.
     pub fn wof_asked(&self) -> Vec<u64> {
         self.wofs.lock().map(|w| w.clone()).unwrap_or_default()
@@ -290,6 +309,14 @@ impl UndoRunner for FakeUndoRunner {
     fn rename_batch(&self, pairs: Vec<BatchPair>) -> UndoFut<Result<(), String>> {
         if let Ok(mut asked) = self.batches.lock() {
             asked.push(pairs);
+        }
+        let answer = self.failure().map_or(Ok(()), Err);
+        Box::pin(async move { answer })
+    }
+
+    fn remove_links(&self, paths: Vec<String>) -> UndoFut<Result<(), String>> {
+        if let Ok(mut asked) = self.links.lock() {
+            asked.push(paths);
         }
         let answer = self.failure().map_or(Ok(()), Err);
         Box::pin(async move { answer })
@@ -379,6 +406,8 @@ pub enum Failing {
     ReadClipboard,
     /// `Couldn't paste`
     Paste,
+    /// `Couldn't paste as a link`
+    Link,
 }
 
 /// What the file operations tell the person. Carried by [`ExplorerEvent::Operation`](super::ExplorerEvent):
@@ -423,6 +452,13 @@ pub enum OpNotice {
     /// Success: `Pasted “{name of made}” into “{dest name}”` (a picture or text pasted as a file into a folder
     /// that isn't on screen).
     PastedInto { made: String, dest: String },
+    /// Success: `Linked {what} into “{dest}”` (Paste as link). `undo` is offered when exactly one link was made:
+    /// each link is its own Ctrl+Z step.
+    Linked {
+        count: usize,
+        dest: String,
+        undo: Option<UndoId>,
+    },
     /// Info with a description: `Your {kind} app is making it` / `It shows here once it's made.`
     AppIsMakingIt { kind: String },
     /// Error: `A name can't contain any of these characters: \ / : * ? " < > |`

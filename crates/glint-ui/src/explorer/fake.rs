@@ -81,6 +81,8 @@ struct State {
     clipboard: Option<ClipboardFiles>,
     /// The name of the file a paste with no files on the clipboard makes (a picture or text there).
     paste_file: Option<String>,
+    /// What Paste as link was asked to link, and where, in order.
+    linked: Vec<(Vec<String>, String)>,
     recycle_answer: bool,
     new_kinds: Vec<NewKind>,
     /// A New menu file whose app has not made it yet.
@@ -413,6 +415,11 @@ impl FakeDisk {
     /// The files on the clipboard.
     pub fn clipboard(&self) -> Option<ClipboardFiles> {
         self.state.borrow().clipboard.clone()
+    }
+
+    /// What Paste as link was asked for: the sources and the folder, each time.
+    pub fn linked(&self) -> Vec<(Vec<String>, String)> {
+        self.state.borrow().linked.clone()
     }
 
     /// A picture or text is on the clipboard: pasting with no files makes a file with this name.
@@ -1252,6 +1259,30 @@ impl Source for FakeDisk {
                 return Ok(None);
             };
             make_numbered(&mut state, &folder, &name, false).map(Some)
+        })
+    }
+
+    fn paste_as_links(&self, sources: Vec<String>, dest: String) -> Fut<Result<glint_core::links::Report, String>> {
+        let state = self.state.clone();
+        Box::pin(async move {
+            let mut state = state.borrow_mut();
+            if let Some(message) = state.fail.take() {
+                return Err(message);
+            }
+            state.linked.push((sources.clone(), dest.clone()));
+            let mut report = glint_core::links::Report::default();
+            for source in sources {
+                let name = glint_model::paths::base_name(&source).to_string();
+                match make_numbered(&mut state, &dest, &name, false) {
+                    Ok(path) => report.made.push(glint_core::links::Made {
+                        path,
+                        target: source,
+                        kind: glint_core::links::Kind::Hardlink,
+                    }),
+                    Err(why) => report.failed.push((source, why)),
+                }
+            }
+            Ok(report)
         })
     }
 

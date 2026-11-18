@@ -78,6 +78,8 @@ pub enum MenuEvent {
     PasteInto { folder: String },
     /// "Paste with the copy queue" (`pasteQueued(folder)`).
     PasteQueued { folder: String },
+    /// "Paste as link": what is on the clipboard linked into the folder (junction, hardlink or shortcut).
+    PasteAsLink { folder: String },
     /// "Extract here" (`extractHere`).
     ExtractHere { path: String },
     /// "Mount" a disk image (`mountImage`).

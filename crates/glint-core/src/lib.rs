@@ -34,6 +34,7 @@ pub mod git;
 pub mod index;
 pub mod ioring;
 pub mod jq;
+pub mod links;
 pub mod locks;
 pub mod mcp;
 pub mod metadata;

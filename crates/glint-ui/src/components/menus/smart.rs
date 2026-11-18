@@ -78,6 +78,7 @@ fn event_key(event: &MenuEvent) -> Option<String> {
         MenuEvent::EmptyRecycleBin => "do:empty-recycle-bin",
         MenuEvent::PasteInto { .. } => "do:paste-into",
         MenuEvent::PasteQueued { .. } => "do:paste-queued",
+        MenuEvent::PasteAsLink { .. } => "do:paste-as-link",
         MenuEvent::ExtractHere { .. } => "do:extract-here",
         MenuEvent::Mount { .. } => "do:mount",
         MenuEvent::OpenWithItsApp { .. } => "do:open-with-its-app",
