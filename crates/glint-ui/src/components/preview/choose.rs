@@ -1,10 +1,7 @@
 //! Which previewer a file gets: the chain of `EntryPreview` in FilePreview.tsx, as a pure function.
 //!
 //! The TypeScript decided in the middle of a component; here the decision is a function of the entry and the
-//! chosen view, so it is tested without a window. [`choose`] says what is drawn ([`Body`]); where the
-//! TypeScript had a previewer that the port doesn't have yet, the `later` field names it (the `PORT ME` kinds)
-//! and the body is the TypeScript's own fallback for it (Windows' previewer over the file's icon, or the
-//! file as text). No kind is waiting on a previewer through it now, so `later` is always `None`.
+//! chosen view, so it is tested without a window. [`choose`] says what is drawn ([`Body`]).
 
 use super::player::Kind as PlayerKind;
 use crate::dialogs::data_tools::DUCK_READS;
@@ -120,22 +117,6 @@ pub enum Body {
     Shell(Fallback),
     /// The kind's icon and nothing else.
     Icon,
-}
-
-/// A body, and the TypeScript previewer it stands in for until that part is built.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Choice {
-    pub body: Body,
-    /// `PORT ME(<kind>)`: the TypeScript showed something better for this file; the body is its fallback. Nothing
-    /// is waiting on a previewer now, so it is always `None`; a kind that is not
-    /// ported yet sets it with `Choice { body, later: Some("kind") }`.
-    pub later: Option<&'static str>,
-}
-
-impl Choice {
-    fn of(body: Body) -> Self {
-        Choice { body, later: None }
-    }
 }
 
 /// Whether the file's contents can be looked at (`readable`).
@@ -279,87 +260,87 @@ pub fn effective_view(entry: &FileEntry, chosen: View, changed: bool) -> View {
 }
 
 /// What to draw for `entry` in `view` (use [`effective_view`] for the view): the chain in `EntryPreview`.
-pub fn choose(entry: &FileEntry, view: View) -> Choice {
+pub fn choose(entry: &FileEntry, view: View) -> Body {
     let archived = is_archived(entry);
     let readable = readable(entry);
     let source = view == View::Source;
     if view == View::Hex && readable {
-        return Choice::of(Body::Hex);
+        return Body::Hex;
     }
     // The views that are the same tool whatever the file is; `effective_view` only passes the ones it has.
     match view {
-        View::Changes if !entry.dir && !archived => return Choice::of(Body::Changes),
-        View::Query if is_queryable(entry) => return Choice::of(Body::Query),
-        View::Profile if is_profilable(entry) => return Choice::of(Body::Profile),
+        View::Changes if !entry.dir && !archived => return Body::Changes,
+        View::Query if is_queryable(entry) => return Body::Query,
+        View::Profile if is_profilable(entry) => return Body::Profile,
         _ => {}
     }
     if entry.dir {
-        return Choice::of(Body::Folder);
+        return Body::Folder;
     }
     if is_online_only(entry) {
-        return Choice::of(Body::OnlineOnly);
+        return Body::OnlineOnly;
     }
     if is_closed(entry) {
-        return Choice::of(Body::Closed);
+        return Body::Closed;
     }
     if is_locked(entry) {
-        return Choice::of(Body::Locked);
+        return Body::Locked;
     }
     // Its Text view is the file as it is, which goes on down the chain.
     if let Some(kind) = small_of(entry).filter(|_| !source) {
-        return Choice::of(Body::Small(kind));
+        return Body::Small(kind);
     }
     if is_archive_file(entry) {
-        return Choice::of(Body::Archive);
+        return Body::Archive;
     }
     // In an archive, pictures, video, sound and PDFs are shown from a temp copy; text is read straight out of it.
     match kind_of(entry).preview {
-        Some(PreviewKind::Image) => return Choice::of(Body::Picture),
+        Some(PreviewKind::Image) => return Body::Picture,
         // The player, with Trim, the waveform and the transcript (VideoPreview, AudioPreview).
-        Some(PreviewKind::Video) => return Choice::of(Body::Player(PlayerKind::Video)),
-        Some(PreviewKind::Audio) => return Choice::of(Body::Player(PlayerKind::Audio)),
+        Some(PreviewKind::Video) => return Body::Player(PlayerKind::Video),
+        Some(PreviewKind::Audio) => return Body::Player(PlayerKind::Audio),
         // PDF pages drawn natively (PdfPreview).
-        Some(PreviewKind::Pdf) => return Choice::of(Body::Pdf),
+        Some(PreviewKind::Pdf) => return Body::Pdf,
         _ => {}
     }
     if !archived && one_of(entry, &SQLITE) {
-        return Choice::of(Body::Sqlite);
+        return Body::Sqlite;
     }
     if !archived && one_of(entry, &TABULAR) && data_format(entry).is_none() {
-        return Choice::of(if source { Body::Text } else { Body::Data });
+        return if source { Body::Text } else { Body::Data };
     }
     if is_sheet(entry) {
         // A workbook's Previewer view is Windows' own, over its icon.
-        return Choice::of(if source && is_workbook(entry) {
+        return if source && is_workbook(entry) {
             Body::Shell(Fallback::Icon)
         } else {
             Body::Sheet
-        });
+        };
     }
     if is_notebook(entry) {
-        return Choice::of(if source { Body::Text } else { Body::Notebook });
+        return if source { Body::Text } else { Body::Notebook };
     }
     if rendered_markdown(entry) {
-        return Choice::of(if source { Body::Text } else { Body::Markdown });
+        return if source { Body::Text } else { Body::Markdown };
     }
     if data_kind(entry) {
-        return Choice::of(if source { Body::Text } else { Body::Data });
+        return if source { Body::Text } else { Body::Data };
     }
     if readable && !archived && one_of(entry, &DOCX_EXTS) && entry.size <= DOCX_MAX {
-        return Choice::of(Body::Docx);
+        return Body::Docx;
     }
     // Unknown extensions get a text preview attempt; the probe spots binary files.
     if kind_of(entry).preview == Some(PreviewKind::Text) || !is_known_type(entry) {
-        return Choice::of(Body::Text);
+        return Body::Text;
     }
     if !archived && one_of(entry, &PE) {
-        return Choice::of(Body::Program);
+        return Body::Program;
     }
     // Word, Excel, PowerPoint, fonts…: Windows' own previewer, where there's one.
     if !archived {
-        return Choice::of(Body::Shell(Fallback::Icon));
+        return Body::Shell(Fallback::Icon);
     }
-    Choice::of(Body::Icon)
+    Body::Icon
 }
 
 #[cfg(test)]
@@ -370,7 +351,7 @@ mod tests {
 
     fn body(name: &str) -> Body {
         let entry = file("C:\\x", name, 10, 1);
-        choose(&entry, effective_view(&entry, View::File, false)).body
+        choose(&entry, effective_view(&entry, View::File, false))
     }
 
     fn marked(name: &str, attrs: u32) -> FileEntry {
@@ -415,13 +396,12 @@ mod tests {
     }
 
     #[test]
-    fn no_kind_is_waiting_on_a_previewer_and_e_books_go_to_windows_previewer() {
-        let later = |name: &str| choose(&file("C:\\x", name, 10, 1), View::File);
+    fn e_books_and_3d_models_go_to_windows_previewer_or_the_text_probe() {
+        let body_of = |name: &str| choose(&file("C:\\x", name, 10, 1), View::File);
         // Glint has no book reader: the kinds it knows are Windows' previewer over the icon, with no view of
         // their own beyond the file as it is.
         for book in ["book.epub", "book.mobi", "book.azw3", "comic.cbz"] {
-            assert_eq!(later(book).body, Body::Shell(Fallback::Icon), "{book}");
-            assert_eq!(later(book).later, None, "{book}");
+            assert_eq!(body_of(book), Body::Shell(Fallback::Icon), "{book}");
             let entry = file("C:\\x", book, 10, 1);
             assert_eq!(
                 labels(&entry, false),
@@ -429,59 +409,38 @@ mod tests {
                 "{book}"
             );
         }
-        // What has its previewer now says nothing is missing.
-        assert_eq!(later("movie.mp4").body, Body::Player(PlayerKind::Video));
-        assert_eq!(later("song.mp3").body, Body::Player(PlayerKind::Audio));
-        assert_eq!(later("paper.pdf").body, Body::Pdf);
+        // What has a previewer of its own.
+        assert_eq!(body_of("movie.mp4"), Body::Player(PlayerKind::Video));
+        assert_eq!(body_of("song.mp3"), Body::Player(PlayerKind::Audio));
+        assert_eq!(body_of("paper.pdf"), Body::Pdf);
         // 3D models have no previewer of their own: their type is unknown, so the text probe looks, and hands a
         // binary file to Windows' previewer (or its bytes).
         for model in ["model.stl", "scene.glb", "scene.gltf", "mesh.ply", "part.3mf"] {
-            assert_eq!(later(model).body, Body::Text, "{model}");
-            assert_eq!(later(model).later, None, "{model}");
+            assert_eq!(body_of(model), Body::Text, "{model}");
         }
-        assert_eq!(later("letter.docx").body, Body::Docx);
-        for ready in [
-            "notes.md",
-            "sheet.xlsx",
-            "lab.ipynb",
-            "card.vcf",
-            "tool.exe",
-            "app.sqlite",
-            "movie.mp4",
-            "song.mp3",
-            "paper.pdf",
-            "letter.docx",
-        ] {
-            assert_eq!(later(ready).later, None, "{ready}");
-        }
+        assert_eq!(body_of("letter.docx"), Body::Docx);
     }
 
     #[test]
     fn the_states_come_before_the_kind() {
-        assert_eq!(choose(&folder("C:\\x", "sub"), View::File).body, Body::Folder);
-        assert_eq!(
-            choose(&marked("a.png", attr::OFFLINE), View::File).body,
-            Body::OnlineOnly
-        );
-        assert_eq!(choose(&marked("a.png", attr::CLOSED), View::File).body, Body::Closed);
-        assert_eq!(choose(&marked("a.png", attr::ENCRYPTED), View::File).body, Body::Locked);
+        assert_eq!(choose(&folder("C:\\x", "sub"), View::File), Body::Folder);
+        assert_eq!(choose(&marked("a.png", attr::OFFLINE), View::File), Body::OnlineOnly);
+        assert_eq!(choose(&marked("a.png", attr::CLOSED), View::File), Body::Closed);
+        assert_eq!(choose(&marked("a.png", attr::ENCRYPTED), View::File), Body::Locked);
     }
 
     #[test]
     fn files_in_archives_are_shown_from_a_copy_or_as_text_and_never_by_windows() {
         let inside = |name: &str| marked(name, attr::IN_ARCHIVE);
-        assert_eq!(choose(&inside("a.png"), View::File).body, Body::Picture);
-        assert_eq!(choose(&inside("a.txt"), View::File).body, Body::Text);
-        assert_eq!(choose(&inside("a.md"), View::File).body, Body::Markdown);
-        assert_eq!(choose(&inside("a.docx"), View::File).body, Body::Icon);
+        assert_eq!(choose(&inside("a.png"), View::File), Body::Picture);
+        assert_eq!(choose(&inside("a.txt"), View::File), Body::Text);
+        assert_eq!(choose(&inside("a.md"), View::File), Body::Markdown);
+        assert_eq!(choose(&inside("a.docx"), View::File), Body::Icon);
         // Video, sound and PDFs are played or drawn from a copy the view extracts itself.
-        assert_eq!(
-            choose(&inside("a.mp4"), View::File).body,
-            Body::Player(PlayerKind::Video)
-        );
-        assert_eq!(choose(&inside("a.pdf"), View::File).body, Body::Pdf);
+        assert_eq!(choose(&inside("a.mp4"), View::File), Body::Player(PlayerKind::Video));
+        assert_eq!(choose(&inside("a.pdf"), View::File), Body::Pdf);
         // A table in an archive is shown as the text it is.
-        assert_eq!(choose(&inside("a.csv"), View::File).body, Body::Text);
+        assert_eq!(choose(&inside("a.csv"), View::File), Body::Text);
     }
 
     #[test]
@@ -499,14 +458,14 @@ mod tests {
                 (View::Hex, "Hex".to_string())
             ]
         );
-        assert_eq!(choose(&md, View::Source).body, Body::Text);
-        assert_eq!(choose(&md, View::Hex).body, Body::Hex);
+        assert_eq!(choose(&md, View::Source), Body::Text);
+        assert_eq!(choose(&md, View::Hex), Body::Hex);
         let json = file("C:\\x", "a.json", 10, 1);
         assert_eq!(views(&json, false)[0].label, "Tree");
-        assert_eq!(choose(&json, View::Source).body, Body::Text);
+        assert_eq!(choose(&json, View::Source), Body::Text);
         let csv = file("C:\\x", "a.csv", 10, 1);
         assert_eq!(views(&csv, false)[0].label, "Table");
-        assert_eq!(choose(&csv, View::Source).body, Body::Text);
+        assert_eq!(choose(&csv, View::Source), Body::Text);
         // A plain file has File and Hex: a chosen Source view isn't one of them, so it is shown as it is.
         let txt = file("C:\\x", "a.txt", 10, 1);
         assert_eq!(views(&txt, false).len(), 2);
@@ -520,7 +479,7 @@ mod tests {
     fn a_big_json_file_is_not_a_tree() {
         let mut big = file("C:\\x", "huge.json", 10, 1);
         big.size = 65 * 1024 * 1024;
-        assert_eq!(choose(&big, View::File).body, Body::Text);
+        assert_eq!(choose(&big, View::File), Body::Text);
         // No tree, but DuckDB reads a JSON file of any size: File, Profile and Hex.
         let order: Vec<_> = views(&big, false).into_iter().map(|v| v.view).collect();
         assert_eq!(order, [View::File, View::Profile, View::Hex]);
@@ -549,8 +508,8 @@ mod tests {
                 (View::Hex, "Hex")
             ])
         );
-        assert_eq!(choose(&book, View::File).body, Body::Sheet);
-        assert_eq!(choose(&book, View::Source).body, Body::Shell(Fallback::Icon));
+        assert_eq!(choose(&book, View::File), Body::Sheet);
+        assert_eq!(choose(&book, View::Source), Body::Shell(Fallback::Icon));
         let parquet = file("C:\\x", "a.parquet", 10, 1);
         assert_eq!(
             labels(&parquet, false),
@@ -561,7 +520,7 @@ mod tests {
                 (View::Hex, "Hex")
             ])
         );
-        assert_eq!(choose(&parquet, View::Source).body, Body::Sheet);
+        assert_eq!(choose(&parquet, View::Source), Body::Sheet);
     }
 
     #[test]
@@ -572,15 +531,15 @@ mod tests {
             pairs(&[(View::File, "Notebook"), (View::Source, "Source"), (View::Hex, "Hex")])
         );
         assert_eq!(views(&book, false)[1].title, "The notebook's JSON as written");
-        assert_eq!(choose(&book, View::File).body, Body::Notebook);
-        assert_eq!(choose(&book, View::Source).body, Body::Text);
+        assert_eq!(choose(&book, View::File), Body::Notebook);
+        assert_eq!(choose(&book, View::Source), Body::Text);
     }
 
     #[test]
     fn a_terminal_recording_is_text() {
         // Glint has no player for asciinema recordings: a .cast file is highlighted text, with the usual views.
         let cast = file("C:\\x", "c.cast", 10, 1);
-        assert_eq!(choose(&cast, View::File).body, Body::Text);
+        assert_eq!(choose(&cast, View::File), Body::Text);
         assert_eq!(labels(&cast, false), pairs(&[(View::File, "File"), (View::Hex, "Hex")]));
     }
 
@@ -591,7 +550,7 @@ mod tests {
             labels(&contact, false),
             pairs(&[(View::File, "Preview"), (View::Source, "Text"), (View::Hex, "Hex")])
         );
-        assert_eq!(choose(&contact, View::Source).body, Body::Text);
+        assert_eq!(choose(&contact, View::Source), Body::Text);
         // A design file is not text: its preview and its bytes.
         let design = file("C:\\x", "a.kra", 10, 1);
         assert_eq!(
@@ -600,7 +559,7 @@ mod tests {
         );
         // In an archive they are not read from disk, so not as a contact.
         let inside = marked("a.vcf", attr::IN_ARCHIVE);
-        assert_ne!(choose(&inside, View::File).body, Body::Small(SmallKind::Contact));
+        assert_ne!(choose(&inside, View::File), Body::Small(SmallKind::Contact));
     }
 
     #[test]
@@ -619,12 +578,12 @@ mod tests {
             assert!(!has(name, View::Profile), "{name} is not profiled");
         }
         let csv = file("C:\\x", "a.csv", 10, 1);
-        assert_eq!(choose(&csv, View::Query).body, Body::Query);
-        assert_eq!(choose(&csv, View::Profile).body, Body::Profile);
+        assert_eq!(choose(&csv, View::Query), Body::Query);
+        assert_eq!(choose(&csv, View::Profile), Body::Profile);
         let db = file("C:\\x", "a.sqlite", 10, 1);
-        assert_eq!(choose(&db, View::Query).body, Body::Query);
+        assert_eq!(choose(&db, View::Query), Body::Query);
         // A view the file has not got is not drawn even when asked for.
-        assert_eq!(choose(&db, View::Profile).body, Body::Sqlite);
+        assert_eq!(choose(&db, View::Profile), Body::Sqlite);
         // Nothing inside an archive is read from disk.
         let inside = marked("a.csv", attr::IN_ARCHIVE);
         assert!(!views(&inside, false).iter().any(|v| v.view == View::Query));
@@ -640,7 +599,7 @@ mod tests {
         assert_eq!(views(&txt, true)[1].title, "What changed since the last commit (Git)");
         assert_eq!(effective_view(&txt, View::Changes, true), View::Changes);
         assert_eq!(effective_view(&txt, View::Changes, false), View::File);
-        assert_eq!(choose(&txt, View::Changes).body, Body::Changes);
+        assert_eq!(choose(&txt, View::Changes), Body::Changes);
         // Changes come before Query and Profile.
         let csv = file("C:\\x", "a.csv", 10, 1);
         let order: Vec<_> = labels(&csv, true).into_iter().map(|(view, _)| view).collect();
@@ -660,6 +619,6 @@ mod tests {
             .any(|v| v.view == View::Changes));
         let inside = marked("a.txt", attr::IN_ARCHIVE);
         assert!(!views(&inside, true).iter().any(|v| v.view == View::Changes));
-        assert_ne!(choose(&inside, View::Changes).body, Body::Changes);
+        assert_ne!(choose(&inside, View::Changes), Body::Changes);
     }
 }

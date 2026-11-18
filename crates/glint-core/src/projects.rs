@@ -94,7 +94,7 @@ fn just_recipes(json: &str) -> Vec<Task> {
 fn just_tasks(dir: &Path) -> Option<TaskGroup> {
     let file = ["justfile", "Justfile", ".justfile"].iter().map(|n| dir.join(n)).find(|p| p.is_file())?;
     let folder = dir.to_string_lossy().into_owned();
-    let Ok(mut just) = crate::tools::command("just") else {
+    let Ok(mut just) = crate::tools::runtime_command("just") else {
         return Some(TaskGroup { folder, source: "just".into(), tasks: Vec::new(), missing: Some("just".into()) });
     };
     let out = just.arg("--justfile").arg(&file).args(["--dump", "--dump-format", "json"]).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
@@ -117,7 +117,7 @@ fn uv_tasks(dir: &Path) -> Option<TaskGroup> {
             }
         }
     }
-    let missing = crate::tools::command("uv").is_err().then(|| "uv".to_string());
+    let missing = crate::tools::runtime_command("uv").is_err().then(|| "uv".to_string());
     Some(TaskGroup { folder: dir.to_string_lossy().into_owned(), source: "uv".into(), tasks, missing })
 }
 

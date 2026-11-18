@@ -156,7 +156,6 @@ impl AddressBar {
             SearchOptionKey::CaseSensitive => o.case_sensitive,
             SearchOptionKey::WholeWord => o.whole_word,
             SearchOptionKey::Regex => o.regex,
-            SearchOptionKey::Code => o.code,
             SearchOptionKey::Documents => o.documents,
             SearchOptionKey::Ocr => o.ocr,
         };

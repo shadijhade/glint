@@ -48,6 +48,16 @@ const RETIRED: &[&str] = &[
     // 0.14's sendme and dufs (Send to another PC, Share on this network), as Glint downloaded them.
     "tools/sendme",
     "tools/dufs",
+    // 0.14's ast-grep, onefetch and tokei (gone), and zoxide, just, uv, Bun and Nushell, which Glint now finds on the
+    // PATH and no longer downloads. One installed with winget or Scoop is the person's own.
+    "tools/ast-grep",
+    "tools/onefetch",
+    "tools/tokei",
+    "tools/zoxide",
+    "tools/just",
+    "tools/uv",
+    "tools/bun",
+    "tools/nushell",
 ];
 
 /// Under Glint's roaming data folder (beside `state.json`), as [`RETIRED`] is under the local one.
@@ -114,7 +124,9 @@ mod tests {
             fs::create_dir_all(models.join(folder).join("sub")).unwrap();
             fs::write(models.join(folder).join("sub").join("weights.bin"), "w").unwrap();
         }
-        for tool in ["sendme", "dufs"] {
+        for tool in [
+            "sendme", "dufs", "ast-grep", "onefetch", "tokei", "zoxide", "just", "uv", "bun", "nushell",
+        ] {
             fs::create_dir_all(data.join("tools").join(tool)).unwrap();
             fs::write(data.join("tools").join(tool).join(format!("{tool}.exe")), "x").unwrap();
         }
@@ -143,7 +155,7 @@ mod tests {
 
         let gone = sweep_in(&data, RETIRED);
 
-        assert_eq!(gone.len(), 13, "{gone:?}");
+        assert_eq!(gone.len(), 21, "{gone:?}");
         assert_eq!(sweep_in(&roaming, RETIRED_ROAMING), [roaming.join("books.json")]);
         // A mail attachment saved to the temp folder, with the mark Windows puts on files from the internet.
         let temp = std::env::temp_dir().join(format!("glint-retired-temp-{}", std::process::id()));

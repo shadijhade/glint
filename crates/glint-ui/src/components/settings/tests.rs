@@ -26,6 +26,7 @@ pub struct Fake {
     pub index: Mutex<IndexInfo>,
     pub tools: Mutex<Vec<ToolInfo>>,
     pub rclone_installed: Mutex<bool>,
+    pub zoxide_installed: Mutex<bool>,
     pub rclone_locked: Mutex<bool>,
     pub remotes: Mutex<Vec<rclone::Remote>>,
     /// The next answers of the pickers, in order (`None` is "cancelled").
@@ -47,10 +48,11 @@ impl Fake {
             }),
             tools: Mutex::new(vec![
                 tool("rg", "ripgrep", Some("bundled")),
-                tool("zoxide", "zoxide", None),
+                tool("jaq", "jaq", None),
                 tool("rclone", "rclone", None),
             ]),
             rclone_installed: Mutex::new(false),
+            zoxide_installed: Mutex::new(false),
             rclone_locked: Mutex::new(false),
             remotes: Mutex::new(Vec::new()),
             picks: Mutex::new(VecDeque::new()),
@@ -207,6 +209,10 @@ impl Backend for Fake {
                 path: "C:\\wt.exe".into(),
             },
         ]))
+    }
+
+    fn zoxide_installed(&self) -> Fut<bool> {
+        ready(Ok(*lock(&self.zoxide_installed)))
     }
 
     fn shells(&self) -> Fut<Vec<term::Shell>> {

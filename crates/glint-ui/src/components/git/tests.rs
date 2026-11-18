@@ -1,9 +1,9 @@
 //! Headless tests of Git: the marks and the branch following the tabs' folders, the chip and its popover (a branch,
 //! a dirty tree, a repository that waits for trust or for F5), the status bar's words, the row badges, the
-//! repository card, the README (in Arabic too) and the Changes view with its two sides. Git's answers come from a
+//! README (in Arabic too) and the Changes view with its two sides. Git's answers come from a
 //! fake [`Source`], so nothing touches the real core; the explorer runs on a fake disk.
 
-use super::cards::{ReadmeCard, RepoCard};
+use super::cards::ReadmeCard;
 use super::changes::{ChangesView, OpenSides};
 use super::chip::GitChip;
 use super::model::{self, Counts, Fut, Git, GitEvent, Source, View};
@@ -16,7 +16,6 @@ use crate::kit::prelude::*;
 use crate::testing;
 use glint_core::fsx::TextPreview as TextRead;
 use glint_core::git::{DiffLine, FileDiff, LineKind};
-use glint_core::repo::{Author, Lines, RepoCard as Card};
 use glint_model::entries::GitMark;
 use glint_model::groups::GitMarks;
 use glint_model::paths::THIS_PC;
@@ -48,8 +47,6 @@ struct State {
     diff: Option<Result<Option<FileDiff>, String>>,
     head: Option<Result<Option<String>, String>>,
     discarded: Vec<String>,
-    card: Option<Result<Option<Card>, String>>,
-    cards_asked: usize,
     gates: HashMap<String, (async_channel::Sender<()>, async_channel::Receiver<()>)>,
 }
 
@@ -132,15 +129,6 @@ impl Source for Fake {
 
     fn head_discard(&self, path: String) {
         self.state().discarded.push(path);
-    }
-
-    fn card(&self, _: String) -> Fut<Option<Card>> {
-        let answer = {
-            let mut state = self.state();
-            state.cards_asked += 1;
-            state.card.clone().unwrap_or(Ok(None))
-        };
-        Box::pin(async move { answer })
     }
 }
 
@@ -786,129 +774,6 @@ fn a_row_badge_is_named_for_its_row_and_tinted_for_its_mark(cx: &mut TestAppCont
         Some(Tone::Amber)
     );
     assert_eq!(words::badge(GitMark::Untracked, false).map(|b| b.tone), Some(Tone::Sky));
-}
-
-// ---- The repository card ------------------------------------------------------------------------------------
-
-fn a_card() -> Card {
-    Card {
-        onefetch: true,
-        tokei: true,
-        name: Some("glint".into()),
-        description: Some("A fast file explorer".into()),
-        head: Some("abc1234".into()),
-        branch: Some("main".into()),
-        version: Some("0.9.5".into()),
-        created: None,
-        last_change: Some("2026-11-09T12:00:00+00:00".into()),
-        languages: vec![("Rust".into(), 62.5), ("TypeScript".into(), 30.0), ("CSS".into(), 0.4)],
-        authors: vec![
-            Author {
-                name: "Rafd".into(),
-                commits: 900,
-                share: 90,
-            },
-            Author {
-                name: "رافد".into(),
-                commits: 100,
-                share: 10,
-            },
-        ],
-        contributors: Some(5),
-        commits: Some(1234),
-        url: Some("git@github.com:rafd/glint.git".into()),
-        license: Some("MIT".into()),
-        lines: vec![Lines {
-            language: "Rust".into(),
-            code: 90_000,
-            comments: 5_000,
-            blanks: 1_000,
-        }],
-        total: Some(Lines {
-            language: "Total".into(),
-            code: 120_000,
-            comments: 6_000,
-            blanks: 2_000,
-        }),
-    }
-}
-
-fn with_repo_card(cx: &mut TestAppContext, rtl: bool, fake: Fake) -> (Env, Entity<RepoCard>) {
-    let made: Rc<RefCell<Option<Entity<RepoCard>>>> = Rc::new(RefCell::new(None));
-    let slot = made.clone();
-    let env = setup(cx, rtl, fake, move |_, _, cx| {
-        let card = cx.new(|cx| RepoCard::new("C:\\repo".into(), None, cx));
-        *slot.borrow_mut() = Some(card.clone());
-        vec![card.into()]
-    });
-    let card = made.borrow().clone().expect("the card was made");
-    (env, card)
-}
-
-#[gpui_kit::test]
-fn the_repository_card_says_what_the_repository_is(cx: &mut TestAppContext) {
-    let _guard = testing::lock();
-    let fake = Fake::default();
-    fake.state().card = Some(Ok(Some(a_card())));
-    let (mut env, card) = with_repo_card(cx, false, fake.clone());
-    env.settle_until("the card", |env| env.has("Repository: glint"));
-    assert_eq!(env.role_of("Repository: glint"), Some(Role::Group));
-    // The languages, biggest first, in whole percent and "<1" for a sliver.
-    for label in ["Rust 63%", "TypeScript 30%", "CSS <1%"] {
-        assert!(env.has(label), "{label}");
-    }
-    assert_eq!(env.role_of("Languages"), Some(Role::List));
-    // The remote becomes a web address; reading it again is not needed for a folder seen before.
-    assert!(env.has("github.com/rafd/glint"));
-    // Seen again, the card is there at once from the model's cache.
-    let cached = env.git.read_with(&env.visual, |git, _| git.cached_card("c:\\REPO"));
-    assert!(cached.is_some_and(|c| c.is_some_and(|c| c.name.as_deref() == Some("glint"))));
-    assert_eq!(card.read_with(&env.visual, |c, _| c.path().to_string()), "C:\\repo");
-}
-
-#[gpui_kit::test]
-fn a_folder_that_is_not_a_repository_has_no_card(cx: &mut TestAppContext) {
-    let _guard = testing::lock();
-    let fake = Fake::default();
-    let (mut env, card) = with_repo_card(cx, false, fake.clone());
-    env.settle_until("the answer", |_| fake.state().cards_asked == 1);
-    env.settle();
-    assert!(!env.has("Repository: C:\\repo"));
-    assert!(card.read_with(&env.visual, |c, _| matches!(c.card(), Some(None))));
-    // A failed read shows nothing either, and is not remembered.
-    let failing = Fake::default();
-    failing.state().card = Some(Err("boom".into()));
-    let (mut env, _) = with_repo_card(cx, false, failing);
-    env.settle();
-    assert!(env
-        .git
-        .read_with(&env.visual, |git, _| git.cached_card("C:\\repo").is_none()));
-}
-
-#[gpui_kit::test]
-fn the_card_reads_in_arabic_with_an_arabic_author(cx: &mut TestAppContext) {
-    let _guard = testing::lock();
-    let fake = Fake::default();
-    fake.state().card = Some(Ok(Some(a_card())));
-    let (mut env, _) = with_repo_card(cx, true, fake);
-    env.settle_until("the card", |env| env.has("Repository: glint"));
-    let bounds = env.visual.update(|window, cx| {
-        window.render_frame(cx);
-        window.find("repo-card").bounds()
-    });
-    assert!(bounds.size.width > gpui_kit::px(100.));
-    // The card is a column that fills from the start edge: its legend starts at the right in Arabic.
-    let first = env.visual.update(|window, cx| {
-        window.render_frame(cx);
-        (
-            window.find(("repo-language", 0usize)).bounds(),
-            window.find(("repo-language", 1usize)).bounds(),
-        )
-    });
-    assert!(
-        first.0.center().x > first.1.center().x,
-        "the legend runs right to left: {first:?}"
-    );
 }
 
 // ---- The README ---------------------------------------------------------------------------------------------

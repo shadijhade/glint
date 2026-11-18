@@ -4,8 +4,6 @@
 
 use super::sources::{sources, ArchiveFacts, Counts, Sources};
 use super::states::{big_icon, centered, icon_and_text, sentence, Waiting};
-use crate::components::git::RepoCard;
-use crate::dialogs::action_run::tools_model;
 use crate::dialogs::password::PasswordForm;
 use crate::explorer::{self, ExplorerEvent, NavOptions};
 use crate::kit::prelude::*;
@@ -81,13 +79,10 @@ pub fn items(n: usize) -> String {
 
 // ---- A folder ---------------------------------------------------------------------------------------------
 
-/// A folder: what is directly inside it, how big it is once measured, and for a repository's own folder its
-/// card (`FolderPreview`).
+/// A folder: what is directly inside it, and how big it is once measured (`FolderPreview`).
 pub struct FolderCard {
     entry: FileEntry,
     counts: Option<Result<Counts, String>>,
-    /// A folder with a `.git` (not in the Recycle Bin) has the repository's card under its counts.
-    repo: Option<Entity<RepoCard>>,
     _task: Task<()>,
     /// Folder sizes arriving (the explorer measures them) redraw the card.
     _sizes: Option<Subscription>,
@@ -96,16 +91,9 @@ pub struct FolderCard {
 impl FolderCard {
     pub fn new(entry: FileEntry, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let running = (sources(cx).counts)(&entry.path);
-        let recycled = entry.attrs & attr::RECYCLED != 0;
         let task = cx.spawn_in(window, async move |this, cx| {
             let counts = running.await;
-            this.update_in(cx, |this, window, cx| {
-                // A repository's own folder has its .git (a file in a worktree): its card shows.
-                if !recycled && matches!(&counts, Ok(counts) if counts.repo) {
-                    let path = this.entry.path.clone();
-                    let tools = tools_model(window, cx);
-                    this.repo = Some(cx.new(|cx| RepoCard::new(path, tools, cx)));
-                }
+            this.update_in(cx, |this, _window, cx| {
                 this.counts = Some(counts);
                 cx.notify();
             })
@@ -126,20 +114,9 @@ impl FolderCard {
         FolderCard {
             entry,
             counts: None,
-            repo: None,
             _task: task,
             _sizes: sizes,
         }
-    }
-
-    /// What is inside, once listed.
-    pub fn counts(&self) -> Option<&Result<Counts, String>> {
-        self.counts.as_ref()
-    }
-
-    /// The repository's card, for a repository's own folder.
-    pub fn repo(&self) -> Option<&Entity<RepoCard>> {
-        self.repo.as_ref()
     }
 
     /// The folder's size when it has been measured here (the explorer's folder sizes), else a Recycle Bin item's
@@ -234,7 +211,7 @@ impl Render for FolderCard {
                     }),
             );
         }
-        card.children(self.repo.clone())
+        card
     }
 }
 

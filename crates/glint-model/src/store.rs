@@ -156,8 +156,6 @@ pub struct SearchOptions {
     pub case_sensitive: bool,
     pub whole_word: bool,
     pub regex: bool,
-    /// A code pattern, by ast-grep, rather than text.
-    pub code: bool,
     /// The text inside documents (PDF, Office, OpenDocument, EPUB) rather than files' own (doctext.rs).
     pub documents: bool,
     /// With documents: pictures' text too, read by Windows' OCR (ocr.rs).
@@ -170,7 +168,6 @@ pub enum SearchOptionKey {
     CaseSensitive,
     WholeWord,
     Regex,
-    Code,
     Documents,
     Ocr,
 }
@@ -793,7 +790,6 @@ lenient_deserialize!(SearchOptions {
     "caseSensitive" => case_sensitive,
     "wholeWord" => whole_word,
     "regex" => regex,
-    "code" => code,
     "documents" => documents,
     "ocr" => ocr,
 });
@@ -1039,16 +1035,8 @@ impl AppState {
             SearchOptionKey::CaseSensitive => o.case_sensitive = value,
             SearchOptionKey::WholeWord => o.whole_word = value,
             SearchOptionKey::Regex => o.regex = value,
-            SearchOptionKey::Code => o.code = value,
             SearchOptionKey::Documents => o.documents = value,
             SearchOptionKey::Ocr => o.ocr = value,
-        }
-        // Code patterns and documents are searches of their own: turning one on turns the other off.
-        if value && key == SearchOptionKey::Code {
-            o.documents = false;
-        }
-        if value && key == SearchOptionKey::Documents {
-            o.code = false;
         }
     }
 
@@ -1216,7 +1204,7 @@ mod tests {
         format!(
             concat!(
                 r#"{{"state":{{"query":"","path":"","history":[],"#,
-                r#""options":{{"caseSensitive":false,"wholeWord":false,"regex":false,"code":false,"#,
+                r#""options":{{"caseSensitive":false,"wholeWord":false,"regex":false,"#,
                 r#""documents":false,"ocr":false}},"settings":{},"mode":"files","pinned":[],"#,
                 r#""savedSearches":[],"remotes":[],"rules":[],"lastFolder":null,"session":null,"visits":{{}},"#,
                 r#""folderViews":{{}}}},"version":0}}"#
@@ -1389,14 +1377,10 @@ mod tests {
     }
 
     #[test]
-    fn search_options_turn_each_other_off() {
+    fn search_options_switch_on_and_off() {
         let mut s = AppState::default();
         s.set_option(SearchOptionKey::Documents, true);
-        assert!(s.options.documents && !s.options.code);
-        s.set_option(SearchOptionKey::Code, true);
-        assert!(s.options.code && !s.options.documents);
-        s.set_option(SearchOptionKey::Documents, true);
-        assert!(s.options.documents && !s.options.code);
+        assert!(s.options.documents);
         s.set_option(SearchOptionKey::Documents, false);
         assert!(!s.options.documents);
         s.set_option(SearchOptionKey::Regex, true);

@@ -142,6 +142,8 @@ pub struct SettingsView {
     pub(crate) editors: Vec<Opener>,
     /// The fixed drives' room, for the full-drive suggestion; None until core has said.
     pub(crate) drives: Option<Vec<crate::suggestions::Room>>,
+    /// Whether zoxide is on the PATH, for History's switch; false until core has looked.
+    pub(crate) zoxide_found: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -288,10 +290,12 @@ impl SettingsView {
             shells: Vec::new(),
             editors: Vec::new(),
             drives: None,
+            zoxide_found: false,
             _subscriptions: subscriptions,
         };
         this.load_shells_and_editors(window, cx);
         this.load_drives(window, cx);
+        this.look_for_zoxide(cx);
         this
     }
 
@@ -334,6 +338,20 @@ impl SettingsView {
                     .into_iter()
                     .filter(|o| !o.terminal)
                     .collect();
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Looks for zoxide on the PATH, in the background.
+    fn look_for_zoxide(&mut self, cx: &mut Context<Self>) {
+        let looking = self.backend.zoxide_installed();
+        cx.spawn(async move |this, cx| {
+            let found = looking.await.unwrap_or(false);
+            this.update(cx, |this, cx| {
+                this.zoxide_found = found;
                 cx.notify();
             })
             .ok();

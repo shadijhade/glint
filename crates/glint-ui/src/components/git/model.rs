@@ -11,9 +11,9 @@
 //! | `watchShown`                           | [`Git::watch_shown`]                                               |
 //! | `useExplorer.subscribe(...)`           | the subscription in [`Git::new`] to the explorer's events          |
 //! | `listen("git-changed")`                | `core_bridge::subscribe` in [`Git::new`]                           |
-//! | `gitView`, `cancelGit`, `gitWatch`, `gitDiff`, `gitHeadCopy`, `gitHeadDiscard`, `repoCard` | the [`Source`] trait; [`CoreGit`] is glint-core's |
+//! | `gitView`, `cancelGit`, `gitWatch`, `gitDiff`, `gitHeadCopy`, `gitHeadDiscard` | the [`Source`] trait; [`CoreGit`] is glint-core's |
 //!
-//! **Nothing here waits on the UI thread.** Status, the diff and the card are glint-core calls run on its
+//! **Nothing here waits on the UI thread.** Status and the diff are glint-core calls run on its
 //! runtime behind a [`Source`] (a fake in the tests); the answer comes back to the model, which tells the views.
 //!
 //! **Marks are converted once.** core sends `Mark`s; the model keeps them as glint-model's [`GitMark`]s in a
@@ -23,7 +23,6 @@ use crate::core_bridge;
 use crate::explorer::{try_explorer, ExplorerEvent, TabId};
 use crate::state;
 use glint_core::git::{FileDiff, GitView as CoreView, Mark};
-use glint_core::repo::RepoCard;
 use glint_model::entries::GitMark;
 use glint_model::groups::GitMarks;
 use glint_model::paths::{is_folder_path, same_path};
@@ -126,11 +125,9 @@ pub trait Source {
     fn head_copy(&self, path: String) -> Fut<Option<String>>;
     /// Removes a copy [`Source::head_copy`] made (`gitHeadDiscard`).
     fn head_discard(&self, path: String);
-    /// The card of the repository whose folder `path` is; `None` when it isn't one's (`repoCard`).
-    fn card(&self, path: String) -> Fut<Option<RepoCard>>;
 }
 
-/// glint-core's git.rs and repo.rs, through the app's handle.
+/// glint-core's git.rs, through the app's handle.
 pub struct CoreGit {
     app: glint_core::host::AppHandle,
 }
@@ -187,10 +184,6 @@ impl Source for CoreGit {
         // Removing the copy's folder is disk work: not on the UI thread.
         glint_core::host::async_runtime::spawn_blocking(move || glint_core::git::git_head_discard(path));
     }
-
-    fn card(&self, path: String) -> Fut<Option<RepoCard>> {
-        on_core(glint_core::repo::repo_card(path))
-    }
 }
 
 /// For an app whose core isn't up: no repository anywhere.
@@ -214,10 +207,6 @@ impl Source for NoCore {
     }
 
     fn head_discard(&self, _: String) {}
-
-    fn card(&self, _: String) -> Fut<Option<RepoCard>> {
-        Box::pin(async { Ok(None) })
-    }
 }
 
 // ---- The model ---------------------------------------------------------------------------------------------
@@ -253,8 +242,6 @@ pub struct Git {
     again: HashMap<TabId, String>,
     /// The repositories being watched, as the sorted lowercase roots joined (to notice a change).
     watched: String,
-    /// Cards read this session, by lowercase folder: a folder previewed again shows its card at once.
-    cards: HashMap<String, Option<Arc<RepoCard>>>,
     next_seq: u64,
     _subscriptions: Vec<Subscription>,
 }
@@ -299,7 +286,6 @@ impl Git {
             asks: HashMap::new(),
             again: HashMap::new(),
             watched: String::new(),
-            cards: HashMap::new(),
             next_seq: 1,
             _subscriptions: subscriptions,
         };
@@ -313,7 +299,7 @@ impl Git {
         this
     }
 
-    /// The source, for the views that ask for a diff or a card themselves.
+    /// The source, for the views that ask for a diff themselves.
     pub fn source(&self) -> Rc<dyn Source> {
         self.source.clone()
     }
@@ -321,16 +307,6 @@ impl Git {
     /// A tab's Git: `None` for a tab in no repository (or showing a search, an archive, This PC).
     pub fn run(&self, tab: TabId) -> Option<&Run> {
         self.runs.get(&tab)
-    }
-
-    /// The card read for this folder earlier in the session: `Some(None)` when it had none.
-    pub fn cached_card(&self, folder: &str) -> Option<Option<Arc<RepoCard>>> {
-        self.cards.get(&key(folder)).cloned()
-    }
-
-    /// Remembers the card read for a folder.
-    pub fn remember_card(&mut self, folder: &str, card: Option<Arc<RepoCard>>) {
-        self.cards.insert(key(folder), card);
     }
 
     /// The folder a tab's Git is for, if the tab shows a real folder on disk: not a search, an archive, a folder
