@@ -120,38 +120,44 @@ pub(crate) fn serve_on(name: &str, engine: Arc<Engine>, sddl: &str, updater: Opt
     let stopping = Arc::new(AtomicBool::new(false));
     let stop = stopping.clone();
     let active = Arc::new(AtomicUsize::new(0));
-    let thread = thread::spawn(move || loop {
-        if stop.load(Ordering::SeqCst) {
-            return;
-        }
-        let connected = unsafe { ConnectNamedPipe(next.0, None) };
-        if stop.load(Ordering::SeqCst) {
-            return;
-        }
-        let client = connected.is_ok() || connected.as_ref().is_err_and(|e| e.code() == ERROR_PIPE_CONNECTED.to_hresult());
-        let pipe = loop {
-            match instance(&pipe_name, &sd, false) {
-                Ok(fresh) => break std::mem::replace(&mut next, fresh),
-                Err(e) => {
-                    engine.log.line(&format!("can't open another pipe instance: {e}"));
-                    thread::sleep(Duration::from_secs(1));
-                }
+    // The listener and each answer at high quality of service, as the pool that searches: in a service,
+    // Windows would otherwise keep them to the efficient cores, where a connection could wait its turn.
+    let thread = thread::spawn(move || {
+        win::high_qos();
+        loop {
+            if stop.load(Ordering::SeqCst) {
+                return;
             }
-        };
-        if !client {
-            continue;
+            let connected = unsafe { ConnectNamedPipe(next.0, None) };
+            if stop.load(Ordering::SeqCst) {
+                return;
+            }
+            let client = connected.is_ok() || connected.as_ref().is_err_and(|e| e.code() == ERROR_PIPE_CONNECTED.to_hresult());
+            let pipe = loop {
+                match instance(&pipe_name, &sd, false) {
+                    Ok(fresh) => break std::mem::replace(&mut next, fresh),
+                    Err(e) => {
+                        engine.log.line(&format!("can't open another pipe instance: {e}"));
+                        thread::sleep(Duration::from_secs(1));
+                    }
+                }
+            };
+            if !client {
+                continue;
+            }
+            if active.load(Ordering::SeqCst) >= MAX_CLIENTS {
+                // Small enough for the pipe's buffer, so this never waits on the client.
+                let _ = proto::write_message(&mut PipeIo(&pipe), &Message::Error { message: "The instant search service is busy; try again".into() });
+                continue;
+            }
+            active.fetch_add(1, Ordering::SeqCst);
+            let (engine, active, updater) = (engine.clone(), active.clone(), updater.clone());
+            thread::spawn(move || {
+                win::high_qos();
+                answer(pipe, &engine, updater.as_deref());
+                active.fetch_sub(1, Ordering::SeqCst);
+            });
         }
-        if active.load(Ordering::SeqCst) >= MAX_CLIENTS {
-            // Small enough for the pipe's buffer, so this never waits on the client.
-            let _ = proto::write_message(&mut PipeIo(&pipe), &Message::Error { message: "The instant search service is busy; try again".into() });
-            continue;
-        }
-        active.fetch_add(1, Ordering::SeqCst);
-        let (engine, active, updater) = (engine.clone(), active.clone(), updater.clone());
-        thread::spawn(move || {
-            answer(pipe, &engine, updater.as_deref());
-            active.fetch_sub(1, Ordering::SeqCst);
-        });
     });
     Ok(Server { name: name.to_string(), stopping, thread: Some(thread) })
 }

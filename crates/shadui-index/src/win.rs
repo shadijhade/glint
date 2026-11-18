@@ -19,8 +19,25 @@ use windows::Win32::System::Registry::{
     RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegGetValueW, RegSetValueExW, HKEY, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE,
     REG_MULTI_SZ, REG_OPTION_NON_VOLATILE, REG_SZ, REG_VALUE_TYPE, RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_MULTI_SZ, RRF_RT_REG_SZ,
 };
-use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+use windows::Win32::System::Threading::{
+    GetCurrentProcess, GetCurrentThread, OpenProcessToken, SetThreadInformation, ThreadPowerThrottling, THREAD_POWER_THROTTLING_CURRENT_VERSION,
+    THREAD_POWER_THROTTLING_EXECUTION_SPEED, THREAD_POWER_THROTTLING_STATE,
+};
 use windows::Win32::UI::Shell::{SHGetKnownFolderPath, KF_FLAG_DEFAULT};
+
+/// Asks Windows to run the calling thread at high quality of service, as it runs a focused app's. A
+/// service's threads are utility ones otherwise, which Windows keeps to a hybrid processor's efficient
+/// cores: on a Core Ultra 7 265K (8 performance cores, 12 efficient ones) the plain pass of a search
+/// over C:'s 3.3 million names took 9 ms there, where every core takes it in 4. For the threads that
+/// answer the app and the pool they search with (which also reads a drive's records when the whole
+/// drive is read); the threads that follow the change journal stay as Windows has them. Windows before
+/// 10 version 1709 has no such thing and says no, which changes nothing.
+pub fn high_qos() {
+    // Execution speed is what's asked about, and it's not to be throttled.
+    let state = THREAD_POWER_THROTTLING_STATE { Version: THREAD_POWER_THROTTLING_CURRENT_VERSION, ControlMask: THREAD_POWER_THROTTLING_EXECUTION_SPEED, StateMask: 0 };
+    let size = size_of::<THREAD_POWER_THROTTLING_STATE>() as u32;
+    let _ = unsafe { SetThreadInformation(GetCurrentThread(), ThreadPowerThrottling, (&raw const state).cast(), size) };
+}
 
 /// A NUL-terminated UTF-16 copy of `text`.
 pub fn wide(text: impl AsRef<OsStr>) -> Vec<u16> {

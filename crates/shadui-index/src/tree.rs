@@ -2169,6 +2169,98 @@ mod tests {
         }
     }
 
+    /// Real names (NAMES, as for `real_names_close_matches`) searched as typed under the conditions the
+    /// service may run in: QOS=high|eco tags the process (SetProcessInformation's power throttling),
+    /// THREAD_QOS=high tags the pool's threads as the service does (`win::high_qos`), MASK=<hex> keeps
+    /// the process to some processors, THREADS sizes the pool, GAP_MS idles before each search, OUT
+    /// appends the numbers to a file (for a run with no console, such as one started as a service).
+    /// Prints each query's times and the processor time a search took. Run with --ignored --nocapture,
+    /// in release.
+    #[test]
+    #[ignore]
+    #[cfg(windows)]
+    fn plain_search_conditions() {
+        use std::fmt::Write as _;
+        use windows::Win32::Foundation::FILETIME;
+        use windows::Win32::System::Threading::{
+            GetCurrentProcess, GetProcessTimes, ProcessPowerThrottling, SetProcessAffinityMask, SetProcessInformation, PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+            PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_STATE,
+        };
+        let Ok(file) = std::env::var("NAMES") else { return };
+        let env = |key: &str| std::env::var(key).ok().filter(|v| !v.is_empty());
+        let process = unsafe { GetCurrentProcess() };
+        if let Some(qos) = env("QOS") {
+            let state = PROCESS_POWER_THROTTLING_STATE {
+                Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+                ControlMask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+                StateMask: if qos == "eco" { PROCESS_POWER_THROTTLING_EXECUTION_SPEED } else { 0 },
+            };
+            unsafe { SetProcessInformation(process, ProcessPowerThrottling, &state as *const _ as *const _, size_of_val(&state) as u32) }.unwrap();
+        }
+        if let Some(mask) = env("MASK") {
+            unsafe { SetProcessAffinityMask(process, usize::from_str_radix(mask.trim_start_matches("0x"), 16).unwrap()) }.unwrap();
+        }
+        let text = std::fs::read_to_string(file).unwrap();
+        let names: Vec<&str> = text.lines().filter(|l| !l.is_empty() && l.len() < 250).collect();
+        let mut builder = Builder::new(names.len() + 32);
+        builder.record(ROOT, 5, true, 0, 0);
+        builder.record(20, 1, true, 0, 0);
+        builder.name(20, make_ref(ROOT, 5), "Folder");
+        for (i, name) in names.iter().enumerate() {
+            let n = 21 + i as u32;
+            builder.record(n, 1, false, 0x20, 0);
+            builder.name(n, make_ref(20, 1), name);
+        }
+        let tree = builder.finish();
+        let mut pool = rayon::ThreadPoolBuilder::new().num_threads(env("THREADS").and_then(|t| t.parse().ok()).unwrap_or(0));
+        if env("THREAD_QOS").is_some() {
+            pool = pool.start_handler(|_| crate::win::high_qos());
+        }
+        let pool = pool.build().unwrap();
+        let runs: usize = env("RUNS").and_then(|r| r.parse().ok()).unwrap_or(30);
+        let gap = std::time::Duration::from_millis(env("GAP_MS").and_then(|g| g.parse().ok()).unwrap_or(0));
+        let cpu_ms = || {
+            let mut times = [FILETIME::default(); 4];
+            let [created, exited, kernel, user] = &mut times;
+            unsafe { GetProcessTimes(process, created, exited, kernel, user) }.unwrap();
+            let ms = |t: &FILETIME| ((t.dwHighDateTime as u64) << 32 | t.dwLowDateTime as u64) as f64 / 10_000.0;
+            ms(&times[2]) + ms(&times[3])
+        };
+        let mut report = format!(
+            "{} names; QOS={} THREAD_QOS={} MASK={} THREADS={} GAP_MS={} RUNS={runs}\n",
+            names.len(),
+            env("QOS").unwrap_or("-".into()),
+            env("THREAD_QOS").unwrap_or("-".into()),
+            env("MASK").unwrap_or("-".into()),
+            pool.current_num_threads(),
+            gap.as_millis()
+        );
+        for (query, near) in [("reprot", false), ("downlaod", false), ("kernal32", false), ("kernal32", true)] {
+            let terms = crate::query::terms(query);
+            let matcher = if near { NameMatcher::near(terms).unwrap() } else { NameMatcher::from_terms(terms) };
+            let mut times = Vec::with_capacity(runs);
+            let mut found = 0;
+            let before = cpu_ms();
+            for _ in 0..runs {
+                std::thread::sleep(gap);
+                let started = std::time::Instant::now();
+                found = pool.install(|| {
+                    tree.search(&Search { matcher: &matcher, filters: &Default::default(), now: 0, scope: ROOT, hidden: true, excludes: &Excludes::default() }).len()
+                });
+                times.push(started.elapsed().as_secs_f64() * 1000.0);
+            }
+            let cpu = (cpu_ms() - before) / runs as f64;
+            times.sort_by(f64::total_cmp);
+            let pass = if near { "close" } else { "plain" };
+            writeln!(report, "{query:>10} {pass}: {found} found, min {:.2} median {:.2} p90 {:.2} ms, {cpu:.1} ms of processor a search", times[0], times[runs / 2], times[runs * 9 / 10]).unwrap();
+        }
+        print!("{report}");
+        if let Some(out) = env("OUT") {
+            use std::io::Write as _;
+            std::fs::OpenOptions::new().create(true).append(true).open(out).unwrap().write_all(report.as_bytes()).unwrap();
+        }
+    }
+
     #[test]
     fn folder_lists_follow_every_change() {
         let mut seed = 0x9E37_79B9_7F4A_7C15u64;
