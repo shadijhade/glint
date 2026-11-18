@@ -856,6 +856,7 @@ impl Explorer {
         }
         let at = Instant::now();
         // What it held the last time it was read ahead stays to be peeked at while it is read again.
+        self.prefetch_gen = self.prefetch_gen.wrapping_add(1);
         let seen = self.prefetched.remove(&key).and_then(|known| match known.state {
             PrefetchState::Ready(listed) => listed,
             PrefetchState::Pending(_) => known.seen,
@@ -898,6 +899,7 @@ impl Explorer {
             .ok();
             let listed = source.list(&path).await.ok();
             this.update(cx, |this, cx| {
+                this.prefetch_gen = this.prefetch_gen.wrapping_add(1);
                 let Some(entry) = this.prefetched.get_mut(&key).filter(|e| e.at == at) else {
                     return;
                 };
@@ -943,12 +945,19 @@ impl Explorer {
             .collect()
     }
 
+    /// A number that is the same for as long as [`Explorer::peeks`] says the same: a view that drew from the peeks
+    /// at one number needs to ask again only when it is another.
+    pub fn prefetch_generation(&self) -> u64 {
+        self.prefetch_gen
+    }
+
     /// Takes the listing read ahead for `path`, if there is a fresh one: it's used once.
     fn claim_prefetch(&mut self, path: &str) -> Option<Claim> {
         let key = path.to_lowercase();
         let entry = self.prefetched.get_mut(&key)?;
         if entry.at.elapsed() > PREFETCH_FRESH {
             self.prefetched.remove(&key);
+            self.prefetch_gen = self.prefetch_gen.wrapping_add(1);
             return None;
         }
         match &mut entry.state {
@@ -958,6 +967,7 @@ impl Explorer {
                 Some(Claim::Waiting(receiver))
             }
             PrefetchState::Ready(_) => {
+                self.prefetch_gen = self.prefetch_gen.wrapping_add(1);
                 let entry = self.prefetched.remove(&key)?;
                 let PrefetchState::Ready(listed) = entry.state else {
                     return None;

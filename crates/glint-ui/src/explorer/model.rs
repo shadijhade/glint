@@ -158,6 +158,9 @@ pub struct Explorer {
     pub(super) reported_folder: String,
     pub(super) first_painted: bool,
     pub(super) prefetched: HashMap<String, super::nav::PrefetchEntry>,
+    /// Moves on whenever `prefetched` changes in a way [`Explorer::peeks`] would show (a folder read ahead, its
+    /// listing arriving, one taken or let go), so a view can tell that what it drew from them still stands.
+    pub(super) prefetch_gen: u64,
     pub(super) hover_task: Option<Task<()>>,
     /// Tabs refreshed with F5, until what waits for it (Git status in a very big repository) has run.
     pub refreshed_by_hand: HashSet<TabId>,
@@ -221,6 +224,7 @@ impl Explorer {
             reported_folder: String::new(),
             first_painted: false,
             prefetched: HashMap::new(),
+            prefetch_gen: 0,
             hover_task: None,
             refreshed_by_hand: HashSet::new(),
             initialized: false,

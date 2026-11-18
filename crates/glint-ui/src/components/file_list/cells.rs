@@ -484,22 +484,20 @@ impl FileList {
         // What is in the folder, at the end of its name's column: there while the pointer is on the row, and on
         // the row the keyboard is on. The folder was read ahead when either came to it, so this is said before it
         // is opened.
+        // Only a row that shows it builds it: a folder the pointer is not on, or the keyboard, has no cell.
         if let Some(peek) = entry
             .dir
-            .then(|| frame.peeks.iter().find(|peek| peek.path == entry.path))
-            .flatten()
+            .then(|| shows_peek(frame, entry, focused))
+            .filter(|&shows| shows)
+            .and_then(|_| frame.peeks.iter().find(|peek| peek.path == entry.path))
         {
-            let kept = focused && !frame.inactive;
-            name_cell = name_cell
-                .child(div().flex_1().min_w_0())
-                .child(peek_cell(i, peek, kept, t));
+            name_cell = name_cell.child(div().flex_1().min_w_0()).child(peek_cell(i, peek, t));
         }
 
         // The row's highlight: a rounded fill inside the line (hover, selection, the folder files will drop into),
         // holding the cells. The line around it is what is clicked, named and measured.
         let mut fill = row_start()
             .id(("file-row-fill", i))
-            .group(ROW_GROUP)
             .relative()
             .size_full()
             .min_w_0()
@@ -652,6 +650,7 @@ impl FileList {
         let line = line.on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
             this.rest_on_row(i, *hovered, cx);
             if let Some(path) = &folder {
+                this.hover_folder_row(path, *hovered, cx);
                 this.explorer.update(cx, |explorer, cx| {
                     if *hovered {
                         explorer.hover_folder(path, cx);
@@ -665,13 +664,15 @@ impl FileList {
     }
 }
 
-/// The name rows are a hover group under: what shows only while the pointer is on a row asks it.
-const ROW_GROUP: &str = "file-row";
+/// Whether the row of the folder `entry` says what the folder holds: while the pointer is on it, and on the row the
+/// keyboard is on (`focused`, in the pane the keyboard is in).
+pub(super) fn shows_peek(frame: &Frame, entry: &FileEntry, focused: bool) -> bool {
+    (focused && !frame.inactive) || frame.hovered_folder.as_deref() == Some(entry.path.as_str())
+}
 
-/// What a folder holds, said in its row ([`super::Peek`]): its words, then its make-up as a small band. Drawn
-/// clear unless `kept` (the row the keyboard is on) and shown while the pointer is on the row; it gives way before
-/// the name does when the column is narrow.
-fn peek_cell(i: usize, peek: &super::Peek, kept: bool, t: &Tokens) -> impl IntoElement {
+/// What a folder holds, said in its row ([`super::Peek`]): its words, then its make-up as a small band. Built only
+/// for a row that shows it ([`shows_peek`]); it gives way before the name does when the column is narrow.
+fn peek_cell(i: usize, peek: &super::Peek, t: &Tokens) -> impl IntoElement {
     let band = row_start()
         .flex_none()
         .w(rems(2.5))
@@ -685,7 +686,7 @@ fn peek_cell(i: usize, peek: &super::Peek, kept: bool, t: &Tokens) -> impl IntoE
                 .rounded_full()
                 .bg(*color)
         }));
-    let cell = row_start()
+    row_start()
         .id(("file-list-peek", i))
         .role(Role::Note)
         .aria_label(peek.words.clone())
@@ -702,12 +703,7 @@ fn peek_cell(i: usize, peek: &super::Peek, kept: bool, t: &Tokens) -> impl IntoE
                 .child(crate::kit::rtl_line(peek.words.clone())),
         )
         .child(band)
-        .test_support();
-    if kept {
-        cell
-    } else {
-        cell.opacity(0.).group_hover(ROW_GROUP, |style| style.opacity(1.))
-    }
+        .test_support()
 }
 
 /// How long a flash lasts (`glint-flash`'s 1.15 s).
