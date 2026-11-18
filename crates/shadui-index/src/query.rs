@@ -168,6 +168,8 @@ const MAX_NAME: usize = 256;
 
 /// A name's lowercase characters, and where its words start: at its start, after anything but a
 /// letter or digit, between letters and digits, and (ASCII names) at a capital after a small letter.
+/// Laid out for names with a folded copy; an ASCII name is read where it is (`Near::distance_ascii`),
+/// as the tests check against this.
 struct Words {
     chars: [char; MAX_NAME],
     starts: [bool; MAX_NAME],
@@ -229,11 +231,14 @@ fn char_bit(c: char) -> u64 {
 /// Every bit a name's non-ASCII characters could have (they aren't decoded to tell which).
 const OTHER_CHARACTERS: u64 = 0xFFFF << 48;
 
-/// What `name_bits` needs of each byte, taken as the character it is when a name has no folded copy
-/// (as `Words::of` takes it): its bit, and its class as Words tells word starts by.
+/// What `name_bits` and `Near::distance_ascii` need of each byte, taken as the character it is when a name
+/// has no folded copy (as `Words::of` takes it): its bit, its class as Words tells word starts by, and
+/// whether a class starts a word after another.
 struct ByteTable {
     bit: [u64; 256],
     class: [u8; 256],
+    /// By `previous << 5 | class` (a class is five flags).
+    starts: [bool; 32 * 32],
 }
 
 const ALNUM: u8 = 1;
@@ -242,48 +247,53 @@ const NUMERIC: u8 = 4;
 const LOWER: u8 = 8;
 const UPPER: u8 = 16;
 
+impl ByteTable {
+    /// Whether a character of `class` starts a word after one of `previous`, as `Words::of` tells: after
+    /// anything but a letter or digit, between letters and digits, and at a capital after a small letter.
+    /// Before a name's first character, `previous` is 0 (as after a space): the first starts one.
+    fn starts_word(&self, previous: u8, class: u8) -> bool {
+        self.starts[usize::from(previous) << 5 | usize::from(class)]
+    }
+}
+
 static BYTES: std::sync::LazyLock<ByteTable> = std::sync::LazyLock::new(|| {
-    let mut table = ByteTable { bit: [0; 256], class: [0; 256] };
+    let mut table = ByteTable { bit: [0; 256], class: [0; 256], starts: [false; 32 * 32] };
     for b in 0..=255u8 {
         let c = b as char;
         table.bit[b as usize] = if b.is_ascii() { char_bit(b.to_ascii_lowercase() as char) } else { OTHER_CHARACTERS };
         let flag = |yes: bool, flag: u8| if yes { flag } else { 0 };
         table.class[b as usize] = flag(c.is_alphanumeric(), ALNUM) | flag(c.is_alphabetic(), ALPHA) | flag(c.is_numeric(), NUMERIC) | flag(c.is_lowercase(), LOWER) | flag(c.is_uppercase(), UPPER);
     }
+    for p in 0..32u8 {
+        for class in 0..32u8 {
+            table.starts[usize::from(p) << 5 | usize::from(class)] =
+                p & ALNUM == 0 || (p & ALPHA != 0 && class & NUMERIC != 0) || (p & NUMERIC != 0 && class & ALPHA != 0) || (p & LOWER != 0 && class & UPPER != 0);
+        }
+    }
     table
 });
 
-/// The characters a name has, as bits (by `char_bit`, case ignored): a byte past ASCII sets every one of
-/// `OTHER_CHARACTERS`, so a bit can be wrongly set but never wrongly clear. No branches: it's done for
-/// every name a search for close matches looks at.
-fn name_bits(name: &[u8], folded: Option<&[u8]>) -> u64 {
-    let table = &BYTES.bit;
-    folded.unwrap_or(name).iter().fold(0, |bits, &b| bits | table[b as usize])
-}
-
-/// The characters a name's words start with, as bits, as `Words::of` tells its starts (after anything but
-/// a letter or digit, between letters and digits, and at a capital after a small letter), each byte taken
-/// as the character it is there. A name with a folded copy (Words lays out its characters, not its
-/// bytes) counts every character as a start.
-fn start_bits(name: &[u8], folded: Option<&[u8]>) -> u64 {
-    if folded.is_some() {
-        return !0;
-    }
+/// The characters a name has, and the characters its words start with, as bits (by `char_bit`, case
+/// ignored), in one pass without branches: it's done for every name a search for close matches looks at.
+/// A byte past ASCII sets every one of `OTHER_CHARACTERS`, so a bit can be wrongly set but never wrongly
+/// clear. Words start as `Words::of` tells their starts, each byte taken as the character it is there; a
+/// name with a folded copy (Words lays out its characters, not its bytes) counts every character as a
+/// start.
+fn name_bits(name: &[u8], folded: Option<&[u8]>) -> (u64, u64) {
     let table = &*BYTES;
-    let mut starts = 0;
-    let mut previous: Option<u8> = None;
-    for &b in name {
-        let class = table.class[b as usize];
-        let start = match previous {
-            None => true,
-            Some(p) => p & ALNUM == 0 || (p & ALPHA != 0 && class & NUMERIC != 0) || (p & NUMERIC != 0 && class & ALPHA != 0) || (p & LOWER != 0 && class & UPPER != 0),
-        };
-        if start {
-            starts |= table.bit[b as usize];
-        }
-        previous = Some(class);
+    if let Some(folded) = folded {
+        return (folded.iter().fold(0, |bits, &b| bits | table.bit[b as usize]), !0);
     }
-    starts
+    let (mut bits, mut starts) = (0u64, 0u64);
+    let mut previous = 0;
+    for &b in name {
+        let (bit, class) = (table.bit[b as usize], table.class[b as usize]);
+        bits |= bit;
+        // The bit when a word starts here, else nothing.
+        starts |= bit & 0u64.wrapping_sub(u64::from(table.starts_word(previous, class)));
+        previous = class;
+    }
+    (bits, starts)
 }
 
 impl Near {
@@ -300,7 +310,7 @@ impl Near {
         (self.bits & !bits).count_ones() > u32::from(self.k)
     }
 
-    /// Whether no word of a name with these word starts (`start_bits`) starts with the word's first or
+    /// Whether no word of a name with these word starts (`name_bits`) starts with the word's first or
     /// second character, the only words `distance` looks at.
     fn no_start(&self, starts: u64) -> bool {
         starts & self.first == 0
@@ -308,18 +318,39 @@ impl Near {
 }
 
 impl Near {
+    /// The fewest edits from the word to the start of a word of the name `words` lays out, if at most `k`.
     fn distance(&self, words: &Words) -> Option<u8> {
+        self.distance_in(words.len, |i| words.chars[i], |i| words.starts[i])
+    }
+
+    /// `distance` for an ASCII name (one without a folded copy), read where it is: its bytes are the
+    /// characters `Words::of` would lay out, and where its words start comes from the byte before.
+    fn distance_ascii(&self, name: &[u8]) -> Option<u8> {
+        let table = &*BYTES;
+        let class = |i: usize| table.class[name[i] as usize];
+        let starts = |i: usize| i == 0 || table.starts_word(class(i - 1), class(i));
+        self.distance_in(name.len().min(MAX_NAME), |i| name[i].to_ascii_lowercase() as char, starts)
+    }
+
+    /// The fewest edits from the word to the start of one of a name's words, if at most `k`: the name's
+    /// `len` characters, `at(i)` the i-th (lowercase), and `starts(i)` whether a word starts there. Only
+    /// the words starting with the word's first or second character are looked at.
+    fn distance_in(&self, len: usize, at: impl Fn(usize) -> char, starts: impl Fn(usize) -> bool) -> Option<u8> {
         let (first, second) = (self.word[0], self.word.get(1).copied());
         let mut best: Option<u8> = None;
-        for start in (0..words.len).filter(|&i| words.starts[i]) {
-            let c = words.chars[start];
-            if c != first && Some(c) != second {
+        for start in 0..len {
+            let c = at(start);
+            if (c != first && Some(c) != second) || !starts(start) {
                 continue;
             }
             // A prefix more than k letters longer than the word is more than k edits away.
-            let end = (start + self.word.len() + self.k as usize).min(words.len);
-            if let Some(d) = prefix_distance(&self.word, &words.chars[start..end], self.k) {
+            let end = (start + self.word.len() + self.k as usize).min(len);
+            if let Some(d) = prefix_distance(&self.word, end - start, |j| at(start + j), self.k) {
                 best = Some(best.map_or(d, |b| b.min(d)));
+                // None is closer than the word as typed.
+                if d == 0 {
+                    break;
+                }
             }
         }
         best
@@ -327,27 +358,38 @@ impl Near {
 }
 
 /// The fewest edits (a letter added, dropped or changed, or two neighbours swapped) that make `word`
-/// a prefix of `text`, if that's at most `k`. The edit table, a column at a time (the last two kept
-/// for swaps).
-fn prefix_distance(word: &[char], text: &[char], k: u8) -> Option<u8> {
+/// a prefix of the `len` characters `at` gives, if that's at most `k`. The edit table, a column at a
+/// time (the last two kept for swaps), given up at the first column with every cell past `k`: no
+/// column after it can come back under (each cell is at most one less than the one beside it in the
+/// column before, and a swap reaches back only one column more).
+fn prefix_distance(word: &[char], len: usize, at: impl Fn(usize) -> char, k: u8) -> Option<u8> {
     let m = word.len();
     let (mut before, mut last, mut column) = ([0u8; MAX_NEAR + 1], [0u8; MAX_NEAR + 1], [0u8; MAX_NEAR + 1]);
     for (i, cell) in last.iter_mut().enumerate().take(m + 1) {
         *cell = i as u8;
     }
     let mut best = last[m];
-    for j in 1..=text.len() {
+    // The character before this column's, for swaps.
+    let mut previous = '\0';
+    for j in 1..=len {
+        let c = at(j - 1);
         column[0] = j as u8;
+        let mut lowest = column[0];
         for i in 1..=m {
-            let changed = u8::from(word[i - 1] != text[j - 1]);
+            let changed = u8::from(word[i - 1] != c);
             let mut d = (last[i] + 1).min(column[i - 1] + 1).min(last[i - 1] + changed);
-            if i > 1 && j > 1 && word[i - 1] == text[j - 2] && word[i - 2] == text[j - 1] {
+            if i > 1 && j > 1 && word[i - 1] == previous && word[i - 2] == c {
                 d = d.min(before[i - 2] + 1);
             }
             column[i] = d;
+            lowest = lowest.min(d);
         }
         best = best.min(column[m]);
+        if lowest > k {
+            break;
+        }
         (before, last) = (last, column);
+        previous = c;
     }
     (best <= k).then_some(best)
 }
@@ -523,28 +565,22 @@ impl NameMatcher {
     /// How many edits away the name is, when it matches (0 for terms matched as typed).
     pub fn distance(&self, name: &[u8], folded: Option<&[u8]>) -> Option<u32> {
         // Close matches: a name lacking too many of a word's characters, or with no word starting as the word
-        // does, is ruled out from a pass over its bytes, before its words are laid out and any edit table
-        // is filled (most names, on a real drive).
+        // does, is ruled out from a pass over its bytes, before any edit table is filled (most names, on a
+        // real drive).
         if self.is_near() && !self.passes_checks(name, folded) {
             return None;
         }
         self.distance_unfiltered(name, folded)
     }
 
-    /// Whether a name gets past the cheap checks `distance` makes for close matches before laying out its
-    /// words and filling any edit table: its characters first (one pass without branches), then the
-    /// characters its words start with.
+    /// Whether a name gets past the cheap checks `distance` makes for close matches before filling any edit
+    /// table: its characters, and the characters its words start with (one pass without branches).
     pub(crate) fn passes_checks(&self, name: &[u8], folded: Option<&[u8]>) -> bool {
-        let nears = || self.terms.iter().filter_map(|t| match t {
-            Term::Near(near) => Some(near),
-            _ => None,
-        });
-        let bits = name_bits(name, folded);
-        if nears().any(|near| near.lacks(bits)) {
-            return false;
-        }
-        let starts = start_bits(name, folded);
-        !nears().any(|near| near.no_start(starts))
+        let (bits, starts) = name_bits(name, folded);
+        self.terms.iter().all(|t| match t {
+            Term::Near(near) => !near.lacks(bits) && !near.no_start(starts),
+            _ => true,
+        })
     }
 
     /// `distance` without ruling names out by their characters first: what it must always agree with.
@@ -568,11 +604,18 @@ impl NameMatcher {
                     }
                 }
                 Term::Near(near) => {
-                    let words = match &words {
-                        Some(words) => words,
-                        None => words.insert(Words::of(name, folded)?),
+                    let edits = match folded {
+                        // ASCII names, nearly all of them, are read where they are.
+                        None => near.distance_ascii(name),
+                        Some(_) => {
+                            let words = match &words {
+                                Some(words) => words,
+                                None => words.insert(Words::of(name, folded)?),
+                            };
+                            near.distance(words)
+                        }
                     };
-                    total += u32::from(near.distance(words)?);
+                    total += u32::from(edits?);
                 }
             }
         }
@@ -1154,9 +1197,34 @@ mod tests {
             let text: Vec<char> = (0..next() % 12).map(|_| (b'a' + (next() % 3) as u8) as char).collect();
             let expected = table_distance(&word, &text);
             for k in 0..3 {
-                assert_eq!(prefix_distance(&word, &text, k), (expected <= k).then_some(expected), "{word:?} in {text:?}");
+                assert_eq!(prefix_distance(&word, text.len(), |j| text[j], k), (expected <= k).then_some(expected), "{word:?} in {text:?}");
             }
         }
+    }
+
+    /// An ASCII name read where it is gives what its laid-out words give: over random words and names
+    /// (small and capital letters, digits, a space and other signs, where word starts differ most).
+    #[test]
+    fn ascii_names_read_in_place_as_laid_out() {
+        let mut seed = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        const WORD: &[u8] = b"aberp1";
+        const NAME: &[u8] = b"abeRPA1 -._";
+        let mut found = 0;
+        for _ in 0..200_000 {
+            let word: Vec<char> = (0..4 + next() % 6).map(|_| WORD[(next() % WORD.len() as u64) as usize] as char).collect();
+            let name: Vec<u8> = (0..next() % 20).map(|_| NAME[(next() % NAME.len() as u64) as usize]).collect();
+            let near = Near::new(word.clone(), edits(word.len()));
+            let laid_out = Words::of(&name, None).map(|words| near.distance(&words));
+            assert_eq!(Some(near.distance_ascii(&name)), laid_out, "{word:?} in {:?}", String::from_utf8_lossy(&name));
+            found += usize::from(near.distance_ascii(&name).is_some());
+        }
+        assert!(found > 1000, "{found}");
     }
 
     /// Ruling names out by their characters never loses a close match: over random words and names
