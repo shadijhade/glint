@@ -268,7 +268,7 @@ pub enum Signal {
     Bell,
 }
 
-/// How a screen reaches the outside. A cast player's screen uses [`Hooks::none`].
+/// How a screen reaches the outside. A screen nothing is written back from uses [`Hooks::none`].
 #[derive(Clone)]
 pub struct Hooks {
     /// Bytes the terminal answers a program with (cursor position reports, device attributes, color queries):
@@ -281,7 +281,7 @@ pub struct Hooks {
 }
 
 impl Hooks {
-    /// A screen nobody listens to (a recording, a test).
+    /// A screen nobody listens to (a test).
     pub fn none() -> Self {
         Hooks {
             write: Arc::new(|_| {}),
@@ -416,7 +416,6 @@ pub struct Emu {
     parser: Processor,
     listener: Listener,
     size: Size,
-    history: usize,
     generation: u64,
     palette: Palette,
     palette_id: u64,
@@ -454,7 +453,6 @@ impl Emu {
             parser: Processor::new(),
             listener,
             size,
-            history,
             generation: 1,
             palette: Palette::new(true, 0x242424, 0xf2f2f2, 0xec4899),
             palette_id: 0,
@@ -1030,18 +1028,9 @@ pub struct Screen(Arc<Inner>);
 impl Screen {
     /// A screen of `cols` x `rows` (at least 10 x 2) that keeps [`SCROLLBACK`] lines.
     pub fn new(cols: usize, rows: usize, hooks: Hooks) -> Self {
-        Self::with_history(cols, rows, SCROLLBACK, hooks)
-    }
-
-    /// A screen that keeps no scrollback, as a recording is played (`scrollback: 0`).
-    pub fn fixed(cols: usize, rows: usize, hooks: Hooks) -> Self {
-        Self::with_history(cols, rows, 0, hooks)
-    }
-
-    fn with_history(cols: usize, rows: usize, history: usize, hooks: Hooks) -> Self {
         let wake = hooks.wake.clone();
         Screen(Arc::new(Inner {
-            emu: Mutex::new(Emu::new(cols, rows, history, hooks)),
+            emu: Mutex::new(Emu::new(cols, rows, SCROLLBACK, hooks)),
             wake,
         }))
     }
@@ -1059,31 +1048,6 @@ impl Screen {
     /// Parses output from the shell. Callable from any thread; wakes the UI when done.
     pub fn feed(&self, bytes: &[u8]) {
         self.lock().feed(bytes);
-        (self.0.wake)();
-    }
-
-    /// Replaces what is on the screen with a fresh terminal of the same size that has been fed `bytes`.
-    /// The parse runs here, on the calling thread, and the swap under the lock is instant: a cast player
-    /// calls this from a background task to seek.
-    pub fn replay(&self, bytes: &[&[u8]]) {
-        let (cols, rows, history, hooks) = {
-            let emu = self.lock();
-            (emu.size.cols, emu.size.rows, emu.history, emu.listener.hooks.clone())
-        };
-        let mut fresh = Emu::new(cols, rows, history, hooks);
-        for chunk in bytes {
-            fresh.feed(chunk);
-        }
-        let mut emu = self.lock();
-        fresh.palette = emu.palette.clone();
-        fresh.palette_id = emu.palette_id;
-        fresh.generation = emu.generation + 1;
-        fresh
-            .listener
-            .cell
-            .store(emu.listener.cell.load(Ordering::Relaxed), Ordering::Relaxed);
-        *emu = fresh;
-        drop(emu);
         (self.0.wake)();
     }
 
@@ -1389,14 +1353,6 @@ mod tests {
             assert_eq!(link.on_row(1, 20), Some((0, 18)));
             assert_eq!(link.on_row(3, 20), None);
         });
-    }
-
-    #[test]
-    fn replaying_swaps_in_a_screen_fed_from_the_start() {
-        let s = screen(20, 3);
-        s.feed(b"old stuff");
-        s.replay(&[b"new ", b"stuff"]);
-        s.with(|e| assert_eq!(e.visible_text()[0], "new stuff"));
     }
 
     #[test]

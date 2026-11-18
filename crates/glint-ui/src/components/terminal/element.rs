@@ -10,10 +10,9 @@
 //! scrollbar. Cells are grouped in runs by the snapshot, so a screenful is a few dozen shaped lines, and GPUI
 //! caches the shaping between frames.
 //!
-//! **What it measures.** In a live terminal ([`Fit::Fill`]) the grid is as many cells as fit the bounds: the
-//! element resizes the screen right here in prepaint (the parse lock is held for the reflow only) and reports
-//! the new size, so the view tells the shell. In a recording ([`Fit::Fixed`]) the grid is the recording's and
-//! the font is chosen to fit the width (10 to 18 px, as CastPreview.tsx did).
+//! **What it measures.** The grid is as many cells as fit the bounds: the element resizes the screen right here
+//! in prepaint (the parse lock is held for the reflow only) and reports the new size, so the view tells the
+//! shell.
 //!
 //! **Never notifies.** Nothing here calls `cx.notify`: GPUI drops a redraw asked for during a draw. What the
 //! view needs to know (the grid size) goes through a channel its task reads.
@@ -27,11 +26,11 @@ use super::view::TerminalView;
 use crate::i18n;
 use alacritty_terminal::vte::ansi::CursorShape;
 use gpui_kit::{
-    fill, point, px, quad, relative, rgb, size, App, AvailableSpace, BorderStyle, Bounds, ContentMask, CursorStyle,
-    DispatchPhase, Edges, Element, ElementId, ElementInputHandler, Entity, FocusHandle, Font, FontStyle, FontWeight,
-    GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollEvent, SharedString, Size, StrikethroughStyle, Style, TextAlign,
-    TextRun, UnderlineStyle, Window,
+    fill, point, px, quad, relative, rgb, size, App, BorderStyle, Bounds, ContentMask, CursorStyle, DispatchPhase,
+    Edges, Element, ElementId, ElementInputHandler, Entity, FocusHandle, Font, FontStyle, FontWeight, GlobalElementId,
+    Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, Pixels, Point, ScrollEvent, SharedString, Size, StrikethroughStyle, Style, TextAlign, TextRun,
+    UnderlineStyle, Window,
 };
 use std::cell::Cell;
 use std::rc::Rc;
@@ -42,15 +41,6 @@ pub const PAD_X: f32 = 8.;
 pub const PAD_Y: f32 = 4.;
 /// The scrollbar's width and the room its track needs at the end edge.
 pub const SCROLLBAR: f32 = 8.;
-
-/// How the grid is sized.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Fit {
-    /// As many cells as fill the bounds (a live terminal).
-    Fill,
-    /// This many columns and rows, drawn as big as fits the width (a recording).
-    Fixed { cols: usize, rows: usize },
-}
 
 /// Where the grid was drawn last: what the view needs to turn the pointer into a cell.
 #[derive(Clone, Copy, Debug)]
@@ -132,15 +122,6 @@ pub fn measure(window: &Window, cx: &App, family: &SharedString, font_size: Pixe
     }
 }
 
-/// The font size a recording `cols` wide is drawn at in `available` pixels of width: as big as fits, from 10 to
-/// 18 px (a narrower pane scrolls sideways rather than go smaller).
-pub fn fitted_font_size(window: &Window, cx: &App, family: &SharedString, cols: usize, available: Pixels) -> Pixels {
-    let probe = measure(window, cx, family, px(14.));
-    let drawn = f32::from(probe.cell.width) * cols.max(1) as f32 + 2. * PAD_X;
-    let fits = (14. * f32::from(available) / drawn.max(1.)).floor();
-    px(fits.clamp(10., 18.))
-}
-
 fn color(value: u32) -> Hsla {
     rgb(value).into()
 }
@@ -153,7 +134,6 @@ pub struct TerminalElement {
     pub family: SharedString,
     /// The font size in rems (13 px at the usual size).
     pub rems: f32,
-    pub fit: Fit,
     pub geometry: Rc<Cell<Option<Geometry>>>,
     /// Told the grid's size whenever it changes (and once at the start).
     pub on_size: Option<Rc<dyn Fn(u16, u16)>>,
@@ -213,34 +193,11 @@ impl Element for TerminalElement {
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
         let mut style = Style::default();
-        match self.fit {
-            Fit::Fill => {
-                style.size.width = relative(1.).into();
-                style.size.height = relative(1.).into();
-                style.min_size.width = px(0.).into();
-                style.min_size.height = px(0.).into();
-                (window.request_layout(style, [], cx), ())
-            }
-            Fit::Fixed { cols, rows } => {
-                let family = self.family.clone();
-                let measured = window.request_measured_layout(style, move |known, available, window, cx| {
-                    let width = known.width.or(match available.width {
-                        AvailableSpace::Definite(width) => Some(width),
-                        _ => None,
-                    });
-                    let font_size = match width {
-                        Some(width) => fitted_font_size(window, cx, &family, cols, width),
-                        None => px(14.),
-                    };
-                    let m = measure(window, cx, &family, font_size);
-                    size(
-                        m.cell.width * cols as f32 + px(2. * PAD_X),
-                        m.cell.height * rows as f32 + px(2. * PAD_Y),
-                    )
-                });
-                (measured, ())
-            }
-        }
+        style.size.width = relative(1.).into();
+        style.size.height = relative(1.).into();
+        style.min_size.width = px(0.).into();
+        style.min_size.height = px(0.).into();
+        (window.request_layout(style, [], cx), ())
     }
 
     fn prepaint(
@@ -252,37 +209,27 @@ impl Element for TerminalElement {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
-        let font_size = match self.fit {
-            Fit::Fill => self.font_size(window),
-            Fit::Fixed { cols, .. } => fitted_font_size(window, cx, &self.family, cols, bounds.size.width),
-        };
+        let font_size = self.font_size(window);
         let metrics = measure(window, cx, &self.family, font_size);
         let cell = metrics.cell;
         let pad_x = px(PAD_X);
         let pad_y = px(PAD_Y);
         // The scrollbar's room at the end edge is taken out of the text's width.
-        let (cols, rows) = match self.fit {
-            Fit::Fill => {
-                let width = (bounds.size.width - pad_x * 2.).max(px(0.));
-                let height = (bounds.size.height - pad_y).max(px(0.));
-                (
-                    ((f32::from(width) / f32::from(cell.width)).floor() as usize).max(super::emu::MIN_COLS),
-                    ((f32::from(height) / f32::from(cell.height)).floor() as usize).max(super::emu::MIN_ROWS),
-                )
-            }
-            Fit::Fixed { cols, rows } => (cols, rows),
-        };
+        let width = (bounds.size.width - pad_x * 2.).max(px(0.));
+        let height = (bounds.size.height - pad_y).max(px(0.));
+        let (cols, rows) = (
+            ((f32::from(width) / f32::from(cell.width)).floor() as usize).max(super::emu::MIN_COLS),
+            ((f32::from(height) / f32::from(cell.height)).floor() as usize).max(super::emu::MIN_ROWS),
+        );
         let previous = self.geometry.get().map(|g| (g.cols, g.rows));
         let (snapshot, (cols, rows)) = self.screen.with(|emu| {
-            if self.fit == Fit::Fill {
-                emu.resize(cols, rows);
-            }
+            emu.resize(cols, rows);
             emu.set_cell_pixels(f32::from(cell.width), f32::from(cell.height));
             emu.set_palette(&self.palette, self.palette_id);
             let size = emu.size();
             (emu.snapshot(), size)
         });
-        if self.fit == Fit::Fill && previous != Some((cols, rows)) {
+        if previous != Some((cols, rows)) {
             if let Some(report) = &self.on_size {
                 report(
                     cols.min(usize::from(u16::MAX)) as u16,
