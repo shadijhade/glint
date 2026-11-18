@@ -523,6 +523,22 @@ fn paste_as_link_links_what_is_on_the_clipboard_and_each_link_is_its_own_undo_st
 }
 
 #[gpui_kit::test]
+fn a_clone_pasted_as_link_goes_back_to_the_recycle_bin_on_undo(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let h = harness(cx);
+    let runner = cx.update(FakeUndoRunner::install);
+    assert!(h.go(cx, "C:\\b"));
+    // A ReFS drive without hardlinks: the file is cloned, a copy of its own that may be changed after.
+    h.disk.set_link_kind(glint_core::links::Kind::Clone);
+    h.disk.set_clipboard(&["C:\\a\\one.txt"], false);
+    h.task(cx, |e, cx| e.paste_as_links(None, cx));
+    assert!(h.said().iter().any(|n| matches!(n, OpNotice::Linked { count: 1, .. })));
+    h.task(cx, |e, cx| e.undo(None, cx));
+    assert!(runner.links_removed().is_empty(), "a clone isn't removed as a link");
+    assert!(matches!(&h.disk.ops()[..], [FileOp::Delete { .. }]), "it is recycled: {:?}", h.disk.ops());
+}
+
+#[gpui_kit::test]
 fn paste_as_link_into_a_place_that_cannot_hold_files_does_nothing(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let h = harness(cx);

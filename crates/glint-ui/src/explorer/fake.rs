@@ -83,6 +83,8 @@ struct State {
     paste_file: Option<String>,
     /// What Paste as link was asked to link, and where, in order.
     linked: Vec<(Vec<String>, String)>,
+    /// What Paste as link makes of a file: a hardlink unless a test says otherwise (a clone, on a ReFS drive).
+    link_kind: Option<glint_core::links::Kind>,
     recycle_answer: bool,
     new_kinds: Vec<NewKind>,
     /// A New menu file whose app has not made it yet.
@@ -415,6 +417,11 @@ impl FakeDisk {
     /// What Paste as link was asked for: the sources and the folder, each time.
     pub fn linked(&self) -> Vec<(Vec<String>, String)> {
         self.state.borrow().linked.clone()
+    }
+
+    /// Makes Paste as link make this kind of link of every file from now on.
+    pub fn set_link_kind(&self, kind: glint_core::links::Kind) {
+        self.state.borrow_mut().link_kind = Some(kind);
     }
 
     /// A picture or text is on the clipboard: pasting with no files makes a file with this name.
@@ -1243,15 +1250,12 @@ impl Source for FakeDisk {
                 return Err(message);
             }
             state.linked.push((sources.clone(), dest.clone()));
+            let kind = state.link_kind.unwrap_or(glint_core::links::Kind::Hardlink);
             let mut report = glint_core::links::Report::default();
             for source in sources {
                 let name = glint_model::paths::base_name(&source).to_string();
                 match make_numbered(&mut state, &dest, &name, false) {
-                    Ok(path) => report.made.push(glint_core::links::Made {
-                        path,
-                        target: source,
-                        kind: glint_core::links::Kind::Hardlink,
-                    }),
+                    Ok(path) => report.made.push(glint_core::links::Made { path, target: source, kind }),
                     Err(why) => report.failed.push((source, why)),
                 }
             }

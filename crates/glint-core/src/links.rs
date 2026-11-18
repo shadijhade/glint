@@ -2,12 +2,14 @@
 //!
 //! A folder becomes a directory junction (`mklink /J`, which needs no administrator rights), a file on the same
 //! drive a hardlink (one file with two names, no space used twice), and a file from another drive or a network
-//! share a `.lnk` shortcut, which is the only link that crosses drives. Names that are taken are numbered like
-//! Glint's other pastes ("a (2).txt").
+//! share a `.lnk` shortcut, which is the only link that crosses drives. A drive that keeps no hardlinks but clones
+//! blocks (ReFS, a Dev Drive) gets a block clone instead of a shortcut: a copy that shares the original's space
+//! until either changes. Names that are taken are numbered like Glint's other pastes ("a (2).txt").
 //!
 //! Taking a link back ([`remove_links`]) must never touch what it points to. A junction is removed with
 //! `remove_dir`, which on a junction removes the link only and on a real folder with anything in it fails; a
-//! folder that is not a reparse point is refused outright. Nothing here deletes recursively.
+//! folder that is not a reparse point is refused outright. Nothing here deletes recursively. A clone is a file of
+//! its own, which may have been changed since, so the app takes it back to the Recycle Bin rather than here.
 
 use crate::fsx;
 use std::io;
@@ -24,6 +26,8 @@ pub enum Kind {
     Junction,
     /// A second name for a file on the same drive.
     Hardlink,
+    /// A block clone of a file, on a drive that keeps no hardlinks but clones blocks (ReFS, a Dev Drive).
+    Clone,
     /// A `.lnk` shortcut.
     Shortcut,
 }
@@ -116,14 +120,30 @@ fn make_link(source: &str, dest: &str) -> Result<Made, String> {
         let link = free_in(dest_path, &name, false)?;
         match std::fs::hard_link(source, &link) {
             Ok(()) => return Ok(made(&link, Kind::Hardlink)),
-            // A drive that keeps no hardlinks (FAT, exFAT) takes a shortcut instead; any other failure is told.
-            Err(e) if unsupported(&e) => {}
+            // A drive that keeps no hardlinks clones the file where it can, else takes a shortcut (FAT, exFAT);
+            // any other failure is told.
+            Err(e) if unsupported(&e) => {
+                if without_hardlinks(crate::dedup::clones_supported(dest)) == Kind::Clone {
+                    reflink_copy::reflink(source, &link).map_err(|e| format!("{source}: {}", fsx::file_error(e)))?;
+                    return Ok(made(&link, Kind::Clone));
+                }
+            }
             Err(e) => return Err(format!("{source}: {}", fsx::file_error(e))),
         }
     }
     let link = free_in(dest_path, &format!("{name}.lnk"), false)?;
     shortcut(source, &link)?;
     Ok(made(&link, Kind::Shortcut))
+}
+
+/// What a file on the same drive becomes when that drive keeps no hardlinks: a block clone where the volume clones
+/// blocks (`clones`: ReFS, a Dev Drive), else a shortcut.
+fn without_hardlinks(clones: bool) -> Kind {
+    if clones {
+        Kind::Clone
+    } else {
+        Kind::Shortcut
+    }
 }
 
 /// The file system doesn't do hardlinks (`ERROR_INVALID_FUNCTION` or `ERROR_NOT_SUPPORTED`).
@@ -325,6 +345,20 @@ mod tests {
     fn taking_back_a_link_that_is_already_gone_is_fine() {
         let dir = scratch("gone");
         assert!(remove_links(&[text(&dir.join("nothing"))]).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_drive_without_hardlinks_clones_where_it_can_and_takes_a_shortcut_where_it_cannot() {
+        assert_eq!(without_hardlinks(true), Kind::Clone);
+        assert_eq!(without_hardlinks(false), Kind::Shortcut);
+        // This PC's temp folder is on NTFS, which keeps hardlinks: a file on the same drive still gets one.
+        let dir = scratch("ntfs");
+        std::fs::write(dir.join("one.txt"), "1").unwrap();
+        let dest = dir.join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        let report = make_links(&[text(&dir.join("one.txt"))], &text(&dest));
+        assert_eq!(report.made[0].kind, Kind::Hardlink);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
