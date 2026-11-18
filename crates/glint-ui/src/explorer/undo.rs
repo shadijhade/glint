@@ -33,6 +33,11 @@ impl UndoRunner for CoreRunner {
         Box::pin(async move { call.await.and_then(|inner| inner).map(|_| ()) })
     }
 
+    fn remove_links(&self, paths: Vec<String>) -> UndoFut<Result<(), String>> {
+        let call = core_bridge::run(glint_core::links::undo_links(paths));
+        Box::pin(async move { call.await.and_then(|inner| inner) })
+    }
+
     fn wof_undo(&self, id: u64) -> UndoFut<Result<WofUndone, String>> {
         // Nobody watches an undo's progress here; the channel only has to outlive the call.
         let (channel, progress) = core_bridge::stream::<glint_core::wof::Progress>();
@@ -150,6 +155,7 @@ impl Explorer {
                     // Files that wouldn't decompress stay compressed: the undo didn't come all the way, and
                     // the person is told which (the web app's second toast, "Couldn't decompress {n} files").
                     UndoRun::Wof(id) => runner.wof_undo(id).await.and_then(wof_outcome),
+                    UndoRun::RemoveLinks(paths) => runner.remove_links(paths).await,
                 };
                 if let Err(message) = done {
                     result = Err(message);

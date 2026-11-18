@@ -914,6 +914,8 @@ impl MenuHost {
             data: self.data.clone(),
             ..FolderCtx::default()
         };
+        ctx.files_on_clipboard = aware::try_shared(cx)
+            .is_some_and(|aware| matches!(aware.read(cx).clip(), glint_model::aware::Clip::Files { .. }));
         // What Undo would take back, said in the menu's Undo.
         ctx.data.undo = try_explorer(cx).and_then(|e| e.read(cx).next_undo().map(|(_, label)| label.to_string()));
         if let Some(app) = persistence::app(cx) {

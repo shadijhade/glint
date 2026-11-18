@@ -296,6 +296,8 @@ pub struct Inputs {
     pub other_pane: Option<String>,
     /// What Undo would take back, in a few words (`nextUndo()?.label`).
     pub undo: Option<String>,
+    /// Files or folders are on the clipboard: Paste as link is offered.
+    pub files_on_clipboard: bool,
     /// The two files Ctrl+M compares: path and name, left then right (`comparePair`).
     pub pair: Option<((String, String), (String, String))>,
     /// The file an archive in the tab is in, when the tab is inside one (`archive.outer`).
@@ -938,6 +940,18 @@ pub fn actions(inputs: &Inputs) -> Vec<Command> {
             I::ClipboardPaste,
             Kind::Action,
             Run::Menu(MenuEvent::PasteQueued {
+                folder: inputs.path.clone(),
+            }),
+        ),
+    );
+    push(
+        writable && !inputs.finding && !inputs.shut && inputs.files_on_clipboard,
+        Command::new(
+            "paste-as-link",
+            t!("Paste as link: a junction, hardlink or shortcut to what was copied"),
+            I::Link,
+            Kind::Action,
+            Run::Menu(MenuEvent::PasteAsLink {
                 folder: inputs.path.clone(),
             }),
         ),

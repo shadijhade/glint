@@ -778,6 +778,8 @@ pub fn read_inputs(cx: &mut App) -> Inputs {
         focus_path: tab.and_then(|t| t.selection.focus().map(str::to_string)),
         other_pane: e.other_pane_folder().map(|(_, path)| path),
         undo: e.next_undo().map(|(_, label)| label.to_string()),
+        files_on_clipboard: crate::aware::try_shared(cx)
+            .is_some_and(|aware| matches!(aware.read(cx).clip(), glint_model::aware::Clip::Files { .. })),
         pair: Facts::read(e, false, settings)
             .pair
             .map(|p| ((p.left, p.left_name), (p.right, p.right_name))),

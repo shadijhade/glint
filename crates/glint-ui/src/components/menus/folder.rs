@@ -54,6 +54,8 @@ pub struct FolderCtx {
     pub remote: Option<Connection>,
     /// The lists from [`MenuData`].
     pub data: MenuData,
+    /// Files or folders are on the clipboard: Paste as link is offered.
+    pub files_on_clipboard: bool,
 }
 
 /// "Undo", saying what it takes back (`undoLabel`).
@@ -263,6 +265,19 @@ pub fn folder_menu(folder: &str, current: bool, c: &FolderCtx) -> Vec<Node> {
                     MenuEvent::PasteQueued { folder: owned.clone() },
                 )
                 .disabled_because(find || in_archive || shut, &why_not(in_archive, shut, find)),
+            )
+        }),
+        when(c.files_on_clipboard, || {
+            Node::Item(
+                Entry::ask(
+                    t!("Paste as link"),
+                    IconName::Link,
+                    MenuEvent::PasteAsLink { folder: owned.clone() },
+                )
+                .disabled_because(
+                    (current && find) || in_archive || shut,
+                    &why_not(in_archive, shut, current && find),
+                ),
             )
         }),
         when(current && view.is_some(), || Node::Item(select_all(unlisted))),

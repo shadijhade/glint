@@ -383,6 +383,24 @@ fn a_closed_folder_a_search_and_an_archive_take_the_tools_away() {
 }
 
 #[test]
+fn paste_as_link_is_listed_only_while_files_are_on_the_clipboard() {
+    assert!(find(&actions(&with_selected(&[])), "paste-as-link").is_none());
+    let inputs = Inputs {
+        files_on_clipboard: true,
+        ..with_selected(&[])
+    };
+    let commands = actions(&inputs);
+    let command = find(&commands, "paste-as-link").expect("listed with files on the clipboard");
+    assert_eq!(menu_event(command), MenuEvent::PasteAsLink { folder: HERE.into() });
+    // Not into a search's results.
+    let finding = Inputs {
+        finding: true,
+        ..inputs
+    };
+    assert!(find(&actions(&finding), "paste-as-link").is_none());
+}
+
+#[test]
 fn the_folders_own_tools_ask_about_the_folder() {
     let commands = actions(&with_selected(&[]));
     let folder_event = |id: &str| menu_event(find(&commands, id).unwrap_or_else(|| panic!("{id} is listed")));

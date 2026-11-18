@@ -667,6 +667,36 @@ fn shown_folder() -> FolderCtx {
 }
 
 #[test]
+fn paste_as_link_is_offered_only_while_files_are_on_the_clipboard() {
+    let _guard = english();
+    let without = folder_menu("C:\\x", true, &shown_folder());
+    assert!(find(&without, "Paste as link").is_none());
+    let with = FolderCtx {
+        files_on_clipboard: true,
+        ..shown_folder()
+    };
+    let menu = folder_menu("C:\\x", true, &with);
+    let entry = find(&menu, "Paste as link").expect("Paste as link is in the folder menu");
+    assert!(!entry.disabled);
+    // A folder that is not the one shown gets it too, aimed at that folder.
+    let other = folder_menu("C:\\x\\docs", false, &with);
+    assert!(find(&other, "Paste as link").is_some());
+    // In a search's results nothing can be made.
+    let finding = FolderCtx {
+        files_on_clipboard: true,
+        view: Some(FolderView {
+            find: true,
+            ..FolderView::default()
+        }),
+        ..FolderCtx::default()
+    };
+    assert_eq!(
+        find(&folder_menu("C:\\x", true, &finding), "Paste as link").map(|e| e.disabled),
+        Some(true)
+    );
+}
+
+#[test]
 fn the_folder_shown_has_paste_undo_new_and_the_folders_tools() {
     let _guard = english();
     let menu = folder_menu("C:\\x", true, &shown_folder());

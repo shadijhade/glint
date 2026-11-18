@@ -94,6 +94,9 @@ pub trait Source {
     /// Paste with no files on the clipboard: its picture or text as a new file in `folder`; the file made
     /// (`clipboardPasteFile`).
     fn clipboard_paste_file(&self, folder: &str) -> Fut<Result<Option<String>, String>>;
+    /// Paste as link: links to `sources` made in `dest` (junctions, hardlinks, shortcuts), what was made and what
+    /// couldn't be (`glint_core::links::paste_as_links`).
+    fn paste_as_links(&self, sources: Vec<String>, dest: String) -> Fut<Result<glint_core::links::Report, String>>;
     /// Empties the Recycle Bin, every drive's, after Windows' own question: whether it's empty now
     /// (`recycleEmpty`).
     fn recycle_empty(&self) -> Fut<Result<bool, String>>;
@@ -463,6 +466,11 @@ impl Source for CoreSource {
             return Box::pin(async { Err("Glint has no window to reach the clipboard from".to_string()) });
         };
         let running = core_bridge::run(glint_core::shell::clipboard_paste_file(window, folder.to_string()));
+        Box::pin(async move { running.await? })
+    }
+
+    fn paste_as_links(&self, sources: Vec<String>, dest: String) -> Fut<Result<glint_core::links::Report, String>> {
+        let running = core_bridge::run(glint_core::links::paste_as_links(sources, dest));
         Box::pin(async move { running.await? })
     }
 

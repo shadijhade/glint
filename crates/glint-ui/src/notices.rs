@@ -121,6 +121,17 @@ pub fn show(notice: &OpNotice, window: &mut Window, cx: &mut App) {
             made = name_of(made),
             dest = name_of(dest)
         )),
+        OpNotice::Linked { count, dest, undo } => {
+            let message = t!(
+                "Linked {what} into “{dest}”",
+                what = items(*count),
+                dest = name_of(dest)
+            );
+            return match undo {
+                Some(undo) => offer_undo(undo_offer(message, *undo), *undo, window, cx),
+                None => window.push_notification(Notification::success(message), cx),
+            };
+        }
         OpNotice::AppIsMakingIt { kind } => Notification::info(t!("It shows here once it's made."))
             .title(t!("Your {kind} app is making it", kind = kind.clone())),
         OpNotice::InvalidName => {
@@ -181,6 +192,7 @@ fn failing(what: &Failing) -> SharedString {
         Failing::Clipboard => t!("Couldn't use the clipboard"),
         Failing::ReadClipboard => t!("Couldn't read the clipboard"),
         Failing::Paste => t!("Couldn't paste"),
+        Failing::Link => t!("Couldn't paste as a link"),
     }
 }
 
