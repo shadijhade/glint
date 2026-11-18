@@ -633,6 +633,62 @@ pub fn tasks_menu(groups: &[TaskGroup]) -> Vec<Node> {
     nodes
 }
 
+// ---- The basket ------------------------------------------------------------------------------------------------
+
+/// How many of the basket's items its menu lists before it says how many more there are.
+const BASKET_LISTED: usize = 12;
+
+/// The basket's menu: Move here, Copy here, Zip and Batch rename for what it holds, the list of what it holds (each
+/// row takes its item out), and Empty. Move and Copy need a folder that can take them.
+pub fn basket_menu(items: &[String], f: &Facts) -> Vec<Node> {
+    if items.is_empty() {
+        return Vec::new();
+    }
+    let can_drop_here = f.in_folder && !f.find && !f.read_only;
+    let mut nodes = vec![
+        Node::Item(Entry::ask(t!("Move here"), IconName::FolderInput, MenuEvent::BasketMove).disabled(!can_drop_here)),
+        Node::Item(Entry::ask(t!("Copy here"), IconName::Copy, MenuEvent::BasketCopy).disabled(!can_drop_here)),
+        Node::Item(Entry::ask(t!("Zip"), IconName::Package, MenuEvent::BasketZip)),
+        Node::Item(Entry::ask(
+            t!("Batch rename"),
+            IconName::PenLine,
+            MenuEvent::BasketRename,
+        )),
+        Node::Separator,
+    ];
+    let mut listed: Vec<Node> = items
+        .iter()
+        .take(BASKET_LISTED)
+        .map(|path| {
+            Node::Item(Entry::ask(
+                t!("Take out “{name}”", name = base_name(path)),
+                IconName::X,
+                MenuEvent::BasketRemove { path: path.clone() },
+            ))
+        })
+        .collect();
+    if items.len() > BASKET_LISTED {
+        listed.push(Node::Item(
+            Entry::ask(
+                t!("and {n} more", n = items.len() - BASKET_LISTED),
+                IconName::Ellipsis,
+                MenuEvent::BasketEmpty,
+            )
+            .disabled(true),
+        ));
+    }
+    nodes.push(Node::Menu {
+        label: t!("What is in it ({n})", n = items.len()),
+        icon: Some(IconName::List),
+        disabled: false,
+        items: listed,
+    });
+    nodes.push(Node::Item(
+        Entry::ask(t!("Empty the basket"), IconName::Trash, MenuEvent::BasketEmpty).danger(true),
+    ));
+    nodes
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

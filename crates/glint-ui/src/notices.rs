@@ -132,6 +132,12 @@ pub fn show(notice: &OpNotice, window: &mut Window, cx: &mut App) {
                 None => window.push_notification(Notification::success(message), cx),
             };
         }
+        OpNotice::Basketed { added: 0, .. } => Notification::info(t!("Nothing new to add to the basket")),
+        OpNotice::Basketed { added, total } => Notification::success(t!(
+            "Added {what} to the basket ({total} in it)",
+            what = items(*added),
+            total = format_count(*total)
+        )),
         OpNotice::AppIsMakingIt { kind } => Notification::info(t!("It shows here once it's made."))
             .title(t!("Your {kind} app is making it", kind = kind.clone())),
         OpNotice::InvalidName => {

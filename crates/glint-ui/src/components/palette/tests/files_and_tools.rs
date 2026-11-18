@@ -567,3 +567,22 @@ fn converting_to_utf8_is_offered_for_a_selection_of_text_files_only() {
     inside.chosen = true;
     assert!(find(&actions(&inside), "to-utf8").is_none());
 }
+
+#[test]
+fn add_to_basket_is_listed_for_a_selection_and_carries_its_paths() {
+    assert!(find(&actions(&with_selected(&[])), "add-to-basket").is_none());
+    let inputs = with_selected(&["a.txt", "b.txt"]);
+    let commands = actions(&inputs);
+    let command = find(&commands, "add-to-basket").expect("listed while something is selected");
+    assert_eq!(
+        menu_event(command),
+        MenuEvent::BasketAdd {
+            paths: inputs.selected.clone()
+        }
+    );
+    let archive = Inputs {
+        in_archive: true,
+        ..inputs
+    };
+    assert!(find(&actions(&archive), "add-to-basket").is_none());
+}

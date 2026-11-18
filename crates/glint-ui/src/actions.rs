@@ -62,6 +62,7 @@ actions!(
         GridView,
         ListView,
         FlatView,
+        AddToBasket,
         ColumnsView,
         GridLarger,
         GridSmaller,
@@ -242,6 +243,12 @@ pub static BINDINGS: &[Binding] = &[
         "Workspace",
         FlatView,
         "Flat view: every file in this folder and its subfolders as one list (again: back)"
+    ),
+    bind!(
+        "ctrl-shift-b",
+        "Workspace",
+        AddToBasket,
+        "Add the selection to the basket, to move, copy, zip or rename together from any folder"
     ),
     bind!("ctrl-shift-2", "Workspace", GridView, "Grid"),
     bind!("ctrl-shift-6", "Workspace", ListView, "List"),
@@ -424,6 +431,7 @@ mod tests {
             // What was bound before stays.
             ("ctrl-p", "Workspace", "glint::CommandPalette"),
             ("ctrl-b", "Workspace", "glint::FlatView"),
+            ("ctrl-shift-b", "Workspace", "glint::AddToBasket"),
             ("ctrl-=", "Workspace", "glint::GridLarger"),
             ("ctrl--", "Workspace", "glint::GridSmaller"),
         ];

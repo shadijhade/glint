@@ -95,6 +95,7 @@ mod actions;
 mod actions_types;
 mod archive;
 mod archive_types;
+mod basket;
 mod clipboard;
 mod compare;
 mod create;

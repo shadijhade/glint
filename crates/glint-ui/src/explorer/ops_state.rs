@@ -40,6 +40,9 @@ pub(super) struct OpsState {
     pub queue_seen: HashMap<u64, bool>,
     /// The New menu's kinds as last read.
     pub new_kinds: Arc<[NewKind]>,
+    /// What the basket holds (explorer/basket.rs): paths from any folder, gathered to be moved, copied, zipped or
+    /// renamed together. Empty means nothing is kept and nothing runs.
+    pub basket: Vec<String>,
     /// When they were last asked for: they are read again after 30 s (an app installed since shows up).
     pub kinds_asked: Option<Instant>,
     pub kinds_loading: bool,
@@ -55,6 +58,7 @@ impl OpsState {
             busy_seq: 0,
             queue_seen: HashMap::new(),
             new_kinds: Arc::from(Vec::new()),
+            basket: Vec::new(),
             kinds_asked: None,
             kinds_loading: false,
         }

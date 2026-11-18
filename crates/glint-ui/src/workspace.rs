@@ -1151,6 +1151,31 @@ impl Workspace {
             ),
             MenuEvent::PasteInto { folder } => Self::explorer(cx, |e, cx| e.paste(Some(folder), cx).detach()),
             MenuEvent::PasteQueued { folder } => Self::explorer(cx, |e, cx| e.paste_queued(Some(folder), cx).detach()),
+            MenuEvent::BasketAdd { paths } => Self::explorer(cx, |e, cx| e.add_to_basket(paths.clone(), cx)),
+            MenuEvent::BasketMove => {
+                Self::explorer(cx, |e, cx| e.basket_to_here(explorer::QueueKind::Move, cx).detach())
+            }
+            MenuEvent::BasketCopy => {
+                Self::explorer(cx, |e, cx| e.basket_to_here(explorer::QueueKind::Copy, cx).detach())
+            }
+            MenuEvent::BasketRename => Self::explorer(cx, |e, cx| e.basket_batch_rename(cx).detach()),
+            MenuEvent::BasketEmpty => Self::explorer(cx, |e, cx| e.empty_basket(cx)),
+            MenuEvent::BasketRemove { path } => Self::explorer(cx, |e, cx| e.remove_from_basket(path, cx)),
+            MenuEvent::BasketZip => {
+                // What was moved or deleted since is dropped first, then what is left is zipped.
+                let pruning = explorer::explorer(cx).update(cx, |e, cx| e.prune_basket(cx));
+                cx.spawn_in(window, async move |this, cx| {
+                    pruning.await;
+                    this.update_in(cx, |_, window, cx| {
+                        let paths = explorer::explorer(cx).read(cx).basket().to_vec();
+                        if !paths.is_empty() {
+                            Self::compress(paths, explorer::CompressFormat::Zip, window, cx);
+                        }
+                    })
+                    .ok();
+                })
+                .detach();
+            }
             MenuEvent::PasteAsLink { folder } => {
                 Self::explorer(cx, |e, cx| e.paste_as_links(Some(folder), cx).detach())
             }
@@ -2331,6 +2356,10 @@ impl Render for Workspace {
             .on_action(
                 cx.listener(|_, _: &actions::Paste, _, cx| Self::explorer(cx, |e, cx| e.paste(None, cx).detach())),
             )
+            .on_action(cx.listener(|_, _: &actions::AddToBasket, _, cx| {
+                let paths = Self::selection(cx);
+                Self::explorer(cx, |e, cx| e.add_to_basket(paths, cx))
+            }))
             .on_action(cx.listener(|_, _: &actions::CopyPath, window, cx| Self::copy_paths(window, cx)))
             .on_action(cx.listener(|_, _: &actions::Delete, _, cx| Self::delete_selection(false, cx)))
             .on_action(cx.listener(|_, _: &actions::DeletePermanently, _, cx| Self::delete_selection(true, cx)))

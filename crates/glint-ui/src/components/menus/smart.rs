@@ -79,6 +79,14 @@ fn event_key(event: &MenuEvent) -> Option<String> {
         MenuEvent::PasteInto { .. } => "do:paste-into",
         MenuEvent::PasteQueued { .. } => "do:paste-queued",
         MenuEvent::PasteAsLink { .. } => "do:paste-as-link",
+        // The basket's own rows are the dock's, not something the menus suggest.
+        MenuEvent::BasketAdd { .. }
+        | MenuEvent::BasketMove
+        | MenuEvent::BasketCopy
+        | MenuEvent::BasketZip
+        | MenuEvent::BasketRename
+        | MenuEvent::BasketEmpty
+        | MenuEvent::BasketRemove { .. } => return None,
         MenuEvent::ExtractHere { .. } => "do:extract-here",
         MenuEvent::Mount { .. } => "do:mount",
         MenuEvent::OpenWithItsApp { .. } => "do:open-with-its-app",

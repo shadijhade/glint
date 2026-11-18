@@ -78,6 +78,20 @@ pub enum MenuEvent {
     PasteInto { folder: String },
     /// "Paste with the copy queue" (`pasteQueued(folder)`).
     PasteQueued { folder: String },
+    /// "Add to basket" (Ctrl+Shift+B): these items join what the basket holds.
+    BasketAdd { paths: Vec<String> },
+    /// The basket's "Move here": what it holds moves into the folder shown.
+    BasketMove,
+    /// The basket's "Copy here".
+    BasketCopy,
+    /// The basket's "Zip": what it holds into one zip file.
+    BasketZip,
+    /// The basket's "Batch rename".
+    BasketRename,
+    /// The basket's "Empty the basket".
+    BasketEmpty,
+    /// An item taken out of the basket.
+    BasketRemove { path: String },
     /// "Paste as link": what is on the clipboard linked into the folder (junction, hardlink or shortcut).
     PasteAsLink { folder: String },
     /// "Extract here" (`extractHere`).

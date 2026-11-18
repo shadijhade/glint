@@ -945,6 +945,18 @@ pub fn actions(inputs: &Inputs) -> Vec<Command> {
         ),
     );
     push(
+        inputs.chosen && !inputs.in_archive,
+        Command::new(
+            "add-to-basket",
+            t!("Add to basket: gather the selection to move, copy, zip or rename together"),
+            I::Package,
+            Kind::Action,
+            Run::Menu(MenuEvent::BasketAdd {
+                paths: inputs.selected.clone(),
+            }),
+        ),
+    );
+    push(
         writable && !inputs.finding && !inputs.shut && inputs.files_on_clipboard,
         Command::new(
             "paste-as-link",
