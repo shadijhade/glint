@@ -79,10 +79,12 @@ use crate::components::viz;
 use crate::core_bridge;
 use crate::explorer::{self, Explorer};
 use crate::kit::prelude::*;
+use crate::platform::dragdrop::{Answer, Under};
 use crate::theme::{self, Tokens};
 use crate::{aware, i18n, state, t};
 use glint_core::projects::TaskGroup;
 use glint_model::aware::Clip;
+use glint_model::format::plural;
 use glint_model::grid::{zoom_tiles, TileSize};
 use glint_model::store::ViewMode;
 use gpui_kit::{anchored, deferred, Anchor, Stateful};
@@ -221,6 +223,8 @@ pub struct CommandBar {
     clip: Clip,
     /// Counts the times files arrived on the clipboard, so Paste's ring turns once for each.
     clip_turn: u64,
+    /// How many items the basket holds: its pill is in the island only while this is more than none.
+    basket: usize,
     /// The button whose menu a press closed last, and when.
     dismissed: Option<(&'static str, Instant)>,
     _subscriptions: Vec<Subscription>,
@@ -279,6 +283,7 @@ impl CommandBar {
             step_turn: 0,
             clip: Clip::Empty,
             clip_turn: 0,
+            basket: 0,
             dismissed: None,
             _subscriptions: subscriptions,
         }
@@ -359,6 +364,7 @@ impl CommandBar {
             self.clip_turn += 1;
         }
         self.clip = clip;
+        self.basket = self.explorer.read(cx).basket().len();
         let step = if (1..=MOST_FOR_STEP).contains(&facts.selected) {
             smart::next_step(cx, self.explorer.read(cx).active_pane())
         } else {
@@ -424,6 +430,7 @@ impl CommandBar {
         (
             self.step.as_ref().map(|step| step.entry.label.clone()),
             smart::paste_words(&self.clip),
+            self.basket,
         )
             .hash(&mut hasher);
         hasher.finish()
@@ -655,6 +662,22 @@ impl CommandBar {
     fn show_tasks(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let nodes = menus::tasks_menu(&self.tasks.groups);
         self.open_menu("tasks", nodes, t!("Run"), window, cx);
+    }
+
+    /// The basket's menu: what can be done with what it holds, and what it holds. What was moved or deleted since
+    /// it was filled is dropped first, so the menu says what is true.
+    fn show_basket(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let pruning = self.explorer.update(cx, |e, cx| e.prune_basket(cx));
+        cx.spawn_in(window, async move |this, cx| {
+            pruning.await;
+            this.update_in(cx, |this, window, cx| {
+                let items = this.explorer.read(cx).basket().to_vec();
+                let nodes = menus::basket_menu(&items, &this.facts);
+                this.open_menu("basket", nodes, t!("Basket"), window, cx);
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn show_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -992,8 +1015,9 @@ impl CommandBar {
         let f = &self.facts;
         let none = f.selected == 0;
         let paste = self.paste_button(fold, t, cx);
+        let basket = self.basket_button(fold, t, cx);
         if none {
-            return group.child(paste);
+            return group.child(paste).children(basket);
         }
         let mut group = group
             .child(
@@ -1023,7 +1047,8 @@ impl CommandBar {
                 )
                 .on_click(cx.listener(|this, _, window, cx| this.dispatch(Box::new(actions::Copy), window, cx))),
             )
-            .child(paste);
+            .child(paste)
+            .children(basket);
         if f.dual {
             group = group
                 .child(
@@ -1123,6 +1148,27 @@ impl CommandBar {
             Some(step) if fold < MOST => group.child(divider(t)).child(self.step_button(step, fold, t, cx)),
             _ => group,
         }
+    }
+
+    /// The basket's pill, while it holds anything: "Basket 3", which opens what can be done with it. With nothing in
+    /// the basket there is no pill, and nothing of the basket is drawn, timed or watched.
+    fn basket_button(&self, fold: usize, t: &Tokens, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.basket == 0 {
+            return None;
+        }
+        let words = t!("Basket {n}", n = glint_model::format::format_count(self.basket));
+        let tip = t!(
+            "Basket: {n} gathered from any folder, to move, copy, zip or rename together",
+            n = plural(self.basket, "item")
+        );
+        Some(
+            self.anchored(
+                "basket",
+                menu_word(cx, t, "basket", IconName::Package, words, fold < 4, tip)
+                    .on_click(cx.listener(|this, _, window, cx| this.show_basket(window, cx))),
+            )
+            .into_any_element(),
+        )
     }
 
     /// Paste. While files are on the clipboard and Paste can be used it says what it would paste ("Paste 3 files")
@@ -1528,7 +1574,25 @@ impl Render for CommandBar {
             .child(left)
             .child(divider(&t))
             .child(right)
-            .children(menu);
+            .children(menu)
+            // Files dragged onto the dock go into the basket (the drag's words say so); nothing moves or copies.
+            .on_drag_move(cx.listener(|_, event: &DragMoveEvent<ExternalPaths>, _, cx| {
+                if event.bounds.contains(&event.event.position) {
+                    crate::drops::answer(
+                        cx,
+                        Answer::Accept(Under {
+                            name: String::new(),
+                            copy: t!("Add to the basket").to_string(),
+                            moves: t!("Add to the basket").to_string(),
+                            always_move: false,
+                        }),
+                    );
+                }
+            }))
+            .on_drop(cx.listener(|this, drop: &ExternalPaths, _, cx| {
+                let paths = crate::drops::paths(drop);
+                this.explorer.update(cx, |e, cx| e.add_to_basket(paths, cx));
+            }));
         // The dock's whole width is measured, and the island sits in its middle. Nothing here takes the mouse
         // but the island: the status bar under the rest stays live.
         row_start()

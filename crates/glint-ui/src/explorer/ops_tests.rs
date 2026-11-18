@@ -393,6 +393,100 @@ fn a_failed_copy_is_told_and_changes_nothing(cx: &mut TestAppContext) {
     assert_eq!(h.next_undo(cx), None);
 }
 
+// ---- The basket ------------------------------------------------------------------------------------------------
+
+#[gpui_kit::test]
+fn the_basket_gathers_items_from_any_folder_once_and_leaves_out_what_cannot_be_moved(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let h = harness(cx);
+    assert!(h.read(cx, |e| e.basket().is_empty()));
+    h.run(cx, |e, cx| e.add_to_basket(vec!["C:\\a\\one.txt".into(), "C:\\a\\two.txt".into()], cx));
+    assert!(h.said().contains(&OpNotice::Basketed { added: 2, total: 2 }));
+    // The folder is left; what was gathered stays. The same item again, in other letters, is not added twice;
+    // an archive's, a remote's and the Recycle Bin's items cannot be gathered.
+    assert!(h.go(cx, "C:\\b"));
+    h.run(cx, |e, cx| {
+        e.add_to_basket(
+            vec![
+                "c:\\A\\ONE.txt".into(),
+                "C:\\b\\b1.txt".into(),
+                "C:\\x\\pack.zip\\in.txt".into(),
+                "remote:abc\\f.txt".into(),
+            ],
+            cx,
+        )
+    });
+    assert_eq!(h.read(cx, |e| e.basket().to_vec()), ["C:\\a\\one.txt", "C:\\a\\two.txt", "C:\\b\\b1.txt"]);
+    assert_eq!(h.said().last(), Some(&OpNotice::Basketed { added: 1, total: 3 }));
+    h.run(cx, |e, cx| e.add_to_basket(vec!["C:\\b\\b1.txt".into()], cx));
+    assert_eq!(h.said().last(), Some(&OpNotice::Basketed { added: 0, total: 3 }));
+
+    h.run(cx, |e, cx| e.remove_from_basket("C:\\a\\two.txt", cx));
+    assert_eq!(h.read(cx, |e| e.basket().len()), 2);
+    h.run(cx, |e, cx| e.empty_basket(cx));
+    assert!(h.read(cx, |e| e.basket().is_empty()));
+}
+
+#[gpui_kit::test]
+fn the_basket_drops_what_was_moved_or_deleted_meanwhile(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let h = harness(cx);
+    h.run(cx, |e, cx| {
+        e.add_to_basket(vec!["C:\\a\\one.txt".into(), "C:\\a\\gone.txt".into()], cx)
+    });
+    h.task(cx, |e, cx| e.prune_basket(cx));
+    assert_eq!(h.read(cx, |e| e.basket().to_vec()), ["C:\\a\\one.txt"]);
+}
+
+#[gpui_kit::test]
+fn move_here_queues_the_basket_into_the_folder_shown_and_empties_it_and_copy_here_keeps_it(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let h = harness(cx);
+    h.run(cx, |e, cx| {
+        e.add_to_basket(
+            vec!["C:\\a\\one.txt".into(), "C:\\a\\two.txt".into(), "C:\\b\\b1.txt".into()],
+            cx,
+        )
+    });
+    assert!(h.go(cx, "C:\\c"));
+    h.task(cx, |e, cx| e.basket_to_here(QueueKind::Copy, cx));
+    assert_eq!(
+        h.disk.queued(),
+        [(
+            QueueKind::Copy,
+            vec!["C:\\a\\one.txt".to_string(), "C:\\a\\two.txt".to_string(), "C:\\b\\b1.txt".to_string()],
+            "C:\\c".to_string(),
+            true
+        )]
+    );
+    assert_eq!(h.read(cx, |e| e.basket().len()), 3, "a copy keeps the basket for the next folder");
+
+    // Into C:, what is already there is not moved onto itself.
+    assert!(h.go(cx, "C:\\b"));
+    h.task(cx, |e, cx| e.basket_to_here(QueueKind::Move, cx));
+    let queued = h.disk.queued();
+    assert_eq!(queued.len(), 2);
+    assert_eq!(queued[1].0, QueueKind::Move);
+    assert_eq!(queued[1].1, ["C:\\a\\one.txt".to_string(), "C:\\a\\two.txt".to_string()]);
+    assert_eq!(queued[1].2, "C:\\b");
+    assert_eq!(h.read(cx, |e| e.basket().len()), 1, "only what was moved leaves the basket");
+}
+
+#[gpui_kit::test]
+fn the_baskets_batch_rename_opens_with_what_it_holds_and_an_empty_basket_opens_nothing(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let h = harness(cx);
+    h.task(cx, |e, cx| e.basket_batch_rename(cx));
+    assert!(!h.events().iter().any(|e| matches!(e, ExplorerEvent::BatchRename(_))));
+    h.run(cx, |e, cx| {
+        e.add_to_basket(vec!["C:\\a\\one.txt".into(), "C:\\b\\b1.txt".into()], cx)
+    });
+    h.task(cx, |e, cx| e.basket_batch_rename(cx));
+    assert!(h
+        .events()
+        .contains(&ExplorerEvent::BatchRename(vec!["C:\\a\\one.txt".into(), "C:\\b\\b1.txt".into()])));
+}
+
 // ---- Paste as link ---------------------------------------------------------------------------------------------
 
 #[gpui_kit::test]

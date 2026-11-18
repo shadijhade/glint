@@ -1558,3 +1558,72 @@ fn every_icon_the_bar_draws_is_in_the_embedded_assets() {
         assert!(matches!(AllAssets.load(&path), Ok(Some(_))), "{path} is not embedded");
     }
 }
+
+// ---- The basket ------------------------------------------------------------------------------------------------
+
+#[gpui_kit::test]
+fn the_basket_pill_is_in_the_island_only_while_the_basket_holds_something(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut rig = open(cx, false, 1400.);
+    rig.go("C:\\Work");
+    assert!(
+        !rig.present("Basket 1") && !rig.present("Basket 2"),
+        "no pill for an empty basket"
+    );
+    rig.act(|e, cx| e.add_to_basket(vec!["C:\\Work\\notes.txt".into()], cx));
+    assert!(rig.present("Basket 1"));
+    // It stays across folders, and counts.
+    rig.go("C:\\Other");
+    rig.act(|e, cx| e.add_to_basket(vec!["C:\\Other\\other.txt".into()], cx));
+    assert!(rig.present("Basket 2"));
+    rig.act(|e, cx| e.empty_basket(cx));
+    assert!(!rig.present("Basket 2"), "the pill goes with the last item");
+}
+
+#[test]
+fn the_baskets_menu_offers_the_four_jobs_lists_what_is_in_it_and_can_be_emptied() {
+    let _guard = testing::lock();
+    let here = Facts {
+        in_folder: true,
+        ..Facts::none()
+    };
+    let items: Vec<String> = (0..15).map(|n| format!("C:\\Work\\file{n}.txt")).collect();
+    let nodes = menus::basket_menu(&items, &here);
+    let label = |node: &Node| match node {
+        Node::Item(entry) => Some(entry.label.to_string()),
+        Node::Menu { label, .. } => Some(label.to_string()),
+        _ => None,
+    };
+    let labels: Vec<String> = nodes.iter().filter_map(label).collect();
+    assert_eq!(
+        labels,
+        [
+            "Move here",
+            "Copy here",
+            "Zip",
+            "Batch rename",
+            "What is in it (15)",
+            "Empty the basket"
+        ]
+    );
+    // Each listed item takes itself out; past twelve it says how many more.
+    let Some(Node::Menu { items: listed, .. }) = nodes.iter().find(|n| matches!(n, Node::Menu { .. })) else {
+        panic!("the list of what it holds")
+    };
+    assert_eq!(listed.len(), 13);
+    assert!(matches!(
+        &listed[0],
+        Node::Item(Entry { run: Run::Ask(MenuEvent::BasketRemove { path }), .. }) if path == "C:\\Work\\file0.txt"
+    ));
+    // Move and Copy need a folder that can take them; the other two do not.
+    let nowhere = menus::basket_menu(&items, &Facts::none());
+    let disabled: Vec<bool> = nowhere
+        .iter()
+        .filter_map(|n| match n {
+            Node::Item(entry) => Some(entry.disabled),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(disabled, [true, true, false, false, false]);
+    assert!(menus::basket_menu(&[], &here).is_empty());
+}

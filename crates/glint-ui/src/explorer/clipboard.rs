@@ -161,7 +161,7 @@ impl Explorer {
     }
 
     /// Checks that `dest` can be pasted into, saying why not if it can't; the active tab's id if it can.
-    fn paste_target(&mut self, dest: &str, cx: &mut Context<Self>) -> Option<TabId> {
+    pub(super) fn paste_target(&mut self, dest: &str, cx: &mut Context<Self>) -> Option<TabId> {
         let tab = self.active_tab_id();
         if is_remote_path(dest) {
             self.read_only_notice(Some(tab), cx);

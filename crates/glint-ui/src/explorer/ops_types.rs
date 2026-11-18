@@ -459,6 +459,9 @@ pub enum OpNotice {
         dest: String,
         undo: Option<UndoId>,
     },
+    /// Success when `added` is more than none (`Added {what} to the basket`), info when everything was in it
+    /// already or cannot be gathered (`Nothing new to add to the basket`). `total` is what it holds now.
+    Basketed { added: usize, total: usize },
     /// Info with a description: `Your {kind} app is making it` / `It shows here once it's made.`
     AppIsMakingIt { kind: String },
     /// Error: `A name can't contain any of these characters: \ / : * ? " < > |`
