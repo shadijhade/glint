@@ -3,7 +3,7 @@
 *0.13.0 came out on 2026-11-16 ([its release](https://github.com/shadijhade/glint/releases/tag/v0.13.0)),
 0.13.1, a fix for its zoom, the same day ([its release](https://github.com/shadijhade/glint/releases/tag/v0.13.1)),
 and 0.13.2, updates that need nobody, that evening ([its release](https://github.com/shadijhade/glint/releases/tag/v0.13.2)).
-The next release is being got ready: what it has so far is under **In the next release**.
+The next release is being got ready: what it has so far is under **In the next release**, and **Planned for 0.14** (audited 2026-11-18 from `5630c16`) was done the same day, every item of it: each says where (its commit on master), and the M0 table has the numbers.
 The plan for 0.12 that was here is in git history (`git show df1245a:NEXT_RELEASE.md`), the plans for 0.9 to 0.11
 before it (`git show 47c33fa:NEXT_RELEASE.md`), and 0.13's own plan, the menu and the dock that know the selection,
 is [docs/gpui/aware/PLAN.md](docs/gpui/aware/PLAN.md) with its task cards beside it.*
@@ -56,6 +56,168 @@ and `tests/e2e`'s new `search-history` check with the real keyboard and side but
 
 Not tried end to end: the hover's counts and the close matches through the installed service, which stays 0.13.2
 until a release updates it (the tests run the service's code in a test and through a pipe of its own).
+
+---
+
+## Planned for 0.14
+
+*Done 2026-11-18, not pushed when written. Ten agents worked the items in worktrees of their own, from `5630c16`; each branch was rebased onto master, checked (its crates' tests and clippy) and merged one at a time, and the whole workspace was checked at the end (see **Final verification**). Each item below ends with **Done** and its commit.*
+
+### Ground rules
+
+1. **Measure first, keep the numbers.** Run M0 before any change and again after each part; record the numbers in the Results table. A performance change that is not measurably faster (or smaller) and is not a fix or removal is reverted.
+2. **Where to work.** Branch `master` (`git pull` first). Commit locally only when asked; **never push** without the user's word.
+3. **Build folder.** `$env:CARGO_TARGET_DIR = "E:/glint-gpui-target/ui"`.
+4. **The user's own Glint.** Before launching anything, check for a running `Glint*` process. Leave the user's running copy alone: do not kill it, overwrite its exe, or run the e2e harness while it is running.
+5. **Builds to use.** Size: `cargo build --release -p glint -p shadui-index`. Speed: `cargo build --release -p glint --config "profile.release.package.glint-ui.debug-assertions=true"`. e2e: `cargo build -p glint`.
+6. **Checks before saying an item is done.** `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --check`, and `npm run check-imports`. Run `powershell -STA -File tests\e2e\run.ps1` after each part (ask before taking the mouse/keyboard).
+7. **Rules of the code.** Follow [docs/gpui/STANDARDS.md](docs/gpui/STANDARDS.md) (§3 Rust rules, §5 UI rules, §7 Done means).
+
+### M0. Baseline
+
+| Measure | How | 0.13.2 Baseline | After A | After B | After D | Final (0.14) |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| `Glint.exe`, `.text` / `.rdata` | file sizes & `python scripts/dev/size-by-crate.py --json <file>` | 93,770,752 B; 68.4 / 21.8 MB (0.12: 93,284,352 B; 68.2 / 21.6 MB) | — | — | — | **82,779,648 B; 60.5 / 19.1 MB** (−11.7%) |
+| Crates compiled | `cargo tree --locked --offline -p glint --target x86_64-pc-windows-msvc -e normal --prefix none \| sort -u \| wc -l` | 1,015 (0.12: 724) | — | — | — | **836** (−179) |
+| Cold start | `npm run bench -- --start` | not measured yet: it opens Glint's window five times, so it runs with the e2e checks, on the user's word | — | — | — | |
+| Engine: list System32 (all) | `npm run bench` | 1.35 ms (warm) | — | — | — | 1.36 ms: the same (nothing in 0.14 lists folders differently; a cold first run gave 1.72, which wasn't 0.13.2's) |
+| Engine: index search & typo search | `npm run bench` | 8.1 / 27–36 ms | — | — | — | the same: both runs ask the installed 0.13.2 service, so the service's gains (the hover's counts, close matches, all cores) show once it updates. In its code: typo `kernal32` 13.6 → 6.2 ms over 3.35 million names |
+| Engine: copy 5000 small files (1 / 16) | `npm run bench -- --copy 5000` | 1,443–1,448 / 902–959 ms | — | — | — | 1,384–1,471 / 964–1,114 ms: within noise (two rounds each, turn about; 0.14 didn't touch copying) |
+| Frame spans (scroll, folder hover, zoom) | `GLINT_FRAME_LOG=1` | not measured yet (the app on screen: with the e2e checks) | — | — | — | per row, in tests: a size 552 → 38 ns, a row's dates 107 → 14 ns, read-ahead peeks 114 → 1 ns a frame; 20,000 rows sort in 2.94 ms, not 4.35 |
+| Idle CPU over 120 s (shown / tray) | `TotalProcessorTime` delta | not measured yet (the app running two minutes: with the e2e checks) | — | — | — | |
+
+### Part A. Performance: Remaining Hot Paths, Index Service, & Startup
+
+*(Builds on `49574e3`, `706cc60`, and `5630c16` already in **In the next release**.)*
+
+| # | What | Where | Problem | Change | Done when |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **A1** | Zero-allocation thumbnail lookup per frame | `glint-ui/src/components/file_grid/thumbnail.rs:163, 910-916`, `glint-model/src/entries.rs:32` | `Thumbnails::look_at` allocates `entry.path.to_lowercase()` every frame for every visible tile/row even though `FileEntry` already holds `pub path_lower: String`. | Pass `path_lower: &'a str` in `EntryRef` and look up by `&str` without allocating a `String` per frame. | Zero `to_lowercase()` allocations in `Thumbnails::look_at` per frame. |
+| **A2** | Lazy row tooltips & `SharedString` date cache in `FileList` | `glint-ui/src/components/file_list/cells.rs:374-387, 523-535, 930`, `glint-model/src/format.rs:98-170, 352-375` | `FileList::row_element` eagerly computes `format_full_date`, `name_tooltip`, `type_label` (even when Type column is hidden), and `tags.to_vec()` on every visible row every frame; `DATE_CACHE` locks a `Mutex`, calls `SystemTime::now()`, and `.clone()`s a heap `String` twice per row; `short_picture` isn't cached across clears. | Move `format_full_date` and `name_tooltip` into `.tooltip(...)` closures; borrow `&[String]` for tags; store `Arc<str>` in `DateCache` and cache `short_picture`. | Eliminates 2 mutex locks, 1 syscall, and ~12 heap allocations per visible row per frame. |
+| **A3** | Skip hidden `peek_cell` subtrees & per-frame `Peeks::read` allocations | `glint-ui/src/components/file_list/mod.rs:351-372`, `cells.rs:485-494`, `explorer/nav.rs:931-944` | `Peeks::read` allocates and sorts 3 `Vec`s every frame, and `row_element` builds the full `peek_cell` GPUI subtree with `.opacity(0.)` for up to 8 prefetched folders even when `show_peek == false`. | Guard `Peeks::read` by a prefetch generation counter and only build `peek_cell` when `show_peek` is true. | Zero `Peeks::read` allocations when prefetch cache hasn't changed; zero hidden `peek_cell` subtrees built. |
+| **A4** | Filter `NAMESPACE_DOS` before allocating UTF-16 strings during MFT scan | `shadui-index/src/record.rs:262-266, 311-315` | `record::file_name` allocates `Vec<u16>` and `String` on the heap before checking `value[0x41] != NAMESPACE_DOS`, causing ~6–9M wasted heap allocations per drive scan. | Check `value.get(0x41) == Some(&NAMESPACE_DOS)` at the top of `file_name` and decode UTF-16 using a stack `[u16; 255]` buffer. | MFT scan tests pass with zero heap allocations for ignored DOS 8.3 aliases. |
+| **A5** | Restrict `twins::same_size` to single-item selection/hover | `glint-core/src/aware/twins.rs:48-94`, `glint-ui/src/aware/mod.rs:437` | Selecting up to 200 files (`Ctrl+A`) sets `want.twins = true` on all 200, firing up to 400 pipe calls (`status()` + full-volume scan) and saturating `MAX_CLIENTS = 16`. | Only set `want.twins = true` when probing a single item (`entries.len() == 1`), and reuse cached drive roots instead of calling `client::status()` on every `twins` check. | Bulk selection (`Ctrl+A` in large folders) triggers zero `twins` pipe requests. |
+| **A6** | Precomputed 32-byte natural sort keys in `explorer/rows.rs` & background threshold | `glint-ui/src/explorer/model.rs:30`, `rows.rs:451-456`, `glint-model/src/entries.rs:275-343` | `ROWS_IN_BACKGROUND = 20_000` runs non-plain sort/group/filter synchronously on the UI thread using uncached `natural_compare`. | Lower `ROWS_IN_BACKGROUND` to `5_000` and use the 32-byte `[u64; 4]` natural sort head key (`glint-core/src/fsx.rs:456-516`) in `rows.rs`. | Sorting/filtering 5k–20k item folders never stalls the UI thread. |
+| **A7** | Cold start single-pass `state.json` parse, Git `ours == theirs` short-circuit, & `aware::file::pages` thread | `glint-ui/src/persistence.rs:156-160`, `glint-core/src/git.rs:211-213`, `glint-core/src/aware/file.rs:141` | `persistence::load_from` parses `state.json` into `serde_json::Value` twice (`is_saved_state` then `load_persisted`); `git::view_in` runs two `rev_walk` traversals even when `ours == theirs`; `aware::file::pages` spawns a redundant OS thread per PDF even though `glint-aware` pool threads already run in COM MTA. | Parse `state.json` once; skip `rev_walk` when `ours == theirs`; run `PdfDocument::LoadFromFileAsync` directly on the `glint-aware` MTA thread. | Faster cold start, zero redundant rev walks on synced branches, no per-PDF OS thread spawns. |
+
+**Done:**
+
+- **A1** `8d69414`. `FileEntry` has no `path_lower` (the brief's premise): the lookup lowers the path into a buffer the thread keeps and finds the picture by a borrowed key, so a frame allocates nothing; the key and the lookup share one lowering.
+- **A2** `855f017`. The full date and the name tooltip are made when the tooltip shows, tags are borrowed, the Type column's text only while it's shown; dates come from a per-thread cache of shared text (a row's date 107 → 14 ns, no allocation, no lock), the short-date picture is read once a run.
+- **A3** `4665135`. `Peeks::read` is kept until a prefetch generation moves (a frame 114 → 1 ns, no allocation); a folder's words are built only for the row under the pointer or the keyboard (there was no fade, so nothing else needed the hidden cell). Scrolled under a still pointer, they show at the next mouse move.
+- **A4** `ae4baac`. A DOS alias is skipped before anything is decoded, a name goes through a 255-unit stack buffer, every read is bounds-checked: 260 → 118–132 ns a record (300,000 records), an alias with no allocation.
+- **A5** `56b9dbf`. Identical copies are asked only for one item, and the ready drives are kept 20 s, not asked of `status()` each time.
+- **A6** `c486938`. The key moved to `glint-model/src/natural.rs` (no copy left in `fsx.rs`); rows sort by keys built once a sort, from 5,000 rows off the UI thread: 20,072 rows 4.35 → 2.94 ms. The old key could misorder digit runs over 254 digits: fixed.
+- **A7** `2018fd7`. `state.json` is parsed once (a 348 KB state: 47.1 → 36.8 ms in a debug build), synced branches skip the two Git walks, and a PDF's pages are counted on the lane's own thread where it is in the MTA (a scoped thread stays for any other).
+- **Also:** `9ba1465`, the index service's search threads get every core (high QoS: as a service Windows kept them on the 12 efficient ones, 8.7 ms where all cores take 4.1); a probe as a temporary service couldn't show the change, so it shows once the installed service updates.
+
+### Part B. UX Improvements & 0.13 Polish
+
+- **B1. Promote in-flight `Lane::Quiet` probes when right-clicking** (`glint-ui/src/aware/mod.rs:288-319`, `aware/model.rs:25-46`):
+  When `look_now` is called on an item whose `look_ahead` (`Lane::Quiet`) is still in flight (`kept.asked` set, `kept.probed` field still `None`), re-request the unanswered fields on `Lane::Now` and return `waiting = true` so `MenuHost::open_list_menu` waits up to `LOOK_FIRST` (`40 ms`).
+  **Done** `2191187`. A right-click asks again, on the menu's lane, what hovering hasn't heard back yet, and waits for it like an item menu.
+- **B2. Wake `open_list_menu` immediately when probes finish & remove the 16 ms sleep in `Aware::listen`** (`glint-ui/src/aware/mod.rs:333-355`, `components/menus/mod.rs:455-468`):
+  Coalesce `Aware::listen` notifications without sleeping a blind 16 ms after the first fast `Origin` answer, and open the pending right-click menu as soon as the item's requested `Want` bits are answered instead of always waiting the full 40 ms timer.
+  **Done** `13d558bb`. No blind 16 ms: answers are kept as they come and only the redraw is throttled; a waiting menu opens the moment its answers are in (an `Answered` event), with 40 ms still the most it waits.
+- **B3. Enable `Aware` hover probing on all files in Grid View** (`glint-ui/src/components/file_grid/tile.rs:435-437`):
+  Remove the `.when(entry.dir || super::scrub::scrubbable(entry), ...)` gate on `.on_hover` so non-video files (`.exe`, `.zip`, `.pdf`, `.png`) in Grid View call `aware::rest_on` just as `FileList` rows do.
+  **Done** `e9e9aeb`. Every tile takes part in Aware's resting; folders still read ahead and videos still scrub.
+- **B4. Pass `Aware` folder facts to the background context menu** (`glint-ui/src/components/menus/mod.rs:389, 578`):
+  Pass the open folder's `Probed` facts into `open_background_menu` and `refresh_open` so right-clicking empty space inside a project folder shows its total size and suggests **Clean up `<size>` of build output…**.
+  **Done** `e6a6943`. The open folder's menu probes the folder and waits like an item menu: its head says `N items · size`, and a project folder suggests Clean up with what build output is inside. (`refresh_open` doesn't exist: `follow_answers` carries it.)
+- **B5. Clipboard picture/text paste discoverability & Undo** (`glint-ui/src/components/command_bar/smart.rs:19-57`, `explorer/clipboard.rs:251-271`):
+  Show **Paste picture** on the dock button when `Clip::Picture` is on the clipboard, explain both `Clip::Picture` and `Clip::Text` in `paste_tip` (*"Paste picture as a new PNG file (Ctrl+V)"* / *"Paste text as a new .txt file (Ctrl+V)"*), and push `UndoAction::Recycle(vec![created])` in `paste_as_file` so `Ctrl+Z` undoes a pasted screenshot or text file.
+  **Done** `d8be6e2`. The dock says Paste picture for a picture; text gets the tooltip only (a Paste text button would show on every copy). Undo of a pasted file already worked; it has a test now.
+- **B6. Grid View parity: `Shift`+right-click, tag dots, keyboard folder prefetch, and drop target validation** (`glint-ui/src/components/file_grid/mod.rs:532-542, 851-879, 1051-1070`, `tile.rs:318-339`, `workspace.rs:1043-1045`):
+  Forward `event.modifiers.shift` in `FileGridEvent::ItemMenu` so `Shift`+right-click opens Windows' native menu; render `self.tags` color dots on tiles; call `explorer.prefetch_folder` on keyboard focus in `FileGrid::move_by`; reject drops onto Gallery, Recent, and Remote paths in `FileGrid::drop_under`.
+  **Done** `cdeb57a`. The brief's `ItemMenu`, `move_by` and `self.tags` don't exist; the same done in the grid's own terms: Shift+right-click opens Windows' menu, tiles draw tag dots, keyboard focus reads a folder ahead after 80 ms, and drops onto the Gallery, Recent and remote places are refused. (The grid doesn't read off-screen tags for the Tags submenu, as the list does.)
+- **B7. Content search matching lines: jump to line & expand** (`glint-ui/src/components/file_list/cells.rs:149-267`):
+  Clicking a matched line under a file scrolls the Preview Pane / Quick Look to `hit.line` (and double-clicking opens the configured editor at `{path}:{line}`); clicking `"N more matching lines"` (`cells.rs:256`) expands the remaining matches inline.
+  **Done** `2a1af7e`. A click already scrolled the preview to the line; a double-click opens the editor at the line in each editor's own syntax (the VS Code family, Notepad++, Sublime, Zed, Helix, Vim, JetBrains; another gets the file alone), and "N more" lists the rest inline.
+- **B8. Inline rename: `Tab` / `Shift+Tab` to next/previous item & compound extensions** (`glint-ui/src/components/file_list/rename.rs:17-22, 116-137`, `file_grid/rename.rs:207-220`, `dialogs/batch_rename.rs:285-293`):
+  Pressing `Tab` / `Shift+Tab` while renaming commits the current rename and begins inline rename on the next/previous item; stem selection strips compound archive extensions (`.tar.gz`, `.tar.zst`, `.tar.xz`, `.tar.bz2`, `.tar.lz4`).
+  **Done** `8baa524`. In the list and the grid, in the order shown; a failed rename stays with its error; `glint_model::paths::extension_start` is the one rule for the box and batch rename.
+- **B9. Address bar `~` / `%ENV%` autocomplete & keyboard navigation in search hints** (`glint-ui/src/components/address_bar/completion.rs:28-61`, `find.rs:444-567`):
+  Expand `~` and `%ENV%` prefixes in `completion::split_typed`; allow `Down`/`Up` arrow keys to step through Recent Searches and filter chips when the empty search box's hints popup is open, with an `×` button to remove a recent search.
+  **Done** `bd986b8`. An unknown `%NAME%` stays as typed; Enter takes the hint, Delete or × forgets a recent search; the current hint is marked selected for screen readers.
+- **B10. Terminal idle cursor blink & file drop** (`glint-ui/src/components/terminal/view.rs:452-466`, `terminal/mod.rs:520`):
+  Stop the 530 ms cursor-blink timer after 10 s of inactivity (and when `self.exited` is true or Windows animations are off) to keep idle CPU at 0%; accept file/folder drops onto the terminal by writing their quoted paths to the PTY; update the terminal tab title on `TerminalEvent::Title`.
+  **Done** `2c80304`, and `7b6cff9` took out the playback code the `.cast` player left. The blink rests after 10 s, or at once when the shell has ended or animations are off; dropped paths are pasted quoted for the shell (no Enter); the tab shows a task, then the program's title, then the folder.
+- **B11. Columns view (`Ctrl+Shift+9`) & flaky test cleanup** (`glint-ui/src/components/columns_view/mod.rs:424-505, 645-664`, **Left over from 0.13**):
+  Add right-click menu, middle-click new tab, and drag-and-drop to the `Parent` and `Next` columns, and render thumbnail + `Aware` `Probed` facts in the `Next` file inspector; fix the three intermittently flaky tests noted below (`dialogs::timeline::tests::another_time_window_scans_again_and_forgets_the_subfolder`, `core_bridge::tests::jobs_posted_from_any_thread_run_on_the_ui_thread_from_the_message_pump`, and `core_bridge::tests::a_panicking_job_does_not_take_the_ui_down`).
+  **Done** `3a623a2` (the columns: menus through `open_entries_menu`, middle-click, drag out and drops, the inspector with the shared thumbnail and the head's facts) and `264739d`: the three, and This PC's arrow-key test, failed for causes found in the code (a message window replaced by the next test's, drive health answering at random, a race in the timeline's fake) and now wait on what they mean; twenty busy runs passed. `70a9ff3` did the same for X-Ray's partial-hash test, which failed once in the final run.
+
+### Part C. New Features
+
+- **C1. Flat View / Branch View (`Ctrl+B`)**:
+  Toggle flattening all files in the current folder and its subfolders into a single live list or grid (`Ctrl+B` in `actions.rs` and `Ctrl+K`), streaming from `shadui-index` in milliseconds (or `fd` fallback) with the existing `Track::Where` (`Folder`) column (`file_list/header.rs:34-43`). Supports sorting an entire subtree by size/date, viewing all nested photos in Grid View, and batch-renaming across subfolders.
+  **Done** `0e4d275`. A search with no words through the same run, stream and rows (the index answers `files:`, fd where it can't), so the Folder column, sorting, the grid and batch rename work as on results; a place in Back and Forward; the toolbar's toggle and the View menu besides Ctrl+B and Ctrl+K. Capped at Settings' result limit (50,000 by default, "Show all"); not live (F5 lists again); not offered on This PC, Recent, the Gallery, the Recycle Bin, remote places or inside archives.
+- **C2. Automatic Clipboard Checksum Match & `.sha256` Sidecar Verification in `Aware`**:
+  Detect 32/40/64-hex-character hashes on the clipboard in `glint-ui/src/aware/clip.rs`; when a single file is hovered or selected, verify its hash on `Lane::Quiet` and display **`Matches copied SHA-256`** (or warning **`Checksum mismatch`**) in the menu head (`menus/head.rs`) and dock. When right-clicking a `.sha256` / `.sha512` / `.md5` / `.b3sum` file, offer **Check files in this folder** under **Suggested**.
+  **Done** `fc91693` and `82f0544`. SHA-256, SHA-512 and BLAKE3 with the crates Glint has, MD5 and SHA-1 through Windows' CNG (its six functions added to the Windows 10 list); one pass a file, 512 MiB at most for a file the pointer rests on. A match shows in the head and the dock; a mismatch only in a single file's right-click head ("Doesn't match the copied SHA-256"), so a hash on the clipboard doesn't flag every file passed over. Check files in this folder for `.sha256`, `.sha512`, `.sha1`, `.md5`, `.b3sum` and their `sum` forms.
+- **C3. "Already extracted" Archive Awareness** (`glint-model/src/aware/rank.rs`, `glint-core/src/aware/probe.rs`):
+  When probing an archive (`foo.zip`) whose extracted target folder (`foo\`) already exists beside it, show **`Already extracted`** in the menu head and rank **Open extracted folder** ahead of **Extract here**.
+  **Done** `dfc1efb`. The badge opens the folder; Open extracted folder ranks 9.2, Extract here 9.0.
+- **C4. Paste as Link / Directory Junction / Hardlink**:
+  When `Clip::Files` is on the clipboard, add **Paste as link** in the folder menu (`menus/folder.rs`) and `Ctrl+K`: creates a Directory Junction (`mklink /J`, no admin rights needed) for folders, a hardlink (or block clone on ReFS/Dev Drive) for same-drive files, or a `.lnk` shortcut across drives, with `Ctrl+Z` Undo.
+  **Done** `750c9e9` and `dce6751`. Junctions through `mklink /J`, hardlinks, `.lnk` across drives, and a block clone (reflink-copy, as Find duplicates' Clone) on a drive that keeps no hardlinks but clones blocks. Undo removes a link and nothing it points to (a test undoes a junction to a folder of files and finds every file there); a clone, a file of its own, goes to the Recycle Bin. Untried here: a real ReFS clone.
+- **C5. Transient Drop Basket for Cross-Folder Gathering**:
+  A zero-idle-cost **Basket** pill in the dock that appears only when items are dragged to the dock's basket target or added via `Ctrl+Shift+B` (*Add to basket*), holding files across folder navigation to **Move here**, **Copy here**, **Zip**, or **Batch rename** in one step.
+  **Done** `6a18321`. Ctrl+Shift+B, the palette or a drop on the dock; the pill exists only while it holds something, its menu has Move here, Copy here, Zip, Batch rename, the list and Empty; moved or deleted items drop out when it is used.
+- **C6. Separate Data Folder for the Microsoft Store Package**:
+  In `crates/glint-core/src/host.rs`, select `com.shado.glint.store` when running as a packaged MSIX app so Store and installer copies on the same PC keep separate data folders as documented in [docs/releasing.md](docs/releasing.md#as-an-msix-package).
+  **Done** `40dd0ab`. `host::identifier()` already chose `com.shado.glint.store` when packaged: what was missing is filling the Store's folders once from the shared ones (no overwrite, links and anything over 256 MB skipped, the shared folders only read), so Store users keep their settings. Untried inside a real package.
+
+### Part D. Removals & Simplifications
+
+Each removal is an isolated commit (delete the code, its tests, its menu/palette/Settings entries, its MCP tools, its docs, and sweep any leftover user downloads in `retired::sweep()` where applicable):
+
+| # | Candidate | Exact Files & Line Counts | Binary / Crate Savings | Change & Trade-off |
+| :--- | :--- | :--- | :--- | :--- |
+| **D1** | **E-Book Reader + Kindle MOBI + TTS "Read Aloud"** | `preview/book.rs` (4,426), `preview/mobi.rs` (3,505), `platform/speech.rs` (594), `book_places.rs` (495) — **9,020 lines** | Drops WinRT Speech/MediaPlayback imports & large `glint_ui` `.text` slice | Drop untested reverse-engineered Kindle `mobi.rs`, WinRT TTS `speech.rs`, `book_places.rs`, and either drop `book.rs` (falling back to `Body::Shell`) or keep a minimal EPUB viewer. |
+| **D2** | **Custom CPU 3D Engine** | `preview/model3d*.rs` (5 files: 948 + 1,111 + 801 + 715 + 322) — **3,897 lines** | Large `glint_ui` `.text` reduction | Drop the software triangle rasterizer and glTF/3MF/STL/OBJ/PLY scene loader; fall back to `Body::Shell`. |
+| **D3** | **Custom MIME/HTML Mail & Outlook `.msg` CFB/LZFu Parser** | `preview/small.rs` (5,742), `small_kinds.rs` (85), `attachments.rs` (80) — **5,907 lines** | Removes custom CFB/LZFu/MIME parsers & preview network image fetching | Drop the custom `.msg` CFB/LZFu parser and HTML/MIME email client (or keep only lightweight vCard/iCal/Design thumbnail preview). |
+| **D4** | **Graphviz (`layout-rs`) & LaTeX Math (`ratex-*`) in Previews** | `preview/diagram.rs` (949), `preview/math.rs` (517), `preview/svg_image.rs` (676) — **2,142 lines** | **~1.12 MB `.text` + KaTeX fonts in `.rdata` (16 crates)** | Remove `layout-rs` and `ratex-*` (just as 0.12 removed Mermaid); `.dot` and math blocks render as highlighted source/text. |
+| **D5** | **Tantivy Background Content Index** | `core/src/content.rs` (813), `settings/content.rs` (206) — **1,019 lines** | **2.53 MB `.text` (39 exclusive crates: `tantivy`)** | Optional removal if bundled `ripgrep` + `doctext` is sufficient; `tantivy` is off by default and is the largest non-UI crate in `Glint.exe`. |
+| **D6** | **asciinema `.cast` Player** | `preview/cast.rs` (1,097), `model/src/cast.rs` (290) — **1,387 lines** | `glint_ui` `.text` reduction | Preview `.cast` files as text. |
+| **D7** | **`ncdu` JSON Export & Virtual Archive** | `core/src/archive/ncdu.rs` (510) + UI wiring — **~600 lines** | Removes `LIST_ONLY` special cases across core & UI | Remove `ncdu` export/import; Glint has its own instant Disk Usage map on Windows. |
+| **D8** | **`Vault` `.age` Encryption** | `core/src/vault.rs` (137), `dialogs/vault.rs` (1,426) — **1,563 lines** | **353 KB `.text` (48 crates: `age`, `fluent`, `ml-kem`, etc.)** | Consolidate on Glint's built-in AES-256 `.7z` and `.zip` password-protected archives (which open as folders in Glint). |
+| **D9** | **Embedded `rusqlite` (`sql.rs`)** | `core/src/sql.rs` (506) — **506 lines** | **904 KB `.text` (4 crates: `rusqlite`, `libsqlite3-sys`)** | Route SQL `Query` through on-demand `DuckDB` (`duck.rs`) while keeping zero-dep schema/table preview in `data_lens.rs` and `sheet.rs`. |
+| **D10** | **Consolidate File Sharing (`ShareDialog` vs `NearbyDialog`)** | `core/src/share.rs` (418), `lan.rs` (574), `dialogs/share.rs` (2,961) vs `localsend.rs` (510), `dialogs/nearby.rs` (1,135) | **1,600–3,900 lines** + drops `sendme`/`dufs`, `qrcode`, Firewall COM APIs (or `hyper` server) | Unify sharing instead of maintaining 4 protocols (`sendme`, `dufs` + Firewall COM inspector, `LocalSend`, Windows Share) across 2 separate dialogs. |
+| **D11** | **Prune Niche Optional CLI Tools & Dead Helpers** | `tools.rs`, `repo.rs` (201), `git/cards.rs` (630), `codesearch.rs` (23), `preview/choose.rs:139-151` | **~1,000+ lines**; simplifies installer & Settings from 22 tools to ~14 | Remove `ast-grep`, `onefetch`, and `tokei`; detect developer shells/runtimes (`zoxide`, `just`, `uv`, `bun`, `nushell`) on `PATH` without managing private downloads in `tools.rs`; remove `Choice::later` scaffolding and mark test-only `pub fn` helpers `#[cfg(test)]`. |
+
+**Done, all eleven (the user chose every one):** 1,015 crates became 836 and `Glint.exe` 82.8 MB, not 93.8 (the M0 table); `THIRD_PARTY_CRATES.md` and `THIRD_PARTY_LICENSES.md` written again, `cargo deny check` run (`d613940`).
+
+- **D1** `0f9762b`. The whole reader went (EPUB, MOBI and the rest go to Windows' previewer); the sweep deletes `books.json`.
+- **D2** `8f26863`. A text model (ASCII OBJ, PLY, glTF) shows as text, a binary one goes to Windows' previewer.
+- **D3** `f5cfabc`. vCard, iCal and Design previews stay (`small.rs` trimmed); `.eml` shows as text and a binary `.msg` goes to Windows' previewer (Windows' own mail previewers stay skipped: they load remote content); the sweep deletes `%TEMP%\Glint attachments`.
+- **D4** `c8e1ffc`. 28 crates out; `svg_image.rs` only served diagrams and math, and ordinary `.svg` previews keep working.
+- **D5** `c402c1e`. 54 crates out. Typing searches names now; Enter reads the files (ripgrep and the document reader), as with the index off. The sweep deletes `content` and `content.json`.
+- **D6** `ac219b5`. `.cast` is a text type.
+- **D7** `a66db44`. `LIST_ONLY` served only ncdu: gone with every special case.
+- **D8** `1f909a2`. 89 crates out. Glint kept no keys or passphrases (Encrypt took a passphrase each time), so nothing was deleted: an existing `.age` file opens with `age --decrypt file.age` and the same passphrase.
+- **D9** `e50ca24`. SQL over a SQLite file goes through DuckDB, whose SQLite extension is fetched once (a clear message offline); schemas show without DuckDB, rows need it. Untried against a real DuckDB (none installed here). Not carried over: the old 10-second limit on a query, and SQLite's immutable open (a WAL database may get its journal beside it).
+- **D10** `d7b76c6`. One Share dialog: Nearby (LocalSend, which needed none of the removed code) and Windows' Share; sendme, dufs, the QR code and the firewall code went, and the sweep deletes their downloads.
+- **D11** `c51be83`. 14 downloadable tools; the five shells and runtimes come from `PATH` (a missing one gives its `winget install` line); the repository card went with them (the README card stays), `Choice::later` and three unused helpers too, and the sweep deletes the eight tools' downloads.
+
+### Order of work
+
+1. **M0 baseline** (record sizes, crates, `npm run bench`, frame spans, idle CPU).
+2. **Part A (`A1`–`A7`)**: remaining hot-path, index service, and startup speedups; re-measure M0.
+3. **Part B (`B1`–`B11`)**: `Aware` timing fixes, Grid/Columns parity, clipboard/rename/terminal/address-bar polish, flaky test fixes.
+4. **Part D (`D1`–`D11`)**: execute chosen removals commit-by-commit, update `THIRD_PARTY_CRATES.md` (`npm run licenses`), run `cargo deny check`, re-measure M0.
+5. **Part C (`C1`–`C6`)**: implement new features (`Ctrl+B` Flat View, clipboard hash verification, extracted-archive awareness, Paste as link, Drop Basket, Store data folder).
+6. **Final verification**: full M0 table, `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --check`, `npm run check-imports`, and `tests\e2e\run.ps1`.
+
+**Final verification (2026-11-18, master at `d613940`):**
+
+- `cargo test --workspace --no-fail-fast`: shadui-index 98, glint-core 335, glint-model 295, glint-ui 2,416, no failures (X-Ray's flaky test, which failed once in the run before, fixed in `70a9ff3`); `cargo clippy --workspace --all-targets -- -D warnings`: clean.
+- `npm run check-imports`: Windows 10 has every import of the release `Glint.exe` and `shadui-index.exe`.
+- `npm run licenses -- --check`: current. `cargo deny check`: bans, licenses and sources ok; advisories report RUSTSEC-2026-0543, chrono unmaintained (no fixed version; glint-core, glint-model and the vendored GPUI use it), which is the maintainer's to ignore or move off before a release.
+- `cargo fmt --check` fails on master in files 0.14 didn't touch, as it did before; files that were clean are still clean.
+- Still to do, on the user's word: `tests\e2e\run.ps1` (it takes the mouse and keyboard, and the user's Glint must be closed), and with it M0's cold start, frame spans and idle CPU, which need the app on screen.
+
+---
 
 ## 0.13.2: updates that need nobody
 
