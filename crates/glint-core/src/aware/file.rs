@@ -55,6 +55,20 @@ pub fn signer(path: &str) -> Option<Signer> {
     }
 }
 
+/// The folder an archive at `path` was extracted to: the one beside it that has its name (`foo.zip` and `foo`; for
+/// `foo.tar.gz` too, `foo`), as Extract here makes it. `Some(None)` when there is no such folder; `None` for a
+/// path with no name or no folder to look in.
+pub fn extracted(path: &str) -> Option<Option<String>> {
+    let archive = Path::new(path);
+    let (parent, stem) = (archive.parent()?, archive.file_stem()?.to_string_lossy());
+    let stem = match stem.len().checked_sub(4).and_then(|cut| stem.get(cut..).map(|tail| (cut, tail))) {
+        Some((cut, tail)) if tail.eq_ignore_ascii_case(".tar") && cut > 0 => stem.get(..cut).unwrap_or(&stem).to_string(),
+        _ => stem.to_string(),
+    };
+    let folder = parent.join(stem);
+    Some(folder.is_dir().then(|| folder.to_string_lossy().into_owned()))
+}
+
 /// A picture's or video's size and a video's or song's length, as the media reader has them (zero for what it
 /// doesn't say). `None` when it says none of the three.
 pub fn media(path: &str) -> Option<Media> {
@@ -330,6 +344,31 @@ mod tests {
         assert_eq!(opens_with("README"), None);
         assert_eq!(opens_with("C:\\x\\"), None);
         assert_eq!(opens_with("a.txt"), opens_with("b.TXT"));
+    }
+
+    #[test]
+    fn an_archive_whose_folder_is_beside_it_was_extracted_and_one_without_was_not() {
+        let dir = Scratch::new();
+        let zip = dir.write("pack.zip", b"PK");
+        assert_eq!(extracted(&zip), Some(None), "no folder yet");
+        let _ = std::fs::create_dir_all(dir.0.join("pack"));
+        assert_eq!(extracted(&zip), Some(Some(dir.0.join("pack").to_string_lossy().into_owned())));
+        // A file with the folder's name is not an extraction.
+        let other = dir.write("other.zip", b"PK");
+        dir.write("other", b"x");
+        assert_eq!(extracted(&other), Some(None));
+    }
+
+    #[test]
+    fn a_tar_archive_is_named_without_its_tar_as_extract_here_names_it() {
+        let dir = Scratch::new();
+        let tgz = dir.write("src.tar.gz", b"x");
+        let bare = dir.write(".tar", b"x");
+        assert_eq!(extracted(&tgz), Some(None));
+        let _ = std::fs::create_dir_all(dir.0.join("src"));
+        assert_eq!(extracted(&tgz), Some(Some(dir.0.join("src").to_string_lossy().into_owned())));
+        assert_eq!(extracted(&bare), Some(None), "a name that is only an extension has no stem to strip");
+        assert_eq!(extracted(""), None);
     }
 
     #[test]

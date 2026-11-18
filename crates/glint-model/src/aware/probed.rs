@@ -26,6 +26,9 @@ pub struct Probed {
     pub target: Option<String>,
     /// The name of the app that opens it ("Photos").
     pub opens_with: Option<String>,
+    /// For an archive: the folder beside it that has its name, where it was extracted to; `Some(None)` when
+    /// there is none.
+    pub extracted: Option<Option<String>>,
 }
 
 /// One answer about a file or folder.
@@ -41,6 +44,7 @@ pub enum Part {
     Twins(Vec<String>),
     Target(String),
     OpensWith(String),
+    Extracted(Option<String>),
 }
 
 /// Where a downloaded file came from (its Mark of the Web).
@@ -107,6 +111,7 @@ pub struct Want {
     pub twins: bool,
     pub target: bool,
     pub opens_with: bool,
+    pub extracted: bool,
 }
 
 impl Probed {
@@ -123,6 +128,7 @@ impl Probed {
             Part::Twins(paths) => self.twins = Some(paths),
             Part::Target(target) => self.target = Some(target),
             Part::OpensWith(app) => self.opens_with = Some(app),
+            Part::Extracted(folder) => self.extracted = Some(folder),
         }
     }
 }
@@ -141,6 +147,7 @@ impl Want {
             twins: self.twins && have.twins.is_none(),
             target: self.target && have.target.is_none(),
             opens_with: self.opens_with && have.opens_with.is_none(),
+            extracted: self.extracted && have.extracted.is_none(),
         }
     }
 
@@ -157,6 +164,7 @@ impl Want {
             twins: self.twins && !asked.twins,
             target: self.target && !asked.target,
             opens_with: self.opens_with && !asked.opens_with,
+            extracted: self.extracted && !asked.extracted,
         }
     }
 
@@ -173,6 +181,7 @@ impl Want {
             twins: self.twins || other.twins,
             target: self.target || other.target,
             opens_with: self.opens_with || other.opens_with,
+            extracted: self.extracted || other.extracted,
         }
     }
 
@@ -198,6 +207,7 @@ mod tests {
             twins: true,
             target: true,
             opens_with: true,
+            extracted: true,
         }
     }
 

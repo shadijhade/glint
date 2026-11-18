@@ -199,6 +199,33 @@ fn a_menu_is_not_dressed_while_the_app_has_no_aware_entity(cx: &mut TestAppConte
 }
 
 #[gpui_kit::test]
+fn an_archive_that_was_extracted_suggests_its_folder_first_and_says_so_in_its_head(cx: &mut TestAppContext) {
+    let _guard = english();
+    let mut rig = rig(cx, "C:\\x");
+    rig.ui.select(&[PACK]);
+    let zip = file("C:\\x", "pack.zip", 5000, 0);
+    rig.ui.visual.update(|_, cx| {
+        aware::shared(cx).update(cx, |aware, cx| aware.look_ahead(std::slice::from_ref(&zip), cx));
+    });
+    let call = rig.fake.call_of(PACK);
+    rig.fake.send(call, PACK, Part::Extracted(Some("C:\\x\\pack".into())));
+    rig.ui.frame();
+    rig.opened_on(PACK);
+    assert!(rig.head().badges.iter().any(|b| b.label == "Already extracted"), "{:?}", rig.head());
+    let nodes = rig.ui.nodes();
+    let at_top = heading(&nodes).expect("a Suggested section");
+    let rows: Vec<&str> = nodes[at_top + 1..]
+        .iter()
+        .take_while(|n| matches!(n, Node::Item(_)))
+        .filter_map(|n| match n {
+            Node::Item(e) => Some(e.label.as_ref()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(&rows[..2], ["Open extracted folder", "Extract here"], "{:?}", labels(&nodes));
+}
+
+#[gpui_kit::test]
 fn a_zips_menu_suggests_extract_here_and_leaves_its_own_rows_as_they_were(cx: &mut TestAppContext) {
     let _guard = english();
     let mut rig = rig(cx, "C:\\x");

@@ -543,6 +543,36 @@ fn several_items_are_counted_and_weighed_by_their_files() {
 }
 
 #[test]
+fn an_archives_menu_has_open_extracted_folder_before_extract_here_only_once_it_was_extracted() {
+    let _guard = english();
+    let zip = file("C:\\x", "pack.zip", 5000, 0);
+    let mut c = ctx();
+    let plain = labels(&item_menu(std::slice::from_ref(&zip), &c));
+    assert!(!plain.iter().any(|l| l == "Open extracted folder"), "{plain:?}");
+    c.probed = Some(Probed { extracted: Some(Some("C:\\x\\pack".into())), ..Probed::default() });
+    let with = labels(&item_menu(std::slice::from_ref(&zip), &c));
+    let place = |label: &str| with.iter().position(|l| l == label).unwrap_or_else(|| panic!("no {label:?} in {with:?}"));
+    assert!(place("Open extracted folder") < place("Extract here"));
+    c.probed = Some(Probed { extracted: Some(None), ..Probed::default() });
+    assert!(!labels(&item_menu(std::slice::from_ref(&zip), &c)).iter().any(|l| l == "Open extracted folder"));
+}
+
+#[test]
+fn an_archive_that_was_extracted_says_so_in_its_head_and_the_badge_opens_the_folder() {
+    let _guard = english();
+    let zip = file("C:\\x", "pack.zip", 5000, 0);
+    let extras = Extras { now: 0, git: None };
+    let known = |extracted| Probed { extracted: Some(extracted), ..Probed::default() };
+    let folder = "C:\\x\\pack".to_string();
+    let head = head_of(std::slice::from_ref(&zip), Some(&known(Some(folder.clone()))), &extras);
+    let badge = head.badges.iter().find(|b| b.label == "Already extracted").expect("a badge");
+    assert_eq!(badge.run, Run::Do(Task::OpenExtracted(folder.clone())));
+    assert_eq!(badge.tip.as_deref(), Some(folder.as_str()));
+    assert!(head_of(std::slice::from_ref(&zip), Some(&known(None)), &extras).badges.is_empty());
+    assert!(head_of(std::slice::from_ref(&zip), None, &extras).badges.is_empty());
+}
+
+#[test]
 fn a_folders_own_head_adds_its_whole_size_once_it_is_counted() {
     let _guard = english();
     let inside = |bytes, done| Probed {
