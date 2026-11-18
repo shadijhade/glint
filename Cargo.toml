@@ -55,14 +55,6 @@ opt-level = "s"
 opt-level = "s"
 [profile.release.package.parquet]
 opt-level = "s"
-[profile.release.package.ratex-parser]
-opt-level = "s"
-[profile.release.package.ratex-layout]
-opt-level = "s"
-[profile.release.package.ratex-svg]
-opt-level = "s"
-[profile.release.package.ratex-font-loader]
-opt-level = "s"
 [profile.release.package.fend-core]
 opt-level = "s"
 [profile.release.package.nom-exif]
@@ -76,8 +68,6 @@ opt-level = "s"
 [profile.release.package.markdown]
 opt-level = "s"
 [profile.release.package.calamine]
-opt-level = "s"
-[profile.release.package.layout-rs]
 opt-level = "s"
 [profile.release.package.sevenz-rust2]
 opt-level = "s"

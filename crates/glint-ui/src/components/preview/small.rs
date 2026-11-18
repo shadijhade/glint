@@ -1,4 +1,4 @@
-//! Contacts, calendars and design files, and Graphviz sources (SmallPreviews.tsx).
+//! Contacts, calendars and design files (SmallPreviews.tsx).
 //!
 //! | TypeScript                                   | Here                                                               |
 //! |----------------------------------------------|--------------------------------------------------------------------|
@@ -7,7 +7,6 @@
 //! | `icsDate`, `readEvents`                      | [`read_events`], [`When`] (pure; tested)                           |
 //! | `Contacts`, `Calendar`                       | cards in a virtualized `list`                                      |
 //! | `DesignPicture` (zip.js)                     | the archive layer (`sources.extract`) reads the picture out of the file; drawn with `img` |
-//! | `Graphviz`                                   | the diagram drawn ([`super::diagram`]), with the source one button away |
 //!
 //! Email (`.eml`) and Outlook (`.msg`) messages had a viewer here until 0.14 (a MIME reader, HTML mail laid out as
 //! a page, a compound-file reader for `.msg`); they are text or Windows' previewer's business now.
@@ -21,20 +20,12 @@
 //!
 //! # Not ported
 //!
-//! - **Graphviz files** are drawn (layout-rs for `.dot` and `.gv`: see [`super::diagram`] for how it differs from
-//!   Graphviz), fitted to the width and scrolled down, as the TypeScript's `h-full overflow-auto p-3` was. A button
-//!   toggles the source (the read-only editor it always was); a file that can't be drawn shows "Graphviz couldn't
-//!   draw it: …" above its source, where the TypeScript replaced the preview with the message. Not ported: zoom (the TypeScript had none), the white page
-//!   behind a Graphviz graph (it takes the app's background and text colour), a Word 97 template named `.dot` still
-//!   says what it is.
 //! - Dates in an event are written with Windows' long date (`format_full_date`), which has seconds
 //!   where the TypeScript's `timeStyle: "short"` had none; a date alone is written short.
 
 use super::sources::sources;
 use super::states::centered;
-use super::{diagram, svg_image};
 use crate::kit::prelude::*;
-use crate::kit::{Editor, EditorState};
 use crate::{t, theme};
 use glint_model::entries::FileEntry;
 use glint_model::format::{format_date, format_full_date};
@@ -50,8 +41,6 @@ const MAX_BYTES: u64 = 32 << 20;
 /// Contacts shown (`slice(0, 500)`) and events shown (`slice(0, 200)`).
 const MAX_CARDS: usize = 500;
 const MAX_EVENTS: usize = 200;
-/// The most of a message's text, or a diagram's source, put into the editor.
-const MAX_TEXT: usize = 1 << 20;
 /// The picture a Krita, OpenRaster, Procreate or Sketch file keeps of itself, in the order tried.
 pub const DESIGN_PICTURES: [&str; 5] = [
     "mergedimage.png",
@@ -486,7 +475,6 @@ enum Problem {
     TooBig,
     NoContacts,
     NoEvents,
-    WordTemplate,
     NoPicture,
 }
 
@@ -497,7 +485,6 @@ impl Problem {
             Problem::TooBig => t!("Too big to preview here: open it to read it."),
             Problem::NoContacts => t!("No contacts in it."),
             Problem::NoEvents => t!("No events in it."),
-            Problem::WordTemplate => t!("This .dot file is a Word template, which Word opens."),
             Problem::NoPicture => t!("It keeps no picture of itself to show."),
         }
     }
@@ -508,7 +495,6 @@ enum Loaded {
     Contacts(Vec<Card>),
     Events(Vec<Event>),
     Picture(PathBuf),
-    Source(String),
 }
 
 enum Load {
@@ -520,18 +506,6 @@ enum Load {
     },
     Events(Arc<Vec<Event>>),
     Picture(PathBuf),
-    Source {
-        editor: Entity<EditorState>,
-        /// The diagram the file draws, and whether its source shows instead.
-        drawing: Drawing,
-    },
-}
-
-/// A diagram file: what it is, what it says, and which of the picture and the source shows.
-struct Drawing {
-    language: diagram::Language,
-    source: Arc<str>,
-    show_source: bool,
 }
 
 /// A small preview: one file of one kind.
@@ -542,8 +516,6 @@ pub struct SmallPreview {
     list: ListState,
     focus: FocusHandle,
     task: Option<Task<()>>,
-    /// The scroll of a drawn diagram, for Quick Look's page keys.
-    diagram_scroll: gpui_kit::ScrollHandle,
 }
 
 fn sniff_photo(bytes: &[u8]) -> ImageFormat {
@@ -558,15 +530,6 @@ fn sniff_photo(bytes: &[u8]) -> ImageFormat {
     } else {
         ImageFormat::Jpeg
     }
-}
-
-/// A diagram file's source as text; a Word 97 template (`.dot` is its extension too) is told apart.
-fn diagram_source(bytes: &[u8]) -> Result<String, Problem> {
-    if bytes.starts_with(&[0xD0, 0xCF, 0x11, 0xE0]) {
-        return Err(Problem::WordTemplate);
-    }
-    let head = &bytes[..bytes.len().min(MAX_TEXT)];
-    Ok(glint_core::textenc::decode(head, bytes.len() > MAX_TEXT).text)
 }
 
 fn read_small(kind: SmallKind, path: &str, size: u64) -> Result<Loaded, Problem> {
@@ -593,7 +556,6 @@ fn read_small(kind: SmallKind, path: &str, size: u64) -> Result<Loaded, Problem>
                 Ok(Loaded::Events(events))
             }
         }
-        SmallKind::Graphviz => diagram_source(&bytes).map(Loaded::Source),
         SmallKind::Design => Err(Problem::NoPicture),
     }
 }
@@ -608,13 +570,7 @@ impl SmallPreview {
             list: ListState::new(0, ListAlignment::Top, px(400.)),
             focus: cx.focus_handle(),
             task: None,
-            diagram_scroll: gpui_kit::ScrollHandle::new(),
         };
-        // Pictures still being drawn for a view that is gone are not wanted.
-        {
-            let id = cx.entity_id();
-            cx.on_release(move |_, _| svg_image::forget(id)).detach();
-        }
         view.start(window, cx);
         view
     }
@@ -663,27 +619,9 @@ impl SmallPreview {
         }
     }
 
-    /// Scrolls a page (Page Down and Page Up in Quick Look): the contacts, events and a diagram taller than the pane.
+    /// Scrolls a page (Page Down and Page Up in Quick Look): the contacts and events.
     /// Returns whether anything moved.
     pub fn page(&mut self, down: bool, cx: &mut Context<Self>) -> bool {
-        if let Load::Source { drawing, .. } = &self.load {
-            if drawing.show_source {
-                return false;
-            }
-            let max = self.diagram_scroll.max_offset().y;
-            if max <= px(0.) {
-                return false;
-            }
-            let offset = self.diagram_scroll.offset();
-            let step = self.diagram_scroll.bounds().size.height * 0.85;
-            let top = if down { offset.y - step } else { offset.y + step }.clamp(-max, px(0.));
-            if top == offset.y {
-                return false;
-            }
-            self.diagram_scroll.set_offset(gpui_kit::point(offset.x, top));
-            cx.notify();
-            return true;
-        }
         if !matches!(self.load, Load::Contacts { .. } | Load::Events(_)) {
             return false;
         }
@@ -695,7 +633,6 @@ impl SmallPreview {
     }
 
     fn start(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        svg_image::forget(cx.entity_id());
         self.load = Load::Reading;
         let entry = self.entry.clone();
         let kind = self.kind;
@@ -721,12 +658,12 @@ impl SmallPreview {
                     .spawn(async move { read_small(kind, &path, size) })
                     .await
             };
-            this.update_in(cx, |this, window, cx| this.loaded(result, window, cx))
+            this.update_in(cx, |this, _window, cx| this.loaded(result, cx))
                 .ok();
         }));
     }
 
-    fn loaded(&mut self, result: Result<Loaded, Problem>, window: &mut Window, cx: &mut Context<Self>) {
+    fn loaded(&mut self, result: Result<Loaded, Problem>, cx: &mut Context<Self>) {
         self.load = match result {
             Err(problem) => Load::Failed(problem.text()),
             Ok(Loaded::Contacts(cards)) => {
@@ -752,28 +689,6 @@ impl SmallPreview {
                 Load::Events(Arc::new(events))
             }
             Ok(Loaded::Picture(path)) => Load::Picture(path),
-            Ok(Loaded::Source(text)) => {
-                let editor = cx.new(|cx| {
-                    EditorState::new(window, cx)
-                        .line_number(true)
-                        .soft_wrap(false)
-                        .searchable(false)
-                        .folding(false)
-                        .default_value(text.replace("\r\n", "\n"))
-                });
-                editor.update(cx, |editor, cx| editor.set_readonly(true, cx));
-                {
-                    let language = diagram::Language::Dot;
-                    Load::Source {
-                        editor,
-                        drawing: Drawing {
-                            language,
-                            source: Arc::from(text.as_str()),
-                            show_source: false,
-                        },
-                    }
-                }
-            }
         };
         cx.notify();
     }
@@ -1020,138 +935,8 @@ impl SmallPreview {
     }
 }
 
-impl SmallPreview {
-    /// A diagram file's source in the read-only editor, with `note` above it (why it is shown so, or why it
-    /// couldn't be drawn).
-    fn source_view(
-        entry: &FileEntry,
-        editor: &Entity<EditorState>,
-        note: Option<SharedString>,
-        t: &theme::Tokens,
-    ) -> AnyElement {
-        col()
-            .size_full()
-            .min_h_0()
-            .children(note.map(|note| {
-                div()
-                    .id("small-source-note")
-                    .role(Role::Status)
-                    .aria_label(note.clone())
-                    .test_support()
-                    .flex_none()
-                    .px(space(3.))
-                    .py(space(1.5))
-                    .border_b_1()
-                    .border_color(t.border)
-                    .text_size(theme::size::XS)
-                    .text_color(t.muted_foreground)
-                    .child(note)
-            }))
-            .child(
-                div().flex_1().min_h_0().child(
-                    Editor::new(editor)
-                        .readonly(true)
-                        .appearance(false)
-                        .bordered(false)
-                        .aria_label(isolate(entry.name.clone()))
-                        .text_size(rems(0.8125))
-                        .size_full(),
-                ),
-            )
-            .into_any_element()
-    }
-
-    /// A Graphviz or Mermaid file: the diagram drawn, fitted to the width and scrolled down (`h-full overflow-auto
-    /// p-3`), or its source; a button between them. A diagram that can't be drawn shows why above its source.
-    fn diagram_file(
-        &self,
-        editor: &Entity<EditorState>,
-        drawing: &Drawing,
-        t: &theme::Tokens,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let wake = cx.entity_id();
-        let outcome = diagram::request(cx, drawing.language, &drawing.source, wake);
-        let failed = match &outcome {
-            svg_image::Lookup::Done(done) => done.as_ref().as_ref().err().cloned(),
-            svg_image::Lookup::Making => None,
-        };
-        if let Some(reason) = failed {
-            let note = drawing.language.failure_in_file(&reason);
-            return Self::source_view(&self.entry, editor, Some(note), t);
-        }
-        if drawing.show_source {
-            return col()
-                .size_full()
-                .min_h_0()
-                .child(self.diagram_toolbar(drawing, cx))
-                .child(Self::source_view(&self.entry, editor, None, t))
-                .into_any_element();
-        }
-        let body = match &outcome {
-            svg_image::Lookup::Done(done) => match done.as_ref() {
-                Ok(drawn) => div()
-                    .id("small-diagram")
-                    .track_scroll(&self.diagram_scroll)
-                    .role(Role::Group)
-                    .aria_label(isolate(self.entry.name.clone()))
-                    .aria_description(drawing.language.picture_name())
-                    .test_support()
-                    .size_full()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .p(space(3.))
-                    .child(
-                        div()
-                            .w_full()
-                            .min_w_0()
-                            .flex()
-                            .justify_center()
-                            .child(svg_image::picture(
-                                "small-diagram-picture",
-                                drawn,
-                                isolate(self.entry.name.clone()),
-                            )),
-                    )
-                    .into_any_element(),
-                Err(_) => div().into_any_element(),
-            },
-            svg_image::Lookup::Making => Self::reading(cx),
-        };
-        col()
-            .size_full()
-            .min_h_0()
-            .child(self.diagram_toolbar(drawing, cx))
-            .child(div().flex_1().min_h_0().child(body))
-            .into_any_element()
-    }
-
-    /// The row above a drawn diagram: the button that shows its source (or the picture again).
-    fn diagram_toolbar(&self, drawing: &Drawing, cx: &mut Context<Self>) -> Div {
-        let label = if drawing.show_source {
-            t!("Show the diagram")
-        } else {
-            t!("Show the source")
-        };
-        row().flex_none().justify_end().px(space(2.)).py(space(1.)).child(
-            Button::new("small-diagram-toggle")
-                .ghost()
-                .small()
-                .label(label.clone())
-                .accessibility_label(label)
-                .on_click(cx.listener(|this, _, _, cx| {
-                    if let Load::Source { drawing, .. } = &mut this.load {
-                        drawing.show_source = !drawing.show_source;
-                        cx.notify();
-                    }
-                })),
-        )
-    }
-}
-
 impl Render for SmallPreview {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        svg_image::release_retired(window);
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme::tokens(cx).clone();
         let body = match &self.load {
             Load::Reading => Self::reading(cx),
@@ -1176,7 +961,6 @@ impl Render for SmallPreview {
                         .object_fit(ObjectFit::Contain),
                 )
                 .into_any_element(),
-            Load::Source { editor, drawing } => self.diagram_file(editor, drawing, &t, cx),
         };
         div()
             .id("small-preview")
@@ -1501,202 +1285,5 @@ mod tests {
         assert_eq!(small_kind(&file("C:", "a.eml", 1, 0)), None);
         assert_eq!(small_kind(&file("C:", "a.msg", 1, 0)), None);
         assert_eq!(small_kind(&file("C:", "a.txt", 1, 0)), None);
-    }
-
-    // ---- Diagram files (feature `diagrams`) -------------------------------------------------------------------------
-
-    mod drawn {
-        use super::*;
-        use crate::components::preview::{diagram, svg_image};
-        use gpui_kit::Role;
-
-        /// The labelled elements of the last frame: role, label, width, height.
-        fn labelled(visual: &mut VisualTestContext) -> Vec<(Option<Role>, String, f32, f32)> {
-            visual.update(|window, cx| {
-                window.render_frame(cx);
-                window
-                    .elements()
-                    .into_iter()
-                    .filter_map(|e| {
-                        let label = e.label()?.to_string();
-                        let size = e.bounds().size;
-                        Some((e.role(), label, f32::from(size.width), f32::from(size.height)))
-                    })
-                    .collect()
-            })
-        }
-
-        fn with_role(visual: &mut VisualTestContext, role: Role) -> Vec<(String, f32, f32)> {
-            labelled(visual)
-                .into_iter()
-                .filter(|(r, ..)| *r == Some(role))
-                .map(|(_, l, w, h)| (l, w, h))
-                .collect()
-        }
-
-        fn wait(visual: &mut VisualTestContext, what: &str, mut done: impl FnMut(&mut VisualTestContext) -> bool) {
-            for _ in 0..1200 {
-                visual.run_until_parked();
-                if done(visual) {
-                    return;
-                }
-                std::thread::sleep(Duration::from_millis(5));
-            }
-            panic!("never happened: {what}: {:?}", labelled(visual));
-        }
-
-        fn picture_is_shown(visual: &mut VisualTestContext, name: &str) -> bool {
-            with_role(visual, Role::Image)
-                .iter()
-                .any(|(label, ..)| label.contains(name))
-        }
-
-        #[gpui_kit::test]
-        fn dot_files_are_drawn_and_their_source_is_a_button_away(cx: &mut TestAppContext) {
-            let _guard = testing::lock();
-            svg_image::clear();
-            let dir = temp_dir("drawn");
-            let entry = entry_of(&dir, "flow.gv", b"digraph { rankdir=LR; Start -> Ok; Ok -> Done }");
-            let (view, mut visual) = open(cx, entry, SmallKind::Graphviz, false);
-            settle(&view, &mut visual);
-            wait(&mut visual, "the Graphviz picture", |v| picture_is_shown(v, "flow.gv"));
-            // The picture has a size, and the way to the source is offered.
-            assert!(with_role(&mut visual, Role::Image)
-                .iter()
-                .all(|(_, w, h)| *w > 40. && *h > 40.));
-            assert!(has(&mut visual, "Show the source"));
-            visual.update(|window, cx| window.click("small-diagram-toggle", cx));
-            visual.run_until_parked();
-            assert!(has(&mut visual, "Show the diagram"));
-            assert!(!picture_is_shown(&mut visual, "flow.gv"));
-            visual.update(|window, cx| window.click("small-diagram-toggle", cx));
-            visual.run_until_parked();
-            assert!(picture_is_shown(&mut visual, "flow.gv"));
-
-            // An identifier in Arabic, unquoted as DOT allows.
-            let entry = entry_of(
-                &dir,
-                "graph.gv",
-                "digraph { rankdir=LR; مرحبا -> world; world -> مرحبا }".as_bytes(),
-            );
-            let (view, mut visual) = open(cx, entry, SmallKind::Graphviz, false);
-            settle(&view, &mut visual);
-            wait(&mut visual, "the Graphviz picture", |v| picture_is_shown(v, "graph.gv"));
-            let _ = std::fs::remove_dir_all(&dir);
-        }
-
-        #[gpui_kit::test]
-        fn a_diagram_that_cannot_be_drawn_says_why_above_its_source(cx: &mut TestAppContext) {
-            let _guard = testing::lock();
-            svg_image::clear();
-            let dir = temp_dir("broken");
-            let entry = entry_of(&dir, "bad.gv", b"digraph { a -> }");
-            let (view, mut visual) = open(cx, entry, SmallKind::Graphviz, false);
-            settle(&view, &mut visual);
-            wait(&mut visual, "the Graphviz failure", |v| {
-                with_role(v, Role::Status)
-                    .iter()
-                    .any(|(l, ..)| l.starts_with("Graphviz couldn't draw it: "))
-            });
-            assert!(!picture_is_shown(&mut visual, "bad.gv"));
-            let _ = std::fs::remove_dir_all(&dir);
-        }
-
-        #[gpui_kit::test]
-        fn a_tall_diagram_scrolls_a_page_for_quick_look(cx: &mut TestAppContext) {
-            let _guard = testing::lock();
-            svg_image::clear();
-            let dir = temp_dir("tall");
-            let mut source = String::from("digraph {\n");
-            for n in 0..30 {
-                source.push_str(&format!("  S{n} -> S{};\n", n + 1));
-            }
-            source.push('}');
-            let entry = entry_of(&dir, "tall.gv", source.as_bytes());
-            let (view, mut visual) = open(cx, entry, SmallKind::Graphviz, false);
-            settle(&view, &mut visual);
-            wait(&mut visual, "the picture", |v| picture_is_shown(v, "tall.gv"));
-            // Laid out once the picture is there.
-            for _ in 0..3 {
-                visual.update(|window, cx| window.render_frame(cx));
-            }
-            let moved = visual.update(|_, cx| view.update(cx, |v, cx| v.page(true, cx)));
-            assert!(moved, "a diagram taller than the pane scrolls");
-            // And back up.
-            assert!(visual.update(|_, cx| view.update(cx, |v, cx| v.page(false, cx))));
-            assert!(!visual.update(|_, cx| view.update(cx, |v, cx| v.page(false, cx))));
-            let _ = std::fs::remove_dir_all(&dir);
-        }
-
-        #[gpui_kit::test]
-        fn a_diagram_wider_than_the_pane_shrinks_to_fit_and_keeps_its_shape(cx: &mut TestAppContext) {
-            let _guard = testing::lock();
-            svg_image::clear();
-            let dir = temp_dir("wide");
-            let mut source = String::from("digraph {\n  rankdir=LR;\n");
-            for n in 0..20 {
-                source.push_str(&format!(
-                    "  N{n} [label=\"Station number {n}\"];\n  N{n} -> N{};\n",
-                    n + 1
-                ));
-            }
-            source.push('}');
-            let entry = entry_of(&dir, "wide.gv", source.as_bytes());
-            let (view, mut visual) = open(cx, entry, SmallKind::Graphviz, false);
-            settle(&view, &mut visual);
-            wait(&mut visual, "the picture", |v| picture_is_shown(v, "wide.gv"));
-            let drawn = svg_image::peek(&diagram::key_of(diagram::Language::Dot, &source))
-                .and_then(|outcome| outcome.as_ref().as_ref().ok().map(|d| (d.width, d.height)))
-                .expect("it was drawn");
-            assert!(
-                drawn.0 > 1200.,
-                "the diagram is wider than the 1000 px window: {drawn:?}"
-            );
-            // The picture is no wider than the window, and keeps the shape it was drawn in.
-            let frame = with_role(&mut visual, Role::Image)
-                .into_iter()
-                .find(|(l, ..)| l.contains("wide.gv"))
-                .expect("the picture");
-            assert!(frame.1 <= 1000. && frame.1 > 300., "{frame:?}");
-            assert!(
-                ((frame.1 / frame.2) / (drawn.0 / drawn.1) - 1.).abs() < 0.03,
-                "{frame:?} vs {drawn:?}"
-            );
-            let _ = std::fs::remove_dir_all(&dir);
-        }
-
-        #[gpui_kit::test]
-        fn an_arabic_diagram_file_is_drawn_in_an_arabic_window(cx: &mut TestAppContext) {
-            let _guard = testing::lock();
-            svg_image::clear();
-            let dir = temp_dir("arabic");
-            let source = "digraph { rankdir=RL; البداية -> النهاية }";
-            let entry = entry_of(&dir, "مخطط.gv", source.as_bytes());
-            let (view, mut visual) = open(cx, entry, SmallKind::Graphviz, true);
-            settle(&view, &mut visual);
-            wait(&mut visual, "the picture", |v| picture_is_shown(v, "مخطط.gv"));
-            assert!(svg_image::peek(&diagram::key_of(diagram::Language::Dot, source)).is_some_and(|o| o.is_ok()));
-            let _ = std::fs::remove_dir_all(&dir);
-            testing::set_rtl(false);
-        }
-    }
-
-    #[gpui_kit::test]
-    fn a_dot_file_that_is_a_word_template_says_so(cx: &mut TestAppContext) {
-        let _guard = testing::lock();
-        let dir = temp_dir("template");
-        // .dot is also Word 97's template extension.
-        let word = entry_of(
-            &dir,
-            "letter.dot",
-            &[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1, 0, 0],
-        );
-        let (view, mut visual) = open(cx, word, SmallKind::Graphviz, false);
-        settle(&view, &mut visual);
-        assert_eq!(
-            failure(&view, &visual).as_deref(),
-            Some("This .dot file is a Word template, which Word opens.")
-        );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
