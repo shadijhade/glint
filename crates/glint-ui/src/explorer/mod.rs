@@ -164,7 +164,7 @@ pub use open::is_disk_image;
 pub use ops_types::*;
 pub use recycle::purge_what;
 pub use rename::{clean_name, INVALID_NAME_CHARS, INVALID_NAME_HINT};
-pub use rows::{build_rows, GroupLayout, HitLine, Line, RowInside, RowSizes, RowSpec, Rows};
+pub use rows::{build_rows, GroupLayout, HitLine, Line, RowColor, RowInside, RowSizes, RowSpec, Rows};
 pub use source::{Access, CompressRequest, CoreSource, Effect, Fut, Resolved, Source};
 pub use tab::{PathSet, Selection, Tab};
 pub use types::*;

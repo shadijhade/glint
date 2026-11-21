@@ -290,6 +290,14 @@ impl SettingsView {
                 |s, v| s.show_line_numbers = v,
                 t,
             ),
+            self.flag(
+                "haptics",
+                t!("Touchpad haptics"),
+                Some(t!("Subtle tactile feedback on haptic touchpads for zoom detents, boundary bumps, and checksum matches")),
+                s.haptics,
+                |s, v| s.haptics = v,
+                t,
+            ),
         ];
         widgets::section("appearance", t!("Appearance"), None, rows, t)
     }

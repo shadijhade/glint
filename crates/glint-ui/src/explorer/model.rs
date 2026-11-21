@@ -500,6 +500,66 @@ impl Explorer {
         self.tab_changed(id, cx);
     }
 
+    /// Sets or clears the live OKLab color-wheel filter on a tab, loading cached palettes immediately
+    /// and warming any uncached image entries in the background.
+    pub fn set_color_filter(
+        &mut self,
+        filter: Option<glint_model::oklab::ColorFilter>,
+        tab: Option<TabId>,
+        cx: &mut Context<Self>,
+    ) {
+        let id = tab.unwrap_or_else(|| self.active_tab_id());
+        let Some(t) = self.tabs.get(&id) else {
+            return;
+        };
+        if t.color_filter == filter {
+            return;
+        }
+        let had_palettes = !t.color_palettes.is_empty();
+        self.update_tab(id, |t| t.color_filter = filter);
+        if filter.is_some() && !had_palettes {
+            self.warm_color_palettes(id, cx);
+        } else {
+            self.rebuild_rows(id, cx);
+            self.tab_changed(id, cx);
+        }
+    }
+
+    /// Loads cached OKLab palettes for images in `id` immediately and warms uncached images off the UI thread.
+    pub fn warm_color_palettes(&mut self, id: TabId, cx: &mut Context<Self>) {
+        let Some(t) = self.tabs.get(&id) else {
+            return;
+        };
+        let items: Vec<(String, i64)> = t
+            .entries()
+            .iter()
+            .filter(|e| !e.dir)
+            .map(|e| (e.path.clone(), e.modified))
+            .collect();
+        if items.is_empty() {
+            return;
+        }
+        let cached = glint_core::color_index::lookup_batch(&items);
+        let needs_warm = cached.len() < items.len();
+        self.update_tab(id, |t| t.color_palettes = Arc::new(cached));
+        self.rebuild_rows(id, cx);
+        self.tab_changed(id, cx);
+        if needs_warm {
+            cx.spawn(async move |this, cx| {
+                let warmed = cx
+                    .background_executor()
+                    .spawn(async move { glint_core::color_index::warm_missing(&items) })
+                    .await;
+                let _ = this.update(cx, |this, cx| {
+                    this.update_tab(id, |t| t.color_palettes = Arc::new(warmed));
+                    this.rebuild_rows(id, cx);
+                    this.tab_changed(id, cx);
+                });
+            })
+            .detach();
+        }
+    }
+
     // ---- Flash, scroll, timing --------------------------------------------------------------------------
 
     /// Briefly highlights items that just arrived: created, pasted, dropped, renamed or revealed
@@ -705,6 +765,10 @@ impl Explorer {
                     expanded: find.inside.expanded.clone(),
                     lines: tab.view == ViewMode::List,
                 }),
+            color: tab.color_filter.map(|filter| super::rows::RowColor {
+                filter,
+                palettes: tab.color_palettes.clone(),
+            }),
         })
     }
 
@@ -849,6 +913,7 @@ fn is_plain(spec: &RowSpec) -> bool {
         && spec.filter.trim().is_empty()
         && spec.group == GroupBy::None
         && spec.diffs.is_none()
+        && spec.color.is_none()
 }
 
 /// A listing of more entries than this is let go of on a background thread ([`let_go`]).

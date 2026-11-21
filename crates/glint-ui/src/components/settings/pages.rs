@@ -210,26 +210,55 @@ pub const SEARCH: &[Entry] = &[
     entry(Page::Appearance, "Accent color", "pink highlight colour windows color"),
     entry(Page::Appearance, "Text size", "font size bigger smaller zoom scale"),
     entry(Page::Appearance, "Line numbers in preview", "code lines numbers"),
+    entry(
+        Page::Appearance,
+        "Touchpad haptics",
+        "haptics feedback touchpad vibration tactile",
+    ),
     // Files
     entry(Page::Files, "Reopen my tabs", "restore session tabs startup"),
     entry(Page::Files, "Show hidden items", "hidden files system files dotfiles"),
     entry(Page::Files, "Folders first", "sort order folders on top"),
-    entry(Page::Files, "Each folder keeps its own view", "per folder view sort columns"),
+    entry(
+        Page::Files,
+        "Each folder keeps its own view",
+        "per folder view sort columns",
+    ),
     entry(Page::Files, "Preview pane", "preview panel quick look side"),
     entry(Page::Files, "Folders in the sidebar", "tree navigation pane sidebar"),
-    entry(Page::Files, "Open the sidebar to the folder shown", "tree follows expand"),
-    entry(Page::Files, "Copy and move with Glint's queue", "copy queue transfers paste"),
+    entry(
+        Page::Files,
+        "Open the sidebar to the folder shown",
+        "tree follows expand",
+    ),
+    entry(
+        Page::Files,
+        "Copy and move with Glint's queue",
+        "copy queue transfers paste",
+    ),
     entry(Page::Files, "Check each copy the queue makes", "verify copies checksum"),
     entry(Page::Files, "Thumbnails in the list", "pictures previews icons"),
     entry(Page::Files, "A folder's README above the list", "readme markdown"),
     entry(Page::Files, "Tile size in the grid", "icons size grid zoom"),
-    entry(Page::Files, "Ask before moving to the Recycle Bin", "delete confirm recycle bin trash"),
+    entry(
+        Page::Files,
+        "Ask before moving to the Recycle Bin",
+        "delete confirm recycle bin trash",
+    ),
     entry(Page::Files, "Gallery folders", "photos pictures gallery"),
     // History
     entry(Page::History, "Save search history", "searches history privacy"),
     entry(Page::History, "Keep up to", "history length limit"),
-    entry(Page::History, "Share folder history with zoxide", "zoxide terminal cd jump"),
-    entry(Page::History, "Suggest the next step", "smart suggestions suggested menu dock"),
+    entry(
+        Page::History,
+        "Share folder history with zoxide",
+        "zoxide terminal cd jump",
+    ),
+    entry(
+        Page::History,
+        "Suggest the next step",
+        "smart suggestions suggested menu dock",
+    ),
     entry(Page::History, "Learn from what I do", "habits learning usual"),
     entry(Page::History, "Forget what Glint learned", "habits clear reset privacy"),
     // Terminal
@@ -240,17 +269,45 @@ pub const SEARCH: &[Entry] = &[
     entry(Page::Find, "Skip what .gitignore lists", "gitignore ignore"),
     // Quick search
     entry(Page::Quick, "Shortcut", "hotkey keyboard shortcut ctrl alt"),
-    entry(Page::Quick, "Keep running in the tray", "tray background close minimize notification area"),
-    entry(Page::Quick, "Start with Windows", "startup sign in boot autostart login"),
+    entry(
+        Page::Quick,
+        "Keep running in the tray",
+        "tray background close minimize notification area",
+    ),
+    entry(
+        Page::Quick,
+        "Start with Windows",
+        "startup sign in boot autostart login",
+    ),
     // Inside files
     entry(Page::Inside, "Open files with", "editor code notepad open with"),
     // Pages themselves, by the words people use for them.
-    entry(Page::Instant, "Instant search", "index indexing everything drives ntfs mft service fast search"),
-    entry(Page::Clouds, "Clouds", "google drive onedrive dropbox rclone cloud sync remote"),
+    entry(
+        Page::Instant,
+        "Instant search",
+        "index indexing everything drives ntfs mft service fast search",
+    ),
+    entry(
+        Page::Clouds,
+        "Clouds",
+        "google drive onedrive dropbox rclone cloud sync remote",
+    ),
     entry(Page::Agents, "AI agents", "mcp claude copilot agent ai"),
-    entry(Page::Tools, "Tools", "ffmpeg pandoc restic rclone 7-zip pdfcpu exiftool install update programs"),
-    entry(Page::About, "About", "version updates help diagnostics export import settings file shortcuts"),
-    entry(Page::About, "Install updates automatically", "update upgrade new version background restart scoop"),
+    entry(
+        Page::Tools,
+        "Tools",
+        "ffmpeg pandoc restic rclone 7-zip pdfcpu exiftool install update programs",
+    ),
+    entry(
+        Page::About,
+        "About",
+        "version updates help diagnostics export import settings file shortcuts",
+    ),
+    entry(
+        Page::About,
+        "Install updates automatically",
+        "update upgrade new version background restart scoop",
+    ),
 ];
 
 /// What search found: each entry whose name or words have every word typed at the start of one of theirs, the
@@ -275,12 +332,7 @@ pub fn find(query: &str) -> Vec<&'static Entry> {
         .map(|entry| (wanted.iter().all(|word| starts(entry.label, word)), entry))
         .collect();
     // Named by it first; otherwise as the pages come.
-    found.sort_by_key(|(named, entry)| {
-        (
-            !*named,
-            Page::ALL.iter().position(|p| *p == entry.page).unwrap_or(0),
-        )
-    });
+    found.sort_by_key(|(named, entry)| (!*named, Page::ALL.iter().position(|p| *p == entry.page).unwrap_or(0)));
     found.into_iter().map(|(_, entry)| entry).collect()
 }
 

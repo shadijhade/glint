@@ -190,6 +190,9 @@ pub struct Tab {
     pub(super) rows_for: Option<Arc<[FileEntry]>>,
     pub(super) rows_seq: u64,
     pub(super) scroll: Option<ScrollMemo>,
+    /// Active OKLab Color-Wheel filter and cached palettes for this tab's images.
+    pub color_filter: Option<glint_model::oklab::ColorFilter>,
+    pub color_palettes: Arc<std::collections::HashMap<String, glint_model::oklab::Palette3>>,
     /// The newest navigation's number: a result that comes back with an older one is stale and dropped.
     pub(super) nav_seq: u64,
     /// When the navigation that is showing began, until `mark_shown` times it.
@@ -241,6 +244,8 @@ impl Tab {
             rows_for: None,
             rows_seq: 0,
             scroll: None,
+            color_filter: None,
+            color_palettes: Arc::new(std::collections::HashMap::new()),
             nav_seq: 0,
             nav_started: None,
             rereading: None,

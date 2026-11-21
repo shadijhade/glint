@@ -2026,10 +2026,7 @@ fn a_folder_row_builds_its_words_only_while_the_pointer_or_the_keyboard_is_on_it
 /// `C:\x` searched for "needle": `big.rs` holds it on four lines (three are listed, then "1 more matching line").
 fn searched_inside(cx: &mut TestAppContext) -> (Ui, FakeDisk) {
     let disk = FakeDisk::new();
-    disk.folder(
-        "C:\\x",
-        vec![folder("C:\\x", "docs"), file("C:\\x", "big.rs", 100, 0)],
-    );
+    disk.folder("C:\\x", vec![folder("C:\\x", "docs"), file("C:\\x", "big.rs", 100, 0)]);
     disk.live_inside();
     let mut ui = open(cx, &disk, "C:\\x");
     let explorer = ui.explorer.clone();
@@ -2041,7 +2038,11 @@ fn searched_inside(cx: &mut TestAppContext) -> (Ui, FakeDisk) {
     });
     cx.foreground_executor().block_test(task);
     ui.frame();
-    let id = disk.inside_searches().last().map(|(_, request)| request.id.clone()).expect("asked");
+    let id = disk
+        .inside_searches()
+        .last()
+        .map(|(_, request)| request.id.clone())
+        .expect("asked");
     let event = inside_event(
         &id,
         glint_core::TextSaid::Matches(vec![
@@ -2051,7 +2052,8 @@ fn searched_inside(cx: &mut TestAppContext) -> (Ui, FakeDisk) {
             inside_match("C:\\x\\big.rs", "end of needle\n", 20, 7, 13),
         ]),
     );
-    ui.visual.update(|_, cx| explorer.update(cx, |e, cx| e.inside_heard(&event, cx)));
+    ui.visual
+        .update(|_, cx| explorer.update(cx, |e, cx| e.inside_heard(&event, cx)));
     ui.settle();
     (ui, disk)
 }
@@ -2081,9 +2083,9 @@ fn the_more_line_of_a_file_lists_the_rest_of_its_matching_lines_where_it_stands(
     // to show a line of the "more" line.
     assert_eq!(said(&mut ui, 5).as_deref(), Some("Line 20: end of needle"));
     assert_eq!(said(&mut ui, 6), None);
-    let selected = ui
-        .explorer
-        .read_with(&ui.visual, |e, _| e.active_tab().map(|t| t.selection.contains("C:\\x\\big.rs")));
+    let selected = ui.explorer.read_with(&ui.visual, |e, _| {
+        e.active_tab().map(|t| t.selection.contains("C:\\x\\big.rs"))
+    });
     assert_eq!(selected, Some(true));
 }
 
@@ -2185,13 +2187,17 @@ fn eight_folders_read_ahead_cost_a_frame_nothing_while_they_stay_as_they_are(cx:
     disk.folder("C:\\x", names.iter().map(|name| folder("C:\\x", name)).collect());
     for name in &names {
         let at = format!("C:\\x\\{name}");
-        disk.folder(&at, (0..30).map(|i| file(&at, &format!("f{i}.txt"), 10 + i, 0)).collect());
+        disk.folder(
+            &at,
+            (0..30).map(|i| file(&at, &format!("f{i}.txt"), 10 + i, 0)).collect(),
+        );
     }
     let mut ui = open(cx, &disk, "C:\\x");
     let explorer = ui.explorer.clone();
     for name in &names {
         let at = format!("C:\\x\\{name}");
-        ui.visual.update(|_, cx| explorer.update(cx, |e, cx| e.prefetch_folder(&at, cx)));
+        ui.visual
+            .update(|_, cx| explorer.update(cx, |e, cx| e.prefetch_folder(&at, cx)));
     }
     ui.settle();
     const FRAMES: u32 = 20_000;
@@ -2410,7 +2416,11 @@ fn tab_in_the_rename_box_renames_and_opens_the_box_on_the_next_row(cx: &mut Test
     ui.settle_rename(Some("C:\\x\\berry.png"));
     assert_eq!(ui.role_of("New name"), Some(Role::TextInput));
     assert!(ui.labels().iter().any(|l| l.contains("gamma.txt")), "{:?}", ui.labels());
-    assert_eq!(ui.events(), [], "the explorer was asked directly, not through the list's events");
+    assert_eq!(
+        ui.events(),
+        [],
+        "the explorer was asked directly, not through the list's events"
+    );
     // Shift+Tab with nothing typed: back one row in the order shown, with no rename.
     ui.press("shift-tab");
     ui.settle_rename(Some("C:\\x\\docs"));
@@ -2452,7 +2462,9 @@ fn a_tab_rename_that_fails_leaves_the_box_where_it_is(cx: &mut TestAppContext) {
         })
     )));
     ui.settle_rename(Some("C:\\x\\alpha.txt"));
-    assert!(!ui.explorer.read_with(&ui.visual, |e, _| e.rename_busy(e.active_tab_id())));
+    assert!(!ui
+        .explorer
+        .read_with(&ui.visual, |e, _| e.rename_busy(e.active_tab_id())));
     assert_eq!(ui.role_of("New name"), Some(Role::TextInput));
     // The box is not stuck: Enter says what is typed.
     ui.press("enter");
@@ -2468,7 +2480,8 @@ fn a_tab_rename_that_fails_leaves_the_box_where_it_is(cx: &mut TestAppContext) {
 impl Ui {
     /// Starts the box as the explorer does on F2, and gives the frames it needs.
     fn begin_rename(&mut self, path: &str) {
-        self.explorer.update(&mut self.visual, |e, cx| e.begin_rename(Some(path), cx));
+        self.explorer
+            .update(&mut self.visual, |e, cx| e.begin_rename(Some(path), cx));
         self.frame();
         self.frame();
     }
@@ -2488,4 +2501,52 @@ impl Ui {
         }
         panic!("the rename never reached {path:?}");
     }
+}
+
+#[gpui_kit::test]
+fn file_lego_hover_dwell_lights_target_and_emits_merge_pdf(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let disk = FakeDisk::new();
+    disk.folder(
+        "C:\\pdfs",
+        vec![file("C:\\pdfs", "a.pdf", 10, 0), file("C:\\pdfs", "b.pdf", 20, 0)],
+    );
+    let mut ui = open(cx, &disk, "C:\\pdfs");
+    let answers = DropAnswers::default();
+    let row0 = ui.row_at(0).center();
+    let dragged = ["C:\\pdfs\\b.pdf"];
+
+    // Before 250 ms dwell, dragging within the same folder does not activate Lego.
+    assert_eq!(ui.over(&answers, &dragged, row0, DropEffect::Copy), Answer::Refuse);
+    assert_eq!(ui.frame_of().drop_pill, None);
+
+    // Advance the simulated clock past LEGO_DWELL so the hover timer fires.
+    ui.visual.background_executor.advance_clock(Duration::from_millis(260));
+    ui.frame();
+
+    let answer = answers.get();
+    assert!(
+        matches!(&answer, Answer::Accept(u) if u.copy == "Merge into a.pdf"),
+        "expected Merge into a.pdf, got {answer:?}"
+    );
+    assert_eq!(
+        ui.frame_of().drop_pill,
+        Some(("C:\\pdfs\\a.pdf".to_string(), "Merge into a.pdf".to_string()))
+    );
+
+    // Dropping executes the File Lego event rather than regular file copy.
+    ui.dispatch(
+        &answers,
+        DropEvent::Drop {
+            paths: vec!["C:\\pdfs\\b.pdf".to_string()],
+            x: f32::from(row0.x),
+            y: f32::from(row0.y),
+            effect: DropEffect::Copy,
+        },
+    );
+    ui.frame();
+    assert!(ui.events().iter().any(|ev| matches!(
+        ev,
+        FileListEvent::FileLego(r) if r.verb == "Merge PDFs"
+    )));
 }

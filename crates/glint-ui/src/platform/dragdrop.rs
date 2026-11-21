@@ -569,6 +569,24 @@ pub fn drag_out(
     }
 }
 
+/// Starts a virtual drag-out (`CFSTR_FILEDESCRIPTORW` + lazy `CFSTR_FILECONTENTS` `TYMED_ISTREAM`)
+/// transforming `paths` on demand only when a drop target accepts them.
+pub fn drag_transformed(
+    cx: &App,
+    label: &str,
+    paths: Vec<String>,
+    transform: glint_core::virtual_drag::DragTransform,
+) -> impl std::future::Future<Output = Result<String, String>> + 'static {
+    use glint_core::host::Manager as _;
+    let window = cx
+        .try_global::<core_bridge::Core>()
+        .and_then(|core| core.app.window(label));
+    async move {
+        let window = window.ok_or_else(|| "this window isn't registered with core".to_string())?;
+        core_bridge::run(glint_core::virtual_drag::start_virtual_drag(window, paths, transform)).await?
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

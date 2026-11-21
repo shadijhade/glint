@@ -132,6 +132,11 @@ pub enum CommandBarEvent {
         /// What is typed at the prompt.
         command: String,
     },
+    /// Drag selected items out with an on-the-fly stream transformation (`CFSTR_FILECONTENTS`).
+    VirtualDrag {
+        paths: Vec<String>,
+        transform: glint_core::virtual_drag::DragTransform,
+    },
 }
 
 type Fut<T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send>>;
@@ -227,6 +232,8 @@ pub struct CommandBar {
     basket: usize,
     /// The button whose menu a press closed last, and when.
     dismissed: Option<(&'static str, Instant)>,
+    /// Press origin for starting a Drag-to-Transform chip drag.
+    virtual_press: Option<(Vec<String>, glint_core::virtual_drag::DragTransform, Point<Pixels>)>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -285,6 +292,7 @@ impl CommandBar {
             clip_turn: 0,
             basket: 0,
             dismissed: None,
+            virtual_press: None,
             _subscriptions: subscriptions,
         }
     }
@@ -1141,6 +1149,7 @@ impl CommandBar {
                 .disabled(none || f.read_only)
                 .on_click(cx.listener(|this, _, window, cx| this.dispatch(Box::new(actions::Delete), window, cx))),
             );
+        let group = self.add_virtual_drag_chip(group, fold, t, cx);
         match &self.step {
             // The next step is what the island is for while something is selected: it keeps its word while
             // every other button has lost its own, is a picture alone at the fifth fold, and goes only when
@@ -1148,6 +1157,117 @@ impl CommandBar {
             Some(step) if fold < MOST => group.child(divider(t)).child(self.step_button(step, fold, t, cx)),
             _ => group,
         }
+    }
+
+    /// Adds a compact draggable transform chip (`Drag clean` or `Drag <10 MB`) when room permits and the
+    /// selection consists of metadata-strippable images or a single sliceable/shrinkable video.
+    fn add_virtual_drag_chip(
+        &self,
+        group: Stateful<Div>,
+        fold: usize,
+        t: &Tokens,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let f = &self.facts;
+        if fold >= 4 || f.selected == 0 || f.read_only || f.bin || glint_model::paths::is_remote_path(&f.path) {
+            return group;
+        }
+        let selected: Vec<String> = self
+            .explorer
+            .read(cx)
+            .active_tab()
+            .map(|tab| tab.selection.iter().take(11).map(str::to_string).collect())
+            .unwrap_or_default();
+        if selected.is_empty() || selected.len() > 10 {
+            return group;
+        }
+        let ext_of = |p: &str| {
+            std::path::Path::new(p)
+                .extension()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_ascii_lowercase())
+                .unwrap_or_default()
+        };
+        let all_strip_img = selected
+            .iter()
+            .all(|p| matches!(ext_of(p).as_str(), "jpg" | "jpeg" | "png"));
+        let single_video =
+            selected.len() == 1 && matches!(ext_of(&selected[0]).as_str(), "mp4" | "mov" | "mkv" | "webm");
+        let (id, icon_name, label, tip, transform) = if all_strip_img {
+            (
+                "drag-transform-clean",
+                IconName::Sparkles,
+                t!("Drag clean"),
+                t!("Drag out without EXIF, GPS, or camera metadata"),
+                glint_core::virtual_drag::DragTransform::StripMetadata,
+            )
+        } else if single_video {
+            (
+                "drag-transform-shrink",
+                IconName::Minimize2,
+                t!("Drag <10 MB"),
+                t!("Drag a compressed <10 MB copy directly to another app"),
+                glint_core::virtual_drag::DragTransform::ShrinkUnderMb(10),
+            )
+        } else {
+            return group;
+        };
+
+        let press_paths = selected.clone();
+        let press_transform = transform.clone();
+        let click_paths = selected;
+        let click_transform = transform;
+        let chip = row_start()
+            .id(id)
+            .role(Role::Button)
+            .aria_label(label.clone())
+            .test_support()
+            .h(space(7.))
+            .px(space(2.))
+            .gap(space(1.))
+            .items_center()
+            .rounded(theme::size::RADIUS)
+            .border_1()
+            .border_color(t.stroke)
+            .bg(t.accent.opacity(0.6))
+            .text_size(theme::size::XS)
+            .cursor_pointer()
+            .tooltip(move |window, cx| crate::kit::tooltip(tip.clone(), window, cx))
+            .on_mouse_down(
+                gpui_kit::MouseButton::Left,
+                cx.listener(move |this, ev: &gpui_kit::MouseDownEvent, _, cx| {
+                    this.virtual_press = Some((press_paths.clone(), press_transform.clone(), ev.position));
+                    cx.stop_propagation();
+                }),
+            )
+            .on_mouse_move(cx.listener(|this, ev: &gpui_kit::MouseMoveEvent, _, cx| {
+                let Some((paths, transform, origin)) = this.virtual_press.take() else {
+                    return;
+                };
+                if ev.pressed_button == Some(gpui_kit::MouseButton::Left) {
+                    let dx = f32::from(ev.position.x - origin.x);
+                    let dy = f32::from(ev.position.y - origin.y);
+                    if dx * dx + dy * dy >= 16.0 {
+                        cx.emit(CommandBarEvent::VirtualDrag { paths, transform });
+                        return;
+                    }
+                    this.virtual_press = Some((paths, transform, origin));
+                }
+            }))
+            .on_mouse_up(
+                gpui_kit::MouseButton::Left,
+                cx.listener(move |this, _, _, cx| {
+                    if this.virtual_press.take().is_some() {
+                        cx.emit(CommandBarEvent::VirtualDrag {
+                            paths: click_paths.clone(),
+                            transform: click_transform.clone(),
+                        });
+                    }
+                }),
+            )
+            .child(icon(icon_name).small().text_color(t.primary))
+            .child(div().whitespace_nowrap().child(label));
+        group.child(chip)
     }
 
     /// The basket's pill, while it holds anything: "Basket 3", which opens what can be done with it. With nothing in
@@ -1502,9 +1622,17 @@ impl CommandBar {
                         } else {
                             t!("View: hidden items, preview pane, dual pane, compare panes")
                         };
-                        menu_word(cx, t, "view-menu", IconName::SlidersHorizontal, name.clone(), false, name)
+                        menu_word(
+                            cx,
+                            t,
+                            "view-menu",
+                            IconName::SlidersHorizontal,
+                            name.clone(),
+                            false,
+                            name,
+                        )
                     }
-                        .on_click(cx.listener(|this, _, window, cx| this.show_view(window, cx))),
+                    .on_click(cx.listener(|this, _, window, cx| this.show_view(window, cx))),
                 ),
             );
         }

@@ -155,6 +155,8 @@ fn event_key(event: &MenuEvent) -> Option<String> {
                 "do:rotate:left"
             }
         }
+        MenuEvent::MatchColor { .. } => "do:match-color",
+        MenuEvent::ToggleColorWheel => "do:color-wheel",
         MenuEvent::CloudPin { state, .. } => match state {
             CloudPin::Keep => "do:cloud:keep",
             CloudPin::Free => "do:cloud:free",
@@ -162,6 +164,7 @@ fn event_key(event: &MenuEvent) -> Option<String> {
         },
         MenuEvent::XRay { .. } => "do:x-ray",
         MenuEvent::Timeline { .. } => "do:timeline",
+        MenuEvent::OpenTimeMachine { .. } => "do:time-machine",
         MenuEvent::History { .. } => "do:history",
         MenuEvent::Locks { .. } => "do:locks",
         MenuEvent::Defender { .. } => "do:defender",
@@ -171,6 +174,7 @@ fn event_key(event: &MenuEvent) -> Option<String> {
         MenuEvent::RemovePersonalInfo { .. } => "do:remove-personal-info",
         MenuEvent::ChangeDateTaken { .. } => "do:change-date-taken",
         MenuEvent::Share { .. } => "do:share",
+        MenuEvent::CopyPermalink { .. } => "do:copy-permalink",
         MenuEvent::RunScript { script, .. } => {
             return Some(format!("do:script:{}", base_name(script).to_lowercase()));
         }
@@ -180,6 +184,8 @@ fn event_key(event: &MenuEvent) -> Option<String> {
         MenuEvent::RemoveConnection { .. } => "do:remove-connection",
         MenuEvent::ShowOnDemand { .. } => "do:show-on-demand",
         MenuEvent::HideOnDemand { .. } => "do:hide-on-demand",
+        MenuEvent::PinPortal { .. } => "do:pin-portal",
+        MenuEvent::UnpinPortal { .. } => "do:unpin-portal",
         MenuEvent::Unblock { .. } => "do:unblock",
         MenuEvent::CopyTextIn { .. } => "do:copy-text-in",
         MenuEvent::SendTo { moving, .. } => {

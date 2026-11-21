@@ -43,6 +43,10 @@ pub struct Head {
     pub kinds: Vec<Category>,
     /// The search box's text: the chip whose filter it is, is lit.
     pub filter: String,
+    /// True when the tab is backed by a real folder on disk (enables Time Machine / Map tools).
+    pub is_folder: bool,
+    /// True when the tab is displaying the unified Photo & Video Gallery (`shell:Gallery`).
+    pub is_gallery: bool,
 }
 
 /// The line under the name: how many folders and files and how much they weigh; while the box narrows the list,
@@ -121,6 +125,8 @@ impl Head {
             facts: facts(tab, &kinds),
             kinds,
             filter: tab.filter.clone(),
+            is_folder: glint_model::paths::is_folder_path(&tab.path),
+            is_gallery: glint_model::paths::is_gallery(&tab.path),
         })
     }
 }
@@ -349,6 +355,39 @@ impl Render for PaneHead {
                     .rounded_full()
                     .bg(theme::hsl(kind.group.hue as f32, kind.group.sat as f32, 54.).opacity(0.85))
             }));
+        let color_button = (head.is_folder || head.is_gallery).then(|| {
+            let tab = head.tab;
+            Button::new(("pane-head-color-wheel", self.pane))
+                .compact()
+                .ghost()
+                .flex_none()
+                .icon(Icon::new(IconName::Pipette))
+                .accessibility_label(t!("Color Wheel"))
+                .tooltip(t!("Color Wheel: surf photos by color"))
+                .on_click(move |_, _, cx| crate::components::color_wheel::toggle(cx, tab))
+        });
+        let map_button = (head.is_folder || head.is_gallery).then(|| {
+            let tab = head.tab;
+            Button::new(("pane-head-photo-map", self.pane))
+                .compact()
+                .ghost()
+                .flex_none()
+                .icon(Icon::new(IconName::Globe))
+                .accessibility_label(t!("Photo World Map"))
+                .tooltip(t!("Photo World Map (Ctrl+Shift+G)"))
+                .on_click(move |_, _, cx| crate::components::photo_map::toggle(cx, tab))
+        });
+        let tm_button = head.is_folder.then(|| {
+            let tab = head.tab;
+            Button::new(("pane-head-time-machine", self.pane))
+                .compact()
+                .ghost()
+                .flex_none()
+                .icon(Icon::new(IconName::RotateCcwClock))
+                .accessibility_label(t!("Time Machine"))
+                .tooltip(t!("Time Machine scrubber (Ctrl+Shift+H)"))
+                .on_click(move |_, _, cx| crate::components::time_machine::toggle(cx, tab))
+        });
         // Arriving: the name comes in from the start edge as it clears, and the band grows to its width.
         let (name_row, band) = (
             row_start()
@@ -357,7 +396,10 @@ impl Render for PaneHead {
                 .gap(space(3.))
                 .child(head.glyph.picture((rem * if short { 1.5 } else { 2.5 }).round(), cx))
                 .child(name)
-                .child(chips),
+                .child(chips)
+                .when_some(color_button, |row, btn| row.child(btn))
+                .when_some(map_button, |row, btn| row.child(btn))
+                .when_some(tm_button, |row, btn| row.child(btn)),
             div().w_full().child(band),
         );
         let (name_row, band) = if cx.reduce_motion() {

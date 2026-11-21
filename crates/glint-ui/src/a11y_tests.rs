@@ -937,3 +937,32 @@ fn a_searchs_results_with_lines_found_inside_files_and_the_disk_map_have_every_c
     sweep(&mut visual, "the disk usage map", 10);
     testing::set_rtl(false);
 }
+
+#[gpui_kit::test]
+fn new_views_time_machine_photo_map_and_color_wheel_name_every_control_in_ltr_and_rtl(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let files = Files::new("new-views");
+    for rtl in [false, true] {
+        let (mut visual, _) = open_workspace(cx, &files, rtl);
+        let tab = visual.update(|_, cx| explorer::explorer(cx).read(cx).active_tab_id());
+
+        // Color Wheel bar above listing
+        visual.update(|_, cx| crate::components::color_wheel::toggle(cx, tab));
+        settle(&mut visual);
+        sweep(&mut visual, &format!("Color Wheel{}", language(rtl)), 15);
+        visual.update(|_, cx| crate::components::color_wheel::toggle(cx, tab));
+        settle(&mut visual);
+
+        // Time Machine scrubber
+        visual.dispatch_action(actions::ToggleTimeMachine);
+        settle(&mut visual);
+        sweep(&mut visual, &format!("Time Machine{}", language(rtl)), 10);
+
+        // Offline Photo World Map
+        visual.dispatch_action(actions::TogglePhotoMap);
+        settle(&mut visual);
+        sweep(&mut visual, &format!("Photo World Map{}", language(rtl)), 10);
+
+        testing::set_rtl(false);
+    }
+}

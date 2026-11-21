@@ -690,11 +690,23 @@ enum Details {
     Ready(Arc<HashMap<String, Option<Media>>>),
 }
 
+/// Whether the batch renamer builds names from explicit Find/Replace + Pattern rules or
+/// infers a rule automatically from user-edited examples (`flashfill`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum RenameMode {
+    #[default]
+    Rules,
+    ByExample,
+}
+
 /// The dialog's data: the items, the rules, and the preview they make.
 pub struct BatchRename {
     items: Arc<[Item]>,
     existing: Arc<HashSet<String>>,
+    mode: RenameMode,
     rules: Rules,
+    examples: HashMap<usize, String>,
+    synthesized: Option<glint_model::flashfill::SynthesizedRule>,
     details: Details,
     simulation: Arc<Simulation>,
     source: Source,
@@ -712,7 +724,10 @@ impl BatchRename {
         Self {
             items,
             existing,
+            mode: RenameMode::Rules,
             rules,
+            examples: HashMap::new(),
+            synthesized: None,
             details: Details::Idle,
             simulation,
             source,
@@ -726,9 +741,19 @@ impl BatchRename {
         &self.items
     }
 
+    /// Current rename mode (`Rules` or `ByExample`).
+    pub fn mode(&self) -> RenameMode {
+        self.mode
+    }
+
     /// The rules as set.
     pub fn rules(&self) -> &Rules {
         &self.rules
+    }
+
+    /// The active synthesized FlashFill rule when in `ByExample` mode.
+    pub fn synthesized(&self) -> Option<&glint_model::flashfill::SynthesizedRule> {
+        self.synthesized.as_ref()
     }
 
     /// The preview.
@@ -738,7 +763,9 @@ impl BatchRename {
 
     /// The files' details are being read and the pattern needs them (`reading`).
     pub fn reading(&self) -> bool {
-        wants_details(&self.rules.pattern) && !matches!(self.details, Details::Ready(_))
+        self.mode == RenameMode::Rules
+            && wants_details(&self.rules.pattern)
+            && !matches!(self.details, Details::Ready(_))
     }
 
     /// Renaming is under way.
@@ -755,12 +782,126 @@ impl BatchRename {
             && self.simulation.changed_count > 0
     }
 
+    /// Switches between explicit pattern rules and FlashFill example mode.
+    pub fn set_mode(&mut self, mode: RenameMode, cx: &mut Context<Self>) {
+        if self.mode == mode {
+            return;
+        }
+        self.mode = mode;
+        self.resimulate();
+        cx.notify();
+    }
+
+    /// Updates or clears the typed example for row `index` and re-synthesizes the batch preview.
+    pub fn set_example(&mut self, index: usize, to: String, cx: &mut Context<Self>) {
+        if index >= self.items.len() {
+            return;
+        }
+        if to.is_empty() {
+            self.examples.remove(&index);
+        } else {
+            self.examples.insert(index, to);
+        }
+        if self.mode == RenameMode::ByExample {
+            self.resimulate();
+        }
+        cx.notify();
+    }
+
+    /// Clears all typed examples and restores the preview to original names.
+    pub fn reset_examples(&mut self, cx: &mut Context<Self>) {
+        self.examples.clear();
+        self.synthesized = None;
+        if self.mode == RenameMode::ByExample {
+            self.resimulate();
+        }
+        cx.notify();
+    }
+
     fn resimulate(&mut self) {
+        if self.mode == RenameMode::ByExample {
+            self.simulation = Arc::new(self.simulate_by_example());
+            return;
+        }
         let media = match &self.details {
             Details::Ready(found) => Some(found.clone()),
             _ => None,
         };
         self.simulation = Arc::new(simulate(&self.items, &self.existing, &self.rules, media.as_deref()));
+    }
+
+    fn simulate_by_example(&mut self) -> Simulation {
+        let mut active: Vec<glint_model::flashfill::Example> = self
+            .examples
+            .iter()
+            .filter_map(|(&idx, to)| {
+                let item = self.items.get(idx)?;
+                Some(glint_model::flashfill::Example {
+                    index: idx,
+                    from: item.name.clone(),
+                    to: to.clone(),
+                })
+            })
+            .collect();
+        active.sort_by_key(|ex| ex.index);
+        let has_change = active.iter().any(|ex| ex.to != ex.from && !ex.to.is_empty());
+
+        let all_inputs: Vec<String> = self.items.iter().map(|i| i.name.clone()).collect();
+        let rule = if has_change {
+            glint_model::flashfill::synthesize(&active, &all_inputs)
+        } else {
+            None
+        };
+        self.synthesized = rule.clone();
+
+        let mut drafts = Vec::with_capacity(self.items.len());
+        for (idx, item) in self.items.iter().enumerate() {
+            let new_name = if let Some(rule) = &rule {
+                rule.apply(&item.name, idx)
+            } else if has_change {
+                self.examples.get(&idx).cloned().unwrap_or_else(|| item.name.clone())
+            } else {
+                item.name.clone()
+            };
+            let folder = parent_path(&item.path);
+            let to = join_path(&folder, &new_name);
+            drafts.push((item, new_name, to));
+        }
+
+        let mut counts: HashMap<String, usize> = HashMap::new();
+        for (_, _, to) in &drafts {
+            *counts.entry(to.to_lowercase()).or_insert(0) += 1;
+        }
+
+        let mut rows = Vec::with_capacity(drafts.len());
+        for (item, new_name, to) in drafts {
+            let changed = new_name != item.name;
+            let conflict = validate_target_name(&new_name).or_else(|| {
+                if counts.get(&to.to_lowercase()).copied().unwrap_or(0) > 1 {
+                    Some(Conflict::Duplicate)
+                } else if changed && self.existing.contains(&new_name.to_lowercase()) {
+                    Some(Conflict::Exists)
+                } else {
+                    None
+                }
+            });
+            rows.push(Row {
+                from: item.path.clone(),
+                to,
+                name: item.name.clone(),
+                new_name,
+                changed,
+                conflict,
+            });
+        }
+        let changed_count = rows.iter().filter(|r| r.changed).count();
+        let conflict_count = rows.iter().filter(|r| r.conflict.is_some()).count();
+        Simulation {
+            rows,
+            regex_error: None,
+            changed_count,
+            conflict_count,
+        }
     }
 
     /// Changes the rules and works out the preview again; reads the files' details the first time the
@@ -988,6 +1129,9 @@ pub struct BatchRenameDialog {
     pattern: Entity<InputState>,
     start: Entity<InputState>,
     step: Entity<InputState>,
+    example_0: Entity<InputState>,
+    example_1: Entity<InputState>,
+    show_second_example: bool,
     scroll: UniformListScrollHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -995,7 +1139,14 @@ pub struct BatchRenameDialog {
 impl BatchRenameDialog {
     /// A dialog over `model`, its Find box focused.
     pub fn new(model: Entity<BatchRename>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let rules = model.read(cx).rules().clone();
+        let (rules, first_name, second_name) = {
+            let m = model.read(cx);
+            (
+                m.rules().clone(),
+                m.items().first().map(|i| i.name.clone()).unwrap_or_default(),
+                m.items().get(1).map(|i| i.name.clone()).unwrap_or_default(),
+            )
+        };
         let regex = rules.use_regex;
         let find = cx.new(|cx| InputState::new(window, cx).placeholder(find_placeholder(regex)));
         let replace = cx.new(|cx| InputState::new(window, cx).placeholder(replace_placeholder(regex)));
@@ -1007,6 +1158,16 @@ impl BatchRenameDialog {
         });
         let start = cx.new(|cx| InputState::new(window, cx).default_value(rules.start.to_string()));
         let step = cx.new(|cx| InputState::new(window, cx).default_value(rules.step.to_string()));
+        let example_0 = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(first_name.clone())
+                .default_value(first_name)
+        });
+        let example_1 = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(second_name.clone())
+                .default_value(second_name)
+        });
 
         let mut subscriptions = vec![cx.observe(&model, |_, _, cx| cx.notify())];
         // Each box feeds its rule; Enter in any of them renames, as the TypeScript's form did.
@@ -1039,6 +1200,23 @@ impl BatchRenameDialog {
             );
         }
 
+        for (slot, input) in [(0usize, &example_0), (1usize, &example_1)] {
+            subscriptions.push(
+                cx.subscribe_in(
+                    input,
+                    window,
+                    move |this, input, event: &InputEvent, window, cx| match event {
+                        InputEvent::Change => {
+                            let text = input.read(cx).value().to_string();
+                            this.model.update(cx, |model, cx| model.set_example(slot, text, cx));
+                        }
+                        InputEvent::PressEnter { .. } => this.apply(window, cx),
+                        _ => {}
+                    },
+                ),
+            );
+        }
+
         let first = find.clone();
         window.defer(cx, move |window, cx| {
             first.update(cx, |input, cx| input.focus(window, cx));
@@ -1050,16 +1228,27 @@ impl BatchRenameDialog {
             pattern,
             start,
             step,
+            example_0,
+            example_1,
+            show_second_example: false,
             scroll: UniformListScrollHandle::new(),
             _subscriptions: subscriptions,
         }
     }
 
-    /// Whether the caret is in one of the five boxes.
+    /// Whether the caret is in one of the input boxes.
     fn typing_in_a_box(&self, window: &Window, cx: &App) -> bool {
-        [&self.find, &self.replace, &self.pattern, &self.start, &self.step]
-            .into_iter()
-            .any(|input| input.read(cx).focus_handle(cx).is_focused(window))
+        [
+            &self.find,
+            &self.replace,
+            &self.pattern,
+            &self.start,
+            &self.step,
+            &self.example_0,
+            &self.example_1,
+        ]
+        .into_iter()
+        .any(|input| input.read(cx).focus_handle(cx).is_focused(window))
     }
 
     /// Turns the regex switch, and words the boxes for it.
@@ -1073,6 +1262,18 @@ impl BatchRenameDialog {
         });
     }
 
+    /// Switches between Pattern mode and By Example (FlashFill) mode, focusing the relevant box.
+    fn switch_mode(&mut self, mode: RenameMode, window: &mut Window, cx: &mut Context<Self>) {
+        self.model.update(cx, |model, cx| model.set_mode(mode, cx));
+        let focus = match mode {
+            RenameMode::Rules => self.find.clone(),
+            RenameMode::ByExample => self.example_0.clone(),
+        };
+        window.defer(cx, move |window, cx| {
+            focus.update(cx, |input, cx| input.focus(window, cx));
+        });
+    }
+
     /// A token added to the end of the pattern.
     fn add_token(&mut self, token: &str, window: &mut Window, cx: &mut Context<Self>) {
         let next = format!("{}{token}", self.model.read(cx).rules().pattern);
@@ -1082,8 +1283,23 @@ impl BatchRenameDialog {
             .update(cx, |model, cx| model.update_rules(|r| r.pattern = next, cx));
     }
 
-    /// "Reset": every rule and every box back to its start.
+    /// "Reset": every rule (or typed examples) and box back to its start.
     fn reset(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.model.read(cx).mode() == RenameMode::ByExample {
+            self.model.update(cx, |model, cx| model.reset_examples(cx));
+            let (first_name, second_name) = {
+                let m = self.model.read(cx);
+                (
+                    m.items().first().map(|i| i.name.clone()).unwrap_or_default(),
+                    m.items().get(1).map(|i| i.name.clone()).unwrap_or_default(),
+                )
+            };
+            self.example_0
+                .update(cx, |input, cx| input.set_value(first_name, window, cx));
+            self.example_1
+                .update(cx, |input, cx| input.set_value(second_name, window, cx));
+            return;
+        }
         self.model.update(cx, |model, cx| model.reset_rules(cx));
         let rules = self.model.read(cx).rules().clone();
         for (input, text) in [
@@ -1441,8 +1657,130 @@ impl BatchRenameDialog {
             )
     }
 
+    /// Card for "By example" (FlashFill): edit one or two sample filenames and watch the rule infer.
+    fn examples_card(
+        &self,
+        items: &[Item],
+        examples: &HashMap<usize, String>,
+        synthesized: Option<&glint_model::flashfill::SynthesizedRule>,
+        t: &theme::Tokens,
+        mono: &SharedString,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let first_from = items.first().map(|i| i.name.as_str()).unwrap_or("");
+        let second_from = items.get(1).map(|i| i.name.as_str()).unwrap_or("");
+        let has_edit = examples
+            .iter()
+            .any(|(&idx, to)| items.get(idx).is_some_and(|it| !to.is_empty() && *to != it.name));
+
+        let example_row = |label: SharedString, from: &str, input: &Entity<InputState>, input_label: SharedString| {
+            row_start()
+                .items_center()
+                .gap(space(2.))
+                .child(
+                    div()
+                        .w(gpui_kit::relative(0.42))
+                        .flex_none()
+                        .truncate()
+                        .font_family(mono.clone())
+                        .text_size(theme::size::XS)
+                        .text_color(t.muted_foreground)
+                        .child(format!("{label}: "))
+                        .child(isolate(from.to_string())),
+                )
+                .child(icon(forward_icon()).size_3p5().flex_none().text_color(t.primary))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .font_family(mono.clone())
+                        .text_size(theme::size::XS)
+                        .child(Input::new(input).small().aria_label(input_label)),
+                )
+        };
+
+        let title = t!("Rename by example (FlashFill)");
+        card(t)
+            .id("batch-rename-examples")
+            .role(Role::Group)
+            .aria_label(title.clone())
+            .test_support()
+            .child(
+                row_start()
+                    .justify_between()
+                    .items_center()
+                    .gap(space(2.))
+                    .child(div().font_weight(FontWeight::SEMIBOLD).child(title))
+                    .when_some(synthesized, |row, rule| {
+                        row.child(
+                            align_row(1.)
+                                .id("batch-rename-formula")
+                                .role(Role::Status)
+                                .aria_label(t!("Inferred rule: {rule}", rule = rule.description.clone()))
+                                .test_support()
+                                .px(space(2.))
+                                .py(space(0.5))
+                                .rounded(theme::size::RADIUS_SM)
+                                .bg(t.primary.opacity(0.12))
+                                .font_family(mono.clone())
+                                .text_size(theme::size::XXS)
+                                .text_color(t.primary)
+                                .child(icon(IconName::Sparkles).size_3())
+                                .child(SharedString::from(rule.description.clone())),
+                        )
+                    }),
+            )
+            .child(example_row(
+                t!("Example 1"),
+                first_from,
+                &self.example_0,
+                t!("Example 1 new name"),
+            ))
+            .when(items.len() >= 2 && self.show_second_example, |col| {
+                col.child(example_row(
+                    t!("Example 2"),
+                    second_from,
+                    &self.example_1,
+                    t!("Example 2 new name"),
+                ))
+            })
+            .child(
+                row_start()
+                    .items_center()
+                    .justify_between()
+                    .gap(space(2.))
+                    .when(items.len() >= 2 && !self.show_second_example, |row| {
+                        row.child(
+                            Button::new("batch-rename-add-example")
+                                .outline()
+                                .xsmall()
+                                .icon(IconName::Plus)
+                                .label(t!("Refine with 2nd example"))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.show_second_example = true;
+                                    let second = this.example_1.clone();
+                                    window.defer(cx, move |window, cx| {
+                                        second.update(cx, |input, cx| input.focus(window, cx));
+                                    });
+                                    cx.notify();
+                                })),
+                        )
+                    })
+                    .when(has_edit && synthesized.is_none(), |row| {
+                        row.child(
+                            div()
+                                .id("batch-rename-example-conflict")
+                                .role(Role::Status)
+                                .text_size(theme::size::XXS)
+                                .text_color(t.warning)
+                                .child(t!("No shared pattern yet — adjust or add a 2nd example")),
+                        )
+                    }),
+            )
+    }
+
     /// The line at the bottom left: what is wrong, or what will happen.
-    fn status_line(&self, sim: &Simulation, total: usize, t: &theme::Tokens) -> impl IntoElement {
+    fn status_line(&self, mode: RenameMode, sim: &Simulation, total: usize, t: &theme::Tokens) -> impl IntoElement {
         let line = align_row(1.5)
             .id("batch-rename-status")
             .role(Role::Status)
@@ -1469,7 +1807,10 @@ impl BatchRenameDialog {
                 .child(icon(IconName::CircleCheck).size_3p5().flex_none())
                 .child(div().min_w_0().child(text))
         } else {
-            let text = t!("Modify Find/Replace, Pattern, or Case above to preview changes");
+            let text = match mode {
+                RenameMode::Rules => t!("Modify Find/Replace, Pattern, or Case above to preview changes"),
+                RenameMode::ByExample => t!("Edit an example name above to infer the rename pattern automatically"),
+            };
             line.aria_label(text.clone())
                 .text_color(t.muted_foreground)
                 .child(div().min_w_0().child(text))
@@ -1528,10 +1869,13 @@ impl Render for BatchRenameDialog {
         let rem = window.rem_size();
         let list_height = (window.viewport_size().height * LIST_OF_WINDOW - rem * OTHER_REMS)
             .clamp(ROW_REMS * 4. * rem, ROW_REMS * 18. * rem);
-        let (rules, sim, reading, running, count) = {
+        let (mode, rules, examples, synthesized, sim, reading, running, count) = {
             let model = self.model.read(cx);
             (
+                model.mode(),
                 model.rules().clone(),
+                model.examples.clone(),
+                model.synthesized().cloned(),
                 model.simulation().clone(),
                 model.reading(),
                 model.running(),
@@ -1551,9 +1895,39 @@ impl Render for BatchRenameDialog {
             });
         let changed = sim.changed_count;
 
+        let mode_switch = row_start()
+            .id("batch-rename-mode")
+            .role(Role::RadioGroup)
+            .aria_label(t!("Rename mode"))
+            .test_support()
+            .gap(space(1.))
+            .p(space(0.5))
+            .rounded(theme::size::RADIUS_SM)
+            .bg(t.muted.opacity(0.5))
+            .child(
+                Button::new("batch-rename-mode-rules")
+                    .ghost()
+                    .xsmall()
+                    .selected(mode == RenameMode::Rules)
+                    .toggled(mode == RenameMode::Rules)
+                    .label(t!("Rules"))
+                    .on_click(cx.listener(|this, _, window, cx| this.switch_mode(RenameMode::Rules, window, cx))),
+            )
+            .child(
+                Button::new("batch-rename-mode-example")
+                    .ghost()
+                    .xsmall()
+                    .icon(IconName::Sparkles)
+                    .selected(mode == RenameMode::ByExample)
+                    .toggled(mode == RenameMode::ByExample)
+                    .label(t!("By example"))
+                    .on_click(cx.listener(|this, _, window, cx| this.switch_mode(RenameMode::ByExample, window, cx))),
+            );
+
         let header = row_start()
             .gap(space(3.))
-            .items_start()
+            .items_center()
+            .child(mode_switch)
             .child(
                 div()
                     .flex_1()
@@ -1586,15 +1960,28 @@ impl Render for BatchRenameDialog {
                     .on_click(cx.listener(|this, _, window, cx| this.reset(window, cx))),
             );
 
-        let rules_row = row_start()
-            .items_start()
-            .gap(space(3.))
-            .p(space(4.))
-            .rounded(theme::size::RADIUS)
-            .bg(t.muted.opacity(0.2))
-            .text_size(theme::size::XS)
-            .child(self.find_card(&rules, sim.regex_error.as_ref(), &t, &mono, cx))
-            .child(self.pattern_card(&rules, reading, &t, &mono, cx));
+        let rules_row = match mode {
+            RenameMode::Rules => row_start()
+                .items_start()
+                .gap(space(3.))
+                .p(space(4.))
+                .rounded(theme::size::RADIUS)
+                .bg(t.muted.opacity(0.2))
+                .text_size(theme::size::XS)
+                .child(self.find_card(&rules, sim.regex_error.as_ref(), &t, &mono, cx))
+                .child(self.pattern_card(&rules, reading, &t, &mono, cx)),
+            RenameMode::ByExample => {
+                let items = self.model.read(cx).items().to_vec();
+                row_start()
+                    .items_start()
+                    .gap(space(3.))
+                    .p(space(4.))
+                    .rounded(theme::size::RADIUS)
+                    .bg(t.muted.opacity(0.2))
+                    .text_size(theme::size::XS)
+                    .child(self.examples_card(&items, &examples, synthesized.as_ref(), &t, &mono, cx))
+            }
+        };
 
         let preview = {
             let sim = sim.clone();
@@ -1625,7 +2012,7 @@ impl Render for BatchRenameDialog {
             .border_t_1()
             .border_color(t.border)
             .text_size(theme::size::XS)
-            .child(div().flex_1().min_w_0().child(self.status_line(&sim, count, &t)))
+            .child(div().flex_1().min_w_0().child(self.status_line(mode, &sim, count, &t)))
             .child(
                 align_row(2.)
                     .child(
@@ -2819,5 +3206,43 @@ mod tests {
         assert_eq!(model.read_with(&visual, |m, _| m.simulation().changed_count), 1);
         assert_eq!(role_of(&mut visual, "Rename 1 item"), Some(Role::Button));
         testing::set_rtl(false);
+    }
+
+    #[gpui_kit::test]
+    fn flashfill_by_example_mode_infers_and_applies_renames(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let mut visual = window(cx);
+        let fake = Fake::default();
+        let items = vec![
+            item("C:\\Trips", "IMG_20260412_Tokyo.jpg"),
+            item("C:\\Trips", "IMG_20260501_Kyoto.jpg"),
+            item("C:\\Trips", "IMG_20260515_New_York.jpg"),
+        ];
+        let view = open_items(&mut visual, &fake, items, &[]);
+        visual.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("batch-rename-mode-example", cx);
+        });
+        visual.run_until_parked();
+        let (example_0, model) = view.read_with(&visual, |v, _| (v.example_0.clone(), v.model.clone()));
+        visual.update(|window, cx| {
+            example_0.update(cx, |input, cx| input.set_value("", window, cx));
+        });
+        type_into(&mut visual, &example_0, "2026-04-12 - Tokyo.jpg");
+        assert_eq!(
+            new_names(&mut visual, &model),
+            [
+                "2026-04-12 - Tokyo.jpg",
+                "2026-05-01 - Kyoto.jpg",
+                "2026-05-15 - New York.jpg",
+            ]
+        );
+        assert!(model.read_with(&visual, |m, _| m.can_apply()));
+        visual.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("batch-rename-apply", cx);
+        });
+        settle(&mut visual, "flashfill apply", |_| fake.batches().len() == 1);
+        assert_eq!(fake.batches()[0].len(), 3);
     }
 }

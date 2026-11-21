@@ -164,7 +164,7 @@ fn a_file_gets_the_typescripts_items_in_its_order() {
             "With a password…"
         ]
     );
-    assert_eq!(labels(submenu(&menu, "Clean up & share")), ["Share…"]);
+    assert_eq!(labels(submenu(&menu, "Clean up & share")), ["Copy permalink", "Share…"]);
 }
 
 #[test]
@@ -298,7 +298,10 @@ fn files_get_the_tools_that_read_them() {
     let data = item_menu(&[text("a.csv"), text("b.parquet")], &ctx());
     assert!(find(&data, "Query 2 files together…").is_some() && find(&data, "Convert data…").is_some());
     let age = item_menu(&[text("a.txt.age")], &ctx());
-    assert!(find(&age, "Decrypt…").is_none() && find(&age, "Encrypt…").is_none(), "an .age file is an unknown type again");
+    assert!(
+        find(&age, "Decrypt…").is_none() && find(&age, "Encrypt…").is_none(),
+        "an .age file is an unknown type again"
+    );
     let program = item_menu(&[text("setup.exe")], &ctx());
     assert!(find(&program, "Run as administrator").is_some());
     let disk_image = item_menu(&[text("os.iso")], &ctx());
@@ -738,6 +741,7 @@ fn the_folder_shown_has_paste_undo_new_and_the_folders_tools() {
             "Clean up…",
             "A rule for this folder…",
             "-",
+            "Copy permalink",
             "Share this folder…",
         ]
     );
@@ -745,6 +749,7 @@ fn the_folder_shown_has_paste_undo_new_and_the_folders_tools() {
         labels(submenu(&menu, "Inspect & check")),
         [
             "Recent changes",
+            "Time Machine scrubber",
             "Moved and deleted here",
             "Previous versions of this folder",
             "What's locking this?",
@@ -1179,7 +1184,9 @@ impl Ui {
             menus.update(cx, |m, cx| m.open_list_menu(0, target, at, shift, window, cx));
         });
         // A menu for one item may wait a breath for what is being found out about it.
-        self.visual.executor().advance_clock(std::time::Duration::from_millis(60));
+        self.visual
+            .executor()
+            .advance_clock(std::time::Duration::from_millis(60));
         self.frame();
     }
 
@@ -1189,7 +1196,9 @@ impl Ui {
             menus.update(cx, |m, cx| m.open_background_menu(0, Some(at), window, cx));
         });
         // The folder's menu may wait a breath for what is being found out about the folder.
-        self.visual.executor().advance_clock(std::time::Duration::from_millis(60));
+        self.visual
+            .executor()
+            .advance_clock(std::time::Duration::from_millis(60));
         self.frame();
     }
 

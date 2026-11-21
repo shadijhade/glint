@@ -139,6 +139,17 @@ pub enum FileGridEvent {
     ZoomOut { anchor: Option<crate::stage::Anchor> },
     /// The zoom has nowhere to go: the tiles are at their biggest. The pane's stage gives a little, to say so.
     Limit { inward: bool },
+    /// Contextual file-on-file drop ("File Lego") was dropped onto a target file tile.
+    FileLego(glint_model::file_lego::LegoRecipe),
+    /// Frame snatched (`C`) while scrubbing a video tile.
+    CopyVideoFrame { path: String, seconds: f64 },
+    /// Clip sliced (`Shift+Drag`, optional `Alt` for GIF) directly on a video tile.
+    SliceVideoClip {
+        path: String,
+        start_sec: f64,
+        end_sec: f64,
+        format: glint_core::scrub::QuickClipFormat,
+    },
 }
 
 impl EventEmitter<FileGridEvent> for FileGrid {}
@@ -187,8 +198,22 @@ struct Metrics {
 enum DropOver {
     /// The folder tile under the pointer.
     Tile(String),
+    /// A file tile ready for a File Lego recipe.
+    Lego {
+        path: String,
+        recipe: glint_model::file_lego::LegoRecipe,
+    },
     /// The folder the grid shows.
     Pane,
+}
+
+struct GridLegoHover {
+    path: String,
+    name: String,
+    recipe: glint_model::file_lego::LegoRecipe,
+    started: Instant,
+    ready: bool,
+    _timer: Task<()>,
 }
 
 /// The tiles of one pane's active tab.
@@ -248,6 +273,8 @@ pub struct FileGrid {
     dragging: Option<Arc<HashSet<String>>>,
     /// What a drop at the pointer would go into, while files are dragged over the grid.
     drop_over: Option<DropOver>,
+    /// File-on-file dwell state while dragging over a non-folder tile.
+    lego_hover: Option<GridLegoHover>,
     /// The Ctrl+wheel and pinch zoom's count: a notch is one step; finer wheels add up to it.
     wheel: crate::stage::Notches,
     /// What the folders read ahead hold: their tiles say it.
@@ -338,6 +365,7 @@ impl FileGrid {
             marquee_scroll: None,
             dragging: None,
             drop_over: None,
+            lego_hover: None,
             wheel: crate::stage::Notches::default(),
             peeks: crate::components::file_list::Peeks::default(),
             type_ahead: keys::TypeAhead::default(),
@@ -442,6 +470,7 @@ impl FileGrid {
         self.stop_pointer();
         self.dragging = None;
         self.drop_over = None;
+        self.lego_hover = None;
     }
 
     /// Lets go of a press or a marquee in progress.
@@ -946,6 +975,22 @@ impl FileGrid {
                     self.explorer.update(cx, |explorer, cx| explorer.select_only(None, cx));
                 }
             }
+            // Bare `c` while scrubbing a video tile snatches the frame under the cursor to the clipboard.
+            ("c", false, false)
+                if !modifiers.shift
+                    && self
+                        .scrub
+                        .current()
+                        .and_then(|(_, scrub)| scrub.read(cx).current_seconds())
+                        .is_some() =>
+            {
+                if let Some((path, scrub)) = self.scrub.current() {
+                    if let Some(seconds) = scrub.read(cx).current_seconds() {
+                        cx.stop_propagation();
+                        cx.emit(FileGridEvent::CopyVideoFrame { path, seconds });
+                    }
+                }
+            }
             // Type-ahead: jump to the next name starting with what was typed; one letter repeated cycles.
             _ if !ctrl && !modifiers.alt => {
                 let typed = keystroke
@@ -1137,16 +1182,114 @@ impl FileGrid {
     /// Files dragged over the grid moved (every grid hears every move): answer what a drop at the pointer would
     /// do, and light the place it would go.
     fn files_over(&mut self, event: &DragMoveEvent<ExternalPaths>, cx: &mut Context<Self>) {
+        if !event.bounds.contains(&event.event.position) {
+            self.lego_hover = None;
+            if self.drop_over.take().is_some() {
+                cx.notify();
+            }
+            return;
+        }
         let dragged = event
             .dragged_item()
             .downcast_ref::<ExternalPaths>()
             .map(drops::paths)
             .unwrap_or_default();
-        let target = if event.bounds.contains(&event.event.position) {
-            self.drop_under(event.event.position, &dragged, cx)
-        } else {
-            None
+
+        // Check File Lego dwell on non-folder tiles first.
+        let hovered_file = {
+            let explorer = self.explorer.read(cx);
+            explorer.pane_tab(self.pane).and_then(|tab| {
+                self.tile_at(event.event.position, tab.rows.len())
+                    .and_then(|i| tab.rows.get(i))
+                    .filter(|e| !e.dir)
+                    .cloned()
+            })
         };
+        let mut active_lego: Option<(String, String, glint_model::file_lego::LegoRecipe)> = None;
+        if let Some(entry) = hovered_file {
+            if let Some(recipe) = glint_model::file_lego::classify_drop(&dragged, &entry.path, false) {
+                let now = cx.background_executor().now();
+                let dwell = Duration::from_millis(250);
+                let same = self
+                    .lego_hover
+                    .as_ref()
+                    .is_some_and(|h| h.path.eq_ignore_ascii_case(&entry.path));
+                if same {
+                    if let Some(hover) = self.lego_hover.as_mut() {
+                        hover.recipe = recipe.clone();
+                        if !hover.ready && now.saturating_duration_since(hover.started) >= dwell {
+                            hover.ready = true;
+                        }
+                        if hover.ready {
+                            active_lego = Some((hover.path.clone(), hover.name.clone(), hover.recipe.clone()));
+                        }
+                    }
+                } else {
+                    let target_path = entry.path.clone();
+                    let target_name = entry.name.clone();
+                    let timer_path = target_path.clone();
+                    let timer = cx.spawn(async move |this, cx| {
+                        cx.background_executor().timer(dwell).await;
+                        let _ = this.update(cx, |this, cx| {
+                            let Some(hover) = this.lego_hover.as_mut() else {
+                                return;
+                            };
+                            if !hover.path.eq_ignore_ascii_case(&timer_path) {
+                                return;
+                            }
+                            hover.ready = true;
+                            let summary = hover.recipe.summary.clone();
+                            drops::answer(
+                                cx,
+                                Answer::Accept(Under {
+                                    name: hover.name.clone(),
+                                    copy: summary.clone(),
+                                    moves: summary,
+                                    always_move: false,
+                                }),
+                            );
+                            this.drop_over = Some(DropOver::Lego {
+                                path: hover.path.clone(),
+                                recipe: hover.recipe.clone(),
+                            });
+                            cx.notify();
+                        });
+                    });
+                    self.lego_hover = Some(GridLegoHover {
+                        path: target_path,
+                        name: target_name,
+                        recipe,
+                        started: now,
+                        ready: false,
+                        _timer: timer,
+                    });
+                }
+            } else {
+                self.lego_hover = None;
+            }
+        } else {
+            self.lego_hover = None;
+        }
+
+        if let Some((path, name, recipe)) = active_lego {
+            drops::answer(
+                cx,
+                Answer::Accept(Under {
+                    name,
+                    copy: recipe.summary.clone(),
+                    moves: recipe.summary.clone(),
+                    always_move: false,
+                }),
+            );
+            let over = Some(DropOver::Lego { path, recipe });
+            if self.drop_over != over {
+                self.drop_over = over;
+                cx.notify();
+            }
+            return;
+        }
+
+        let target = self.drop_under(event.event.position, &dragged, cx);
         if let Some((dest, _)) = &target {
             drops::answer(cx, Answer::Accept(self.drop_words(dest, cx)));
         }
@@ -1157,12 +1300,35 @@ impl FileGrid {
         }
     }
 
-    /// Files were dropped at `at`: into the folder under the pointer (`dropFiles`), copied, or moved when the drop
-    /// moves (Shift, or the Recycle Bin: recycled). A link copies, as it did on the web.
+    /// Files were dropped at `at`: executes a ready File Lego recipe if hovering a matching file
+    /// tile, or copies/moves into the folder under the pointer.
     fn files_dropped(&mut self, drop: &ExternalPaths, at: Point<Pixels>, cx: &mut Context<Self>) {
-        self.drop_over = None;
+        let lego = match self.drop_over.take() {
+            Some(DropOver::Lego { path, .. }) => Some(path),
+            _ => None,
+        };
+        self.lego_hover = None;
         cx.notify();
+        if drops::effect(cx) == DropEffect::None {
+            return;
+        }
         let paths = drops::paths(drop);
+        if let Some(lego_path) = lego {
+            let entry = {
+                let explorer = self.explorer.read(cx);
+                explorer
+                    .pane_tab(self.pane)
+                    .and_then(|tab| self.tile_at(at, tab.rows.len()).and_then(|i| tab.rows.get(i)).cloned())
+            };
+            if let Some(entry) = entry {
+                if entry.path.eq_ignore_ascii_case(&lego_path) {
+                    if let Some(fresh) = glint_model::file_lego::classify_drop(&paths, &entry.path, entry.dir) {
+                        cx.emit(FileGridEvent::FileLego(fresh));
+                        return;
+                    }
+                }
+            }
+        }
         let Some((dest, _)) = self.drop_under(at, &paths, cx) else {
             return;
         };
@@ -1494,7 +1660,11 @@ impl Render for FileGrid {
             cut,
             dragging: self.dragging.clone(),
             drop_tile: match &drop_over {
-                Some(DropOver::Tile(path)) => Some(path.clone()),
+                Some(DropOver::Tile(path)) | Some(DropOver::Lego { path, .. }) => Some(path.clone()),
+                _ => None,
+            },
+            drop_pill: match &drop_over {
+                Some(DropOver::Lego { path, recipe }) => Some((path.clone(), recipe.summary.clone())),
                 _ => None,
             },
             tile,
