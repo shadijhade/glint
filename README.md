@@ -31,7 +31,8 @@ A native Windows app written in Rust. Free, open source, and no account.
 -   **Any file on any drive, as you type.** Turn on instant search and a small service reads each NTFS drive's Master File Table once, the way Everything does, then follows every change: every `kernel32.dll` on three drives, among 3 million names, in 7.7 ms. Without it, fd streams results as it finds them.
 -   **One search for names and contents.** ripgrep reads inside the files from the same box, and a file found by what it holds is a row like any other, with the lines that matched under it. PDFs, Office documents and the text in pictures too.
 -   **A preview for nearly every file.** `Space` shows it full size: code, Markdown, PDFs, Word documents without Office, spreadsheets and databases you can query with SQL, videos, and every file's bytes.
--   **More to do with files.** Trim and shrink videos, merge and split PDFs, query CSV and Parquet files of any size, convert documents, take personal info out of photos, rename hundreds of files at once, and take it all back with `Ctrl+Z`.
+-   **More to do with files.** Trim and shrink videos, merge and split PDFs, query CSV and Parquet files of any size, convert documents, take personal info out of photos, rename hundreds of files at once (by pattern or by example), and take it all back with `Ctrl+Z`.
+-   **Folders with a past.** **Time Machine** (`Ctrl+Shift+H`) lays a folder's history out from Windows' shadow copies, its Git commits and its backups, and restores from it. **Live portals** open an archive, a Git commit or a backup as a real folder any app can use, and a `glint://` link finds a file wherever it moves on its drive.
 -   **Tabs, two panes, a terminal and Git.** Each pane has its own tabs, two folders compare and sync down through every subfolder, a terminal under the files follows the folder you're in, and every file shows its Git status.
 -   **Still Windows.** Copy, move and delete run on Windows' own file engine, with its progress, *Replace or Skip*, Recycle Bin and UAC. The clipboard, drag and drop and Windows' own context menu work with File Explorer and every other app.
 -   **AI agents use it too.** Through its [MCP server](#ai-agents), Claude, Copilot, Cursor and other agents find files on every drive in milliseconds, measure folders and search inside files.
@@ -68,9 +69,9 @@ Glint needs Windows 10 or 11, 64-bit, and nothing else: it draws its own window,
 -   **Live portals.** **Mount as live folder** turns an archive, a saved search, a Git commit or a restic snapshot into a real folder in your user folder, through Windows' Cloud Files API, so any app can open what's in it; a file is read from its source only when an app opens it.
 -   **Links that follow a file.** **Copy permalink** gives a `glint://` link that still finds the file after it's renamed or moved anywhere on the same drive. Put it in a note or a chat, and opening it shows the file in Glint.
 -   **Rename by example.** In Batch rename, type the new name of one or two items, and the rest follow the same rule, in the live preview.
--   **File Lego.** Drop one file onto another: two PDFs merge, a video and a sound track or subtitles become one video, files go into an archive, and a file dropped onto its checksum file is checked against it.
+-   **File Lego.** Drop one file onto another: two PDFs merge, a video and a sound track or subtitles become one video, files go into an archive, and a file and its checksum file are checked against each other.
 -   **Photos and colors.** `Ctrl+Shift+G` shows the folder's photos on a world map Glint draws itself, offline, in clusters that split as you zoom. The **Color Wheel** ranks pictures by how close their colors come, and **Find similar colors** starts from a picture.
--   **Frames and clips.** In a video's preview, `C` copies the frame shown, and `Shift`+drag along the timeline saves that stretch as an MP4 clip (with `Alt+Shift`, a GIF).
+-   **Frames and clips.** With the pointer on a video's tile in the grid, `C` copies the frame under it, and `Shift`+drag across the tile saves that stretch as an MP4 clip (with `Alt+Shift`, a GIF).
 -   **Drag clean.** The command bar's chips drag out a copy without its personal info, shrunk under a size, or as a WebP or PNG, made as it's dropped.
 -   **A touchpad that taps back.** On a haptic touchpad, light taps mark zoom steps, the end of a list and a matching checksum (**Settings → Touchpad haptics**).
 
@@ -133,7 +134,7 @@ A tour of what Glint does. **Every feature, in detail: [docs/features.md](docs/f
 -   **Disk usage map.** A treemap like WizTree's, six levels deep, colored by kind of file, by age, or by what grew in the last day, week or month.
 -   **A head on every folder.** What's in it (*6 folders · 15 files · 13 MB*), a chip for each kind of file to show only those, and soft light behind the window in the color of the place you're in.
 -   **It answers before you ask.** Rest the pointer on a folder and its row says what's in it: Glint has read it by then, so opening it takes a frame.
--   **List, grid, columns and gallery.** Windows' own thumbnails in five tile sizes, a Columns view (`Ctrl+Shift+9`), **Group by** kind, date, size, type or Git status, and a Gallery of your photos and videos by month.
+-   **List, grid, columns and gallery.** Windows' own thumbnails in five tile sizes, a Columns view (`Ctrl+Shift+9`), **Group by** kind, date, size, type or Git status, a Gallery of your photos and videos by month, and a **Photo World Map** (`Ctrl+Shift+G`) of where they were taken, drawn offline.
 
 [More about browsing →](docs/features.md#browsing)
 
@@ -164,6 +165,7 @@ A tour of what Glint does. **Every feature, in detail: [docs/features.md](docs/f
 -   **Instant search**, when you turn it on: an index of every NTFS drive, kept current from the change journal, so names, folder sizes and maps answer from memory in milliseconds ([how it works, and its security model](docs/instant-search.md)).
 -   **Filters, or plain words.** `ext:pdf size:>10mb dm:7d`, `taken:2024 camera:canon`, `artist:`, `tag:work`, `git:changed`… or type `pdfs from last week over 5 mb` and Glint shows the filters it read. Typos are forgiven: `reprot` finds *Q3 Report.pdf*.
 -   **Inside documents and pictures.** The text in PDFs, Word, Excel, PowerPoint, OpenDocument and EPUB files without Office, and in screenshots and scans through Windows' OCR.
+-   **By color.** The **Color Wheel** ranks a folder's pictures by how close their colors come to the one you pick, and **Find similar colors** starts from a picture.
 -   **Quick search from anywhere.** `Ctrl+Alt+F` in any app opens a search box over every drive, answered by the index as you type.
 
 [More about search →](docs/features.md#search)
@@ -212,11 +214,13 @@ A tour of what Glint does. **Every feature, in detail: [docs/features.md](docs/f
 
 ### More to do with files
 
--   **Media**, with FFmpeg: convert and shrink videos (to fit under 10, 25 or 50 MB, on the PC's own video encoder when it has one), take the sound out, make GIFs, even out loudness, and write **subtitles** from what's said, with whisper.cpp on your PC.
+-   **Media**, with FFmpeg: convert and shrink videos (to fit under 10, 25 or 50 MB, on the PC's own video encoder when it has one), take the sound out, make GIFs, even out loudness, and write **subtitles** from what's said, with whisper.cpp on your PC. On a video's tile in the grid, `C` copies a frame and `Shift`+drag cuts a clip.
+-   **File Lego.** Drop one file onto another for what the two make together: PDFs merged, a sound track or subtitles added to a video, files packed into an archive, two files compared, a checksum checked.
+-   **Drag clean.** Drag out a copy instead of the file: without its personal info, shrunk under a size, or as a WebP or PNG.
 -   **Make smaller.** Videos re-encoded to look the same, smaller photos, PNGs, PDFs and the pictures inside Office files. Nothing that comes out bigger is kept.
 -   **PDF tools** ([pdfcpu](https://github.com/pdfcpu/pdfcpu)), **data files of any size** ([DuckDB](https://duckdb.org)), **Convert document** ([pandoc](https://pandoc.org)) and **Convert pictures** ([rimage](https://github.com/vlad-salone/rimage)).
 -   **Archives and disk images open like folders.** Zip, 7z, RAR, tar and the rest, ISO, VHDX and WIM images and installers, read-only, with nothing extracted until a file's bytes are needed. Compress to zip, 7z or tar.zst, a zip or a 7z with a password.
--   **Remove personal info** from photos, videos, PDFs and Office files, **Compress in place** with Windows' own compression, and **Batch rename** with a live preview.
+-   **Remove personal info** from photos, videos, PDFs and Office files, **Compress in place** with Windows' own compression, and **Batch rename** with a live preview, by pattern or by example.
 
 [More about media, documents and data →](docs/features.md#media-documents-and-data) · [Archives →](docs/features.md#archives-and-disk-images)
 
@@ -247,6 +251,8 @@ A tour of what Glint does. **Every feature, in detail: [docs/features.md](docs/f
 -   **Clouds and servers.** Google Drive, OneDrive, Dropbox and 60 more open as folders through [rclone](https://rclone.org), signed in to from Glint; S3 buckets, WebDAV and SFTP servers too, and any of them can show in File Explorer, on demand.
 -   **Share.** Send files to phones and computers nearby with LocalSend, or through Windows' own Share, from one dialog.
 -   **Backups.** A folder backed up with restic, encrypted, every day or week; your backups and Windows' restore points show in **Previous versions**.
+-   **Time Machine** (`Ctrl+Shift+H`): a folder's past on one timeline, from shadow copies, Git commits, restic backups and the drive's change journal, with what was deleted, changed or added since, and **Restore**.
+-   **Live portals.** An archive, a saved search, a Git commit or a restic snapshot as a real folder in your user folder, through Windows' Cloud Files API: any app opens what's in it, read from the source only when needed.
 -   **Folder rules** sort out what lands in Downloads, or keep a folder in sync with a cloud, with Undo.
 -   **A copy queue** with pause and resume, where each copy is read back and compared with its original.
 
@@ -267,6 +273,8 @@ A tour of what Glint does. **Every feature, in detail: [docs/features.md](docs/f
 -   **Windows' own menu** on `Shift`+right-click, Properties and Open with, and OneDrive's sync marks.
 -   **Mica and your accent color**, the Recycle Bin as a place, and the taskbar button's jump list.
 -   **Open in Glint** from File Explorer, `Win+E` and folders that open in Glint by default (installer copy), and `Ctrl+Alt+G` to take any file dialog to Glint's folder.
+-   **Links that follow a file.** **Copy permalink** gives a `glint://` link that still opens the file after it's renamed or moved on the same drive.
+-   **A touchpad that taps back**, on haptic Precision Touchpads: light taps for zoom steps, the end of a list and a matching checksum.
 -   **Settings that find themselves.** An Overview of how Glint is set up, suggestions for this PC (index every drive, a drive nearly full, tool updates), and a search box for any setting.
 
 [More about Windows integration →](docs/features.md#at-home-on-windows)
@@ -292,7 +300,10 @@ A tour of what Glint does. **Every feature, in detail: [docs/features.md](docs/f
 | Space to free | Disk Cleanup: Windows' own temporary files and caches | Below any folder: build output and package caches, empty folders, leftovers and big files |
 | A file in use | *The action can't be completed*, sometimes naming the program | The programs holding it open, and **End** to close one |
 | Where did a file go? | Not shown | What was renamed, moved and deleted in the last 30 days, with where it is now |
-| Renaming many files | One name for all, numbered (1), (2)… | Patterns, numbering, dates, find and replace, with a preview and Undo |
+| A folder's past | Previous versions, one item at a time | Time Machine: shadow copies, Git commits, backups and the change journal on one timeline, with Restore |
+| Archives and commits as folders | Zip files, inside File Explorer only | Live portals: an archive, a Git commit or a backup as a real folder every app can open |
+| A link to a file | A shortcut, which breaks when the file moves | A `glint://` link that follows it through renames and moves on its drive |
+| Renaming many files | One name for all, numbered (1), (2)… | Patterns, numbering, dates, find and replace, or by example, with a preview and Undo |
 | Checksums | Not shown (PowerShell's `Get-FileHash`) | SHA-256, BLAKE3 and CRC32 in the File X-Ray, compared with one you paste |
 | Timing | Not shown | In the status bar, for every folder and search |
 
@@ -330,6 +341,7 @@ Agents that show apps (MCP Apps) draw `folder_sizes` and `largest_files` as a ma
 | `` Ctrl+` `` | The terminal under the files |
 | `F2` | Rename (several selected: batch rename) |
 | `Ctrl+Z` | Undo the last copy, move, rename, delete or new item |
+| `Ctrl+Shift+H` · `Ctrl+Shift+G` | Time Machine for the folder · Photo World Map |
 
 <details>
 <summary><b>Every shortcut</b></summary>
@@ -376,6 +388,9 @@ Agents that show apps (MCP Apps) draw `folder_sizes` and `largest_files` as a ma
 | `F5` / `Ctrl+R` | Refresh |
 | `Ctrl+H` | Show or hide hidden items |
 | `Ctrl+B` | Flat view: every file in this folder and its subfolders as one list (with a Folder column), until you press it again |
+| `Ctrl+Shift+H` | Time Machine: the folder's past, from shadow copies, Git commits, backups and the change journal |
+| `Ctrl+Shift+G` | Photo World Map: the folder's photos on a map of where they were taken |
+| `C` · `Shift`+drag, on a video's tile in the grid | Copy the frame under the pointer · save that stretch as an MP4 clip (`Alt+Shift`+drag: a GIF) |
 | `Alt+P` | Show or hide the preview pane |
 
 #### Disk usage map
@@ -445,6 +460,9 @@ Glint is Rust from end to end. [GPUI](https://www.gpui.rs/), the UI framework of
 -   **Tabs and panes**: every tab keeps its own state, and its name searches and pdu runs go in a lane of their own in Rust, so tabs and panes never stop each other's work.
 -   **Opening folders from Windows**: per-user shell verbs under `HKEY_CURRENT_USER\Software\Classes` (no administrator rights) run `Glint.exe "%V"`, and a later launch hands its folders to the window that's open (a named mutex decides which copy is first; the later one sends its folders to the first's hidden message window as `WM_COPYDATA` and ends). What Glint can't open goes back to File Explorer before any window shows. See [docs/explorer-integration.md](docs/explorer-integration.md).
 -   **Instant search**: a Windows service in Rust ([`crates/shadui-index`](crates/shadui-index), built as `shadui-index.exe`) that reads each NTFS volume's Master File Table in one sequential pass and follows its USN journal. See [docs/instant-search.md](docs/instant-search.md).
+-   **Time Machine**: the folder's shadow copies (as Previous versions finds them), its Git history read by gitoxide, its restic snapshots and the drive's change journal, merged into one timeline and compared with the folder as it is now. A file a restore would replace goes to the Recycle Bin first.
+-   **Live portals**: Windows' Cloud Files API, the one OneDrive uses. Each portal is a sync root of its own under `%USERPROFILE%\Glint portals`, its placeholders made from the archive's, the search's, the commit's or the snapshot's listing, and a file's bytes are read from that source when an app first opens it. Glint connects the portals again as it starts, and `Glint.exe portals remove` (which the uninstallers run) takes them out of Windows.
+-   **Links**: a `glint://` link holds the file's ID and its volume's serial number, opened again with `OpenFileById` wherever the file has moved on that volume; the instant search index finds the ID next, and the path saved in the link comes last, looked at only on this PC's own drives. Only the installed copy (or the Microsoft Store's, through its package) answers the links.
 
 </details>
 
@@ -483,6 +501,8 @@ npm run test:signing
 ## Roadmap
 
 -   [ ] Code-signed installers (the SignPath Foundation invited a new application once Glint is better known)
+-   [x] 0.15: Time Machine, live portals, links that follow a file, rename by example, File Lego, and photos by place and by color
+-   [x] 0.14: quicker, sharper and lighter: Back that remembers searches, Flat view, matched checksums, and 11 MB less
 -   [x] 0.13: a right-click menu and a dock that know what you picked, and Settings reworked
 -   [x] 0.12: smaller and quieter, with what the move to a native window had stopped running again
 -   [x] 0.11: a window of its own (one bar, tabs in a rail, a dock) and one search for names and contents
