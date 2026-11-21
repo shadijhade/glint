@@ -31,6 +31,7 @@ mod tar;
 pub(crate) mod tree;
 
 use crate::fsx::{self, ms_since, Entry, InArchive, Resolved};
+use crate::host::ipc::Channel;
 pub use read::Format;
 use read::{ItemIndex, Source};
 use shadui_index::proto::{UsageNode, NO_PARENT};
@@ -41,7 +42,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
-use crate::host::ipc::Channel;
 use tree::{Tree, ROOT};
 
 /// An entry expanding more than this many times over what's stored of it...
@@ -77,8 +77,14 @@ pub enum Failure {
     Damaged(String),
     Bomb(String),
     /// Bigger (or deeper in a solid block) than `what` may extract.
-    TooBig { size: u64, what: &'static str },
-    NoSpace { need: u64, free: u64 },
+    TooBig {
+        size: u64,
+        what: &'static str,
+    },
+    NoSpace {
+        need: u64,
+        free: u64,
+    },
     TooManyEntries(usize),
     NotFound,
     NotAFolder,
@@ -111,9 +117,20 @@ impl Failure {
             Failure::Unreadable(what) => format!("Glint can't read it: {what}."),
             Failure::Damaged(what) => format!("The archive is damaged: {what}."),
             Failure::Bomb(what) => format!("Glint won't extract it, because it looks like a zip bomb: {what}."),
-            Failure::TooBig { size, what } => format!("It's too big to {what} from inside the archive ({}). Copy it out first.", size_text(*size)),
-            Failure::NoSpace { need, free } => format!("There isn't enough free space: it needs {}, and {} is free.", size_text(*need), size_text(*free)),
-            Failure::TooManyEntries(n) => format!("This archive has {} entries, more than Glint opens ({}).", count_text(*n as u64), count_text(read::MAX_ENTRIES as u64)),
+            Failure::TooBig { size, what } => format!(
+                "It's too big to {what} from inside the archive ({}). Copy it out first.",
+                size_text(*size)
+            ),
+            Failure::NoSpace { need, free } => format!(
+                "There isn't enough free space: it needs {}, and {} is free.",
+                size_text(*need),
+                size_text(*free)
+            ),
+            Failure::TooManyEntries(n) => format!(
+                "This archive has {} entries, more than Glint opens ({}).",
+                count_text(*n as u64),
+                count_text(read::MAX_ENTRIES as u64)
+            ),
             Failure::NotFound => "It isn't there (anymore).".into(),
             Failure::NotAFolder => "It's a file, not a folder.".into(),
             Failure::Cancelled => "cancelled".into(),
@@ -164,7 +181,8 @@ fn count_text(n: u64) -> String {
 
 /// Runs `f`, turning a panic in an archive reader into an error: a damaged archive mustn't take the app down.
 fn guarded<T>(f: impl FnOnce() -> Result<T, Failure>) -> Result<T, Failure> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|_| Err(Failure::Damaged("Glint couldn't make sense of it".into())))
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
+        .unwrap_or_else(|_| Err(Failure::Damaged("Glint couldn't make sense of it".into())))
 }
 
 /// Whether Enter opens files with this name like folders (zip, 7z…). A .docx or .jar is a zip too,
@@ -197,8 +215,16 @@ pub fn locate(path: &str) -> Option<Located> {
             None => None,
         };
         if let Some(format) = format {
-            let inner = path.get(end + 1..).unwrap_or("").trim_matches(['\\', '/']).replace('/', "\\");
-            return Some(Located { outer: path[..end].to_string(), inner, format });
+            let inner = path
+                .get(end + 1..)
+                .unwrap_or("")
+                .trim_matches(['\\', '/'])
+                .replace('/', "\\");
+            return Some(Located {
+                outer: path[..end].to_string(),
+                inner,
+                format,
+            });
         }
         if end >= path.len() {
             return None;
@@ -223,7 +249,9 @@ fn sniffed(path: &str) -> Option<Format> {
 fn detect_file(path: &Path) -> Option<Format> {
     let mut head = Vec::with_capacity(4096);
     std::fs::File::open(path).ok()?.take(4096).read_to_end(&mut head).ok()?;
-    Format::detect(&head).or_else(|| (head.starts_with(b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1") && msi::is_package(path)).then_some(Format::Msi))
+    Format::detect(&head).or_else(|| {
+        (head.starts_with(b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1") && msi::is_package(path)).then_some(Format::Msi)
+    })
 }
 
 /// For a path that leads into or is a file not named like an archive (a renamed zip, a .bin that's
@@ -238,8 +266,12 @@ pub fn sniff(path: &str) -> bool {
             if found.dir || Format::claimed(prefix).is_some() {
                 return false;
             }
-            let Some(format) = detect_file(Path::new(prefix)) else { return false };
-            state().sniffed.insert(prefix.to_lowercase(), ((found.size, found.modified), format));
+            let Some(format) = detect_file(Path::new(prefix)) else {
+                return false;
+            };
+            state()
+                .sniffed
+                .insert(prefix.to_lowercase(), ((found.size, found.modified), format));
             return true;
         }
         match prefix.rfind(['\\', '/']) {
@@ -277,15 +309,25 @@ pub fn is_read_only(path: &str) -> bool {
 /// its path in the tar, "./" in front or not; at most `limit` bytes of the tar are read.
 pub(crate) fn tar_gz_member(file: &Path, member: &str, limit: u64) -> Result<Vec<u8>, String> {
     let mut tar = Vec::new();
-    flate2::read::GzDecoder::new(io::BufReader::new(std::fs::File::open(file).map_err(|e| e.to_string())?))
-        .take(limit)
-        .read_to_end(&mut tar)
-        .map_err(|e| e.to_string())?;
-    let entries = tar::walk(&mut io::Cursor::new(&tar[..]), 10_000, &mut |r: &mut io::Cursor<&[u8]>, n| tar::read_through(r, n)).map_err(|e| e.message())?;
+    flate2::read::GzDecoder::new(io::BufReader::new(
+        std::fs::File::open(file).map_err(|e| e.to_string())?,
+    ))
+    .take(limit)
+    .read_to_end(&mut tar)
+    .map_err(|e| e.to_string())?;
+    let entries = tar::walk(
+        &mut io::Cursor::new(&tar[..]),
+        10_000,
+        &mut |r: &mut io::Cursor<&[u8]>, n| tar::read_through(r, n),
+    )
+    .map_err(|e| e.message())?;
     let plain = |path: &str| path.replace('\\', "/").trim_start_matches("./").to_ascii_lowercase();
     let wanted = plain(member);
     match entries.iter().find(|e| plain(&e.item.path) == wanted).map(|e| &e.data) {
-        Some(tar::Data::At { offset, size }) => tar.get(*offset as usize..(*offset + *size) as usize).map(<[u8]>::to_vec).ok_or_else(|| format!("{member} is cut short in the download")),
+        Some(tar::Data::At { offset, size }) => tar
+            .get(*offset as usize..(*offset + *size) as usize)
+            .map(<[u8]>::to_vec)
+            .ok_or_else(|| format!("{member} is cut short in the download")),
         _ => Err(format!("{member} isn't in the download")),
     }
 }
@@ -343,7 +385,13 @@ fn state() -> MutexGuard<'static, State> {
 /// The archive at `path` (lowercase key `key`), from memory when it was read before and its archive
 /// file hasn't changed since; otherwise read from the file `file()` gives. Also says whether it was
 /// in memory.
-fn opened(path: &str, outer: &str, stamp: (u64, i64), format: Format, file: impl FnOnce() -> Result<PathBuf, Failure>) -> Result<(Arc<Opened>, bool), Failure> {
+fn opened(
+    path: &str,
+    outer: &str,
+    stamp: (u64, i64),
+    format: Format,
+    file: impl FnOnce() -> Result<PathBuf, Failure>,
+) -> Result<(Arc<Opened>, bool), Failure> {
     let key = path.to_lowercase();
     let in_memory = || {
         let mut state = state();
@@ -389,7 +437,16 @@ fn opened(path: &str, outer: &str, stamp: (u64, i64), format: Format, file: impl
         }
     };
     let tree = Tree::build(&items);
-    let opened = Arc::new(Opened { path: path.to_string(), outer: outer.to_string(), stamp, file, format, source, tree, read_ms: ms_since(started) });
+    let opened = Arc::new(Opened {
+        path: path.to_string(),
+        outer: outer.to_string(),
+        stamp,
+        file,
+        format,
+        source,
+        tree,
+        read_ms: ms_since(started),
+    });
     {
         let mut state = state();
         state.opened.retain(|o| o.path.to_lowercase() != key);
@@ -412,7 +469,10 @@ fn opened(path: &str, outer: &str, stamp: (u64, i64), format: Format, file: impl
 
 /// The size and date of the archive file on disk: a change means reading it again.
 fn stamp_of(outer: &str) -> Result<(u64, i64), Failure> {
-    fsx::stat(outer).filter(|e| !e.dir).map(|e| (e.size, e.modified)).ok_or(Failure::NotFound)
+    fsx::stat(outer)
+        .filter(|e| !e.dir)
+        .map(|e| (e.size, e.modified))
+        .ok_or(Failure::NotFound)
 }
 
 /// A place in an archive: the innermost archive a path goes into and a node of its tree, whether
@@ -453,7 +513,12 @@ fn spot_in(outer: &str, inner: &str, format: Format) -> Result<Spot, Failure> {
         }
         node = archive.tree.child(node, part).ok_or(Failure::NotFound)?;
     }
-    Ok(Spot { archive, node, cached, read_ms })
+    Ok(Spot {
+        archive,
+        node,
+        cached,
+        read_ms,
+    })
 }
 
 /// The archive that the file `node` of `parent` is, opened from a temp copy of it: one named like
@@ -462,10 +527,15 @@ fn enter(parent: &Arc<Opened>, node: u32) -> Result<(Arc<Opened>, bool), Failure
     let n = parent.tree.node(node);
     let format = match Format::claimed(&n.name) {
         Some((format, _)) => format,
-        None => head_of(parent, node, 4096).ok().and_then(|(head, _)| Format::detect(&head)).ok_or(Failure::NotAFolder)?,
+        None => head_of(parent, node, 4096)
+            .ok()
+            .and_then(|(head, _)| Format::detect(&head))
+            .ok_or(Failure::NotAFolder)?,
     };
     let path = format!("{}\\{}", parent.path, parent.tree.path_of(node));
-    opened(&path, &parent.outer, parent.stamp, format, || copy_of(parent, node, Purpose::Nested))
+    opened(&path, &parent.outer, parent.stamp, format, || {
+        copy_of(parent, node, Purpose::Nested)
+    })
 }
 
 /// Why a single entry is extracted, which sets how big it may be.
@@ -493,7 +563,11 @@ impl Purpose {
 fn check_ratio(source: &Source, item: ItemIndex, size: u64) -> Result<(), Failure> {
     let ratio = source.ratio(item, size);
     if size > RATIO_FLOOR && ratio > MAX_RATIO {
-        return Err(Failure::Bomb(format!("it would expand {} times over, to {}", count_text(ratio), size_text(size))));
+        return Err(Failure::Bomb(format!(
+            "it would expand {} times over, to {}",
+            count_text(ratio),
+            size_text(size)
+        )));
     }
     Ok(())
 }
@@ -514,7 +588,15 @@ fn copy_of(archive: &Arc<Opened>, node: u32, purpose: Purpose) -> Result<PathBuf
         return Err(Failure::TooBig { size: cost, what });
     }
     check_ratio(&archive.source, item, n.size)?;
-    let key = |node: u32| format!("{}|{}|{}|{}", archive.path.to_lowercase(), archive.tree.path_of(node).to_lowercase(), archive.stamp.0, archive.stamp.1);
+    let key = |node: u32| {
+        format!(
+            "{}|{}|{}|{}",
+            archive.path.to_lowercase(),
+            archive.tree.path_of(node).to_lowercase(),
+            archive.stamp.0,
+            archive.stamp.1
+        )
+    };
     let cached = |key: &str| state().copies.get(key).filter(|p| p.exists()).cloned();
     if let Some(path) = cached(&key(node)) {
         return Ok(path);
@@ -543,7 +625,15 @@ fn copy_of(archive: &Arc<Opened>, node: u32, purpose: Purpose) -> Result<PathBuf
         for (other, o) in archive.tree.nodes.iter().enumerate() {
             let other = other as u32;
             // Cheapest tests first: this runs over every entry of the archive.
-            if other != node && !o.dir && o.size <= THUMB_BUDGET && archive.source.block_of(o.item as ItemIndex) == Some(b) && archive.source.cost(o.item as ItemIndex, 0) < before && has_thumbnail(&o.name) && wanted.len() < 200 && cached(&key(other)).is_none() {
+            if other != node
+                && !o.dir
+                && o.size <= THUMB_BUDGET
+                && archive.source.block_of(o.item as ItemIndex) == Some(b)
+                && archive.source.cost(o.item as ItemIndex, 0) < before
+                && has_thumbnail(&o.name)
+                && wanted.len() < 200
+                && cached(&key(other)).is_none()
+            {
                 wanted.push(other);
             }
         }
@@ -579,7 +669,9 @@ fn copy_of(archive: &Arc<Opened>, node: u32, purpose: Purpose) -> Result<PathBuf
     for w in done {
         let k = key(w);
         state.copy_order.push(k.clone());
-        state.copies.insert(k, dests[&(archive.tree.node(w).item as ItemIndex)].1.clone());
+        state
+            .copies
+            .insert(k, dests[&(archive.tree.node(w).item as ItemIndex)].1.clone());
     }
     // Old copies are forgotten (not deleted: one may be open in another app); they go when the app closes.
     let extra = state.copy_order.len().saturating_sub(COPIES_KEPT);
@@ -596,10 +688,37 @@ fn copy_of(archive: &Arc<Opened>, node: u32, purpose: Purpose) -> Result<PathBuf
 
 /// Types Windows makes thumbnails of that are worth keeping while reading through a solid block.
 fn has_thumbnail(name: &str) -> bool {
-    let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
+    let ext = name
+        .rsplit_once('.')
+        .map(|(_, e)| e.to_ascii_lowercase())
+        .unwrap_or_default();
     matches!(
         ext.as_str(),
-        "jpg" | "jpeg" | "png" | "gif" | "bmp" | "webp" | "tif" | "tiff" | "heic" | "heif" | "avif" | "jxl" | "ico" | "jfif" | "dng" | "cr2" | "nef" | "arw" | "mp4" | "mov" | "m4v" | "wmv" | "avi" | "mkv" | "pdf"
+        "jpg"
+            | "jpeg"
+            | "png"
+            | "gif"
+            | "bmp"
+            | "webp"
+            | "tif"
+            | "tiff"
+            | "heic"
+            | "heif"
+            | "avif"
+            | "jxl"
+            | "ico"
+            | "jfif"
+            | "dng"
+            | "cr2"
+            | "nef"
+            | "arw"
+            | "mp4"
+            | "mov"
+            | "m4v"
+            | "wmv"
+            | "avi"
+            | "mkv"
+            | "pdf"
     )
 }
 
@@ -641,7 +760,12 @@ pub fn list(path: &str, started: Instant) -> Option<Result<fsx::Listing, String>
                     if !was_cached {
                         spot.read_ms += inside.read_ms;
                     }
-                    spot = Spot { cached: spot.cached && was_cached, read_ms: spot.read_ms, archive: inside, node: ROOT };
+                    spot = Spot {
+                        cached: spot.cached && was_cached,
+                        read_ms: spot.read_ms,
+                        archive: inside,
+                        node: ROOT,
+                    };
                 }
                 let tree = &spot.archive.tree;
                 let entries = spot
@@ -650,7 +774,14 @@ pub fn list(path: &str, started: Instant) -> Option<Result<fsx::Listing, String>
                     .iter()
                     .map(|&c| {
                         let node = tree.node(c);
-                        fsx::Entry { name: node.name.to_string(), path: None, dir: node.dir, size: node.size, modified: node.modified, attrs: node.attrs }
+                        fsx::Entry {
+                            name: node.name.to_string(),
+                            path: None,
+                            dir: node.dir,
+                            size: node.size,
+                            modified: node.modified,
+                            attrs: node.attrs,
+                        }
                     })
                     .collect();
                 let archive = InArchive {
@@ -661,7 +792,14 @@ pub fn list(path: &str, started: Instant) -> Option<Result<fsx::Listing, String>
                     cached: spot.cached,
                     read_ms: spot.read_ms,
                 };
-                Ok(fsx::Listing::Folder { path: path.to_string(), entries, elapsed: ms_since(started), from_index: false, remote: false, archive: Some(archive) })
+                Ok(fsx::Listing::Folder {
+                    path: path.to_string(),
+                    entries,
+                    elapsed: ms_since(started),
+                    from_index: false,
+                    remote: false,
+                    archive: Some(archive),
+                })
             })
             .map_err(|e| e.message()),
     )
@@ -671,7 +809,14 @@ pub fn list(path: &str, started: Instant) -> Option<Result<fsx::Listing, String>
 /// folders. None when it doesn't go into one.
 pub fn resolve(path: &str) -> Option<Result<Resolved, String>> {
     let found = spot(path)?;
-    Some(found.map(|spot| Resolved { path: path.to_string(), dir: spot.node().dir || is_archive_name(&spot.node().name) }).map_err(|e| e.message()))
+    Some(
+        found
+            .map(|spot| Resolved {
+                path: path.to_string(),
+                dir: spot.node().dir || is_archive_name(&spot.node().name),
+            })
+            .map_err(|e| e.message()),
+    )
 }
 
 /// The first `limit` bytes of a file in an archive (and whether there's more), for text previews.
@@ -696,7 +841,10 @@ fn head_of(archive: &Opened, node: u32, limit: usize) -> Result<(Vec<u8>, bool),
     }
     let cost = archive.source.cost(item, 0).saturating_add((limit as u64).min(n.size));
     if cost > PREVIEW_BUDGET {
-        return Err(Failure::TooBig { size: cost, what: "preview" });
+        return Err(Failure::TooBig {
+            size: cost,
+            what: "preview",
+        });
     }
     let mut bytes = Vec::new();
     let mut error = None;
@@ -711,7 +859,12 @@ fn head_of(archive: &Opened, node: u32, limit: usize) -> Result<(Vec<u8>, bool),
         },
         &mut |_| true,
     );
-    if let Some(e) = error.or_else(|| failed.into_iter().map(|(_, e)| e).find(|e| !matches!(e, Failure::Cancelled))) {
+    if let Some(e) = error.or_else(|| {
+        failed
+            .into_iter()
+            .map(|(_, e)| e)
+            .find(|e| !matches!(e, Failure::Cancelled))
+    }) {
         return Err(e);
     }
     let more = bytes.len() > limit;
@@ -729,9 +882,19 @@ pub fn folder_sizes(path: &str) -> Option<Result<Sizes, String>> {
     Some(
         found
             .and_then(|spot| {
-                let (archive, node) = if spot.node().dir { (spot.archive.clone(), spot.node) } else { (guarded(|| enter(&spot.archive, spot.node))?.0, ROOT) };
+                let (archive, node) = if spot.node().dir {
+                    (spot.archive.clone(), spot.node)
+                } else {
+                    (guarded(|| enter(&spot.archive, spot.node))?.0, ROOT)
+                };
                 let n = archive.tree.node(node);
-                let sizes = n.children.iter().map(|&c| archive.tree.node(c)).filter(|c| c.dir).map(|c| (c.name.to_string(), c.size)).collect();
+                let sizes = n
+                    .children
+                    .iter()
+                    .map(|&c| archive.tree.node(c))
+                    .filter(|c| c.dir)
+                    .map(|c| (c.name.to_string(), c.size))
+                    .collect();
                 Ok((n.size, sizes, archive.format.label()))
             })
             .map_err(|e| e.message()),
@@ -741,16 +904,30 @@ pub fn folder_sizes(path: &str) -> Option<Result<Sizes, String>> {
 /// Searches a folder in an archive and the folders in it by name, with the meaning fd's search has
 /// (`shadui_index::query`), for `find::find_files`. Returns the engine's name ("zip" or "7z") and
 /// whether it stopped at `max`. None when `root` doesn't go into an archive.
-pub fn search(root: &str, query: &str, hidden: bool, exclude: &[String], max: Option<usize>, stop: &AtomicBool, push: &mut dyn FnMut(Entry)) -> Option<Result<(&'static str, bool), String>> {
+pub fn search(
+    root: &str,
+    query: &str,
+    hidden: bool,
+    exclude: &[String],
+    max: Option<usize>,
+    stop: &AtomicBool,
+    push: &mut dyn FnMut(Entry),
+) -> Option<Result<(&'static str, bool), String>> {
     let found = spot(root)?;
     Some(
         found
             .and_then(|spot| {
-                let (archive, start) = if spot.node().dir { (spot.archive.clone(), spot.node) } else { (guarded(|| enter(&spot.archive, spot.node))?.0, ROOT) };
+                let (archive, start) = if spot.node().dir {
+                    (spot.archive.clone(), spot.node)
+                } else {
+                    (guarded(|| enter(&spot.archive, spot.node))?.0, ROOT)
+                };
                 // find_files has checked the query: it reads, and asks for something.
                 let (names, filters) = parse(query).map_err(Failure::Unsupported)?;
                 let matcher = NameMatcher::from_terms(names);
-                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_millis() as i64);
                 let excludes = Excludes::new(exclude);
                 let max = max.filter(|&m| m > 0).unwrap_or(usize::MAX);
                 let base = root.trim_end_matches(['\\', '/']);
@@ -764,19 +941,31 @@ pub fn search(root: &str, query: &str, hidden: bool, exclude: &[String], max: Op
                         let c = archive.tree.node(child);
                         let folded = (!c.name.is_ascii()).then(|| fold(&c.name));
                         let folded = folded.as_deref().map(str::as_bytes);
-                        if (!hidden && is_hidden(c.attrs, c.name.as_bytes())) || excludes.name(c.name.as_bytes(), folded) {
+                        if (!hidden && is_hidden(c.attrs, c.name.as_bytes()))
+                            || excludes.name(c.name.as_bytes(), folded)
+                        {
                             continue;
                         }
                         let full = format!("{path}\\{}", c.name);
                         let full_folded = (matcher.has_paths() && !full.is_ascii()).then(|| fold(&full));
-                        if matcher.matches_in(c.name.as_bytes(), folded, full_folded.as_deref().unwrap_or(&full).as_bytes())
-                            && filters.accepts(c.name.as_bytes(), folded, c.dir, c.size, (now - c.modified) / 1000)
+                        if matcher.matches_in(
+                            c.name.as_bytes(),
+                            folded,
+                            full_folded.as_deref().unwrap_or(&full).as_bytes(),
+                        ) && filters.accepts(c.name.as_bytes(), folded, c.dir, c.size, (now - c.modified) / 1000)
                         {
                             if found == max {
                                 return Ok((archive.format.label(), true));
                             }
                             found += 1;
-                            push(Entry { name: c.name.to_string(), path: Some(full.clone()), dir: c.dir, size: c.size, modified: c.modified, attrs: c.attrs });
+                            push(Entry {
+                                name: c.name.to_string(),
+                                path: Some(full.clone()),
+                                dir: c.dir,
+                                size: c.size,
+                                modified: c.modified,
+                                attrs: c.attrs,
+                            });
                         }
                         if c.dir {
                             stack.push((child, full));
@@ -802,7 +991,11 @@ pub fn usage(path: &str, depth: u32, max_items: u32) -> Option<Result<Usage, Str
     Some(
         found
             .and_then(|spot| {
-                let (archive, top) = if spot.node().dir { (spot.archive.clone(), spot.node) } else { (guarded(|| enter(&spot.archive, spot.node))?.0, ROOT) };
+                let (archive, top) = if spot.node().dir {
+                    (spot.archive.clone(), spot.node)
+                } else {
+                    (guarded(|| enter(&spot.archive, spot.node))?.0, ROOT)
+                };
                 let tree = &archive.tree;
                 let mut within = Vec::new();
                 let mut queue = std::collections::VecDeque::from([(top, 0u32)]);
@@ -835,15 +1028,40 @@ pub fn usage(path: &str, depth: u32, max_items: u32) -> Option<Result<Usage, Str
                     }
                 }
                 let t = tree.node(top);
-                let mut nodes = vec![UsageNode { parent: NO_PARENT, name: String::new(), dir: true, size: t.size, modified: t.modified, attrs: t.attrs }];
+                let mut nodes = vec![UsageNode {
+                    parent: NO_PARENT,
+                    name: String::new(),
+                    dir: true,
+                    size: t.size,
+                    modified: t.modified,
+                    attrs: t.attrs,
+                }];
                 let mut queue = std::collections::VecDeque::from([(top, 0u32)]);
                 while let Some((node, at)) = queue.pop_front() {
-                    let mut children: Vec<u32> = tree.node(node).children.iter().copied().filter(|c| keep.contains(c)).collect();
-                    children.sort_by(|&a, &b| tree.node(b).size.cmp(&tree.node(a).size).then_with(|| tree.node(a).name.cmp(&tree.node(b).name)));
+                    let mut children: Vec<u32> = tree
+                        .node(node)
+                        .children
+                        .iter()
+                        .copied()
+                        .filter(|c| keep.contains(c))
+                        .collect();
+                    children.sort_by(|&a, &b| {
+                        tree.node(b)
+                            .size
+                            .cmp(&tree.node(a).size)
+                            .then_with(|| tree.node(a).name.cmp(&tree.node(b).name))
+                    });
                     for child in children {
                         let c = tree.node(child);
                         let index = nodes.len() as u32;
-                        nodes.push(UsageNode { parent: at, name: c.name.to_string(), dir: c.dir, size: c.size, modified: c.modified, attrs: c.attrs });
+                        nodes.push(UsageNode {
+                            parent: at,
+                            name: c.name.to_string(),
+                            dir: c.dir,
+                            size: c.size,
+                            modified: c.modified,
+                            attrs: c.attrs,
+                        });
                         if c.dir {
                             queue.push_back((child, index));
                         }
@@ -862,7 +1080,12 @@ pub fn thumbnail_source(path: &str) -> Option<Result<String, String>> {
         return None;
     }
     let found = spot(path)?;
-    Some(found.and_then(|spot| guarded(|| copy_of(&spot.archive, spot.node, Purpose::Thumbnail))).map(|p| p.to_string_lossy().into_owned()).map_err(|e| e.message()))
+    Some(
+        found
+            .and_then(|spot| guarded(|| copy_of(&spot.archive, spot.node, Purpose::Thumbnail)))
+            .map(|p| p.to_string_lossy().into_owned())
+            .map_err(|e| e.message()),
+    )
 }
 
 /// At start: what earlier runs left in the temp folder goes (on a thread of its own).
@@ -884,12 +1107,60 @@ pub async fn archive_extract(path: String, purpose: String) -> Result<String, St
     if crate::remote::is_remote(&path) {
         return crate::remote::copy_of(&path, &purpose).await;
     }
-    let purpose = if purpose == "open" { Purpose::Open } else { Purpose::Preview };
+    let purpose = if purpose == "open" {
+        Purpose::Open
+    } else {
+        Purpose::Preview
+    };
     fsx::blocking(move || {
-        let spot = spot(&path).ok_or("That isn't in an archive")?.map_err(|e| e.message())?;
-        guarded(|| copy_of(&spot.archive, spot.node, purpose)).map(|p| p.to_string_lossy().into_owned()).map_err(|e| e.message())
+        let spot = spot(&path)
+            .ok_or("That isn't in an archive")?
+            .map_err(|e| e.message())?;
+        guarded(|| copy_of(&spot.archive, spot.node, purpose))
+            .map(|p| p.to_string_lossy().into_owned())
+            .map_err(|e| e.message())
     })
     .await
+}
+
+/// Lists every entry inside `archive_path` recursively as `(rel_path, dir, size, modified)`.
+pub(crate) fn portal_list(archive_path: &str) -> Result<Vec<(String, bool, u64, i64)>, String> {
+    let spot = spot(archive_path)
+        .ok_or_else(|| "Not an archive".to_string())?
+        .map_err(|e| e.message())?;
+    let tree = &spot.archive.tree;
+    let mut out = Vec::new();
+    let mut stack: Vec<(u32, String)> = Vec::new();
+    for &c in spot.node().children.iter().rev() {
+        stack.push((c, String::new()));
+    }
+    while let Some((idx, prefix)) = stack.pop() {
+        let node = tree.node(idx);
+        let rel = if prefix.is_empty() {
+            node.name.to_string()
+        } else {
+            format!("{prefix}\\{}", node.name)
+        };
+        out.push((rel.clone(), node.dir, node.size, node.modified));
+        if node.dir {
+            for &c in node.children.iter().rev() {
+                stack.push((c, rel.clone()));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Synchronously extracts a single file inside an archive (`archive_path\rel_path`) to a temp file.
+pub(crate) fn portal_extract(archive_path: &str, rel_path: &str) -> Result<String, String> {
+    let clean = rel_path.trim_start_matches(['\\', '/']).replace('/', "\\");
+    let joined = glint_model::paths::join_path(archive_path, &clean);
+    let spot = spot(&joined)
+        .ok_or_else(|| "Entry not found in archive".to_string())?
+        .map_err(|e| e.message())?;
+    guarded(|| copy_of(&spot.archive, spot.node, Purpose::Open))
+        .map(|p| p.to_string_lossy().into_owned())
+        .map_err(|e| e.message())
 }
 
 /// Keeps `password` for the archive `path` goes into, once it opens what's there: the archive's list
@@ -911,7 +1182,11 @@ fn unlock(path: &str, password: &str) -> Result<(), Failure> {
     let key = archive.to_lowercase();
     let before = state().passwords.insert(key.clone(), password.to_string());
     forget(&key);
-    if spot(path).ok_or(Failure::NotFound)?.and_then(|spot| opens(&spot, &key)).is_err() {
+    if spot(path)
+        .ok_or(Failure::NotFound)?
+        .and_then(|spot| opens(&spot, &key))
+        .is_err()
+    {
         match before {
             Some(before) => state().passwords.insert(key.clone(), before),
             None => state().passwords.remove(&key),
@@ -996,7 +1271,15 @@ pub struct ReadProgress {
 pub fn archive_progress(path: String) -> Option<ReadProgress> {
     let path = path.to_lowercase();
     let state = state();
-    state.scans.iter().find(|(key, _)| path.starts_with(key.as_str())).map(|(_, (archive, scan))| ReadProgress { path: archive.clone(), done: scan.done.load(Ordering::Relaxed), total: scan.total })
+    state
+        .scans
+        .iter()
+        .find(|(key, _)| path.starts_with(key.as_str()))
+        .map(|(_, (archive, scan))| ReadProgress {
+            path: archive.clone(),
+            done: scan.done.load(Ordering::Relaxed),
+            total: scan.total,
+        })
 }
 
 /// Stops the first read of the archive `path` goes into (its listing then says "cancelled").
@@ -1032,13 +1315,36 @@ pub async fn archive_peek(path: String) -> Result<Peek, String> {
         if stream && found.inner.is_empty() && !in_memory {
             let packed = fsx::stat(&found.outer).map_or(0, |e| e.size);
             if packed > PEEK_LIMIT {
-                return Ok(Peek { format: found.format.label(), packed, entries: None, unpacked: None });
+                return Ok(Peek {
+                    format: found.format.label(),
+                    packed,
+                    entries: None,
+                    unpacked: None,
+                });
             }
         }
-        let spot = spot(&path).ok_or("It isn't an archive Glint reads")?.map_err(|e| e.message())?;
-        let (archive, node) = if spot.node().dir { (spot.archive.clone(), spot.node) } else { (guarded(|| enter(&spot.archive, spot.node)).map_err(|e| e.message())?.0, ROOT) };
-        let packed = if found.inner.is_empty() { fsx::stat(&found.outer).map_or(0, |e| e.size) } else { spot.node().size };
-        Ok(Peek { format: archive.format.label(), packed, entries: Some(archive.tree.len() as u32), unpacked: Some(archive.tree.node(node).size) })
+        let spot = spot(&path)
+            .ok_or("It isn't an archive Glint reads")?
+            .map_err(|e| e.message())?;
+        let (archive, node) = if spot.node().dir {
+            (spot.archive.clone(), spot.node)
+        } else {
+            (
+                guarded(|| enter(&spot.archive, spot.node)).map_err(|e| e.message())?.0,
+                ROOT,
+            )
+        };
+        let packed = if found.inner.is_empty() {
+            fsx::stat(&found.outer).map_or(0, |e| e.size)
+        } else {
+            spot.node().size
+        };
+        Ok(Peek {
+            format: archive.format.label(),
+            packed,
+            entries: Some(archive.tree.len() as u32),
+            unpacked: Some(archive.tree.node(node).size),
+        })
     })
     .await
 }
@@ -1078,16 +1384,30 @@ struct Job {
 /// deleted after the copy) or for other apps ("out": the clipboard, a drag). Reports progress, and
 /// stops when the tab `lane` cancels. Files that can't be extracted (encrypted, damaged…) are left out
 /// and reported; fails when nothing could be.
-pub async fn archive_stage(paths: Vec<String>, purpose: String, lane: String, on_progress: Channel<StageProgress>) -> Result<Staged, String> {
+pub async fn archive_stage(
+    paths: Vec<String>,
+    purpose: String,
+    lane: String,
+    on_progress: Channel<StageProgress>,
+) -> Result<Staged, String> {
     if paths.iter().any(|p| crate::remote::is_remote(p)) {
-        return in_lane(lane, move |cancel| crate::host::async_runtime::block_on(crate::remote::stage(&paths, &purpose, cancel, &on_progress))).await;
+        return in_lane(lane, move |cancel| {
+            crate::host::async_runtime::block_on(crate::remote::stage(&paths, &purpose, cancel, &on_progress))
+        })
+        .await;
     }
-    in_lane(lane, move |cancel| stage(&paths, &purpose, cancel, &on_progress).map_err(|e| e.message())).await
+    in_lane(lane, move |cancel| {
+        stage(&paths, &purpose, cancel, &on_progress).map_err(|e| e.message())
+    })
+    .await
 }
 
 /// Runs `work` with a Cancel of its own for the tab `lane` (`cancel_archive_stage`); a newer run in
 /// the tab cancels it.
-async fn in_lane<T: Send + 'static>(lane: String, work: impl FnOnce(&AtomicBool) -> Result<T, String> + Send + 'static) -> Result<T, String> {
+async fn in_lane<T: Send + 'static>(
+    lane: String,
+    work: impl FnOnce(&AtomicBool) -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
     let cancel = Arc::new(AtomicBool::new(false));
     if let Some(previous) = state().stages.insert(lane.clone(), cancel.clone()) {
         previous.store(true, Ordering::SeqCst);
@@ -1096,7 +1416,11 @@ async fn in_lane<T: Send + 'static>(lane: String, work: impl FnOnce(&AtomicBool)
     let result = fsx::blocking(move || work(&cancel)).await;
     // Unless a newer run in the tab took its place (its Cancel must keep working).
     let mut guard = state();
-    if guard.stages.get(&lane).is_some_and(|current| Arc::ptr_eq(current, &ours)) {
+    if guard
+        .stages
+        .get(&lane)
+        .is_some_and(|current| Arc::ptr_eq(current, &ours))
+    {
         guard.stages.remove(&lane);
     }
     result
@@ -1124,10 +1448,22 @@ pub async fn archive_compress(
     }
     in_lane(lane, move |cancel| {
         let zip = fsx::create_numbered(&folder, &name, false)?;
-        match compress::compress_as(&paths, Path::new(&zip), format, password.as_deref(), cancel, &mut |done, total| {
-            let _ = on_progress.send(StageProgress { done, total });
-        }) {
-            Ok((bytes, skipped)) => Ok(Staged { folder, paths: vec![zip], skipped, bytes }),
+        match compress::compress_as(
+            &paths,
+            Path::new(&zip),
+            format,
+            password.as_deref(),
+            cancel,
+            &mut |done, total| {
+                let _ = on_progress.send(StageProgress { done, total });
+            },
+        ) {
+            Ok((bytes, skipped)) => Ok(Staged {
+                folder,
+                paths: vec![zip],
+                skipped,
+                bytes,
+            }),
             Err(e) => {
                 let _ = std::fs::remove_file(&zip);
                 Err(e)
@@ -1143,29 +1479,63 @@ pub async fn archive_compress(
 /// it instead ("notes.txt" for notes.txt.gz), as gzip -d would. Cancel (the tab `lane`) or a failure
 /// leaves nothing behind; files that can't be extracted are left out and reported. The folder (or the
 /// one file) is `folder` of what comes back.
-pub async fn archive_extract_here(path: String, lane: String, on_progress: Channel<StageProgress>) -> Result<Staged, String> {
+pub async fn archive_extract_here(
+    path: String,
+    lane: String,
+    on_progress: Channel<StageProgress>,
+) -> Result<Staged, String> {
     in_lane(lane, move |cancel| extract_beside(&path, cancel, &on_progress)).await
 }
 
 /// Extract here's work: the archive at `path` (on disk) into a new folder next to it, or a single
 /// compressed file as the file itself; `folder` of what comes back is what was made. Folder rules
 /// extract with it too.
-pub(crate) fn extract_beside(path: &str, cancel: &AtomicBool, on_progress: &Channel<StageProgress>) -> Result<Staged, String> {
+pub(crate) fn extract_beside(
+    path: &str,
+    cancel: &AtomicBool,
+    on_progress: &Channel<StageProgress>,
+) -> Result<Staged, String> {
     let archive = Path::new(path);
-    let (Some(parent), Some(stem)) = (archive.parent(), archive.file_stem()) else { return Err(Failure::NotFound.message()) };
-    let spot = spot(path).ok_or_else(|| Failure::NotFound.message())?.map_err(|e| e.message())?;
+    let (Some(parent), Some(stem)) = (archive.parent(), archive.file_stem()) else {
+        return Err(Failure::NotFound.message());
+    };
+    let spot = spot(path)
+        .ok_or_else(|| Failure::NotFound.message())?
+        .map_err(|e| e.message())?;
     let tree = &spot.archive.tree;
-    let tops: Vec<(String, &str)> = tree.node(spot.node).children.iter().map(|&c| (format!("{path}\\{}", tree.node(c).name), &*tree.node(c).name)).collect();
+    let tops: Vec<(String, &str)> = tree
+        .node(spot.node)
+        .children
+        .iter()
+        .map(|&c| (format!("{path}\\{}", tree.node(c).name), &*tree.node(c).name))
+        .collect();
     let parent = parent.to_string_lossy();
     if let (Format::Single(_), [(top, name)]) = (spot.archive.format, tops.as_slice()) {
         let file = fsx::create_numbered(&parent, name, false)?;
-        let named = Path::new(&file).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        return match guarded(|| stage_into(Path::new(&*parent), std::slice::from_ref(top), Some(&named), cancel, on_progress)) {
-            Ok(staged) if !staged.paths.is_empty() && staged.skipped.is_empty() => Ok(Staged { folder: file, ..staged }),
+        let named = Path::new(&file)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        return match guarded(|| {
+            stage_into(
+                Path::new(&*parent),
+                std::slice::from_ref(top),
+                Some(&named),
+                cancel,
+                on_progress,
+            )
+        }) {
+            Ok(staged) if !staged.paths.is_empty() && staged.skipped.is_empty() => {
+                Ok(Staged { folder: file, ..staged })
+            }
             other => {
                 let _ = std::fs::remove_file(&file);
                 Err(match other {
-                    Ok(staged) => staged.skipped.into_iter().next().map_or_else(|| Failure::NotFound.message(), |s| s.reason),
+                    Ok(staged) => staged
+                        .skipped
+                        .into_iter()
+                        .next()
+                        .map_or_else(|| Failure::NotFound.message(), |s| s.reason),
                     Err(e) => e.message(),
                 })
             }
@@ -1178,7 +1548,11 @@ pub(crate) fn extract_beside(path: &str, cancel: &AtomicBool, on_progress: &Chan
         other => {
             let _ = std::fs::remove_dir_all(&folder);
             Err(match other {
-                Ok(staged) => staged.skipped.into_iter().next().map_or_else(|| "The archive is empty".into(), |s| s.reason),
+                Ok(staged) => staged
+                    .skipped
+                    .into_iter()
+                    .next()
+                    .map_or_else(|| "The archive is empty".into(), |s| s.reason),
                 Err(e) => e.message(),
             })
         }
@@ -1187,13 +1561,22 @@ pub(crate) fn extract_beside(path: &str, cancel: &AtomicBool, on_progress: &Chan
 
 /// A compressed tar's name without its ".tar" ("photos" for the "photos.tar" of photos.tar.gz).
 fn without_tar(stem: &str) -> &str {
-    match stem.len().checked_sub(4).and_then(|at| stem.get(at..).map(|end| (at, end))) {
+    match stem
+        .len()
+        .checked_sub(4)
+        .and_then(|at| stem.get(at..).map(|end| (at, end)))
+    {
         Some((at, end)) if at > 0 && end.eq_ignore_ascii_case(".tar") => &stem[..at],
         _ => stem,
     }
 }
 
-fn stage(paths: &[String], purpose: &str, cancel: &AtomicBool, progress: &Channel<StageProgress>) -> Result<Staged, Failure> {
+fn stage(
+    paths: &[String],
+    purpose: &str,
+    cancel: &AtomicBool,
+    progress: &Channel<StageProgress>,
+) -> Result<Staged, Failure> {
     let out = purpose != "copy";
     if out {
         // Older copies handed over (an hour or more ago) that aren't on the clipboard go now.
@@ -1206,14 +1589,24 @@ fn stage(paths: &[String], purpose: &str, cancel: &AtomicBool, progress: &Channe
         extract::remove_tree(&folder);
     }
     match result {
-        Ok(staged) if staged.paths.is_empty() => Err(staged.skipped.into_iter().next().map_or(Failure::NotFound, |s| Failure::Io(s.reason))),
+        Ok(staged) if staged.paths.is_empty() => Err(staged
+            .skipped
+            .into_iter()
+            .next()
+            .map_or(Failure::NotFound, |s| Failure::Io(s.reason))),
         other => other,
     }
 }
 
 /// Extracts `paths` into `folder`, each by its own name, or by `named` (one path only: Extract here's
 /// single file, under the free name it found).
-fn stage_into(folder: &Path, paths: &[String], named: Option<&str>, cancel: &AtomicBool, progress: &Channel<StageProgress>) -> Result<Staged, Failure> {
+fn stage_into(
+    folder: &Path,
+    paths: &[String],
+    named: Option<&str>,
+    cancel: &AtomicBool,
+    progress: &Channel<StageProgress>,
+) -> Result<Staged, Failure> {
     let mut jobs = Vec::new();
     let mut staged = Vec::new();
     let mut names = std::collections::HashSet::new();
@@ -1221,7 +1614,11 @@ fn stage_into(folder: &Path, paths: &[String], named: Option<&str>, cancel: &Ato
         let spot = spot(path).ok_or(Failure::NotFound)??;
         let top = named.map_or_else(|| spot.node().name.to_string(), str::to_string);
         // Two of the same name (search results from different folders) each get a folder of their own.
-        let dest_top = if names.insert(top.to_lowercase()) { extract::inside(folder, &[&top])? } else { extract::inside(folder, &[&k.to_string(), &top])? };
+        let dest_top = if names.insert(top.to_lowercase()) {
+            extract::inside(folder, &[&top])?
+        } else {
+            extract::inside(folder, &[&k.to_string(), &top])?
+        };
         if spot.node().dir {
             for f in spot.archive.tree.folders_under(spot.node) {
                 std::fs::create_dir_all(dest_top.join(relative(&spot.archive.tree, spot.node, f)))?;
@@ -1230,9 +1627,22 @@ fn stage_into(folder: &Path, paths: &[String], named: Option<&str>, cancel: &Ato
         for file in spot.archive.tree.files_under(spot.node) {
             let rel = relative(&spot.archive.tree, spot.node, file);
             let parts: Vec<&str> = rel.split('\\').filter(|p| !p.is_empty()).collect();
-            let dest = if parts.is_empty() { dest_top.clone() } else { extract::inside(&dest_top, &parts)? };
-            let shown = if rel.is_empty() { path.clone() } else { format!("{}\\{rel}", path.trim_end_matches('\\')) };
-            jobs.push(Job { archive: spot.archive.clone(), node: file, dest, path: shown });
+            let dest = if parts.is_empty() {
+                dest_top.clone()
+            } else {
+                extract::inside(&dest_top, &parts)?
+            };
+            let shown = if rel.is_empty() {
+                path.clone()
+            } else {
+                format!("{}\\{rel}", path.trim_end_matches('\\'))
+            };
+            jobs.push(Job {
+                archive: spot.archive.clone(),
+                node: file,
+                dest,
+                path: shown,
+            });
         }
         staged.push(dest_top.to_string_lossy().into_owned());
     }
@@ -1242,10 +1652,18 @@ fn stage_into(folder: &Path, paths: &[String], named: Option<&str>, cancel: &Ato
     jobs.retain(|job| {
         let n = job.archive.tree.node(job.node);
         let item = n.item as ItemIndex;
-        let problem = job.archive.source.problem(item).map(Err).unwrap_or_else(|| check_ratio(&job.archive.source, item, n.size));
+        let problem = job
+            .archive
+            .source
+            .problem(item)
+            .map(Err)
+            .unwrap_or_else(|| check_ratio(&job.archive.source, item, n.size));
         match problem {
             Err(e) => {
-                skipped.push(Skipped { path: job.path.clone(), reason: e.message() });
+                skipped.push(Skipped {
+                    path: job.path.clone(),
+                    reason: e.message(),
+                });
                 false
             }
             Ok(()) => true,
@@ -1276,7 +1694,10 @@ fn stage_into(folder: &Path, paths: &[String], named: Option<&str>, cancel: &Ato
         done.set(done.get() + n);
         if last.get().elapsed() >= Duration::from_millis(100) {
             last.set(Instant::now());
-            let _ = progress.send(StageProgress { done: done.get(), total });
+            let _ = progress.send(StageProgress {
+                done: done.get(),
+                total,
+            });
         }
         !cancel.load(Ordering::Relaxed)
     };
@@ -1289,7 +1710,10 @@ fn stage_into(folder: &Path, paths: &[String], named: Option<&str>, cancel: &Ato
         }
     }
     for (archive, list) in by_archive {
-        let by_item: HashMap<ItemIndex, &Job> = list.iter().map(|j| (archive.tree.node(j.node).item as ItemIndex, *j)).collect();
+        let by_item: HashMap<ItemIndex, &Job> = list
+            .iter()
+            .map(|j| (archive.tree.node(j.node).item as ItemIndex, *j))
+            .collect();
         let items: Vec<ItemIndex> = by_item.keys().copied().collect();
         let mut failures = Vec::new();
         let failed = archive.source.read_each(
@@ -1314,7 +1738,10 @@ fn stage_into(folder: &Path, paths: &[String], named: Option<&str>, cancel: &Ato
         }
         for (item, e) in failures.into_iter().chain(failed) {
             if let Some(job) = by_item.get(&item) {
-                skipped.push(Skipped { path: job.path.clone(), reason: e.message() });
+                skipped.push(Skipped {
+                    path: job.path.clone(),
+                    reason: e.message(),
+                });
             }
         }
     }
@@ -1325,7 +1752,12 @@ fn stage_into(folder: &Path, paths: &[String], named: Option<&str>, cancel: &Ato
     }
     // An item asked for whose files all failed isn't there to copy.
     staged.retain(|p| Path::new(p).exists());
-    Ok(Staged { folder: folder.to_string_lossy().into_owned(), paths: staged, skipped, bytes })
+    Ok(Staged {
+        folder: folder.to_string_lossy().into_owned(),
+        paths: staged,
+        skipped,
+        bytes,
+    })
 }
 
 /// The path of `node` below `top`, "\" between folders ("" for `top` itself).

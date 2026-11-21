@@ -1,43 +1,46 @@
 //! Glint's engine: everything that isn't a window. Until 0.10 this was the Tauri app's src-tauri; `host` stands in
 //! for the little of Tauri the modules used.
 
-pub mod host;
 pub mod access;
 pub mod actions;
 pub mod agents;
 pub mod archive;
 pub mod aware;
-pub mod checksums;
 pub mod backup;
-pub mod bench;
 pub mod batch_rename;
+pub mod bench;
 pub mod calc;
+pub mod checksums;
 pub mod cleanup;
+pub mod color_index;
 pub mod compare;
 pub mod convert;
 pub mod crash;
 pub mod data_lens;
 pub mod dedup;
-pub mod duck;
 pub mod defender;
 pub mod dialogs;
 pub mod docconvert;
-pub mod drivehealth;
 pub mod doctext;
+pub mod drivehealth;
+pub mod duck;
+pub mod file_lego;
 pub mod filediff;
 pub mod find;
 pub mod fsx;
 pub mod gallery;
 pub mod git;
+pub mod host;
 pub mod index;
 pub mod ioring;
 pub mod jq;
 pub mod links;
+pub mod localsend;
 pub mod locks;
 pub mod mcp;
-pub mod metadata;
 pub mod media;
 pub mod media_tools;
+pub mod metadata;
 #[cfg(windows)]
 pub mod mfapi;
 pub mod newmenu;
@@ -46,43 +49,47 @@ pub mod ondemand;
 pub mod openers;
 pub mod pdf_tools;
 pub mod pe;
+pub mod permalinks;
+pub mod portals;
 pub mod proc;
 pub mod projects;
 pub mod queue;
 pub mod rclone;
 pub mod recent;
 pub mod recycle;
-pub mod rules;
-pub mod sandbox;
-pub mod scrub;
 pub mod remote;
 pub mod retired;
+pub mod rules;
+pub mod sandbox;
 pub mod scripts;
-pub mod localsend;
-pub mod tags;
+pub mod scrub;
 pub mod sheet;
 pub mod shell;
 pub mod shellmenu;
-pub mod sign;
-pub mod sql;
-pub mod startup;
 pub mod shrink;
+pub mod sign;
 pub mod sizes;
 pub mod songtags;
+pub mod sql;
+pub mod startup;
+pub mod tags;
 pub mod term;
 pub mod textenc;
 pub mod thumbs;
+pub mod time_machine;
 pub mod timeline;
 pub mod tools;
 pub mod usage;
-pub mod wof;
 pub mod verbs;
 pub mod versions;
+pub mod virtual_drag;
 pub mod watch;
 pub mod whisper;
+pub mod wof;
 pub mod xray;
 pub mod zoxide;
 
+use crate::host::{State, Window};
 use fsx::blocking;
 use proc::{Lanes, Slot};
 use std::fs;
@@ -91,7 +98,6 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
-use crate::host::{State, Window};
 
 /// The work in flight: the ripgrep text search, and each tab's file search (fd and the index) and
 /// sizing worker (pdu's engine, sizes.rs) measuring folder sizes or a disk-usage map.
@@ -108,7 +114,9 @@ pub struct AppState {
 pub async fn write_file_content(path: String, content: String, expected: Option<String>) -> Result<String, String> {
     blocking(move || {
         let path = std::path::Path::new(&path);
-        if expected.is_some_and(|expected| fs::read(path).map(|now| filediff::content_hash(&now)).ok() != Some(expected)) {
+        if expected
+            .is_some_and(|expected| fs::read(path).map(|now| filediff::content_hash(&now)).ok() != Some(expected))
+        {
             return Err("it was changed or removed since it was compared. Compare again first".into());
         }
         replace_contents(path, content.as_bytes()).map_err(|e| e.to_string())?;
@@ -122,7 +130,10 @@ pub async fn write_file_content(path: String, content: String, expected: Option<
 /// as it was. A folder that doesn't allow a new file gets a plain write.
 pub fn replace_contents(path: &std::path::Path, content: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
-    let name = path.file_name().ok_or_else(|| std::io::Error::other("not a file"))?.to_string_lossy();
+    let name = path
+        .file_name()
+        .ok_or_else(|| std::io::Error::other("not a file"))?
+        .to_string_lossy();
     let temp = path.with_file_name(format!(".{name}.{}.glint-tmp", std::process::id()));
     let mut file = match fs::File::create_new(&temp) {
         Ok(file) => file,
@@ -139,7 +150,17 @@ pub fn replace_contents(path: &std::path::Path, content: &[u8]) -> std::io::Resu
         if !path.exists() {
             return fs::rename(&temp, path);
         }
-        unsafe { ReplaceFileW(&HSTRING::from(path), &HSTRING::from(temp.as_path()), PCWSTR::null(), REPLACEFILE_IGNORE_MERGE_ERRORS, None, None) }.map_err(std::io::Error::from)
+        unsafe {
+            ReplaceFileW(
+                &HSTRING::from(path),
+                &HSTRING::from(temp.as_path()),
+                PCWSTR::null(),
+                REPLACEFILE_IGNORE_MERGE_ERRORS,
+                None,
+                None,
+            )
+        }
+        .map_err(std::io::Error::from)
     });
     #[cfg(not(windows))]
     let written = written.and_then(|()| fs::rename(&temp, path));
@@ -181,7 +202,10 @@ pub async fn diagnostics(app: crate::host::AppHandle) -> Result<String, String> 
         let _ = writeln!(out, "{}", shadui_index::windows_version());
         for tool in tools::TOOLS {
             let found = proc::locate(tool.exe);
-            let version = found.as_ref().and_then(|(path, _)| tools::version_of(path)).unwrap_or_default();
+            let version = found
+                .as_ref()
+                .and_then(|(path, _)| tools::version_of(path))
+                .unwrap_or_default();
             let from = match found {
                 None => "missing".to_string(),
                 Some((_, proc::Origin::Bundled)) => "bundled".to_string(),
@@ -202,7 +226,14 @@ pub async fn diagnostics(app: crate::host::AppHandle) -> Result<String, String> 
             let _ = write!(out, "  {} {}", v.volume, v.state);
             match v.state.as_str() {
                 "ready" => {
-                    let _ = write!(out, ", {} items from the {} in {:.0} ms, {} MB", v.files + v.folders, v.source, v.build_ms, v.memory >> 20);
+                    let _ = write!(
+                        out,
+                        ", {} items from the {} in {:.0} ms, {} MB",
+                        v.files + v.folders,
+                        v.source,
+                        v.build_ms,
+                        v.memory >> 20
+                    );
                 }
                 "scanning" => {
                     let _ = write!(out, " {} of {} records", v.progress, v.progress_total);
@@ -321,8 +352,17 @@ pub fn rg_args(search: &TextSearch, folder: &str) -> Vec<String> {
     // --no-messages hides per-file errors (e.g. Access Denied); pattern errors still reach stderr.
     // The total result limit is enforced while reading (--max-count is per file).
     // --crlf: $ also ends a line before CRLF, as most files on Windows have them.
-    let mut args: Vec<String> = ["--json", "--no-messages", "--stats", "--crlf"].map(String::from).into();
-    args.push(if search.case_sensitive { "--case-sensitive" } else { "--smart-case" }.into());
+    let mut args: Vec<String> = ["--json", "--no-messages", "--stats", "--crlf"]
+        .map(String::from)
+        .into();
+    args.push(
+        if search.case_sensitive {
+            "--case-sensitive"
+        } else {
+            "--smart-case"
+        }
+        .into(),
+    );
     if search.whole_word {
         args.push("--word-regexp".into());
     }
@@ -331,7 +371,10 @@ pub fn rg_args(search: &TextSearch, folder: &str) -> Vec<String> {
         args.extend(["--multiline".into(), "--multiline-dotall".into()]);
         // Textareas normalize to \n but files may use \r\n, so literal searches match both.
         if !search.regex {
-            let escaped: String = query.chars().flat_map(|c| ".*+?^${}()|[]\\".contains(c).then_some('\\').into_iter().chain([c])).collect();
+            let escaped: String = query
+                .chars()
+                .flat_map(|c| ".*+?^${}()|[]\\".contains(c).then_some('\\').into_iter().chain([c]))
+                .collect();
             query = escaped.replace('\n', "\\r?\\n");
         }
     } else if !search.regex {
@@ -369,9 +412,7 @@ pub async fn run_ripgrep_batched(
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        let child = command
-            .spawn()
-            .map_err(|e| format!("Failed to start ripgrep: {e}"))?;
+        let child = command.spawn().map_err(|e| format!("Failed to start ripgrep: {e}"))?;
         stream_search(window, search_id, child, max_results, search, ticket)?;
         Ok(folder)
     })
@@ -441,13 +482,22 @@ fn rg_said(line: &str) -> Option<TextSaid> {
                 text: data.lines.and_then(|l| l.text),
                 line_number: data.line_number,
                 // Offsets that don't fit are dropped, not guessed.
-                hits: data.submatches.iter().filter_map(|h| Some((usize::try_from(h.start).ok()?, usize::try_from(h.end).ok()?))).collect(),
+                hits: data
+                    .submatches
+                    .iter()
+                    .filter_map(|h| Some((usize::try_from(h.start).ok()?, usize::try_from(h.end).ok()?)))
+                    .collect(),
                 label: None,
             };
             cut_long(&mut found);
             Some(TextSaid::Matches(vec![found]))
         }
-        "summary" => Some(TextSaid::Summary { elapsed_ms: parsed.data.elapsed_total.map(|e| e.secs as f64 * 1000. + e.nanos as f64 / 1e6) }),
+        "summary" => Some(TextSaid::Summary {
+            elapsed_ms: parsed
+                .data
+                .elapsed_total
+                .map(|e| e.secs as f64 * 1000. + e.nanos as f64 / 1e6),
+        }),
         _ => None,
     }
 }
@@ -460,7 +510,9 @@ fn is_rg_summary(line: &str) -> bool {
 /// A match whose line is longer than `LONGEST_MATCH_LINE`, cut to a window around its first hit ("…" marks each
 /// cut end), with the hits' offsets moved to match and those outside dropped.
 fn cut_long(found: &mut TextMatch) {
-    let Some(text) = found.text.as_deref().filter(|text| text.len() > LONGEST_MATCH_LINE) else { return };
+    let Some(text) = found.text.as_deref().filter(|text| text.len() > LONGEST_MATCH_LINE) else {
+        return;
+    };
     let first = found.hits.first().map_or(0, |&(start, _)| start).min(text.len());
     let boundary_at_or_before = |mut at: usize| {
         while at > 0 && !text.is_char_boundary(at) {
@@ -486,13 +538,26 @@ fn cut_long(found: &mut TextMatch) {
 /// A Documents search: PDFs', Office's, OpenDocument's and EPUBs' text, read by worker processes (doctext.rs).
 /// Its matches arrive as `Event::Search`es, each with a label ("p. 3"), then a summary and the end. Returns the
 /// folder as searched.
-pub async fn run_doc_search(window: Window, request: doctext::DocSearch, search_id: String, max_results: Option<usize>, state: State<'_, AppState>) -> Result<String, String> {
+pub async fn run_doc_search(
+    window: Window,
+    request: doctext::DocSearch,
+    search_id: String,
+    max_results: Option<usize>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
     let ticket = TEXT_SEARCH.fetch_add(1, Ordering::SeqCst) + 1;
     let search = state.search.clone();
     fsx::blocking(move || doc_search(window, request, search_id, max_results, search, ticket)).await
 }
 
-pub fn doc_search(window: Window, request: doctext::DocSearch, search_id: String, max_results: Option<usize>, search: Slot, ticket: u64) -> Result<String, String> {
+pub fn doc_search(
+    window: Window,
+    request: doctext::DocSearch,
+    search_id: String,
+    max_results: Option<usize>,
+    search: Slot,
+    ticket: u64,
+) -> Result<String, String> {
     let folder = text_folder(&request.path)?;
     let pattern = doctext::pattern(&request)?;
     if !text_current(ticket) {
@@ -506,7 +571,12 @@ pub fn doc_search(window: Window, request: doctext::DocSearch, search_id: String
     };
     let base = std::path::PathBuf::from(&folder);
     thread::spawn(move || {
-        let emit = |said: TextSaid| window.emit(host::Event::Search(SearchEvent { id: search_id.clone(), said }));
+        let emit = |said: TextSaid| {
+            window.emit(host::Event::Search(SearchEvent {
+                id: search_id.clone(),
+                said,
+            }))
+        };
         doctext::search(run, &base, &request, &pattern, max, emit);
         emit(TextSaid::Finished);
     });
@@ -516,7 +586,14 @@ pub fn doc_search(window: Window, request: doctext::DocSearch, search_id: String
 /// Sends what ripgrep finds to the window as `Event::Search`es: its matches in batches, until it ends or
 /// `max_results` matches came, then its summary, any error it gave, and the end. The search replaces the one
 /// before, and Documents' run, unless a newer one (or Stop) came while it started: then it's stopped instead.
-pub fn stream_search(window: Window, search_id: String, mut child: std::process::Child, max_results: Option<usize>, search: proc::Slot, ticket: u64) -> Result<(), String> {
+pub fn stream_search(
+    window: Window,
+    search_id: String,
+    mut child: std::process::Child,
+    max_results: Option<usize>,
+    search: proc::Slot,
+    ticket: u64,
+) -> Result<(), String> {
     let stdout = child.stdout.take().ok_or("Failed to open stdout")?;
     let mut stderr = child.stderr.take().ok_or("Failed to open stderr")?;
     // Replaces (and stops) any search still running.
@@ -531,7 +608,12 @@ pub fn stream_search(window: Window, search_id: String, mut child: std::process:
     });
 
     thread::spawn(move || {
-        let emit = |said: TextSaid| window.emit(host::Event::Search(SearchEvent { id: search_id.clone(), said }));
+        let emit = |said: TextSaid| {
+            window.emit(host::Event::Search(SearchEvent {
+                id: search_id.clone(),
+                said,
+            }))
+        };
         let reader = BufReader::new(stdout);
         let mut batch: Vec<TextMatch> = Vec::new();
         let mut last_emit = Instant::now();
@@ -602,7 +684,8 @@ pub fn package_family() -> Option<&'static str> {
             let mut name = [0u16; 256];
             let mut len = name.len() as u32;
             // APPMODEL_ERROR_NO_PACKAGE when it isn't one.
-            (unsafe { GetCurrentPackageFamilyName(&mut len, Some(windows::core::PWSTR(name.as_mut_ptr()))) } == ERROR_SUCCESS)
+            (unsafe { GetCurrentPackageFamilyName(&mut len, Some(windows::core::PWSTR(name.as_mut_ptr()))) }
+                == ERROR_SUCCESS)
                 .then(|| String::from_utf16_lossy(&name[..(len as usize).saturating_sub(1)]))
         })
         .as_deref()
@@ -626,7 +709,10 @@ pub fn store_package() -> Option<&'static str> {
     let family = package_family()?;
     let apps = std::path::Path::new(&std::env::var_os("ProgramFiles")?).join("WindowsApps");
     let exe = std::env::current_exe().ok()?;
-    exe.to_string_lossy().to_lowercase().starts_with(&apps.to_string_lossy().to_lowercase()).then_some(family)
+    exe.to_string_lossy()
+        .to_lowercase()
+        .starts_with(&apps.to_string_lossy().to_lowercase())
+        .then_some(family)
 }
 
 /// Whether the Microsoft Store keeps this copy up to date (see `package_family`): then the app doesn't
@@ -640,7 +726,13 @@ pub fn store_copy() -> bool {
 /// the MCP server an AI agent starts, or the installer's tool installs. Its exit code once it has answered;
 /// `None` for the app.
 pub fn worker() -> Option<i32> {
-    jq::worker().or_else(sizes::worker).or_else(bench::cli).or_else(doctext::worker).or_else(remote::askpass).or_else(mcp::server).or_else(tools::cli)
+    jq::worker()
+        .or_else(sizes::worker)
+        .or_else(bench::cli)
+        .or_else(doctext::worker)
+        .or_else(remote::askpass)
+        .or_else(mcp::server)
+        .or_else(tools::cli)
 }
 
 #[cfg(test)]
@@ -648,8 +740,14 @@ mod tests {
     use super::*;
 
     fn match_line(text: &str, hits: &[(usize, usize)]) -> String {
-        let submatches: Vec<serde_json::Value> = hits.iter().map(|(s, e)| serde_json::json!({"match": {"text": &text[*s..*e]}, "start": s, "end": e})).collect();
-        format!(r#"{{"type":"match","data":{}}}"#, serde_json::json!({"path": {"text": "C:\\a.min.js"}, "lines": {"text": text}, "line_number": 1, "submatches": submatches}))
+        let submatches: Vec<serde_json::Value> = hits
+            .iter()
+            .map(|(s, e)| serde_json::json!({"match": {"text": &text[*s..*e]}, "start": s, "end": e}))
+            .collect();
+        format!(
+            r#"{{"type":"match","data":{}}}"#,
+            serde_json::json!({"path": {"text": "C:\\a.min.js"}, "lines": {"text": text}, "line_number": 1, "submatches": submatches})
+        )
     }
 
     fn one_match(said: Option<TextSaid>) -> TextMatch {
@@ -668,13 +766,31 @@ mod tests {
         let found = one_match(rg_said(&match_line("    the needle is here\n", &[(8, 14)])));
         assert_eq!(
             found,
-            TextMatch { path: "C:\\a.min.js".into(), text: Some("    the needle is here\n".into()), line_number: Some(1), hits: vec![(8, 14)], label: None }
+            TextMatch {
+                path: "C:\\a.min.js".into(),
+                text: Some("    the needle is here\n".into()),
+                line_number: Some(1),
+                hits: vec![(8, 14)],
+                label: None
+            }
         );
-        assert_eq!(rg_said(r#"{"type":"summary","data":{"elapsed_total":{"secs":1,"nanos":500000000}}}"#), Some(TextSaid::Summary { elapsed_ms: Some(1500.) }));
+        assert_eq!(
+            rg_said(r#"{"type":"summary","data":{"elapsed_total":{"secs":1,"nanos":500000000}}}"#),
+            Some(TextSaid::Summary {
+                elapsed_ms: Some(1500.)
+            })
+        );
         // ripgrep 15 writes the summary with its type last.
-        assert_eq!(rg_said(r#"{"data":{"elapsed_total":{"secs":2,"nanos":0}},"type":"summary"}"#), Some(TextSaid::Summary { elapsed_ms: Some(2000.) }));
+        assert_eq!(
+            rg_said(r#"{"data":{"elapsed_total":{"secs":2,"nanos":0}},"type":"summary"}"#),
+            Some(TextSaid::Summary {
+                elapsed_ms: Some(2000.)
+            })
+        );
         // A line given as bytes has no text, and still counts.
-        let bytes = one_match(rg_said(r#"{"type":"match","data":{"path":{"text":"C:\\b.bin"},"lines":{"bytes":"/w=="},"line_number":3,"submatches":[]}}"#));
+        let bytes = one_match(rg_said(
+            r#"{"type":"match","data":{"path":{"text":"C:\\b.bin"},"lines":{"bytes":"/w=="},"line_number":3,"submatches":[]}}"#,
+        ));
         assert_eq!((bytes.text, bytes.line_number), (None, Some(3)));
     }
 

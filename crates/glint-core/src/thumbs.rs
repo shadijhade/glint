@@ -11,10 +11,10 @@
 //! runtime. Requests wait in their tab's lane and are dropped when that tab scrolls them out of view or
 //! moves on, and every thumbnail goes back as its pixels, kept in memory here too (shared, not copied).
 
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, Once};
 use crate::host::async_runtime::{channel, Sender};
 use crate::host::State;
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, Once};
 
 /// Where a thumbnail came from: Glint's memory of it, Windows' cache, or made from the file just now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,16 +76,31 @@ struct Thumb {
 
 impl Thumb {
     fn none(lasting: bool) -> Arc<Thumb> {
-        Arc::new(Thumb { pixels: None, lasting, source: ThumbFrom::Cache, ms: 0.0 })
+        Arc::new(Thumb {
+            pixels: None,
+            lasting,
+            source: ThumbFrom::Cache,
+            ms: 0.0,
+        })
     }
 
     fn found(pixels: Pixels, source: ThumbFrom, ms: f32) -> Thumb {
-        Thumb { pixels: Some(Arc::new(pixels)), lasting: true, source, ms }
+        Thumb {
+            pixels: Some(Arc::new(pixels)),
+            lasting: true,
+            source,
+            ms,
+        }
     }
 
     /// The answer, saying where it came from this time.
     fn answer(&self, from: ThumbFrom) -> Thumbnail {
-        Thumbnail { pixels: self.pixels.clone(), lasting: self.lasting, from, ms: self.ms }
+        Thumbnail {
+            pixels: self.pixels.clone(),
+            lasting: self.lasting,
+            from,
+            ms: self.ms,
+        }
     }
 }
 
@@ -119,14 +134,22 @@ struct Job<R> {
 
 /// What a worker found.
 #[derive(Debug)]
-enum Outcome {
-    Found { pixels: Pixels, ms: f32 },
+pub(crate) enum Outcome {
+    Found {
+        pixels: Pixels,
+        ms: f32,
+    },
     /// Windows doesn't have it cached (only from a lookup).
     NotCached,
     /// Windows has it cached only at a smaller size (only from a lookup; see `from_smaller_size`).
-    Smaller { pixels: Pixels, ms: f32 },
+    Smaller {
+        pixels: Pixels,
+        ms: f32,
+    },
     /// No thumbnail; `lasting` unless it may work next time (a timeout, a busy surrogate).
-    Nothing { lasting: bool },
+    Nothing {
+        lasting: bool,
+    },
 }
 
 /// The next thing for a worker to do.
@@ -149,7 +172,13 @@ struct Memory {
 
 impl Memory {
     fn new(budget: usize) -> Self {
-        Memory { map: HashMap::new(), order: BTreeMap::new(), tick: 0, bytes: 0, budget }
+        Memory {
+            map: HashMap::new(),
+            order: BTreeMap::new(),
+            tick: 0,
+            bytes: 0,
+            budget,
+        }
     }
 
     fn cost(thumb: &Thumb) -> usize {
@@ -174,7 +203,9 @@ impl Memory {
         }
         self.order.insert(self.tick, key);
         while self.bytes > self.budget {
-            let Some((_, oldest)) = self.order.pop_first() else { break };
+            let Some((_, oldest)) = self.order.pop_first() else {
+                break;
+            };
             if let Some((gone, _)) = self.map.remove(&oldest) {
                 self.bytes -= Self::cost(&gone);
             }
@@ -192,7 +223,12 @@ struct Queue<R> {
 
 impl<R> Queue<R> {
     fn new(budget: usize) -> Self {
-        Queue { jobs: HashMap::new(), lookups: VecDeque::new(), makes: VecDeque::new(), memory: Memory::new(budget) }
+        Queue {
+            jobs: HashMap::new(),
+            lookups: VecDeque::new(),
+            makes: VecDeque::new(),
+            memory: Memory::new(budget),
+        }
     }
 
     /// Adds a waiter for `key`: to the job for it if there's one (several panes can show one
@@ -205,7 +241,18 @@ impl<R> Queue<R> {
         }
         let size = key.size;
         self.lookups.push_back(key.clone());
-        self.jobs.insert(key, Job { path, size, cached_only, phase: Phase::Lookup, running: false, waiters: vec![waiter], smaller: None });
+        self.jobs.insert(
+            key,
+            Job {
+                path,
+                size,
+                cached_only,
+                phase: Phase::Lookup,
+                running: false,
+                waiters: vec![waiter],
+                smaller: None,
+            },
+        );
     }
 
     /// The oldest lookup, or for a thread that makes thumbnails (`makes`), the oldest one to make
@@ -219,7 +266,12 @@ impl<R> Queue<R> {
             };
             if let Some(job) = self.jobs.get_mut(&key).filter(|job| !job.running && job.phase == phase) {
                 job.running = true;
-                return Some(Task { path: job.path.clone(), size: job.size, key, phase });
+                return Some(Task {
+                    path: job.path.clone(),
+                    size: job.size,
+                    key,
+                    phase,
+                });
             }
         }
     }
@@ -229,7 +281,10 @@ impl<R> Queue<R> {
     fn finish(&mut self, key: &Key, outcome: Outcome) -> Option<(Arc<Thumb>, Vec<R>)> {
         let job = self.jobs.get_mut(key)?;
         job.running = false;
-        if matches!(outcome, Outcome::NotCached | Outcome::Smaller { .. }) && !job.cached_only && !job.waiters.is_empty() {
+        if matches!(outcome, Outcome::NotCached | Outcome::Smaller { .. })
+            && !job.cached_only
+            && !job.waiters.is_empty()
+        {
             if let Outcome::Smaller { pixels, ms } = outcome {
                 job.smaller = Some(Thumb::found(pixels, ThumbFrom::Cache, ms));
             }
@@ -239,7 +294,11 @@ impl<R> Queue<R> {
         }
         let thumb = match outcome {
             Outcome::Found { pixels, ms } => {
-                let source = if job.phase == Phase::Lookup { ThumbFrom::Cache } else { ThumbFrom::Made };
+                let source = if job.phase == Phase::Lookup {
+                    ThumbFrom::Cache
+                } else {
+                    ThumbFrom::Made
+                };
                 let thumb = Arc::new(Thumb::found(pixels, source, ms));
                 self.memory.put(key.clone(), thumb.clone());
                 thumb
@@ -307,7 +366,11 @@ pub struct Thumbs(Arc<Shared>);
 
 impl Default for Thumbs {
     fn default() -> Self {
-        Thumbs(Arc::new(Shared { queue: Mutex::new(Queue::new(MEMORY_BUDGET)), work: Condvar::new(), started: Once::new() }))
+        Thumbs(Arc::new(Shared {
+            queue: Mutex::new(Queue::new(MEMORY_BUDGET)),
+            work: Condvar::new(),
+            started: Once::new(),
+        }))
     }
 }
 
@@ -346,7 +409,9 @@ fn start(shared: &Arc<Shared>) {
         for n in 0..lookups + makers {
             let shared = shared.clone();
             let makes = n >= lookups;
-            let _ = std::thread::Builder::new().name(format!("thumbs-{n}")).spawn(move || work(&shared, makes));
+            let _ = std::thread::Builder::new()
+                .name(format!("thumbs-{n}"))
+                .spawn(move || work(&shared, makes));
         }
     });
 }
@@ -366,8 +431,13 @@ fn work(shared: &Shared, makes: bool) {
             }
         };
         // A bug here mustn't take the thread down with its job left running (its tiles would wait for good).
-        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| win::outcome(&task.path, task.size, task.phase == Phase::Lookup)))
-            .unwrap_or(Outcome::Nothing { lasting: false });
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            win::outcome(&task.path, task.size, task.phase == Phase::Lookup)
+        }))
+        .unwrap_or(Outcome::Nothing { lasting: false });
+        if let Outcome::Found { ref pixels, .. } | Outcome::Smaller { ref pixels, .. } = outcome {
+            crate::color_index::record_bgra(&task.path, task.key.modified, pixels.width, pixels.height, &pixels.bgra);
+        }
         let answer = shared.lock().finish(&task.key, outcome);
         match answer {
             Some((thumb, replies)) => {
@@ -386,8 +456,22 @@ fn work(shared: &Shared, makes: bool) {
 /// that changed isn't answered from memory. Waits in `lane` (the tab asking) as request `seq`, until
 /// it's answered or dropped ("cancelled").
 #[allow(clippy::too_many_arguments)]
-pub async fn thumbnail(state: State<'_, Thumbs>, path: String, size: u32, modified: f64, bytes: f64, cached_only: bool, lane: String, seq: u32) -> Result<Thumbnail, String> {
-    let key = Key { path: path.to_lowercase(), size: size.clamp(16, 1024), modified: modified as i64, bytes: bytes as u64 };
+pub async fn thumbnail(
+    state: State<'_, Thumbs>,
+    path: String,
+    size: u32,
+    modified: f64,
+    bytes: f64,
+    cached_only: bool,
+    lane: String,
+    seq: u32,
+) -> Result<Thumbnail, String> {
+    let key = Key {
+        path: path.to_lowercase(),
+        size: size.clamp(16, 1024),
+        modified: modified as i64,
+        bytes: bytes as u64,
+    };
     if !cfg!(windows) {
         return Ok(Thumb::none(true).answer(ThumbFrom::Cache));
     }
@@ -437,7 +521,12 @@ pub async fn thumbnail(state: State<'_, Thumbs>, path: String, size: u32, modifi
 
 /// Drops `lane`'s requests up to number `up_to` for `paths` (they scrolled out of view), or all of
 /// them (its folder changed, or the tab closed).
-pub async fn cancel_thumbnails(state: State<'_, Thumbs>, lane: String, paths: Option<Vec<String>>, up_to: u32) -> Result<(), String> {
+pub async fn cancel_thumbnails(
+    state: State<'_, Thumbs>,
+    lane: String,
+    paths: Option<Vec<String>>,
+    up_to: u32,
+) -> Result<(), String> {
     let paths: Option<HashSet<String>> = paths.map(|p| p.iter().map(|p| p.to_lowercase()).collect());
     // Dropping the replies answers their requests with "cancelled".
     let dropped = state.0.lock().cancel(&lane, paths.as_ref(), up_to);
@@ -459,7 +548,6 @@ impl std::fmt::Debug for Pixels {
         write!(f, "Pixels({} x {}, {} bytes)", self.width, self.height, self.bgra.len())
     }
 }
-
 
 /// The shell hands out premultiplied alpha (what AlphaBlend wants), and some thumbnails, JPEGs' among
 /// them, with alpha 0 everywhere. Turns either into what a browser shows: straight alpha, opaque when
@@ -485,7 +573,7 @@ pub fn straighten_alpha(bgra: &mut [u8]) {
 }
 
 #[cfg(windows)]
-mod win {
+pub(crate) mod win {
     use super::{from_smaller_size, straighten_alpha, Outcome, Pixels};
     use std::collections::HashMap;
     use std::path::Path;
@@ -494,20 +582,28 @@ mod win {
     use windows::core::{HRESULT, HSTRING, PWSTR};
     use windows::Win32::Foundation::{E_FAIL, SIZE};
     use windows::Win32::Graphics::Gdi::{
-        CreateCompatibleDC, DeleteDC, DeleteObject, GetDIBits, GetObjectW, BITMAP, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
-        DIB_RGB_COLORS, HBITMAP, HGDIOBJ,
+        CreateCompatibleDC, DeleteDC, DeleteObject, GetDIBits, GetObjectW, BITMAP, BITMAPINFO, BITMAPINFOHEADER,
+        BI_RGB, DIB_RGB_COLORS, HBITMAP, HGDIOBJ,
     };
-    use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, IBindCtx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE};
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, IBindCtx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
+        COINIT_DISABLE_OLE1DDE,
+    };
     use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_SZ};
     use windows::Win32::System::Threading::{GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL};
     use windows::Win32::UI::Shell::{
-        AssocQueryStringW, IShellItem, IShellItemImageFactory, ISharedBitmap, IThumbnailCache, LocalThumbnailCache, SHCreateItemFromParsingName,
-        ASSOCF_NONE, ASSOCSTR_SHELLEXTENSION, SIIGBF_INCACHEONLY, SIIGBF_THUMBNAILONLY, WTSAT_RGB, WTS_EXTRACTINPROC, WTS_SCALETOREQUESTEDSIZE,
+        AssocQueryStringW, ISharedBitmap, IShellItem, IShellItemImageFactory, IThumbnailCache, LocalThumbnailCache,
+        SHCreateItemFromParsingName, ASSOCF_NONE, ASSOCSTR_SHELLEXTENSION, SIIGBF_INCACHEONLY, SIIGBF_THUMBNAILONLY,
+        WTSAT_RGB, WTS_EXTRACTINPROC, WTS_SCALETOREQUESTEDSIZE,
     };
 
     /// Not in the thumbnail cache (STG_E_FILENOTFOUND), or being made elsewhere (WTS_E_EXTRACTIONPENDING,
     /// E_PENDING).
-    const NOT_CACHED: [HRESULT; 3] = [HRESULT(0x8003_0002_u32 as i32), HRESULT(0x8004_B205_u32 as i32), HRESULT(0x8000_000A_u32 as i32)];
+    const NOT_CACHED: [HRESULT; 3] = [
+        HRESULT(0x8003_0002_u32 as i32),
+        HRESULT(0x8004_B205_u32 as i32),
+        HRESULT(0x8000_000A_u32 as i32),
+    ];
     /// Worth trying again later: the handler timed out (WTS_E_EXTRACTIONTIMEDOUT) or its surrogate
     /// process wasn't there (WTS_E_SURROGATEUNAVAILABLE).
     const TRANSIENT: [HRESULT; 2] = [HRESULT(0x8004_B201_u32 as i32), HRESULT(0x8004_B202_u32 as i32)];
@@ -518,7 +614,10 @@ mod win {
     const PHOTO_PROVIDER: &str = "{C7657C4A-9F68-40fa-A4DF-96BC08EB3551}";
     /// What Windows' own codecs decode. WebP, HEIC, AVIF and RAW decoders are add-ons (from the Store,
     /// or a camera maker or codec pack), so those stay in the isolated process.
-    const BUILT_IN: [&str; 14] = [".jpg", ".jpeg", ".jpe", ".jfif", ".png", ".gif", ".tif", ".tiff", ".bmp", ".dib", ".ico", ".jxr", ".wdp", ".hdp"];
+    const BUILT_IN: [&str; 14] = [
+        ".jpg", ".jpeg", ".jpe", ".jfif", ".png", ".gif", ".tif", ".tiff", ".bmp", ".dib", ".ico", ".jxr", ".wdp",
+        ".hdp",
+    ];
 
     /// Each worker thread is a single-threaded COM apartment, as thumbnail handlers expect; the ones
     /// that decode files run below normal priority, so the window stays responsive. They wait for work
@@ -553,7 +652,10 @@ mod win {
                 return Outcome::NotCached;
             }
             return match pdf_page(path, size) {
-                Ok(pixels) => Outcome::Found { pixels, ms: (started.elapsed().as_secs_f64() * 1000.0) as f32 },
+                Ok(pixels) => Outcome::Found {
+                    pixels,
+                    ms: (started.elapsed().as_secs_f64() * 1000.0) as f32,
+                },
                 Err(_) => Outcome::Nothing { lasting: true },
             };
         }
@@ -566,10 +668,14 @@ mod win {
         };
         let ms = || (started.elapsed().as_secs_f64() * 1000.0) as f32;
         match made {
-            Ok(pixels) if lookup && from_smaller_size(pixels.width, pixels.height, size) => Outcome::Smaller { pixels, ms: ms() },
+            Ok(pixels) if lookup && from_smaller_size(pixels.width, pixels.height, size) => {
+                Outcome::Smaller { pixels, ms: ms() }
+            }
             Ok(pixels) => Outcome::Found { pixels, ms: ms() },
             Err(e) if lookup && NOT_CACHED.contains(&e.code()) => Outcome::NotCached,
-            Err(e) => Outcome::Nothing { lasting: !TRANSIENT.contains(&e.code()) },
+            Err(e) => Outcome::Nothing {
+                lasting: !TRANSIENT.contains(&e.code()),
+            },
         }
     }
 
@@ -581,7 +687,11 @@ mod win {
     pub fn from_shell(path: &str, size: u32, cached_only: bool) -> windows::core::Result<Pixels> {
         unsafe {
             let factory: IShellItemImageFactory = SHCreateItemFromParsingName(&HSTRING::from(path), None::<&IBindCtx>)?;
-            let flags = if cached_only { SIIGBF_THUMBNAILONLY | SIIGBF_INCACHEONLY } else { SIIGBF_THUMBNAILONLY };
+            let flags = if cached_only {
+                SIIGBF_THUMBNAILONLY | SIIGBF_INCACHEONLY
+            } else {
+                SIIGBF_THUMBNAILONLY
+            };
             let side = size as i32;
             let bitmap = factory.GetImage(SIZE { cx: side, cy: side }, flags)?;
             let pixels = read(bitmap, false);
@@ -598,12 +708,22 @@ mod win {
             static CACHE: std::cell::OnceCell<Option<IThumbnailCache>> = const { std::cell::OnceCell::new() };
         }
         unsafe {
-            let Some(cache) = CACHE.with(|c| c.get_or_init(|| CoCreateInstance(&LocalThumbnailCache, None, CLSCTX_INPROC_SERVER).ok()).clone()) else {
+            let Some(cache) = CACHE.with(|c| {
+                c.get_or_init(|| CoCreateInstance(&LocalThumbnailCache, None, CLSCTX_INPROC_SERVER).ok())
+                    .clone()
+            }) else {
                 return from_shell(path, size, false);
             };
             let item: IShellItem = SHCreateItemFromParsingName(&HSTRING::from(path), None::<&IBindCtx>)?;
             let mut shared: Option<ISharedBitmap> = None;
-            cache.GetThumbnail(&item, size, WTS_EXTRACTINPROC | WTS_SCALETOREQUESTEDSIZE, Some(&mut shared), None, None)?;
+            cache.GetThumbnail(
+                &item,
+                size,
+                WTS_EXTRACTINPROC | WTS_SCALETOREQUESTEDSIZE,
+                Some(&mut shared),
+                None,
+                None,
+            )?;
             let shared = shared.ok_or_else(|| windows::core::Error::from(E_FAIL))?;
             // The bitmap stays the shared bitmap's.
             let opaque = shared.GetFormat().is_ok_and(|format| format == WTSAT_RGB);
@@ -618,7 +738,12 @@ mod win {
     /// its own.
     pub fn photo_provider(path: &str) -> bool {
         static KNOWN: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
-        let Some(ext) = Path::new(path).extension().map(|e| format!(".{}", e.to_string_lossy().to_lowercase())) else { return false };
+        let Some(ext) = Path::new(path)
+            .extension()
+            .map(|e| format!(".{}", e.to_string_lossy().to_lowercase()))
+        else {
+            return false;
+        };
         if !BUILT_IN.contains(&ext.as_str()) {
             return false;
         }
@@ -627,7 +752,9 @@ mod win {
             return photo;
         }
         let photo = handler(&ext).is_some_and(|h| h.eq_ignore_ascii_case(PHOTO_PROVIDER))
-            && user_choice(&ext).and_then(|prog_id| handler(&prog_id)).is_none_or(|h| h.eq_ignore_ascii_case(PHOTO_PROVIDER));
+            && user_choice(&ext)
+                .and_then(|prog_id| handler(&prog_id))
+                .is_none_or(|h| h.eq_ignore_ascii_case(PHOTO_PROVIDER));
         known.lock().unwrap_or_else(|e| e.into_inner()).insert(ext, photo);
         photo
     }
@@ -640,7 +767,12 @@ mod win {
     /// per extension.
     pub fn own_thumbnail(path: &str) -> bool {
         static KNOWN: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
-        let Some(ext) = Path::new(path).extension().map(|e| format!(".{}", e.to_string_lossy().to_lowercase())) else { return false };
+        let Some(ext) = Path::new(path)
+            .extension()
+            .map(|e| format!(".{}", e.to_string_lossy().to_lowercase()))
+        else {
+            return false;
+        };
         if !OWN.contains(&ext.as_str()) {
             return false;
         }
@@ -681,7 +813,10 @@ mod win {
                     let stream = InMemoryRandomAccessStream::new()?;
                     page.RenderWithOptionsToStreamAsync(&stream, &options)?.join()?;
                     stream.Seek(0)?;
-                    let bitmap = BitmapDecoder::CreateAsync(&stream)?.join()?.GetSoftwareBitmapConvertedAsync(BitmapPixelFormat::Bgra8, BitmapAlphaMode::Straight)?.join()?;
+                    let bitmap = BitmapDecoder::CreateAsync(&stream)?
+                        .join()?
+                        .GetSoftwareBitmapConvertedAsync(BitmapPixelFormat::Bgra8, BitmapAlphaMode::Straight)?
+                        .join()?;
                     let (width, height) = (bitmap.PixelWidth()? as u32, bitmap.PixelHeight()? as u32);
                     let buffer = Buffer::Create(width * height * 4)?;
                     bitmap.CopyToBuffer(&buffer)?;
@@ -698,29 +833,58 @@ mod win {
     fn handler(assoc: &str) -> Option<String> {
         let mut buf = [0u16; 64];
         let mut len = buf.len() as u32;
-        let hr = unsafe { AssocQueryStringW(ASSOCF_NONE, ASSOCSTR_SHELLEXTENSION, &HSTRING::from(assoc), &HSTRING::from(THUMBNAIL_PROVIDER), Some(PWSTR(buf.as_mut_ptr())), &mut len) };
-        hr.is_ok().then(|| String::from_utf16_lossy(&buf[..(len as usize).saturating_sub(1)]))
+        let hr = unsafe {
+            AssocQueryStringW(
+                ASSOCF_NONE,
+                ASSOCSTR_SHELLEXTENSION,
+                &HSTRING::from(assoc),
+                &HSTRING::from(THUMBNAIL_PROVIDER),
+                Some(PWSTR(buf.as_mut_ptr())),
+                &mut len,
+            )
+        };
+        hr.is_ok()
+            .then(|| String::from_utf16_lossy(&buf[..(len as usize).saturating_sub(1)]))
     }
 
     /// The ProgID of the app chosen in Windows' "Open with" for `ext`, if one was.
     fn user_choice(ext: &str) -> Option<String> {
-        let key = HSTRING::from(format!(r"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\{ext}\UserChoice"));
+        let key = HSTRING::from(format!(
+            r"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\{ext}\UserChoice"
+        ));
         let mut buf = [0u16; 260];
         let mut bytes = (buf.len() * 2) as u32;
-        let found = unsafe { RegGetValueW(HKEY_CURRENT_USER, &key, &HSTRING::from("ProgId"), RRF_RT_REG_SZ, None, Some(buf.as_mut_ptr() as *mut _), Some(&mut bytes)) };
+        let found = unsafe {
+            RegGetValueW(
+                HKEY_CURRENT_USER,
+                &key,
+                &HSTRING::from("ProgId"),
+                RRF_RT_REG_SZ,
+                None,
+                Some(buf.as_mut_ptr() as *mut _),
+                Some(&mut bytes),
+            )
+        };
         // A name too long for the buffer fails with the length it needs, so it's read only once found.
         if found.is_err() {
             return None;
         }
         let units = (bytes as usize / 2).min(buf.len());
-        let text = String::from_utf16_lossy(&buf[..units]).trim_end_matches('\0').to_string();
+        let text = String::from_utf16_lossy(&buf[..units])
+            .trim_end_matches('\0')
+            .to_string();
         (!text.is_empty()).then_some(text)
     }
 
     /// The bitmap's pixels as straight-alpha BGRA (`opaque` when it's known to have no alpha).
     unsafe fn read(bitmap: HBITMAP, opaque: bool) -> Option<Pixels> {
         let mut info = BITMAP::default();
-        if GetObjectW(HGDIOBJ(bitmap.0), size_of::<BITMAP>() as i32, Some(&mut info as *mut _ as *mut _)) == 0 {
+        if GetObjectW(
+            HGDIOBJ(bitmap.0),
+            size_of::<BITMAP>() as i32,
+            Some(&mut info as *mut _ as *mut _),
+        ) == 0
+        {
             return None;
         }
         let (width, height) = (info.bmWidth, info.bmHeight.abs());
@@ -741,7 +905,15 @@ mod win {
         };
         let mut bgra = vec![0u8; width as usize * height as usize * 4];
         let dc = CreateCompatibleDC(None);
-        let lines = GetDIBits(dc, bitmap, 0, height as u32, Some(bgra.as_mut_ptr() as *mut _), &mut header, DIB_RGB_COLORS);
+        let lines = GetDIBits(
+            dc,
+            bitmap,
+            0,
+            height as u32,
+            Some(bgra.as_mut_ptr() as *mut _),
+            &mut header,
+            DIB_RGB_COLORS,
+        );
         let _ = DeleteDC(dc);
         if lines != height {
             return None;
@@ -751,7 +923,11 @@ mod win {
         } else {
             straighten_alpha(&mut bgra);
         }
-        Some(Pixels { width: width as u32, height: height as u32, bgra })
+        Some(Pixels {
+            width: width as u32,
+            height: height as u32,
+            bgra,
+        })
     }
 }
 
@@ -760,16 +936,29 @@ mod tests {
     use super::*;
 
     fn key(path: &str) -> Key {
-        Key { path: path.into(), size: 96, modified: 1, bytes: 2 }
+        Key {
+            path: path.into(),
+            size: 96,
+            modified: 1,
+            bytes: 2,
+        }
     }
 
     fn waiter(lane: &str, seq: u32, reply: u32) -> Waiter<u32> {
-        Waiter { lane: lane.into(), seq, reply }
+        Waiter {
+            lane: lane.into(),
+            seq,
+            reply,
+        }
     }
 
     /// A picture of one "pixel" of these bytes.
     fn px(bgra: &[u8]) -> Pixels {
-        Pixels { width: 1, height: 1, bgra: bgra.to_vec() }
+        Pixels {
+            width: 1,
+            height: 1,
+            bgra: bgra.to_vec(),
+        }
     }
 
     fn bgra(thumb: &Thumb) -> &[u8] {
@@ -777,7 +966,10 @@ mod tests {
     }
 
     fn found() -> Outcome {
-        Outcome::Found { pixels: px(&[1, 2, 3]), ms: 1.5 }
+        Outcome::Found {
+            pixels: px(&[1, 2, 3]),
+            ms: 1.5,
+        }
     }
 
     #[test]
@@ -795,7 +987,10 @@ mod tests {
         let make = q.next(true).unwrap();
         assert_eq!((make.path.as_str(), make.phase), ("A", Phase::Make));
         let (thumb, replies) = q.finish(&make.key, found()).unwrap();
-        assert_eq!((thumb.pixels.is_some(), thumb.source, replies), (true, ThumbFrom::Made, vec![10]));
+        assert_eq!(
+            (thumb.pixels.is_some(), thumb.source, replies),
+            (true, ThumbFrom::Made, vec![10])
+        );
         // Kept in memory for the next request.
         assert_eq!(bgra(&q.memory.get(&key("a")).unwrap()), [1, 2, 3]);
         let (thumb, replies) = q.finish(&b.key, found()).unwrap();
@@ -853,30 +1048,73 @@ mod tests {
         q.want(key("a"), "A".into(), false, waiter("tab1", 1, 1));
         let task = q.next(false).unwrap();
         // Windows has the list's little one: a tile's is made at its own size.
-        assert!(q.finish(&task.key, Outcome::Smaller { pixels: px(&[9]), ms: 1.0 }).is_none(), "on to be made");
+        assert!(
+            q.finish(
+                &task.key,
+                Outcome::Smaller {
+                    pixels: px(&[9]),
+                    ms: 1.0
+                }
+            )
+            .is_none(),
+            "on to be made"
+        );
         let make = q.next(true).unwrap();
         assert_eq!((make.path.as_str(), make.phase), ("A", Phase::Make));
         let (thumb, replies) = q.finish(&make.key, found()).unwrap();
-        assert_eq!((thumb.source, bgra(&thumb), replies), (ThumbFrom::Made, &[1, 2, 3][..], vec![1]));
+        assert_eq!(
+            (thumb.source, bgra(&thumb), replies),
+            (ThumbFrom::Made, &[1, 2, 3][..], vec![1])
+        );
         // Making it fails: the smaller one will do.
         q.want(key("b"), "B".into(), false, waiter("tab1", 2, 2));
         let task = q.next(false).unwrap();
-        q.finish(&task.key, Outcome::Smaller { pixels: px(&[9]), ms: 1.0 });
+        q.finish(
+            &task.key,
+            Outcome::Smaller {
+                pixels: px(&[9]),
+                ms: 1.0,
+            },
+        );
         let make = q.next(true).unwrap();
         let (thumb, _) = q.finish(&make.key, Outcome::Nothing { lasting: true }).unwrap();
-        assert_eq!((thumb.pixels.is_some(), thumb.source, bgra(&thumb)), (true, ThumbFrom::Cache, &[9][..]));
+        assert_eq!(
+            (thumb.pixels.is_some(), thumb.source, bgra(&thumb)),
+            (true, ThumbFrom::Cache, &[9][..])
+        );
         assert!(q.memory.get(&key("b")).is_some_and(|t| t.pixels.is_some()));
         // Online-only files aren't made (that would download them), and nothing's kept for later.
         q.want(key("c"), "C".into(), true, waiter("tab1", 3, 3));
         let task = q.next(false).unwrap();
-        let (thumb, replies) = q.finish(&task.key, Outcome::Smaller { pixels: px(&[9]), ms: 1.0 }).unwrap();
-        assert_eq!((thumb.pixels.is_some(), thumb.source, replies), (true, ThumbFrom::Cache, vec![3]));
+        let (thumb, replies) = q
+            .finish(
+                &task.key,
+                Outcome::Smaller {
+                    pixels: px(&[9]),
+                    ms: 1.0,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            (thumb.pixels.is_some(), thumb.source, replies),
+            (true, ThumbFrom::Cache, vec![3])
+        );
         assert!(q.memory.get(&key("c")).is_none());
         // Nobody waits any more: not kept either, so the next tile to ask has it made.
         q.want(key("d"), "D".into(), false, waiter("tab1", 4, 4));
         let task = q.next(false).unwrap();
         q.cancel("tab1", None, 4);
-        assert_eq!(q.finish(&task.key, Outcome::Smaller { pixels: px(&[9]), ms: 1.0 }).map(|(_, r)| r), Some(vec![]));
+        assert_eq!(
+            q.finish(
+                &task.key,
+                Outcome::Smaller {
+                    pixels: px(&[9]),
+                    ms: 1.0
+                }
+            )
+            .map(|(_, r)| r),
+            Some(vec![])
+        );
         assert!(q.memory.get(&key("d")).is_none());
     }
 
@@ -885,7 +1123,9 @@ mod tests {
         // Windows' 32 and 256 px versions, for a 120 px tile and a 320 px one.
         assert!(from_smaller_size(32, 20, 120) && from_smaller_size(256, 160, 320) && from_smaller_size(60, 96, 120));
         // What was asked for, and pictures that are that small themselves.
-        assert!(!from_smaller_size(120, 75, 120) && !from_smaller_size(200, 150, 320) && !from_smaller_size(96, 60, 96));
+        assert!(
+            !from_smaller_size(120, 75, 120) && !from_smaller_size(200, 150, 320) && !from_smaller_size(96, 60, 96)
+        );
     }
 
     #[test]
@@ -894,7 +1134,10 @@ mod tests {
         q.want(key("a"), "A".into(), true, waiter("tab1", 1, 1));
         let task = q.next(true).unwrap();
         let (thumb, replies) = q.finish(&task.key, Outcome::NotCached).unwrap();
-        assert_eq!((thumb.pixels.is_some(), thumb.lasting, replies), (false, false, vec![1]));
+        assert_eq!(
+            (thumb.pixels.is_some(), thumb.lasting, replies),
+            (false, false, vec![1])
+        );
         // Not remembered: once the file is downloaded (or Windows has its thumbnail), it's asked again.
         assert!(q.memory.get(&key("a")).is_none());
         // Someone who may download it (the same file, not online-only any more) gets it made.
@@ -939,7 +1182,10 @@ mod tests {
         let thumb = Thumb::found(px(&[1, 2, 3, 255]), ThumbFrom::Made, 2.5);
         let answer = thumb.answer(ThumbFrom::Memory);
         assert_eq!((answer.from, answer.ms, answer.lasting), (ThumbFrom::Memory, 2.5, true));
-        assert!(Arc::ptr_eq(answer.pixels.as_ref().unwrap(), thumb.pixels.as_ref().unwrap()), "shared, not copied");
+        assert!(
+            Arc::ptr_eq(answer.pixels.as_ref().unwrap(), thumb.pixels.as_ref().unwrap()),
+            "shared, not copied"
+        );
         // None yet: the window asks again next time.
         let none = Thumb::none(false).answer(ThumbFrom::Cache);
         assert!(none.pixels.is_none() && !none.lasting);
@@ -970,16 +1216,27 @@ mod tests {
         let wallpaper = r"C:\Windows\Web\Wallpaper\Windows\img0.jpg";
         if std::path::Path::new(wallpaper).exists() {
             let made = win::outcome(wallpaper, 96, false);
-            let Outcome::Found { pixels, .. } = made else { panic!("no thumbnail of {wallpaper}: {made:?}") };
+            let Outcome::Found { pixels, .. } = made else {
+                panic!("no thumbnail of {wallpaper}: {made:?}")
+            };
             let (width, height) = (pixels.width, pixels.height);
             assert!(width == 96 && (40..=96).contains(&height), "{width}x{height}");
             assert_eq!(pixels.bgra.len(), (width * height * 4) as usize);
-            assert!(matches!(win::outcome(wallpaper, 96, true), Outcome::Found { .. }), "cached now");
+            assert!(
+                matches!(win::outcome(wallpaper, 96, true), Outcome::Found { .. }),
+                "cached now"
+            );
         }
-        assert!(matches!(win::outcome(r"C:\Windows\win.ini", 96, false), Outcome::Nothing { lasting: true }));
+        assert!(matches!(
+            win::outcome(r"C:\Windows\win.ini", 96, false),
+            Outcome::Nothing { lasting: true }
+        ));
         // Only photo types are made in this process; text files have no handler, nameless ones no type.
         assert!(!win::photo_provider(r"C:\Windows\win.ini") && !win::photo_provider(r"C:\Windows\no-extension"));
-        assert!(matches!(win::outcome(r"C:\no\such\file.jpg", 96, true), Outcome::Nothing { lasting: true }));
+        assert!(matches!(
+            win::outcome(r"C:\no\such\file.jpg", 96, true),
+            Outcome::Nothing { lasting: true }
+        ));
     }
 
     #[cfg(windows)]
@@ -1004,7 +1261,10 @@ mod tests {
         for offset in offsets {
             pdf += &format!("{offset:010} 00000 n \n");
         }
-        pdf += &format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objects.len() + 1);
+        pdf += &format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+            objects.len() + 1
+        );
         let dir = std::env::temp_dir().join(format!("glint-thumbs-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("page.pdf");
@@ -1013,13 +1273,20 @@ mod tests {
         let missing = win::pdf_page(dir.join("nope.pdf").to_str().unwrap(), 96);
         let _ = std::fs::remove_dir_all(&dir);
         let page = page.unwrap();
-        assert_eq!((page.width, page.height), (96, 48), "the long side at the size asked, the shape kept");
+        assert_eq!(
+            (page.width, page.height),
+            (96, 48),
+            "the long side at the size asked, the shape kept"
+        );
         assert_eq!(page.bgra.len(), 96 * 48 * 4);
         let pixel = |x: usize, y: usize| &page.bgra[(y * 96 + x) * 4..][..4];
         // The page is white, the rectangle on it blue (BGRA, opaque).
         assert_eq!(pixel(2, 2), [255, 255, 255, 255]);
         let middle = pixel(48, 24);
-        assert!(middle[0] > 200 && middle[1] < 60 && middle[2] < 60 && middle[3] == 255, "{middle:?}");
+        assert!(
+            middle[0] > 200 && middle[1] < 60 && middle[2] < 60 && middle[3] == 255,
+            "{middle:?}"
+        );
         assert!(missing.is_err());
     }
 }
