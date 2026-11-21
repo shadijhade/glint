@@ -83,6 +83,8 @@ windows = { workspace = true, features = [
     # The updater: other Glint processes on the way out (a process snapshot), and whether the connection is metered.
     "Win32_System_Diagnostics_ToolHelp",
     "Networking_Connectivity",
+    "Devices_Haptics",
+    "Devices_Enumeration",
 ] }
 
 # Headless window tests (gpui-kit's test module) need gpui-kit's test-support feature. It is a dev-dependency
