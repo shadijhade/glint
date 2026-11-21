@@ -8,6 +8,19 @@ The plan for 0.12 that was here is in git history (`git show df1245a:NEXT_RELEAS
 before it (`git show 47c33fa:NEXT_RELEASE.md`), and 0.13's own plan, the menu and the dock that know the selection,
 is [docs/gpui/aware/PLAN.md](docs/gpui/aware/PLAN.md) with its task cards beside it.*
 
+## 0.15.1: updates that finish, and Space while renaming
+
+- People couldn't update to 0.15.0: the setup stopped at "Error opening file for writing: …\Glint\rg.exe". An rg (or fd)
+  that a closed or killed Glint had left running (a search still going, or one an AI agent's `Glint.exe mcp` asked for)
+  held the file. The in-app update stopped the app's own searches first, but nothing ended processes Glint no longer
+  tracked. Now the setup and the uninstaller close exactly the processes using `$INSTDIR\rg.exe` and `fd.exe` with
+  Restart Manager, after Glint itself is closed (`GLINT_CLOSE_TOOLS` in installer/hooks.nsh); another program's rg.exe
+  stays. And Glint starts rg and fd in a job that ends them when it ends (`proc::spawn_tool`); a winget install is
+  left out of it, so closing Glint doesn't cut one off.
+- Space in the rename box opened Quick Look: the list binds Space, and the box is inside the list. The box's context
+  binds Space and Shift+Delete to `NoAction`, which outranks the list's bindings, so Space types a space and
+  Shift+Delete deletes no file (`file_list/rename.rs`, for the list's and the grid's boxes).
+
 ## In 0.15.0
 
 Built on 2026-11-21, in the five commits from `d792e5b` to `77e7d69`: Time Machine (`Ctrl+Shift+H`), live portals
