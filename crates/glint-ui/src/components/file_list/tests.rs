@@ -472,6 +472,41 @@ fn enter_in_the_rename_box_commits_and_does_not_open_the_item(cx: &mut TestAppCo
     assert!(ui.explorer.read_with(&ui.visual, |e, _| e.quick_look));
 }
 
+/// Space in the rename box types a space. The list binds Space to Quick Look and the box is inside the list, so
+/// that binding won and Quick Look opened (the workspace handles it); the box's context switches it off. This
+/// window has no workspace to open Quick Look, so what the keymap gives Space under the box is what shows it.
+#[gpui_kit::test]
+fn space_in_the_rename_box_types_a_space_not_quick_look(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut ui = open(cx, &small_disk(), "C:\\x");
+    // What the keymap runs for `key` where the keyboard is now.
+    let bound = |ui: &mut Ui, key: &'static str| -> Vec<gpui_kit::KeyBinding> {
+        ui.visual.update(|window, cx| {
+            let stack = window.context_stack();
+            let keystroke = gpui_kit::Keystroke::parse(key).unwrap();
+            cx.key_bindings().borrow().bindings_for_input(&[keystroke], &stack).0.into_vec()
+        })
+    };
+    let quick_look = |bindings: &[gpui_kit::KeyBinding]| bindings.iter().any(|b| b.action().as_any().is::<crate::actions::QuickLook>());
+    ui.click(0);
+    assert!(quick_look(&bound(&mut ui, "space")), "in the list, Space is Quick Look");
+    ui.rename(Some("C:\\x\\alpha.txt"));
+    assert!(!quick_look(&bound(&mut ui, "space")), "in the rename box, Space is typing");
+    assert!(bound(&mut ui, "shift-delete").is_empty(), "Shift+Delete in the rename box deletes nothing");
+    // "alpha" is selected: typing replaces it, with a space in the middle.
+    ui.visual.update(|window, cx| window.input("my", cx));
+    ui.press("space");
+    ui.visual.update(|window, cx| window.input("file", cx));
+    ui.press("enter");
+    assert_eq!(
+        ui.events(),
+        [FileListEvent::CommitRename {
+            path: "C:\\x\\alpha.txt".into(),
+            name: "my file.txt".into()
+        }]
+    );
+}
+
 #[gpui_kit::test]
 fn the_list_takes_the_keyboard_back_when_the_rename_box_closes(cx: &mut TestAppContext) {
     let _guard = testing::lock();

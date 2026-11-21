@@ -29,6 +29,10 @@ impl Global for Bound {}
 /// Binds Tab and Shift+Tab in the rename box, once per app. They are bound here, not in `actions::BINDINGS`: they
 /// mean something only inside the box, and the shortcut sheet lists commands. The box's own context comes first
 /// (`RenameBox > Input`), which is deeper than the root's Tab (the next control) and so wins over it.
+///
+/// The list's own keys that are typing in the box are switched off there the same way (`NoAction` outranks the
+/// list's binding): Space is a space in a name, not Quick Look (it opened Quick Look instead, as the list binds it
+/// and the box is inside the list), and Shift+Delete deletes no file while a name is being typed.
 pub fn ensure_bound(cx: &mut App) {
     if cx.has_global::<Bound>() {
         return;
@@ -37,6 +41,8 @@ pub fn ensure_bound(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("tab", RenameNext, Some("RenameBox > Input")),
         KeyBinding::new("shift-tab", RenamePrevious, Some("RenameBox > Input")),
+        KeyBinding::new("space", NoAction, Some("RenameBox > Input")),
+        KeyBinding::new("shift-delete", NoAction, Some("RenameBox > Input")),
     ]);
 }
 
