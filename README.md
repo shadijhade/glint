@@ -62,7 +62,7 @@ Glint needs Windows 10 or 11, 64-bit, and nothing else: it draws its own window,
 
 ## What's new
 
-**0.15.0** (coming soon) gives files a past, a place on the map and links that follow them. **Time Machine** steps through a folder's history, **live portals** open archives, Git commits and backups as real folders for every app, and a `glint://` link finds a file wherever it moves on its drive.
+**0.15.0** (November 21, 2026) gives files a past, a place on the map and links that follow them. **Time Machine** steps through a folder's history, **live portals** open archives, Git commits and backups as real folders for every app, and a `glint://` link finds a file wherever it moves on its drive.
 
 -   **Time Machine.** `Ctrl+Shift+H` lays a folder's past out on one timeline, from Windows' shadow copies, its Git commits, its restic backups and the drive's change journal: see what was deleted, changed or added since, and restore it (a file a restore would replace goes to the Recycle Bin first).
 -   **Live portals.** **Mount as live folder** turns an archive, a saved search, a Git commit or a restic snapshot into a real folder in your user folder, through Windows' Cloud Files API, so any app can open what's in it; a file is read from its source only when an app opens it.
