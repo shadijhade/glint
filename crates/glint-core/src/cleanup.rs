@@ -385,7 +385,7 @@ fn fd_paths(flags: &[&str], pattern: Option<&str>, roots: &[String], skip: &[&st
         None => roots.iter().fold(&mut command, |c, root| c.arg("--search-path").arg(root)),
     };
     command.env_remove("MSYSTEM").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
-    let mut child = command.spawn().map_err(|e| format!("Failed to start fd: {e}"))?;
+    let mut child = crate::proc::spawn_tool(&mut command).map_err(|e| format!("Failed to start fd: {e}"))?;
     let stdout = child.stdout.take().ok_or("Failed to open fd's output")?;
     let pid = run.child.replace(child);
     let mut found = Vec::new();

@@ -123,7 +123,26 @@ pub fn wait_stopped() {
     }
 }
 
-/// A bundled CLI tool (`rg`, `fd`), run without a console window.
+/// Starts a bundled tool's `command` in a Windows job that ends it when Glint ends, however Glint ends: an rg
+/// or fd still running after Glint was closed or killed (a search going on, or one an AI agent asked for) held
+/// its exe, and an update's setup couldn't write it ("Error opening file for writing"). Only rg and fd go in it:
+/// a winget install mustn't be cut off because Glint closed.
+pub fn spawn_tool(command: &mut Command) -> std::io::Result<Child> {
+    let child = command.spawn()?;
+    if let Some(job) = helpers() {
+        // A process Windows won't move (one already gone) just stays out.
+        let _ = job.assign(&child);
+    }
+    Ok(child)
+}
+
+/// The job [`spawn_tool`] puts rg and fd in: held until Glint ends, when Windows ends what's in it.
+fn helpers() -> Option<&'static Job> {
+    static HELPERS: std::sync::LazyLock<Option<Job>> = std::sync::LazyLock::new(|| Job::ending().ok());
+    HELPERS.as_ref()
+}
+
+/// A bundled CLI tool (`rg`, `fd`), run without a console window. Start it with [`spawn_tool`].
 pub fn tool(name: &str) -> Result<Command, String> {
     let (exe, _) = locate(name).ok_or_else(|| format!("{name}.exe is missing next to the app; reinstall the app"))?;
     let mut command = Command::new(exe);
@@ -244,8 +263,9 @@ fn in_winget_packages(packages: &std::path::Path, package: &str, file: &str) -> 
 /// end does, however it ends.
 pub(crate) struct Job(windows::Win32::Foundation::HANDLE);
 
-// The handle is only closed, once, by its owner.
+// The handle is only closed, once, by its owner, and assigning to it from any thread is what Windows allows.
 unsafe impl Send for Job {}
+unsafe impl Sync for Job {}
 
 impl Job {
     /// One that also holds its process to `memory` and to no child processes of its own: jq's, and
@@ -303,6 +323,31 @@ pub(crate) fn no_window(command: &mut Command) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// rg started for a search is in the job that ends it with Glint: one left running held rg.exe, and an
+    /// update's setup couldn't replace it.
+    #[test]
+    fn rg_and_fd_end_with_glint() {
+        use std::os::windows::io::AsRawHandle;
+        use std::process::Stdio;
+        // rg waits for what it reads on its standard input until that closes, so it runs while this looks.
+        let mut command = tool("rg").unwrap();
+        command.arg("never-there").stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null());
+        let mut child = spawn_tool(&mut command).unwrap();
+        let job = helpers().expect("the helpers' job");
+        let mut inside = windows::core::BOOL::default();
+        let looked = unsafe {
+            windows::Win32::System::JobObjects::IsProcessInJob(
+                windows::Win32::Foundation::HANDLE(child.as_raw_handle()),
+                Some(job.0),
+                &mut inside,
+            )
+        };
+        let _ = child.kill();
+        let _ = child.wait();
+        looked.unwrap();
+        assert!(inside.as_bool(), "rg isn't in the job that ends it with Glint");
+    }
 
     #[test]
     fn where_a_program_is_kept_and_checked_and_forgotten_after_an_install() {

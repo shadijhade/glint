@@ -101,6 +101,26 @@ Var OldDesktopShortcut
   !insertmacro GLINT_INSTALL_TOOLS
 !macroend
 
+; rg and fd beside Glint, left running by a Glint that ended without stopping them (a search still going when
+; it was closed or killed, or one an AI agent's Glint asked for), hold their files, and the setup couldn't write
+; them ("Error opening file for writing: ...\rg.exe"): updates stopped there. After Glint itself is closed
+; (CheckIfAppIsRunning), Restart Manager finds the processes using exactly these files, so other programs' own
+; rg.exe (VS Code's) are left alone, and ends them without asking: they're Glint's helpers, and the next search
+; starts them again. Since 0.15.1 Glint also ends them itself as it ends (proc::spawn_tool).
+!macro GLINT_CLOSE_TOOLS
+  !insertmacro RestartManager_StartSession $R0
+  ${If} $R0 != ""
+    !insertmacro RestartManager_RegisterFile $R0 "$INSTDIR\rg.exe"
+    ${If} $0 = 0
+      !insertmacro RestartManager_RegisterFile $R0 "$INSTDIR\fd.exe"
+    ${EndIf}
+    ${If} $0 = 0
+      System::Call 'RSTRTMGR::RmShutdown(p R0, i ${RmForceShutdown}, p 0) i .r0'
+    ${EndIf}
+    !insertmacro RestartManager_EndSession $R0
+  ${EndIf}
+!macroend
+
 ; File Explorer's "Open in Glint" entries, opening folders in Glint by default and Win+E, which the
 ; app's settings add under HKCU\Software\Classes (verbs.rs in glint-core). Uninstalling removes them where
 ; they run this copy and puts back what folders opened with, and the keys above them go once empty.

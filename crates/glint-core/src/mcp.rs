@@ -364,13 +364,15 @@ fn search_files(args: &Value) -> Result<Value, String> {
     }
     if !left.is_empty() && found.len() < limit {
         let options = crate::find::FindOptions { hidden, respect_ignore: false, exclude, max_results: Some(limit - found.len()), fuzzy: false, rank: false };
-        let output = crate::proc::tool("fd")?
-            .args(crate::find::fd_args(&query, &left, &options)?)
+        let mut fd = crate::proc::tool("fd")?;
+        fd.args(crate::find::fd_args(&query, &left, &options)?)
             // fd prints "/" separators when it thinks it runs under MSYS.
             .env_remove("MSYSTEM")
             .stdin(Stdio::null())
-            .stderr(Stdio::null())
-            .output()
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        let output = crate::proc::spawn_tool(&mut fd)
+            .and_then(|child| child.wait_with_output())
             .map_err(|e| format!("Couldn't start fd: {e}"))?;
         let before = found.len();
         for line in String::from_utf8_lossy(&output.stdout).lines() {
@@ -499,13 +501,9 @@ fn search_text(args: &Value) -> Result<Value, String> {
         exclusions: vec!["node_modules".into(), ".git".into()],
         everything: false,
     };
-    let mut child = crate::proc::tool("rg")?
-        .args(crate::rg_args(&request, &folder))
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Couldn't start ripgrep: {e}"))?;
+    let mut rg = crate::proc::tool("rg")?;
+    rg.args(crate::rg_args(&request, &folder)).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = crate::proc::spawn_tool(&mut rg).map_err(|e| format!("Couldn't start ripgrep: {e}"))?;
     let stdout = child.stdout.take().ok_or("Couldn't read ripgrep's output")?;
     let (mut matches, mut more) = (Vec::new(), false);
     for line in BufReader::new(stdout).lines().map_while(Result::ok) {

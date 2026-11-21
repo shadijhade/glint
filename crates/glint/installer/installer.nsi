@@ -451,6 +451,8 @@ Section Install
   !insertmacro NSIS_HOOK_PREINSTALL
 
   !insertmacro CheckIfAppIsRunning "$INSTDIR\${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
+  ; rg and fd a closed Glint left running (hooks.nsh)
+  !insertmacro GLINT_CLOSE_TOOLS
 
   ; Copy main executable
   File "${STAGE}\${MAINBINARYNAME}.exe"
@@ -565,6 +567,8 @@ Section Uninstall
   !insertmacro NSIS_HOOK_PREUNINSTALL
 
   !insertmacro CheckIfAppIsRunning "$INSTDIR\${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
+  ; rg and fd a closed Glint left running (hooks.nsh)
+  !insertmacro GLINT_CLOSE_TOOLS
 
   ; Delete the app directory and its content from disk
   ; Copy main executable

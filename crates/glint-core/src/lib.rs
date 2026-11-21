@@ -412,7 +412,7 @@ pub async fn run_ripgrep_batched(
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        let child = command.spawn().map_err(|e| format!("Failed to start ripgrep: {e}"))?;
+        let child = proc::spawn_tool(&mut command).map_err(|e| format!("Failed to start ripgrep: {e}"))?;
         stream_search(window, search_id, child, max_results, search, ticket)?;
         Ok(folder)
     })
