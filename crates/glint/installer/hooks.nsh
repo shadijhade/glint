@@ -150,8 +150,8 @@ Var OldDesktopShortcut
   System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
 !macroend
 
-; Uninstalling the app removes File Explorer's entries for it, starting with Windows, and the service
-; and its index files (an update keeps them all).
+; Uninstalling the app removes File Explorer's entries for it, starting with Windows, glint:// links, the
+; Live Portals, and the service and its index files (an update keeps them all).
 !macro NSIS_HOOK_PREUNINSTALL
   ${If} $UpdateMode <> 1
     !insertmacro GLINT_REMOVE_EXPLORER_VERBS
@@ -163,6 +163,15 @@ Var OldDesktopShortcut
     ${If} $R0 == $R1
       DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCTNAME}"
     ${EndIf}
+    ; glint:// links (permalinks.rs in glint-core), where they open this copy.
+    ReadRegStr $R0 HKCU "Software\Classes\glint\shell\open\command" ""
+    StrCpy $R0 $R0 $R2
+    ${If} $R0 == $R1
+      DeleteRegKey HKCU "Software\Classes\glint"
+    ${EndIf}
+    ; Live Portals and the remotes shown in File Explorer (portals.rs): no program would be left to fill
+    ; their placeholders in.
+    ExecWait '"$INSTDIR\${MAINBINARYNAME}.exe" portals remove'
     nsExec::ExecToStack 'sc.exe query ShadUIRipgrepIndex'
     Pop $0
     Pop $1

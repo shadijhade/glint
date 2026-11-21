@@ -35,6 +35,13 @@
             <desktop:ExecutionAlias Alias="glint.exe" />
           </uap3:AppExecutionAlias>
         </uap3:Extension>
+        <!-- glint:// links (permalinks.rs), which launch.rs reads from the command line: Windows keeps
+             a packaged copy's registry writes to itself, so the package declares them. -->
+        <uap3:Extension Category="windows.protocol">
+          <uap3:Protocol Name="glint" Parameters="&quot;%1&quot;">
+            <uap:DisplayName>Glint link</uap:DisplayName>
+          </uap3:Protocol>
+        </uap3:Extension>
         <!-- Start with Windows, in the tray (quick.rs, startup_task): off until it's turned on. -->
         <desktop:Extension Category="windows.startupTask" Executable="Glint.exe" EntryPoint="Windows.FullTrustApplication" uap10:Parameters="--tray">
           <desktop:StartupTask TaskId="GlintTray" Enabled="false" DisplayName="Glint" />

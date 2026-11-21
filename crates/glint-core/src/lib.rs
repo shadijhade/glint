@@ -733,6 +733,7 @@ pub fn worker() -> Option<i32> {
         .or_else(remote::askpass)
         .or_else(mcp::server)
         .or_else(tools::cli)
+        .or_else(portals::cli)
 }
 
 #[cfg(test)]

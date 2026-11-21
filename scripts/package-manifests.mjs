@@ -100,10 +100,10 @@ ${footer("defaultLocale")}`,
 // once it has quit, then it starts again (crates/glint-ui/src/updater/scoop.rs), so Scoop's record stays right.
 // Uninstalling it (not updating: Scoop's $cmd tells them apart) does what the setup's uninstaller does.
 //
-// File Explorer's entries: a Scoop copy adds them running Glint through the app's `current` link, which
-// updates keep (crates/glint-core/src/verbs.rs). Uninstalling takes them out as GLINT_REMOVE_EXPLORER_VERBS does
-// for the setup's copies (crates/glint/installer/hooks.nsh); verbs.rs tests it against what turning the
-// options on adds.
+// File Explorer's entries and glint:// links: a Scoop copy adds them running Glint through the app's `current`
+// link, which updates keep (crates/glint-core/src/verbs.rs, permalinks.rs). Uninstalling takes them out as the
+// setup's uninstaller does for its copies (crates/glint/installer/hooks.nsh); verbs.rs tests it against what
+// turning the options on and starting Glint add.
 const removeExplorerVerbs = String.raw`
 # File Explorer's 'Open in Glint', opening folders in Glint by default and Win+E (Settings > Files) run Glint through 'current'.
 # Uninstalling (not updating) removes them where they run this copy, puts back what folders opened with before, and
@@ -160,6 +160,13 @@ if ($cmd -eq 'uninstall') {
         Add-Type -Namespace GlintScoop -Name Shell -MemberDefinition '[DllImport("shell32.dll")] public static extern void SHChangeNotify(int eventId, uint flags, IntPtr item1, IntPtr item2);'
         [GlintScoop.Shell]::SHChangeNotify(0x08000000, 0, [IntPtr]::Zero, [IntPtr]::Zero)
     }
+    # glint:// links (permalinks.rs), where they open this copy.
+    $command = $classes.OpenSubKey('glint\shell\open\command')
+    if ($command) {
+        $ours = "$($command.GetValue(''))".StartsWith($exe, 'OrdinalIgnoreCase')
+        $command.Close()
+        if ($ours) { $classes.DeleteSubKeyTree('glint') }
+    }
     $classes.Close()
     # Starting with Windows (Settings > Quick search), where it starts this copy.
     $run = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\Microsoft\Windows\CurrentVersion\Run', $true)
@@ -190,6 +197,8 @@ const scoop = {
             "if ($cmd -eq 'uninstall' -and (Get-Service ShadUIRipgrepIndex -ErrorAction SilentlyContinue)) {",
             "    Start-Process \"$dir\\shadui-index.exe\" -ArgumentList uninstall -Verb RunAs -Wait",
             "}",
+            "# Live Portals and the remotes shown in File Explorer: no program would be left to fill their placeholders in.",
+            "if ($cmd -eq 'uninstall') { Start-Process \"$dir\\Glint.exe\" -ArgumentList 'portals', 'remove' -Wait }",
             ...removeExplorerVerbs.trim().split("\n"),
         ],
     },

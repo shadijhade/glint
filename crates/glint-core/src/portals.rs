@@ -276,6 +276,30 @@ fn unmount_sync(id: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// `Glint.exe portals remove`, which the setup's and Scoop's uninstallers run (not their updates): every
+/// folder Glint shows through the Cloud Files API leaves Windows, the Live Portals and the remotes shown in
+/// File Explorer (ondemand.rs), as no program would be left to fill their placeholders in. What they show
+/// stays where it is.
+pub fn cli() -> Option<i32> {
+    let mut args = std::env::args().skip(1);
+    if args.next().as_deref() != Some("portals") {
+        return None;
+    }
+    if args.next().as_deref() != Some("remove") || args.next().is_some() {
+        return Some(2);
+    }
+    crate::tools::init_outside_app();
+    for portal in portals_list() {
+        let _ = unmount_sync(&portal.id);
+    }
+    if let Some(root) = portals_root() {
+        // Only once nothing else is in it.
+        let _ = fs::remove_dir(root);
+    }
+    crate::ondemand::remove_all();
+    Some(0)
+}
+
 /// Lists virtual entries for `source` without hydrating file bytes.
 pub(crate) fn portal_list_entries(source: &PortalSource) -> Result<Vec<PortalEntry>, String> {
     match source {

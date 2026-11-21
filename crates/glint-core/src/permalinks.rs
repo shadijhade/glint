@@ -6,6 +6,10 @@
 //! Resolution uses `OpenFileById` on an unprivileged volume-root handle first, then falls back to
 //! `shadui-index` (`Request::ResolveId`), then the encoded hint path. Links survive renames and
 //! moves across any folder on the same NTFS/ReFS volume.
+//!
+//! A link is data from anywhere (any web page can open one), so only this PC's own drives are ever
+//! looked at: merely checking whether a `\\server\share` path exists makes Windows sign in to that
+//! server with the user's account. Links are made for files on those drives only.
 
 use std::fmt::Write as _;
 
@@ -146,17 +150,25 @@ pub fn resolve_permalink(uri: &str) -> Result<String, String> {
     }
 }
 
-/// Registers the `glint://` URL protocol handler cleanly under `HKCU\Software\Classes\glint`.
-pub fn register_protocol_hkcu() -> Result<(), String> {
+/// Makes `glint://` links open this copy for as long as it's installed, as Glint starts. The copy the
+/// setup program or Scoop installed points the handler under `HKCU\Software\Classes\glint` at itself,
+/// writing only when it isn't already there; their uninstallers take it out again (installer/hooks.nsh,
+/// scripts/package-manifests.mjs). A portable copy or a dev build (an e2e run's too) never takes the
+/// links: it only removes a handler whose program is gone. The Microsoft Store's copy has them from its
+/// manifest (crates/glint/msix/AppxManifest.xml), as Windows keeps a packaged copy's registry writes to
+/// itself.
+pub fn claim_protocol() {
     #[cfg(windows)]
     {
-        win::register_protocol_hkcu()
-    }
-    #[cfg(not(windows))]
-    {
-        Ok(())
+        if !crate::packaged() {
+            let _ = win::claim_protocol(r"Software\Classes", crate::verbs::installed_exe().as_deref());
+        }
     }
 }
+
+/// `claim_protocol` under a stand-in for Software\Classes, for the uninstallers' tests (verbs.rs).
+#[cfg(all(windows, test))]
+pub(crate) use win::claim_protocol as claim_protocol_in;
 
 #[cfg(windows)]
 mod win {
@@ -165,16 +177,12 @@ mod win {
     use windows::core::{GUID, PCWSTR};
     use windows::Win32::Foundation::{CloseHandle, HANDLE};
     use windows::Win32::Storage::FileSystem::{
-        CreateFileW, FileIdType, GetFileInformationByHandle, GetFinalPathNameByHandleW, GetLogicalDrives,
-        GetVolumeInformationW, ObjectIdType, OpenFileById, BY_HANDLE_FILE_INFORMATION, FILE_FLAGS_AND_ATTRIBUTES,
-        FILE_FLAG_BACKUP_SEMANTICS, FILE_ID_DESCRIPTOR, FILE_ID_DESCRIPTOR_0, FILE_SHARE_DELETE, FILE_SHARE_READ,
-        FILE_SHARE_WRITE, OPEN_EXISTING, VOLUME_NAME_DOS,
+        CreateFileW, FileIdType, GetDriveTypeW, GetFileInformationByHandle, GetFinalPathNameByHandleW,
+        GetLogicalDrives, GetVolumeInformationW, ObjectIdType, OpenFileById, BY_HANDLE_FILE_INFORMATION,
+        FILE_FLAGS_AND_ATTRIBUTES, FILE_FLAG_BACKUP_SEMANTICS, FILE_ID_DESCRIPTOR, FILE_ID_DESCRIPTOR_0,
+        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, VOLUME_NAME_DOS,
     };
     use windows::Win32::System::Ioctl::FSCTL_GET_OBJECT_ID;
-    use windows::Win32::System::Registry::{
-        RegCloseKey, RegCreateKeyExW, RegSetValueExW, HKEY, HKEY_CURRENT_USER, KEY_WRITE, REG_OPTION_NON_VOLATILE,
-        REG_SZ,
-    };
     use windows::Win32::System::IO::DeviceIoControl;
 
     struct OwnedHandle(HANDLE);
@@ -240,7 +248,31 @@ mod win {
         Some(strip_win32_prefix(&String::from_utf16_lossy(&buf[..len as usize])))
     }
 
+    /// Whether `path` is on one of this PC's own drives (`C:\…` on a fixed, removable or RAM drive), not
+    /// on a network drive or a `\\server\share` (see the module's notes). Only the drive's type is asked.
+    pub(super) fn on_local_drive(path: &str) -> bool {
+        const DRIVE_REMOVABLE: u32 = 2;
+        const DRIVE_FIXED: u32 = 3;
+        const DRIVE_RAMDISK: u32 = 6;
+        let b = path.as_bytes();
+        if b.len() < 3 || !b[0].is_ascii_alphabetic() || b[1] != b':' || !matches!(b[2], b'\\' | b'/') {
+            return false;
+        }
+        let root = wide(&format!("{}:\\", b[0] as char));
+        // SAFETY: NUL-terminated root path.
+        let kind = unsafe { GetDriveTypeW(PCWSTR(root.as_ptr())) };
+        matches!(kind, DRIVE_REMOVABLE | DRIVE_FIXED | DRIVE_RAMDISK)
+    }
+
+    /// A path a link names that may be opened: an existing one on this PC's own drives.
+    pub(super) fn usable(path: &str) -> bool {
+        on_local_drive(path) && Path::new(path).exists()
+    }
+
     pub(super) fn create_permalink(path: &str) -> Result<String, String> {
+        if !on_local_drive(&strip_win32_prefix(path)) {
+            return Err("Links are only made for files on this PC's own drives".to_string());
+        }
         let handle = open_metadata_handle(path)?;
         let mut info = BY_HANDLE_FILE_INFORMATION::default();
         // SAFETY: `handle` is an open Win32 file/folder handle and `info` is valid out-memory.
@@ -293,6 +325,9 @@ mod win {
             }
             let letter = (b'A' + i as u8) as char;
             let root = format!("{letter}:\\");
+            if !on_local_drive(&root) {
+                continue;
+            }
             let root_w = wide(&root);
             let mut serial = 0u32;
             // SAFETY: null-terminated root path; optional out-parameter for serial number.
@@ -359,52 +394,48 @@ mod win {
         }
 
         if let Ok(Some(indexed)) = shadui_index::client::resolve_id(link.volume_serial, link.frn) {
-            if Path::new(&indexed).exists() {
+            if usable(&indexed) {
                 return Ok(indexed);
             }
         }
 
-        if !link.hint.is_empty() && Path::new(&link.hint).exists() {
+        if usable(&link.hint) {
             return Ok(link.hint.clone());
         }
         Err("Target file or folder could not be located on any connected drive".to_string())
     }
 
-    pub(super) fn register_protocol_hkcu() -> Result<(), String> {
-        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-        let command = format!("\"{}\" \"%1\"", exe.to_string_lossy());
-        set_reg_sz("Software\\Classes\\glint", None, "URL:Glint Permalink")?;
-        set_reg_sz("Software\\Classes\\glint", Some("URL Protocol"), "")?;
-        set_reg_sz("Software\\Classes\\glint\\shell\\open\\command", None, &command)?;
-        Ok(())
+    /// The command `glint://` links run: `exe` with the link, which launch.rs reads.
+    fn protocol_command(exe: &Path) -> String {
+        format!("\"{}\" \"%1\"", exe.display())
     }
 
-    fn set_reg_sz(subkey: &str, name: Option<&str>, value: &str) -> Result<(), String> {
-        let subkey_w = wide(subkey);
-        let name_w = name.map(wide);
-        let val_w = wide(value);
-        let mut hkey = HKEY::default();
-        // SAFETY: creates/opens HKCU subkey and writes NUL-terminated UTF-16 REG_SZ value, closing key afterwards.
-        unsafe {
-            RegCreateKeyExW(
-                HKEY_CURRENT_USER,
-                PCWSTR(subkey_w.as_ptr()),
-                None,
-                None,
-                REG_OPTION_NON_VOLATILE,
-                KEY_WRITE,
-                None,
-                &mut hkey,
-                None,
-            )
-            .ok()
-            .map_err(|e| format!("RegCreateKeyExW {subkey}: {}", e.message()))?;
-            let bytes = std::slice::from_raw_parts(val_w.as_ptr() as *const u8, val_w.len() * 2);
-            let name_ptr = name_w.as_ref().map_or(PCWSTR::null(), |v| PCWSTR(v.as_ptr()));
-            let res = RegSetValueExW(hkey, name_ptr, None, REG_SZ, Some(bytes)).ok();
-            let _ = RegCloseKey(hkey);
-            res.map_err(|e| format!("RegSetValueExW {subkey}: {}", e.message()))
+    /// The `glint://` handler under `classes` (HKCU's Software\Classes, or a test's stand-in): pointed at
+    /// `installed`, written only when it runs something else; or, for a copy that isn't installed (`None`),
+    /// taken out when the program it runs is gone. See `claim_protocol`.
+    pub(crate) fn claim_protocol(classes: &str, installed: Option<&Path>) -> std::io::Result<()> {
+        use crate::verbs::reg;
+        let key = format!(r"{classes}\glint");
+        let command_key = format!(r"{key}\shell\open\command");
+        let current = reg::get_string(&command_key, "");
+        match installed {
+            Some(exe) => {
+                let command = protocol_command(exe);
+                if current.as_deref() != Some(command.as_str()) {
+                    reg::set_string(&key, "", "URL:Glint link")?;
+                    reg::set_string(&key, "URL Protocol", "")?;
+                    reg::set_string(&command_key, "", &command)?;
+                }
+            }
+            None => {
+                // The program is the command's first quoted part.
+                let program = current.as_deref().and_then(|c| c.strip_prefix('"')).and_then(|c| c.split('"').next());
+                if program.is_some_and(|exe| !Path::new(exe).exists()) {
+                    reg::delete_tree(&key)?;
+                }
+            }
         }
+        Ok(())
     }
 }
 
@@ -425,6 +456,58 @@ mod tests {
         assert!(uri.contains("&oid=0102030405060708090a0b0c0d0e0f10"));
         let parsed = parse_uri(&uri).unwrap();
         assert_eq!(parsed, original);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn only_this_pcs_own_drives_are_looked_at() {
+        let temp = std::env::temp_dir();
+        assert!(win::on_local_drive(&temp.to_string_lossy()));
+        assert!(win::usable(&temp.to_string_lossy()));
+        for elsewhere in [
+            r"\\server\share\file.txt",
+            r"\\?\UNC\server\share\file.txt",
+            "//server/share/file.txt",
+            r"\\.\pipe\glint",
+            r"relative\file.txt",
+            "C:",
+            "",
+        ] {
+            assert!(!win::on_local_drive(elsewhere), "{elsewhere}");
+        }
+        // Refused before anything is opened, so Windows never tries to sign in to the server.
+        assert!(!win::usable(r"\\glint-test.invalid\share\file.txt"));
+        assert!(create_permalink(r"\\glint-test.invalid\share\file.txt").is_err());
+    }
+
+    /// The handler, under a stand-in for Software\Classes: an installed copy points it at itself, a copy
+    /// that isn't installed leaves another copy's alone and only takes out one whose program is gone.
+    #[cfg(windows)]
+    #[test]
+    fn only_an_installed_copy_takes_glint_links() {
+        use crate::verbs::reg;
+        let classes = format!(r"Software\GlintTests-permalinks-{}", std::process::id());
+        let command = format!(r"{classes}\glint\shell\open\command");
+        let installed = std::env::current_exe().unwrap();
+
+        win::claim_protocol(&classes, None).unwrap();
+        assert!(!reg::exists(&format!(r"{classes}\glint")), "a dev build doesn't take the links");
+
+        win::claim_protocol(&classes, Some(&installed)).unwrap();
+        let want = format!("\"{}\" \"%1\"", installed.display());
+        assert_eq!(reg::get_string(&command, "").as_deref(), Some(want.as_str()));
+        assert_eq!(reg::get_string(&format!(r"{classes}\glint"), "URL Protocol").as_deref(), Some(""));
+
+        // Another copy's handler stays while its program is there.
+        win::claim_protocol(&classes, None).unwrap();
+        assert_eq!(reg::get_string(&command, "").as_deref(), Some(want.as_str()));
+
+        // One running a program that's gone is taken out.
+        reg::set_string(&command, "", r#""C:\Gone\Glint-glint-test.exe" "%1""#).unwrap();
+        win::claim_protocol(&classes, None).unwrap();
+        assert!(!reg::exists(&format!(r"{classes}\glint")));
+
+        reg::delete_tree(&classes).unwrap();
     }
 
     #[cfg(windows)]

@@ -67,6 +67,21 @@ pub async fn ondemand_unmount(id: String) -> Result<(), String> {
     .await
 }
 
+/// Takes every remote out of File Explorer, for the uninstallers (`Glint.exe portals remove`, portals.rs).
+pub fn remove_all() {
+    let mounts = saved();
+    for mount in &mounts {
+        let _ = imp::unmount(&mount.id, &PathBuf::from(&mount.folder));
+    }
+    if !mounts.is_empty() {
+        save(&[]);
+    }
+    if let Some(home) = std::env::var_os("USERPROFILE") {
+        // Only once nothing else is in it.
+        let _ = std::fs::remove_dir(PathBuf::from(home).join(ROOT_DIR));
+    }
+}
+
 /// Connects the remotes shown in File Explorer again, as Glint starts (the app has sent its connections by
 /// then). One whose connection is gone (a paired PC's, since 0.12, or one removed while Glint was closed) has its
 /// placeholders taken out of File Explorer instead.
