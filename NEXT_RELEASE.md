@@ -8,6 +8,23 @@ The plan for 0.12 that was here is in git history (`git show df1245a:NEXT_RELEAS
 before it (`git show 47c33fa:NEXT_RELEASE.md`), and 0.13's own plan, the menu and the dock that know the selection,
 is [docs/gpui/aware/PLAN.md](docs/gpui/aware/PLAN.md) with its task cards beside it.*
 
+## In 0.15.0
+
+Built on 2026-11-21, in the five commits from `d792e5b` to `77e7d69`: Time Machine (`Ctrl+Shift+H`), live portals
+(Cloud Files folders for archives, saved searches, Git commits and restic snapshots), `glint://` permalinks, rename by
+example, File Lego, the Photo World Map (`Ctrl+Shift+G`), the Color Wheel and Find similar colors, frames and clips
+from a video's preview, Drag clean and touchpad haptics; `docs/features.md` describes each. Fixed before the release:
+
+- The `glint://` handler was written by every copy at every start, so a dev build or an e2e run took the links from
+  the installed Glint. Only the copy the setup program or Scoop installed points it at itself now, writing only when
+  it runs something else; other copies only remove a handler whose program is gone (`permalinks::claim_protocol`).
+- The Microsoft Store's copy couldn't take the links at all (Windows keeps a packaged copy's registry writes to
+  itself): its manifest declares `glint://` now.
+- Uninstalling left the handler and the portals' sync roots behind: the setup's and Scoop's uninstallers take them
+  out (`Glint.exe portals remove` also takes out the remotes shown in File Explorer).
+- A link's saved path was looked at wherever it pointed, so a link could make Windows sign in to any server
+  (`\\server\share`). Links are only made for, and only ever open, files on this PC's own drives.
+
 ## In 0.14.0
 
 ### Back and Forward that remember
