@@ -266,7 +266,7 @@ fn start_background(cx: &mut App) {
             glint_core::tools::sweep();
             glint_core::ondemand::start();
             glint_core::portals::start();
-            let _ = glint_core::permalinks::register_protocol_hkcu();
+            glint_core::permalinks::claim_protocol();
             glint_core::backup::start_scheduler(app);
             glint_core::dialogs::listen();
         });

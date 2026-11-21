@@ -708,6 +708,8 @@ mod imp {
             reg::set_string(&format!(r"{folders}\OtherApp\command"), "", r#""C:\Other.exe" "%1""#).unwrap();
             let before = reg::dump(&scratch.0);
             verbs.set(true, true).unwrap();
+            // The glint:// handler a Scoop copy points at itself as it starts (permalinks.rs).
+            crate::permalinks::claim_protocol_in(&verbs.classes, Some(&verbs.exe)).unwrap();
             let on = reg::dump(&scratch.0);
             scoop("update");
             assert_eq!(reg::dump(&scratch.0), on);
@@ -717,10 +719,12 @@ mod imp {
             // Entries that run another copy stay.
             let setup = Verbs { exe: PathBuf::from(r"C:\Users\Someone\AppData\Local\Glint\Glint.exe"), ..scratch.verbs() };
             setup.set(true, true).unwrap();
+            crate::permalinks::claim_protocol_in(&setup.classes, Some(&setup.exe)).unwrap();
             let on = reg::dump(&scratch.0);
             scoop("uninstall");
             assert_eq!(reg::dump(&scratch.0), on);
             setup.set(false, false).unwrap();
+            reg::delete_tree(&format!(r"{}\glint", setup.classes)).unwrap();
 
             // Something else took the default since: it stays.
             verbs.set(true, true).unwrap();
