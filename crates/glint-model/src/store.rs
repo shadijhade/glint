@@ -375,6 +375,8 @@ pub struct Settings {
     /// Updates download in the background and install on quitting Glint or after a start with Windows (Settings →
     /// About); off, Glint only says a new version is out.
     pub auto_update: bool,
+    /// Subtle tactile cues on Precision Touchpads (zoom detents, boundary bumps, File Basket snaps, checksum match).
+    pub haptics: bool,
 }
 
 impl Default for Settings {
@@ -486,6 +488,7 @@ impl Default for Settings {
             suggest: true,
             learn: true,
             auto_update: true,
+            haptics: true,
         }
     }
 }
@@ -858,6 +861,7 @@ lenient_deserialize!(Settings {
     "suggest" => suggest,
     "learn" => learn,
     "autoUpdate" => auto_update,
+    "haptics" => haptics,
 });
 /// Kinds of remote connection Glint no longer has: a paired PC's folders ("device"), gone with paired devices in
 /// 0.12. A saved one loads as nothing ([`load_persisted`] drops it); any other kind it doesn't know loads as S3.
@@ -1196,7 +1200,7 @@ mod tests {
                 r#""compareSubfolders":false,"compareContents":false,"columns":{{}},"previewWidth":null,"#,
                 r#""dualSplit":null,"gitTrusted":[],"terminalShell":"","terminalHeight":null,"#,
                 r#""terminalFollow":true,"growthDays":7,"showReadme":true,"readmeOpen":false,"#,
-                r#""zoxide":false,"suggest":true,"learn":true,"autoUpdate":true}}"#
+                r#""zoxide":false,"suggest":true,"learn":true,"autoUpdate":true,"haptics":true}}"#
             ),
             DEFAULT_EXCLUSIONS
         );
@@ -1309,7 +1313,14 @@ mod tests {
         assert_eq!(load_persisted("not json"), AppState::default());
         assert_eq!(load_persisted(""), AppState::default());
         assert!(parse_persisted(r#"{"state":{"query":"x"},"version":0}"#).is_some_and(|s| s.query == "x"));
-        for text in [r#"{"version":0}"#, r#"{"state":{"query":"x"},"version":1}"#, r#"{"state":{"query":"x"}}"#, r#"{"state":null,"version":0}"#, "not json", ""] {
+        for text in [
+            r#"{"version":0}"#,
+            r#"{"state":{"query":"x"},"version":1}"#,
+            r#"{"state":{"query":"x"}}"#,
+            r#"{"state":null,"version":0}"#,
+            "not json",
+            "",
+        ] {
             assert!(parse_persisted(text).is_none(), "{text}");
         }
     }
