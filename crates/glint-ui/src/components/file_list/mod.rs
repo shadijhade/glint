@@ -138,6 +138,8 @@ pub enum FileListEvent {
     /// The zoom has nowhere to go: the list is as far out as it gets (or its tab is in columns, which have one
     /// size). The pane's stage gives a little, to say so.
     Limit { inward: bool },
+    /// Contextual file-on-file drop ("File Lego") was dropped onto a target file row.
+    FileLego(glint_model::file_lego::LegoRecipe),
 }
 
 impl EventEmitter<FileListEvent> for FileList {}
@@ -294,6 +296,8 @@ pub(crate) struct Frame {
     pub dragging: Arc<HashSet<String>>,
     /// The folder row files are dragged over: lit (`dropTarget`).
     pub drop_row: Option<String>,
+    /// Active File Lego recipe badge `(target_path, summary)` drawn over `drop_row`.
+    pub drop_pill: Option<(String, String)>,
     /// How many lines the list has (rows, a header per group, and the lines under rows).
     pub lines: usize,
     /// The tab shown, and what its search found inside files (the header of that part says it).
@@ -479,6 +483,8 @@ pub struct FileList {
     peeks: Peeks,
     /// Where a drop of the files being dragged over the list would land.
     drop_at: Option<DropAt>,
+    /// File-on-file dwell state while dragging over a non-folder row.
+    lego_hover: Option<incoming::LegoHover>,
     /// Tests only: an item shown as being renamed, as the explorer's rename part will make `Tab::renaming` say.
     #[cfg(test)]
     pretend_renaming: Option<String>,
@@ -572,6 +578,7 @@ impl FileList {
                 cut: Arc::new(HashSet::new()),
                 dragging: Arc::new(HashSet::new()),
                 drop_row: None,
+                drop_pill: None,
                 lines: 0,
                 tab: TabId(0),
                 inside: InsideInfo::default(),
@@ -609,6 +616,7 @@ impl FileList {
             dragging: Arc::new(HashSet::new()),
             peeks: Peeks::default(),
             drop_at: None,
+            lego_hover: None,
             #[cfg(test)]
             pretend_renaming: None,
             _subscriptions: subscriptions,
@@ -1238,7 +1246,9 @@ impl FileList {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let after_expanding = self.expanded_at.is_some_and(|at| at.elapsed() < Duration::from_millis(600));
+        let after_expanding = self
+            .expanded_at
+            .is_some_and(|at| at.elapsed() < Duration::from_millis(600));
         if let (MouseButton::Left, true, false, Some((path, line))) =
             (event.button, event.click_count >= 2, after_expanding, spot)
         {
@@ -1260,7 +1270,8 @@ impl FileList {
             self.expanded_at = Some(Instant::now());
             let tab = self.explorer.read(cx).pane_tab(self.pane).map(|tab| tab.id);
             if let Some(tab) = tab {
-                self.explorer.update(cx, |explorer, cx| explorer.expand_hits(tab, path, cx));
+                self.explorer
+                    .update(cx, |explorer, cx| explorer.expand_hits(tab, path, cx));
             }
         }
     }
@@ -1550,7 +1561,11 @@ impl Render for FileList {
             cut,
             dragging: self.dragging.clone(),
             drop_row: match &drop_at {
-                Some(DropAt::Row(path)) => Some(path.clone()),
+                Some(DropAt::Row(path)) | Some(DropAt::Lego { path, .. }) => Some(path.clone()),
+                _ => None,
+            },
+            drop_pill: match &drop_at {
+                Some(DropAt::Lego { path, recipe }) => Some((path.clone(), recipe.summary.clone())),
                 _ => None,
             },
             lines,

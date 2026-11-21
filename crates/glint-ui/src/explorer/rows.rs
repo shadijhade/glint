@@ -78,6 +78,19 @@ impl PartialEq for RowInside {
     }
 }
 
+/// Active OKLab color filter and extracted image palettes for 120 FPS photo surfing.
+#[derive(Clone, Debug)]
+pub struct RowColor {
+    pub filter: glint_model::oklab::ColorFilter,
+    pub palettes: Arc<std::collections::HashMap<String, glint_model::oklab::Palette3>>,
+}
+
+impl PartialEq for RowColor {
+    fn eq(&self, other: &Self) -> bool {
+        self.filter == other.filter && Arc::ptr_eq(&self.palettes, &other.palettes)
+    }
+}
+
 /// Everything that decides which rows a listing makes, and in what order. Two equal specs make equal rows.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RowSpec {
@@ -102,6 +115,8 @@ pub struct RowSpec {
     /// A search's findings inside files: the files found by their contents alone stay whatever the box's words say
     /// of their names; in the list their lines go under their rows, and those files under a header of their own.
     pub inside: Option<RowInside>,
+    /// Active OKLab color filter and cached palettes for sorting matching photos closest-first.
+    pub color: Option<RowColor>,
 }
 
 impl Default for RowSpec {
@@ -120,6 +135,7 @@ impl Default for RowSpec {
             git: None,
             diffs: None,
             inside: None,
+            color: None,
         }
     }
 }
@@ -404,7 +420,8 @@ pub fn build_rows(entries: &Arc<[FileEntry]>, spec: &RowSpec, now: i64) -> Rows 
     let test = matcher(&spec.filter, marks, None);
     let mut hidden = 0usize;
     let diffs = spec.diffs.as_ref().map(|d| &d.comparison.diffs);
-    let narrowing = test.is_some() || !spec.show_hidden || diffs.is_some();
+    let max_color_dist_sq = spec.color.as_ref().map(|rc| rc.filter.max_dist * rc.filter.max_dist);
+    let narrowing = test.is_some() || !spec.show_hidden || diffs.is_some() || spec.color.is_some();
 
     let mut order: Option<Vec<u32>> = None;
     if narrowing {
@@ -416,6 +433,17 @@ pub fn build_rows(entries: &Arc<[FileEntry]>, spec: &RowSpec, now: i64) -> Rows 
             }
             if diffs.is_some_and(|d| d.get(&entry.lower) == Some(&glint_model::entries::DiffStatus::Same)) {
                 continue;
+            }
+            if let (Some(rc), Some(max_sq)) = (&spec.color, max_color_dist_sq) {
+                if entry.dir {
+                    continue;
+                }
+                let Some(pal) = rc.palettes.get(&entry.path.to_lowercase()) else {
+                    continue;
+                };
+                if glint_model::oklab::palette_distance_sq(pal, rc.filter.target) > max_sq {
+                    continue;
+                }
             }
             // The box's words are looked for in names here; a file found by what is in it needn't be named so
             // (the search's filters were applied to it when it was found).
@@ -429,7 +457,7 @@ pub fn build_rows(entries: &Arc<[FileEntry]>, spec: &RowSpec, now: i64) -> Rows 
             kept.push(u32::try_from(i).unwrap_or(u32::MAX));
         }
         // Nothing was left out and the order is the engine's: the listing is the rows.
-        if kept.len() != entries.len() || !by_default {
+        if kept.len() != entries.len() || !by_default || spec.color.is_some() {
             order = Some(kept);
         }
     } else if !by_default {
@@ -452,7 +480,25 @@ pub fn build_rows(entries: &Arc<[FileEntry]>, spec: &RowSpec, now: i64) -> Rows 
             }
         }
     });
-    if !by_default {
+    if let Some(rc) = &spec.color {
+        if let Some(order) = order.as_mut() {
+            order.sort_by(|&a, &b| {
+                let da = entries
+                    .get(a as usize)
+                    .and_then(|e| rc.palettes.get(&e.path.to_lowercase()))
+                    .map_or(f32::INFINITY, |p| {
+                        glint_model::oklab::palette_distance_sq(p, rc.filter.target)
+                    });
+                let db = entries
+                    .get(b as usize)
+                    .and_then(|e| rc.palettes.get(&e.path.to_lowercase()))
+                    .map_or(f32::INFINITY, |p| {
+                        glint_model::oklab::palette_distance_sq(p, rc.filter.target)
+                    });
+                da.total_cmp(&db)
+            });
+        }
+    } else if !by_default {
         if let Some(order) = order.as_mut() {
             let size_of = measured.as_ref().map(|f| f as &SizeOf);
             sort_order(entries, order, spec, size_of);
@@ -1209,5 +1255,68 @@ mod tests {
             "{} rows, name sort: comparing names {before:.2} ms, name keys {after:.2} ms",
             entries.len()
         );
+    }
+
+    #[test]
+    fn color_filter_drops_non_matching_and_ranks_closest_first() {
+        use glint_model::oklab::{srgb_to_oklab, ColorFilter, Palette3};
+        let entries: Arc<[FileEntry]> = Arc::from(vec![
+            with_details(
+                RawEntry {
+                    name: "blue.jpg".into(),
+                    ..Default::default()
+                },
+                "C:\\pics",
+            ),
+            with_details(
+                RawEntry {
+                    name: "red.jpg".into(),
+                    ..Default::default()
+                },
+                "C:\\pics",
+            ),
+            with_details(
+                RawEntry {
+                    name: "orange.jpg".into(),
+                    ..Default::default()
+                },
+                "C:\\pics",
+            ),
+        ]);
+        let mut palettes = std::collections::HashMap::new();
+        palettes.insert(
+            r"c:\pics\blue.jpg".to_string(),
+            Palette3 {
+                colors: [srgb_to_oklab(20, 80, 240); 3],
+                weights: [1.0, 0.0, 0.0],
+            },
+        );
+        palettes.insert(
+            r"c:\pics\red.jpg".to_string(),
+            Palette3 {
+                colors: [srgb_to_oklab(240, 30, 30); 3],
+                weights: [1.0, 0.0, 0.0],
+            },
+        );
+        palettes.insert(
+            r"c:\pics\orange.jpg".to_string(),
+            Palette3 {
+                colors: [srgb_to_oklab(240, 120, 40); 3],
+                weights: [1.0, 0.0, 0.0],
+            },
+        );
+        let spec = RowSpec {
+            color: Some(RowColor {
+                filter: ColorFilter {
+                    target: srgb_to_oklab(245, 25, 25),
+                    max_dist: 0.20,
+                },
+                palettes: Arc::new(palettes),
+            }),
+            ..RowSpec::default()
+        };
+        let rows = build_rows(&entries, &spec, 0);
+        let names: Vec<&str> = rows.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["red.jpg", "orange.jpg"]);
     }
 }

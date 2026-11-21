@@ -249,11 +249,10 @@ pub fn folder_menu(folder: &str, current: bool, c: &FolderCtx) -> Vec<Node> {
         when(!current, || Node::Item(open_in_new_tab_entry(&owned))),
         when(current, || {
             Node::Item(
-                Entry::command(t!("New folder"), IconName::FolderPlus, Command::NewFolder)
-                    .disabled_because(
-                        find || archive.is_some() || shut,
-                        &why_not(archive.is_some(), shut, find),
-                    ),
+                Entry::command(t!("New folder"), IconName::FolderPlus, Command::NewFolder).disabled_because(
+                    find || archive.is_some() || shut,
+                    &why_not(archive.is_some(), shut, find),
+                ),
             )
         }),
         new_menu,
@@ -306,6 +305,13 @@ pub fn folder_menu(folder: &str, current: bool, c: &FolderCtx) -> Vec<Node> {
                     t!("Recent changes"),
                     IconName::FileClock,
                     MenuEvent::Timeline { folder: owned.clone() },
+                ))
+            }),
+            when(reads && folder_path, || {
+                Node::Item(Entry::ask(
+                    t!("Time Machine scrubber"),
+                    IconName::RotateCcwClock,
+                    MenuEvent::OpenTimeMachine { folder: owned.clone() },
                 ))
             }),
             when(reads, || {
@@ -369,6 +375,13 @@ pub fn folder_menu(folder: &str, current: bool, c: &FolderCtx) -> Vec<Node> {
                 ))
             }),
             separator(),
+            when(reads && folder_path && on_a_drive(folder), || {
+                Node::Item(Entry::ask(
+                    t!("Copy permalink"),
+                    IconName::Link,
+                    MenuEvent::CopyPermalink { path: owned.clone() },
+                ))
+            }),
             when(reads && folder_path, || {
                 Node::Item(Entry::ask(
                     if current {
@@ -377,7 +390,9 @@ pub fn folder_menu(folder: &str, current: bool, c: &FolderCtx) -> Vec<Node> {
                         t!("Share…")
                     },
                     IconName::Share2,
-                    MenuEvent::Share { paths: vec![owned.clone()] },
+                    MenuEvent::Share {
+                        paths: vec![owned.clone()],
+                    },
                 ))
             }),
         ],

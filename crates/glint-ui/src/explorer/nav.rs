@@ -525,6 +525,8 @@ impl Explorer {
                 tab.filter.clear();
                 tab.find = None;
                 tab.renaming = None;
+                tab.color_filter = None;
+                tab.color_palettes = std::sync::Arc::new(std::collections::HashMap::new());
             }
             match (restore, left) {
                 (Some(visit), left) => {

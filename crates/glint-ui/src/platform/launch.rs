@@ -162,6 +162,13 @@ fn target_with_mode(arg: &str, cwd: &Path, force_select: bool) -> Result<Target,
     // File Explorer passes a drive as "C:\" in quotes, which the command line reads as C:" since a
     // backslash before a quote escapes it.
     let arg = arg.trim_matches('"');
+    if arg.len() >= 8 && arg[..8].eq_ignore_ascii_case("glint://") {
+        let resolved = glint_core::permalinks::resolve_permalink(arg)?;
+        if resolved.len() >= 8 && resolved[..8].eq_ignore_ascii_case("glint://") {
+            return Err(resolved);
+        }
+        return target_with_mode(&resolved, cwd, force_select);
+    }
     if let Some(virtual_target) = resolve_virtual_location(arg) {
         return Ok(virtual_target);
     }
@@ -1267,5 +1274,33 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn glint_permalink_uri_resolves_after_move_and_rename() {
+        let root = std::env::temp_dir().join(format!("glint-launch-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir_a = root.join("one");
+        let dir_b = root.join("two");
+        std::fs::create_dir_all(&dir_a).unwrap();
+        std::fs::create_dir_all(&dir_b).unwrap();
+
+        let src = dir_a.join("report.txt");
+        std::fs::write(&src, b"hello permalink").unwrap();
+        let uri = glint_core::permalinks::create_permalink(&src.to_string_lossy()).unwrap();
+        let moved = dir_b.join("final report.txt");
+        std::fs::rename(&src, &moved).unwrap();
+
+        let resolved = target(&uri, &root).expect("glint:// resolves to moved file");
+        assert_eq!(
+            std::fs::canonicalize(&resolved.path).unwrap(),
+            std::fs::canonicalize(&dir_b).unwrap()
+        );
+        assert_eq!(
+            resolved.select.as_deref().map(|p| std::fs::canonicalize(p).unwrap()),
+            Some(std::fs::canonicalize(&moved).unwrap())
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

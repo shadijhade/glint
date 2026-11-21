@@ -45,6 +45,8 @@ pub(super) struct Frame {
     pub dragging: Option<Arc<HashSet<String>>>,
     /// The folder tile that files dragged over the grid would be dropped into (`dropTarget`).
     pub drop_tile: Option<String>,
+    /// Active File Lego recipe badge `(target_path, summary)` shown over `drop_tile`.
+    pub drop_pill: Option<(String, String)>,
     pub tile: GridTile,
     pub cols: usize,
     /// How many rows of tiles there are.
@@ -398,6 +400,28 @@ fn tile(frame: &Rc<Frame>, i: usize, entry: &FileEntry, cx: &App) -> AnyElement 
 
     if let Some((_, over)) = frame.scrub.as_ref().filter(|(path, _)| *path == entry.path) {
         square = square.child(over.clone());
+    }
+    if let Some((path, summary)) = &frame.drop_pill {
+        if *path == entry.path {
+            square = square.child(
+                div()
+                    .absolute()
+                    .bottom(space(1.))
+                    .left(space(1.))
+                    .right(space(1.))
+                    .px(space(1.5))
+                    .py(space(0.5))
+                    .rounded(theme::size::RADIUS_SM)
+                    .bg(t.popover.opacity(0.94))
+                    .border_1()
+                    .border_color(t.primary)
+                    .text_size(theme::size::XXS)
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(t.primary)
+                    .truncate()
+                    .child(SharedString::from(summary.clone())),
+            );
+        }
     }
 
     let location = if frame.located && !frame.gallery {

@@ -491,6 +491,28 @@ impl FileList {
             .and_then(|_| frame.peeks.iter().find(|peek| peek.path == entry.path))
         {
             name_cell = name_cell.child(div().flex_1().min_w_0()).child(peek_cell(i, peek, t));
+        } else if let Some((path, summary)) = &frame.drop_pill {
+            if *path == entry.path {
+                name_cell = name_cell.child(div().flex_1().min_w_0()).child(
+                    align_row(1.)
+                        .id(("file-list-lego-pill", i))
+                        .role(Role::Status)
+                        .aria_label(SharedString::from(summary.clone()))
+                        .test_support()
+                        .flex_none()
+                        .px(space(2.))
+                        .py(space(0.5))
+                        .rounded(theme::size::RADIUS_SM)
+                        .bg(t.primary.opacity(0.20))
+                        .border_1()
+                        .border_color(t.primary.opacity(0.55))
+                        .text_size(theme::size::XXS)
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(t.primary)
+                        .child(icon(IconName::Sparkles).size_3())
+                        .child(SharedString::from(summary.clone())),
+                );
+            }
         }
 
         // The row's highlight: a rounded fill inside the line (hover, selection, the folder files will drop into),

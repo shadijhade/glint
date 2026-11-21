@@ -2,6 +2,7 @@
 //! exposes calls and events; `crate::startup` wires them into the app.
 
 pub mod dragdrop;
+pub mod haptics;
 pub mod launch;
 /// Windows' open and save pickers, with file-type filters, for every view.
 pub mod pickers;

@@ -178,6 +178,10 @@ pub enum MenuEvent {
     SetWallpaper { path: String },
     /// "Rotate right" / "Rotate left" (`rotatePictures`).
     Rotate { paths: Vec<String>, clockwise: bool },
+    /// "Find similar colors": opens the OKLab Color Wheel anchored on this picture's dominant color.
+    MatchColor { path: String },
+    /// Opens or closes the OKLab Color Wheel filter bar in the active tab.
+    ToggleColorWheel,
     /// "Always keep on this device" / "Free up space" (`cloudPin`).
     CloudPin { paths: Vec<String>, state: CloudPin },
 
@@ -188,6 +192,8 @@ pub enum MenuEvent {
     CheckSums { path: String },
     /// "Recent changes" in a folder (`inspectTimeline`).
     Timeline { folder: String },
+    /// "Time Machine scrubber" in a folder (shadow copies, Git commits, backups, journal).
+    OpenTimeMachine { folder: String },
     /// "Moved and deleted here" (`openHistory`).
     History { folder: String },
     /// "What's locking this?" (`inspectLocks`).
@@ -208,6 +214,8 @@ pub enum MenuEvent {
     ChangeDateTaken { paths: Vec<String> },
     /// "Share…": the Share dialog, with these files to send to a device nearby or through Windows (`openNearby`).
     Share { paths: Vec<String> },
+    /// "Copy permalink": copies an unbreakable `glint://` NTFS/ReFS file-ID URI for `path`.
+    CopyPermalink { path: String },
 
     // ---- Scripts ----
     /// A script of the Scripts folder, run on these paths in `cwd` (`runScript`): the script's file.
@@ -230,6 +238,13 @@ pub enum MenuEvent {
     ShowOnDemand { id: String, name: String },
     /// "Stop showing in File Explorer" (`hideOnDemand`).
     HideOnDemand { id: String },
+    /// Mounts an archive, search, commit, or backup snapshot as a live CfAPI portal folder.
+    PinPortal {
+        name: String,
+        source: glint_core::portals::PortalSource,
+    },
+    /// Unmounts an active CfAPI live portal folder.
+    UnpinPortal { id: String },
 
     // ---- What Glint knows (docs/gpui/aware) ----
     /// "Unblock": takes Windows' "downloaded" mark off these files.

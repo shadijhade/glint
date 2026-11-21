@@ -48,6 +48,11 @@ pub fn settings(cx: &App) -> &Settings {
     &cx.global::<UiState>().settings
 }
 
+/// The settings if initialized (safe inside isolated unit tests).
+pub fn try_settings(cx: &App) -> Option<&Settings> {
+    cx.try_global::<UiState>().map(|s| &s.settings)
+}
+
 /// Changes the settings, then re-applies what depends on them and redraws every window. The theme is applied
 /// again only when a setting it reads changed: most changes (a sort, a zoom notch, a column's width) don't.
 pub fn update(cx: &mut App, change: impl FnOnce(&mut Settings)) {

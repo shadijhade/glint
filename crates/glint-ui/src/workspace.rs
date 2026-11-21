@@ -21,6 +21,7 @@
 //! - The window's background material (Mica) follows the theme: while it is on, chrome is see-through.
 
 use crate::components::address_bar::{AddressBar, AddressBarEvent};
+use crate::components::color_wheel::{self, ColorWheelBar};
 use crate::components::columns_view::ColumnsView;
 use crate::components::command_bar::{CommandBar, CommandBarEvent};
 use crate::components::compare_bar::CompareBar;
@@ -35,6 +36,7 @@ use crate::components::git::{self, GitEvent, ReadmeCard};
 use crate::components::menus::{self, MenuEvent, MenuHost};
 use crate::components::pane_bars::PaneBars;
 use crate::components::pane_head::PaneHead;
+use crate::components::photo_map::{self, PhotoMapEvent, PhotoMapView};
 use crate::components::preview::{self, PreviewPane};
 use crate::components::settings::SettingsEvent;
 use crate::components::sidebar::{Sidebar, SidebarEvent, SidebarRequest};
@@ -42,9 +44,11 @@ use crate::components::status_bar::{Insight, StatusBar, StatusBarEvent};
 use crate::components::tab_strip::{PaneDropZone, TabStrip};
 use crate::components::terminal::{TerminalPane, TerminalPaneEvent};
 use crate::components::this_pc::{ThisPc, ThisPcEvent};
+use crate::components::time_machine::{self, TimeMachineEvent, TimeMachineView};
 use crate::components::{palette, settings};
 use crate::explorer::{self, ExplorerEvent};
 use crate::kit::prelude::*;
+use crate::platform::haptics::{self, HapticCue};
 use crate::platform::{dragdrop, pickers, secondary};
 use crate::{actions, core_bridge, dialogs, notices, stage, state, t, theme};
 use glint_core::host::Manager as _;
@@ -114,6 +118,10 @@ struct PaneViews {
     this_pc: Entity<ThisPc>,
     /// The map of what fills the tab's folder, while the tab shows it (`disk_usage::visible`).
     usage: Entity<DiskUsage>,
+    /// Live Folder Time-Machine Scrubber, while the tab shows it (`time_machine::visible`).
+    time_machine: Entity<TimeMachineView>,
+    /// Offline 120 FPS interactive vector Photo World Map (`photo_map::visible`).
+    photo_map: Entity<PhotoMapView>,
     /// The folder above and the focused folder on each side of the list, in the Columns view.
     columns: Entity<ColumnsView>,
     /// The Gallery's months, at the end edge of its list or grid.
@@ -124,6 +132,8 @@ struct PaneViews {
     compare: Entity<CompareBar>,
     /// The search bar and the closed-folder bar above the pane (above the compare bar).
     bars: Entity<PaneBars>,
+    /// Live OKLab Color Wheel filter bar above the pane when open.
+    color_wheel: Entity<ColorWheelBar>,
     /// The folder's name, large, with what is in it and a chip for each kind, at the top of the pane.
     head: Entity<PaneHead>,
 }
@@ -133,6 +143,8 @@ struct PaneViews {
 enum Shown {
     ThisPc,
     DiskUsage,
+    TimeMachine,
+    PhotoMap,
     Grid,
     List,
     /// The list between the folder above and the focused folder.
@@ -252,9 +264,13 @@ impl Workspace {
         if let Some(updater) = crate::updater::try_shared(cx) {
             subscriptions.push(cx.observe(&updater, |_, _, cx| cx.notify()));
         }
-        // A tab's map turned on or off changes what its pane shows.
+        // A tab's map or Time Machine turned on or off changes what its pane shows.
         let usage = disk_usage::shared(cx);
         subscriptions.push(cx.observe_in(&usage, window, |this, _, window, cx| this.follow_panes(window, cx)));
+        let tm = time_machine::shared(cx);
+        subscriptions.push(cx.observe_in(&tm, window, |this, _, window, cx| this.follow_panes(window, cx)));
+        let pm = photo_map::shared(cx);
+        subscriptions.push(cx.observe_in(&pm, window, |this, _, window, cx| this.follow_panes(window, cx)));
         // Back in front: Windows' "Animation effects" switch is read again (someone who turns it off in Settings
         // comes back to a Glint that has stopped moving).
         subscriptions.push(cx.observe_window_activation(window, |_, window, cx| {
@@ -356,11 +372,14 @@ impl Workspace {
             grid: cx.new(|cx| FileGrid::new(pane, window, cx)),
             this_pc: cx.new(|cx| ThisPc::new(pane, window, cx)),
             usage: cx.new(|cx| DiskUsage::new(pane, window, cx)),
+            time_machine: cx.new(|cx| TimeMachineView::new(pane, window, cx)),
+            photo_map: cx.new(|cx| PhotoMapView::new(pane, window, cx)),
             columns,
             months: cx.new(|cx| GalleryMonths::new(pane, window, cx)),
             frequent: cx.new(|cx| FrequentFolders::new(pane, window, cx)),
             compare: cx.new(|cx| CompareBar::new(pane, window, cx)),
             bars: cx.new(|cx| PaneBars::new(pane, window, cx)),
+            color_wheel: cx.new(|cx| ColorWheelBar::new(pane, window, cx)),
             head: cx.new(|cx| PaneHead::new(pane, window, cx)),
         };
         // Where the pane draws an item, for what opens out of one (Quick Look).
@@ -398,6 +417,14 @@ impl Workspace {
                 this.on_usage_event(pane, event, window, cx)
             }),
         );
+        subscriptions.push(
+            cx.subscribe_in(&views.time_machine, window, move |_, _, event, window, cx| {
+                Self::on_time_machine_event(event, window, cx)
+            }),
+        );
+        subscriptions.push(cx.subscribe_in(&views.photo_map, window, move |_, _, event, _, cx| {
+            Self::on_photo_map_event(event, cx)
+        }));
         // A right-click on a frequent folder: the shared folder menu, as on This PC's tiles.
         subscriptions.push(cx.subscribe_in(
             &views.frequent,
@@ -444,6 +471,10 @@ impl Workspace {
             Shown::ThisPc
         } else if disk_usage::visible(cx, tab.id) {
             Shown::DiskUsage
+        } else if time_machine::visible(cx, tab.id) {
+            Shown::TimeMachine
+        } else if photo_map::visible(cx, tab.id) {
+            Shown::PhotoMap
         } else if tab.view == ViewMode::Grid {
             Shown::Grid
         } else if tab.view == ViewMode::Columns {
@@ -547,6 +578,8 @@ impl Workspace {
             Some(Shown::List) | Some(Shown::Columns) => views.list.focus_handle(cx).contains_focused(window, cx),
             Some(Shown::Grid) => views.grid.read(cx).focus_handle().contains_focused(window, cx),
             Some(Shown::DiskUsage) => views.usage.read(cx).focus_handle().contains_focused(window, cx),
+            Some(Shown::TimeMachine) => views.time_machine.read(cx).focus_handle().contains_focused(window, cx),
+            Some(Shown::PhotoMap) => views.photo_map.read(cx).focus_handle().contains_focused(window, cx),
             Some(Shown::ThisPc) => self.focus.is_focused(window) || views.this_pc.read(cx).has_focus(window),
             None => false,
         }
@@ -577,6 +610,14 @@ impl Workspace {
         match Self::shown_in(pane, cx) {
             Some(Shown::DiskUsage) => {
                 let handle = views.usage.read(cx).focus_handle().clone();
+                window.focus(&handle, cx);
+            }
+            Some(Shown::TimeMachine) => {
+                let handle = views.time_machine.read(cx).focus_handle().clone();
+                window.focus(&handle, cx);
+            }
+            Some(Shown::PhotoMap) => {
+                let handle = views.photo_map.read(cx).focus_handle().clone();
                 window.focus(&handle, cx);
             }
             Some(Shown::Grid) => {
@@ -795,10 +836,12 @@ impl Workspace {
         );
     }
 
-    /// The list or the grid for the active tab (`chooseView`): a map it showed goes first.
+    /// The list or the grid for the active tab (`chooseView`): a map or Time Machine it showed goes first.
     fn choose_view(view: ViewMode, cx: &mut App) {
         let tab = explorer::explorer(cx).read(cx).active_tab_id();
         disk_usage::set(cx, tab, false);
+        time_machine::set(cx, tab, false);
+        photo_map::set(cx, tab, false);
         Self::explorer(cx, |e, cx| e.set_view(view, None, cx));
     }
 
@@ -806,8 +849,89 @@ impl Workspace {
     fn toggle_disk_usage(cx: &mut App) {
         let tab = explorer::explorer(cx).read(cx).active_tab_id();
         if Self::can_map(cx) {
+            time_machine::set(cx, tab, false);
+            photo_map::set(cx, tab, false);
             disk_usage::toggle(cx, tab);
         }
+    }
+
+    /// Live Folder Time-Machine Scrubber, or back to the file list, for the active tab.
+    fn toggle_time_machine(cx: &mut App) {
+        let tab = explorer::explorer(cx).read(cx).active_tab_id();
+        if Self::can_map(cx) {
+            disk_usage::set(cx, tab, false);
+            photo_map::set(cx, tab, false);
+            time_machine::toggle(cx, tab);
+        }
+    }
+
+    /// Offline Vector Photo World Map, or back to the file list, for the active tab.
+    fn toggle_photo_map(cx: &mut App) {
+        let tab = explorer::explorer(cx).read(cx).active_tab_id();
+        if Self::can_photo_map(cx) {
+            disk_usage::set(cx, tab, false);
+            time_machine::set(cx, tab, false);
+            photo_map::toggle(cx, tab);
+        }
+    }
+
+    fn on_photo_map_event(event: &PhotoMapEvent, cx: &mut App) {
+        let tab = explorer::explorer(cx).read(cx).active_tab_id();
+        match event {
+            PhotoMapEvent::Reveal { path } => {
+                photo_map::set(cx, tab, false);
+                Self::reveal(path, cx);
+            }
+            PhotoMapEvent::Open { path } => {
+                let path = path.clone();
+                Self::explorer(cx, move |e, cx| {
+                    e.open_on_disk(&path, explorer::OpenHow::Default, cx).detach()
+                });
+            }
+        }
+    }
+
+    fn on_time_machine_event(event: &TimeMachineEvent, window: &mut Window, cx: &mut App) {
+        match event {
+            TimeMachineEvent::Restored { folder, path } => {
+                let name = base_name(path).to_string();
+                let folder = folder.clone();
+                let path = path.clone();
+                Self::explorer(cx, |e, cx| {
+                    e.reload_folder(&folder, cx);
+                    e.flash_paths([path], cx);
+                });
+                window.push_notification(Notification::success(t!("Restored {name}", name = name)), cx);
+            }
+            TimeMachineEvent::Compare { current, staged } => {
+                dialogs::compare_files::open(window, cx, staged.clone(), current.clone());
+            }
+            TimeMachineEvent::PinPortal { name, source } => {
+                Self::pin_portal(name.clone(), source.clone(), window, cx);
+            }
+            TimeMachineEvent::Error { title, message } => {
+                window.push_notification(Notification::error(message.clone()).title(title.clone()), cx);
+            }
+        }
+    }
+
+    fn pin_portal(name: String, source: glint_core::portals::PortalSource, window: &mut Window, cx: &mut App) {
+        window
+            .spawn(cx, async move |cx| {
+                let res = core_bridge::run(glint_core::portals::portal_mount(name, source))
+                    .await
+                    .and_then(|r| r);
+                let _ = cx.update(|window, cx| match res {
+                    Ok(portal) => window.push_notification(
+                        Notification::success(t!("Mounted live portal at {path}", path = portal.mount_path)),
+                        cx,
+                    ),
+                    Err(err) => {
+                        window.push_notification(Notification::error(err).title(t!("Couldn't mount live portal")), cx)
+                    }
+                });
+            })
+            .detach();
     }
 
     /// Whether the active tab can show a map: a folder on a drive, no search running in it.
@@ -817,6 +941,16 @@ impl Workspace {
         explorer
             .active_tab()
             .is_some_and(|tab| tab.find.is_none() && glint_model::paths::is_folder_path(&tab.path))
+    }
+
+    /// Whether the active tab can show the Photo World Map (any folder on disk or Gallery).
+    fn can_photo_map(cx: &App) -> bool {
+        let explorer = explorer::explorer(cx);
+        let explorer = explorer.read(cx);
+        explorer.active_tab().is_some_and(|tab| {
+            tab.find.is_none()
+                && (glint_model::paths::is_folder_path(&tab.path) || glint_model::paths::is_gallery(&tab.path))
+        })
     }
 
     // ---- The command bar, requests, tools -----------------------------------------------------------------------
@@ -865,6 +999,18 @@ impl Workspace {
             CommandBarEvent::RunTask { folder, command } => self
                 .terminal
                 .update(cx, |terminal, cx| terminal.run_task(folder, command, window, cx)),
+            CommandBarEvent::VirtualDrag { paths, transform } => {
+                let drag = dragdrop::drag_transformed(cx, MAIN, paths.clone(), transform.clone());
+                window
+                    .spawn(cx, async move |cx| {
+                        if let Err(err) = drag.await {
+                            let _ = cx.update(|window, cx| {
+                                window.push_notification(Notification::error(err).title(t!("Couldn't start drag")), cx);
+                            });
+                        }
+                    })
+                    .detach();
+            }
         }
     }
 
@@ -1016,6 +1162,7 @@ impl Workspace {
             }
             FileListEvent::ZoomIn { anchor } => self.zoom_view(pane, true, anchor.clone(), cx),
             FileListEvent::Limit { inward } => self.bump(pane, *inward, window, cx),
+            FileListEvent::FileLego(recipe) => Self::run_file_lego(recipe.clone(), window, cx),
         }
     }
 
@@ -1055,6 +1202,160 @@ impl Workspace {
             FileGridEvent::OpenMany { paths } => Self::open_many(paths.clone(), window, cx),
             FileGridEvent::ZoomOut { anchor } => self.zoom_view(pane, false, anchor.clone(), cx),
             FileGridEvent::Limit { inward } => self.bump(pane, *inward, window, cx),
+            FileGridEvent::FileLego(recipe) => Self::run_file_lego(recipe.clone(), window, cx),
+            FileGridEvent::CopyVideoFrame { path, seconds } => {
+                let win = cx
+                    .try_global::<core_bridge::Core>()
+                    .and_then(|c| c.app.window(MAIN).or_else(|| c.app.windows().into_values().next()));
+                let (path, seconds) = (path.clone(), *seconds);
+                let stamp = crate::components::preview::player::engine::clock(seconds);
+                window
+                    .spawn(cx, async move |cx| {
+                        let Some(win) = win else {
+                            let _ = cx.update(|window, cx| {
+                                window.push_notification(
+                                    Notification::error(t!("Main window unavailable")).title(t!("Couldn't copy frame")),
+                                    cx,
+                                );
+                            });
+                            return;
+                        };
+                        let res = core_bridge::run(glint_core::scrub::copy_frame_to_clipboard(win, path, seconds))
+                            .await
+                            .and_then(|r| r);
+                        let _ = cx.update(|window, cx| match res {
+                            Ok(()) => window.push_notification(
+                                Notification::success(t!("Copied video frame at {time}", time = stamp)),
+                                cx,
+                            ),
+                            Err(err) => {
+                                window.push_notification(Notification::error(err).title(t!("Couldn't copy frame")), cx)
+                            }
+                        });
+                    })
+                    .detach();
+            }
+            FileGridEvent::SliceVideoClip {
+                path,
+                start_sec,
+                end_sec,
+                format,
+            } => {
+                let (path, start_sec, end_sec, format) = (path.clone(), *start_sec, *end_sec, *format);
+                window
+                    .spawn(cx, async move |cx| {
+                        let res = core_bridge::run(glint_core::scrub::slice_clip(path, start_sec, end_sec, format))
+                            .await
+                            .and_then(|r| r);
+                        let _ = cx.update(|window, cx| match res {
+                            Ok(out) => {
+                                let name = base_name(&out).to_string();
+                                let folder = glint_model::paths::parent_path(&out);
+                                Self::explorer(cx, |e, cx| {
+                                    e.remember_undo(
+                                        format!("slice {name}"),
+                                        explorer::UndoAction::Recycle(vec![out.clone()]),
+                                        cx,
+                                    );
+                                    e.reload_folder(&folder, cx);
+                                    e.flash_paths([out], cx);
+                                });
+                                window.push_notification(
+                                    Notification::success(t!("Created clip {name}", name = name)),
+                                    cx,
+                                );
+                            }
+                            Err(err) => {
+                                window.push_notification(Notification::error(err).title(t!("Couldn't slice clip")), cx)
+                            }
+                        });
+                    })
+                    .detach();
+            }
+        }
+    }
+
+    /// Executes a contextual file-on-file drop recipe ("File Lego").
+    fn run_file_lego(recipe: glint_model::file_lego::LegoRecipe, window: &mut Window, cx: &mut App) {
+        use glint_model::file_lego::{LegoAction, MuxKind};
+        haptics::trigger(HapticCue::BasketSnap, state::try_settings(cx).is_none_or(|s| s.haptics));
+        match recipe.action {
+            LegoAction::CompareFiles { left, right } => {
+                dialogs::compare_files::open(window, cx, left, right);
+            }
+            LegoAction::MergePdf { files, .. } => {
+                dialogs::pdf::open(window, cx, files, dialogs::pdf::PdfMode::Merge);
+            }
+            LegoAction::PackArchive { files, target_archive } => {
+                let fmt = if target_archive.to_ascii_lowercase().ends_with(".7z") {
+                    explorer::CompressFormat::SevenZ
+                } else {
+                    explorer::CompressFormat::Zip
+                };
+                let mut all = vec![target_archive];
+                all.extend(files);
+                Self::compress(all, fmt, window, cx);
+            }
+            LegoAction::MuxMedia { video, track, kind } => {
+                let is_subs = matches!(kind, MuxKind::Subtitles);
+                window
+                    .spawn(cx, async move |cx| {
+                        let res = core_bridge::run(glint_core::file_lego::mux_track(video, track, is_subs))
+                            .await
+                            .and_then(|r| r);
+                        let _ = cx.update(|window, cx| match res {
+                            Ok(out) => {
+                                let name = glint_model::paths::base_name(&out).to_string();
+                                let folder = glint_model::paths::parent_path(&out);
+                                Self::explorer(cx, |e, cx| {
+                                    e.remember_undo(
+                                        format!("mux {name}"),
+                                        explorer::UndoAction::Recycle(vec![out.clone()]),
+                                        cx,
+                                    );
+                                    e.reload_folder(&folder, cx);
+                                    e.flash_paths([out], cx);
+                                });
+                                window.push_notification(Notification::success(t!("Created {name}", name = name)), cx);
+                            }
+                            Err(err) => {
+                                window.push_notification(Notification::error(err).title(t!("Couldn't mux media")), cx);
+                            }
+                        });
+                    })
+                    .detach();
+            }
+            LegoAction::VerifyChecksum { file, sums_file } => {
+                window
+                    .spawn(cx, async move |cx| {
+                        let res = core_bridge::run(glint_core::file_lego::verify_single_against_sums(file, sums_file))
+                            .await
+                            .and_then(|r| r);
+                        let _ = cx.update(|window, cx| match res {
+                            Ok(check) => {
+                                if check.matched {
+                                    haptics::trigger(
+                                        HapticCue::ChecksumMatch,
+                                        state::try_settings(cx).is_none_or(|s| s.haptics),
+                                    );
+                                }
+                                let note = if check.matched {
+                                    Notification::success(check.message)
+                                } else {
+                                    Notification::error(check.message)
+                                };
+                                window.push_notification(note, cx);
+                            }
+                            Err(err) => {
+                                window.push_notification(
+                                    Notification::error(err).title(t!("Couldn't verify checksum")),
+                                    cx,
+                                );
+                            }
+                        });
+                    })
+                    .detach();
+            }
         }
     }
 
@@ -1102,6 +1403,20 @@ impl Workspace {
             MenuEvent::Closed => preview::uncover(cx),
             MenuEvent::Duplicates { folder } => dialogs::duplicates::open(window, cx, folder.clone()),
             MenuEvent::Timeline { folder } => dialogs::timeline::open(window, cx, folder.clone()),
+            MenuEvent::OpenTimeMachine { folder } => {
+                let target = folder.clone();
+                let current_tab = explorer::explorer(cx)
+                    .read(cx)
+                    .active_tab()
+                    .map(|t| (t.id, same_path(&t.path, &target)));
+                if let Some((tab, here)) = current_tab {
+                    disk_usage::set(cx, tab, false);
+                    if !here {
+                        Self::explorer(cx, |e, cx| e.navigate(target, explorer::NavOptions::default(), cx));
+                    }
+                    time_machine::set(cx, tab, true);
+                }
+            }
             MenuEvent::Cleanup { folder } => dialogs::cleanup::open(window, cx, folder),
             MenuEvent::XRay { path } => dialogs::xray::open(window, cx, path.clone()),
             MenuEvent::CheckSums { path } => dialogs::check_sums::open(window, cx, path.clone()),
@@ -1132,7 +1447,10 @@ impl Workspace {
             ),
             MenuEvent::PasteInto { folder } => Self::explorer(cx, |e, cx| e.paste(Some(folder), cx).detach()),
             MenuEvent::PasteQueued { folder } => Self::explorer(cx, |e, cx| e.paste_queued(Some(folder), cx).detach()),
-            MenuEvent::BasketAdd { paths } => Self::explorer(cx, |e, cx| e.add_to_basket(paths.clone(), cx)),
+            MenuEvent::BasketAdd { paths } => {
+                haptics::trigger(HapticCue::BasketSnap, state::try_settings(cx).is_none_or(|s| s.haptics));
+                Self::explorer(cx, |e, cx| e.add_to_basket(paths.clone(), cx))
+            }
             MenuEvent::BasketMove => {
                 Self::explorer(cx, |e, cx| e.basket_to_here(explorer::QueueKind::Move, cx).detach())
             }
@@ -1223,6 +1541,7 @@ impl Workspace {
             MenuEvent::Share { paths } => {
                 dialogs::share::open(window, cx, paths.clone());
             }
+            MenuEvent::CopyPermalink { path } => Self::copy_permalink(path.clone(), window, cx),
             // Opening, showing, Recent.
             MenuEvent::OpenWithItsApp {
                 path,
@@ -1270,6 +1589,11 @@ impl Workspace {
             MenuEvent::Rotate { paths, clockwise } => {
                 Self::explorer(cx, |e, cx| e.rotate_pictures(paths.clone(), *clockwise, cx).detach())
             }
+            MenuEvent::MatchColor { path } => Self::match_color(path.clone(), window, cx),
+            MenuEvent::ToggleColorWheel => {
+                let tab = explorer::explorer(cx).read(cx).active_tab_id();
+                color_wheel::toggle(cx, tab);
+            }
             MenuEvent::CloudPin { paths, state } => {
                 let state = match state {
                     menus::CloudPin::Keep => explorer::PinState::Keep,
@@ -1287,6 +1611,24 @@ impl Workspace {
             // File Explorer's on-demand folders.
             MenuEvent::ShowOnDemand { id, name } => Self::explorer(cx, |e, cx| e.show_on_demand(id, name, cx).detach()),
             MenuEvent::HideOnDemand { id } => Self::explorer(cx, |e, cx| e.hide_on_demand(id, cx).detach()),
+            MenuEvent::PinPortal { name, source } => Self::pin_portal(name.clone(), source.clone(), window, cx),
+            MenuEvent::UnpinPortal { id } => {
+                let id = id.clone();
+                window
+                    .spawn(cx, async move |cx| {
+                        let res = core_bridge::run(glint_core::portals::portal_unmount(id))
+                            .await
+                            .and_then(|r| r);
+                        let _ = cx.update(|window, cx| match res {
+                            Ok(()) => window.push_notification(Notification::success(t!("Unmounted live portal")), cx),
+                            Err(err) => window.push_notification(
+                                Notification::error(err).title(t!("Couldn't unmount live portal")),
+                                cx,
+                            ),
+                        });
+                    })
+                    .detach();
+            }
             // What Glint knows (docs/gpui/aware).
             MenuEvent::Unblock { paths } => Self::unblock(paths.clone(), window, cx),
             MenuEvent::CopyTextIn { path } => Self::copy_text_in(path.clone(), window, cx),
@@ -1314,6 +1656,57 @@ impl Workspace {
                     None => Notification::success(t!("Unblocked")),
                 };
                 window.push_notification(notice, cx);
+            });
+        })
+        .detach();
+    }
+
+    /// "Copy permalink": builds an unbreakable `glint://` NTFS/ReFS file-ID URI and copies it to the clipboard.
+    fn copy_permalink(path: String, window: &mut Window, cx: &mut Context<Self>) {
+        cx.spawn_in(window, async move |_, cx| {
+            let link = cx
+                .background_executor()
+                .spawn(async move { glint_core::permalinks::create_permalink(&path) })
+                .await;
+            let _ = cx.update(|window, cx| {
+                let notice = match link {
+                    Ok(uri) => {
+                        cx.write_to_clipboard(ClipboardItem::new_string(uri));
+                        Notification::success(t!("Copied unbreakable link"))
+                    }
+                    Err(reason) => Notification::error(reason).title(t!("Couldn't copy permalink")),
+                };
+                window.push_notification(notice, cx);
+            });
+        })
+        .detach();
+    }
+
+    /// "Find similar colors": samples the picture's dominant OKLab color and opens the Color Wheel filter.
+    fn match_color(path: String, window: &mut Window, cx: &mut Context<Self>) {
+        let (tab, modified) = {
+            let exp = explorer::explorer(cx).read(cx);
+            let tab = exp.active_tab_id();
+            let modified = exp
+                .tab(tab)
+                .and_then(|t| t.entries().iter().find(|e| e.path == path).map(|e| e.modified))
+                .unwrap_or(0);
+            (tab, modified)
+        };
+        cx.spawn_in(window, async move |_, cx| {
+            let color = cx
+                .background_executor()
+                .spawn(async move { glint_core::color_index::dominant_color_of(&path, modified) })
+                .await;
+            let _ = cx.update(|window, cx| match color {
+                Some(oklab) => {
+                    explorer::explorer(cx).update(cx, |e, cx| e.warm_color_palettes(tab, cx));
+                    color_wheel::open_with(cx, tab, oklab);
+                }
+                None => window.push_notification(
+                    Notification::info(t!("Couldn't extract color palette for this image")),
+                    cx,
+                ),
             });
         })
         .detach();
@@ -1809,6 +2202,7 @@ impl Workspace {
     /// The zoom in pane `pane` goes from the list to the grid's smallest tiles (`to_grid`) or from those back to
     /// the list: the tab's view changes, and the view that comes is asked to show `anchor` where it was.
     fn zoom_view(&mut self, pane: usize, to_grid: bool, anchor: Option<stage::Anchor>, cx: &mut Context<Self>) {
+        haptics::trigger(HapticCue::ZoomDetent, state::try_settings(cx).is_none_or(|s| s.haptics));
         let tab = explorer::explorer(cx).read(cx).pane_tab_id(pane);
         self.anchors[pane] = anchor;
         if to_grid {
@@ -1841,6 +2235,7 @@ impl Workspace {
 
     /// The zoom has nowhere to go in pane `pane`: its view gives a little about the pointer and comes back.
     fn bump(&mut self, pane: usize, inward: bool, window: &Window, cx: &mut Context<Self>) {
+        haptics::trigger(HapticCue::BumpLimit, state::try_settings(cx).is_none_or(|s| s.haptics));
         self.cue(
             pane,
             stage::Plan::Bump {
@@ -1911,6 +2306,8 @@ impl Workspace {
         let view: AnyElement = match Self::shown_in(pane, cx) {
             Some(Shown::ThisPc) => views.this_pc.clone().into_any_element(),
             Some(Shown::DiskUsage) => views.usage.clone().into_any_element(),
+            Some(Shown::TimeMachine) => views.time_machine.clone().into_any_element(),
+            Some(Shown::PhotoMap) => views.photo_map.clone().into_any_element(),
             Some(Shown::Columns) => views.columns.clone().into_any_element(),
             Some(Shown::Grid) => views.grid.clone().into_any_element(),
             Some(Shown::List) | None => views.list.clone().into_any_element(),
@@ -1963,6 +2360,7 @@ impl Workspace {
             .when(headed, |view| view.child(div().flex_none().child(views.head.clone())))
             .child(div().flex_none().child(views.bars.clone()))
             .child(div().flex_none().child(views.compare.clone()))
+            .child(div().flex_none().child(views.color_wheel.clone()))
             .child(div().flex_1().min_h_0().child(view));
         // On its stage: going into a folder, out of one, or anywhere else flies there.
         let view = stage::stage(&self.stages[pane].hand, self.stages[pane].cue.clone(), view);
@@ -2300,6 +2698,8 @@ impl Render for Workspace {
                 this.terminal.update(cx, |terminal, cx| terminal.toggle(window, cx))
             }))
             .on_action(cx.listener(|_, _: &actions::DiskUsage, _, cx| Self::toggle_disk_usage(cx)))
+            .on_action(cx.listener(|_, _: &actions::ToggleTimeMachine, _, cx| Self::toggle_time_machine(cx)))
+            .on_action(cx.listener(|_, _: &actions::TogglePhotoMap, _, cx| Self::toggle_photo_map(cx)))
             // File operations, on the active tab's selection.
             .on_action(cx.listener(|_, _: &actions::Copy, _, cx| {
                 let paths = Self::selection(cx);
@@ -2872,6 +3272,38 @@ mod tests {
         assert_eq!(shown(&mut visual), Some(Shown::List));
         let tab = visual.update(|_, cx| explorer::explorer(cx).read(cx).active_tab_id());
         assert!(!visual.update(|_, cx| disk_usage::shows(cx, tab)));
+    }
+
+    #[gpui_kit::test]
+    fn toggle_time_machine_shows_scrubber_and_list_view_returns_to_files(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let mut visual = open(cx, false);
+        let shown = |visual: &mut VisualTestContext| visual.update(|_, cx| Workspace::shown_in(0, cx));
+        assert_eq!(shown(&mut visual), Some(Shown::List));
+        visual.dispatch_action(actions::ToggleTimeMachine);
+        visual.run_until_parked();
+        assert_eq!(shown(&mut visual), Some(Shown::TimeMachine));
+        visual.dispatch_action(actions::ListView);
+        visual.run_until_parked();
+        assert_eq!(shown(&mut visual), Some(Shown::List));
+        let tab = visual.update(|_, cx| explorer::explorer(cx).read(cx).active_tab_id());
+        assert!(!visual.update(|_, cx| time_machine::shows(cx, tab)));
+    }
+
+    #[gpui_kit::test]
+    fn toggle_photo_map_shows_map_and_list_view_returns_to_files(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let mut visual = open(cx, false);
+        let shown = |visual: &mut VisualTestContext| visual.update(|_, cx| Workspace::shown_in(0, cx));
+        assert_eq!(shown(&mut visual), Some(Shown::List));
+        visual.dispatch_action(actions::TogglePhotoMap);
+        visual.run_until_parked();
+        assert_eq!(shown(&mut visual), Some(Shown::PhotoMap));
+        visual.dispatch_action(actions::ListView);
+        visual.run_until_parked();
+        assert_eq!(shown(&mut visual), Some(Shown::List));
+        let tab = visual.update(|_, cx| explorer::explorer(cx).read(cx).active_tab_id());
+        assert!(!visual.update(|_, cx| photo_map::shows(cx, tab)));
     }
 
     #[gpui_kit::test]

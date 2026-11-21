@@ -233,7 +233,14 @@ pub fn item_menu(targets: &[FileEntry], c: &ItemCtx) -> Vec<Node> {
         .and(c.probed.as_ref())
         .and_then(|probed| probed.extracted.clone().flatten())
     {
-        m.push(Entry::task(t!("Open extracted folder"), IconName::FolderOpen, Task::OpenExtracted(folder)).node());
+        m.push(
+            Entry::task(
+                t!("Open extracted folder"),
+                IconName::FolderOpen,
+                Task::OpenExtracted(folder),
+            )
+            .node(),
+        );
     }
     if let Some(e) = one.filter(|e| (is_archive_file(e) || is_browsable(e)) && !fixed) {
         m.push(
@@ -241,6 +248,21 @@ pub fn item_menu(targets: &[FileEntry], c: &ItemCtx) -> Vec<Node> {
                 t!("Extract here"),
                 IconName::ArchiveRestore,
                 MenuEvent::ExtractHere { path: e.path.clone() },
+            )
+            .node(),
+        );
+    }
+    if let Some(e) = one.filter(|e| is_archive_file(e) && !fixed && !remote) {
+        m.push(
+            Entry::ask(
+                t!("Mount as live folder"),
+                IconName::Pin,
+                MenuEvent::PinPortal {
+                    name: e.name.clone(),
+                    source: glint_core::portals::PortalSource::Archive {
+                        archive_path: e.path.clone(),
+                    },
+                },
             )
             .node(),
         );
@@ -346,7 +368,11 @@ pub fn item_menu(targets: &[FileEntry], c: &ItemCtx) -> Vec<Node> {
         );
     }
     // Windows marked it as downloaded from the internet: one press takes the mark off.
-    let blocked = c.probed.as_ref().and_then(|p| p.origin.as_ref()).is_some_and(|o| o.blocked);
+    let blocked = c
+        .probed
+        .as_ref()
+        .and_then(|p| p.origin.as_ref())
+        .is_some_and(|o| o.blocked);
     if let Some(e) = one.filter(|e| blocked && !e.dir && !fixed) {
         m.push(
             Entry::ask(
@@ -698,9 +724,8 @@ pub fn item_menu(targets: &[FileEntry], c: &ItemCtx) -> Vec<Node> {
         m.push(Some(pdf_tools_menu(&pdfs)));
     }
     // Windows' own text recognition, on a picture that is on the disk.
-    let readable_picture = |e: &&FileEntry| {
-        !e.dir && on_disk(e) && !is_online_only(e) && TEXT_PICTURES.contains(&e.ext.as_str())
-    };
+    let readable_picture =
+        |e: &&FileEntry| !e.dir && on_disk(e) && !is_online_only(e) && TEXT_PICTURES.contains(&e.ext.as_str());
     if let Some(e) = one.filter(readable_picture) {
         m.push(
             Entry::ask(
@@ -717,6 +742,16 @@ pub fn item_menu(targets: &[FileEntry], c: &ItemCtx) -> Vec<Node> {
                 t!("Set as desktop background"),
                 IconName::Wallpaper,
                 MenuEvent::SetWallpaper { path: e.path.clone() },
+            )
+            .node(),
+        );
+    }
+    if let Some(e) = one.filter(|e| can_convert(e)) {
+        m.push(
+            Entry::ask(
+                t!("Find similar colors"),
+                IconName::Pipette,
+                MenuEvent::MatchColor { path: e.path.clone() },
             )
             .node(),
         );
@@ -808,14 +843,15 @@ pub fn item_menu(targets: &[FileEntry], c: &ItemCtx) -> Vec<Node> {
                 .node()
             }),
             // A checksum file (`.sha256`, `.sha512`, `.b3sum`): the files it lists are checked against it.
-            one.filter(|e| !e.dir && !fixed && glint_core::checksums::is_sums_file(&e.name)).and_then(|e| {
-                Entry::ask(
-                    t!("Check files in this folder"),
-                    IconName::FileCheck,
-                    MenuEvent::CheckSums { path: e.path.clone() },
-                )
-                .node()
-            }),
+            one.filter(|e| !e.dir && !fixed && glint_core::checksums::is_sums_file(&e.name))
+                .and_then(|e| {
+                    Entry::ask(
+                        t!("Check files in this folder"),
+                        IconName::FileCheck,
+                        MenuEvent::CheckSums { path: e.path.clone() },
+                    )
+                    .node()
+                }),
             one.filter(|e| e.dir && !fixed).and_then(|e| {
                 Entry::ask(
                     t!("Recent changes"),
@@ -877,6 +913,14 @@ pub fn item_menu(targets: &[FileEntry], c: &ItemCtx) -> Vec<Node> {
                 ))
             }),
             separator(),
+            one.filter(|e| !fixed && on_a_drive(&e.path)).and_then(|e| {
+                Entry::ask(
+                    t!("Copy permalink"),
+                    IconName::Link,
+                    MenuEvent::CopyPermalink { path: e.path.clone() },
+                )
+                .node()
+            }),
             when(!fixed, || {
                 entry_node(Entry::ask(
                     t!("Share…"),

@@ -4,6 +4,8 @@
 
 /// Breadcrumbs, editing and completion (AddressBar.tsx).
 pub mod address_bar;
+/// 120 FPS OKLab Color-Wheel Photo Surfing bar.
+pub mod color_wheel;
 /// Columns: the folders down to the one open, side by side (ColumnsView.tsx).
 pub mod columns_view;
 /// The command bar under the address bar: New, Cut, Copy, Paste, Rename, Delete, Sort, View... (CommandBar.tsx).
@@ -32,6 +34,8 @@ pub mod palette;
 pub mod pane_bars;
 /// The head of a pane: the folder's name and picture, what is in it, and a chip for each kind.
 pub mod pane_head;
+/// Offline 120 FPS interactive vector Photo World Map.
+pub mod photo_map;
 /// The preview pane and Quick Look.
 pub mod preview;
 /// The Quick Search window: the shortcut's and the tray's search (QuickSearch.tsx).
@@ -50,5 +54,7 @@ pub mod tab_strip;
 pub mod terminal;
 /// This PC: drives and their space (ThisPC.tsx).
 pub mod this_pc;
+/// Live Folder Time-Machine Scrubber: shadow copies, Git commits, backups, and USN activity on a timeline.
+pub mod time_machine;
 /// Small things drawn for the dock: a rolling number, a spark line, the glint's ring (docs/gpui/aware).
 pub mod viz;

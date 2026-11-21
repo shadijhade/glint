@@ -53,7 +53,7 @@ mod tests;
 pub mod wave;
 
 pub use engine::{Command, Engine, Event, Facts, Frame, Kind, Opened};
-pub use scrub::Scrub;
+pub use scrub::{Scrub, ScrubEvent};
 pub use sources::{init_with, player_sources, PlayerSources};
 
 use super::states::{centered, Waiting};

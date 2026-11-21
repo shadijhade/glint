@@ -17,7 +17,11 @@ use super::sources::player_sources;
 use super::{retire, PlayerSources};
 use crate::kit::prelude::*;
 use crate::{t, theme};
-use gpui_kit::{canvas, img, Bounds, MouseMoveEvent, ObjectFit, Pixels, RenderImage, StyledImage as _, Task};
+use glint_core::scrub::QuickClipFormat;
+use gpui_kit::{
+    canvas, img, Bounds, EventEmitter, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit, Pixels,
+    RenderImage, StyledImage as _, Task,
+};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -115,6 +119,21 @@ fn remember(path: &str, width: u32, frames: Arc<Frames>) {
     });
 }
 
+/// Actions triggered directly from a video tile scrub overlay.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ScrubEvent {
+    CopyFrame {
+        path: String,
+        seconds: f64,
+    },
+    SliceClip {
+        path: String,
+        start_sec: f64,
+        end_sec: f64,
+        format: QuickClipFormat,
+    },
+}
+
 /// The tile's overlay.
 pub struct Scrub {
     path: String,
@@ -124,10 +143,27 @@ pub struct Scrub {
     /// The pointer across the tile, 0 to 0.999; none while it is off the tile.
     at: Option<f32>,
     hovering: bool,
+    /// Shift+drag clip selection anchors across `[0..1]`.
+    drag_anchor: Option<f32>,
+    drag_current: Option<f32>,
     /// Whether a frame of `frames` is (or may be) in the GPU's atlas.
     drawn: bool,
     area: Rc<Cell<Bounds<Pixels>>>,
     loading: Option<Task<()>>,
+}
+
+impl EventEmitter<ScrubEvent> for Scrub {}
+
+/// Orders and validates a `[0..1]` Shift+drag selection into `(start_sec, end_sec)`.
+pub fn clip_range(anchor: f32, current: f32, seconds: f64) -> Option<(f64, f64)> {
+    if !seconds.is_finite() || seconds <= 0. {
+        return None;
+    }
+    let a = anchor.clamp(0., 1.);
+    let b = current.clamp(0., 1.);
+    let start = f64::from(a.min(b)) * seconds;
+    let end = f64::from(a.max(b)) * seconds;
+    (end - start >= 0.25).then_some((start, end))
 }
 
 impl Scrub {
@@ -146,10 +182,35 @@ impl Scrub {
             frames: None,
             at: None,
             hovering: false,
+            drag_anchor: None,
+            drag_current: None,
             drawn: false,
             area: Rc::new(Cell::new(Bounds::default())),
             loading: None,
         }
+    }
+
+    /// Video file path this scrub overlay belongs to.
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    /// Timestamp in seconds at the current scrub cursor, when duration is known.
+    pub fn current_seconds(&self) -> Option<f64> {
+        let at = self.at?;
+        let seconds = self.frames.as_ref()?.seconds;
+        (seconds > 0.).then(|| f64::from(at) * seconds)
+    }
+
+    /// Normalized `[0..0.999]` cursor fraction across the tile, accounting for RTL mirroring.
+    fn fraction(&self, x: Pixels) -> Option<f32> {
+        let area = self.area.get();
+        let width = f32::from(area.size.width);
+        if width <= 0. {
+            return None;
+        }
+        let raw = ((f32::from(x) - f32::from(area.origin.x)) / width).clamp(0., 0.999);
+        Some(if crate::i18n::is_rtl() { 0.999 - raw } else { raw })
     }
 
     /// Where the pointer is across the tile, if it is on it.
@@ -191,24 +252,66 @@ impl Scrub {
     /// The pointer left: nothing is drawn, and the pictures are let go of the atlas by the next frame.
     pub(super) fn leave(&mut self, cx: &mut Context<Self>) {
         self.hovering = false;
+        self.drag_anchor = None;
+        self.drag_current = None;
         if self.at.take().is_some() {
             cx.notify();
         }
     }
 
     fn moved(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
-        let area = self.area.get();
-        let width = f32::from(area.size.width);
-        if !self.hovering || width <= 0. {
+        if !self.hovering {
             return;
         }
-        let across = ((f32::from(event.position.x) - f32::from(area.origin.x)) / width).clamp(0., 0.999);
-        // Mirrored in Arabic, the tile's start is at the right.
-        let across = if crate::i18n::is_rtl() { 0.999 - across } else { across };
-        if self.at != Some(across) {
-            self.at = Some(across);
+        let Some(across) = self.fraction(event.position.x) else {
+            return;
+        };
+        let mut changed = self.at != Some(across);
+        self.at = Some(across);
+        if self.drag_anchor.is_some() && self.drag_current != Some(across) {
+            self.drag_current = Some(across);
+            changed = true;
+        }
+        if changed {
             cx.notify();
         }
+    }
+
+    fn shift_down(&mut self, event: &MouseDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if !event.modifiers.shift {
+            return;
+        }
+        if let Some(at) = self.fraction(event.position.x) {
+            self.drag_anchor = Some(at);
+            self.drag_current = Some(at);
+            self.at = Some(at);
+            cx.stop_propagation();
+            cx.notify();
+        }
+    }
+
+    fn shift_up(&mut self, event: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let (Some(anchor), Some(current)) = (self.drag_anchor.take(), self.drag_current.take()) else {
+            return;
+        };
+        cx.stop_propagation();
+        let final_at = self.fraction(event.position.x).unwrap_or(current);
+        if let Some(seconds) = self.frames.as_ref().map(|f| f.seconds).filter(|s| *s > 0.) {
+            if let Some((start_sec, end_sec)) = clip_range(anchor, final_at, seconds) {
+                let format = if event.modifiers.alt {
+                    QuickClipFormat::Gif
+                } else {
+                    QuickClipFormat::Mp4Copy
+                };
+                cx.emit(ScrubEvent::SliceClip {
+                    path: self.path.clone(),
+                    start_sec,
+                    end_sec,
+                    format,
+                });
+            }
+        }
+        cx.notify();
     }
 }
 
@@ -249,10 +352,53 @@ impl Render for Scrub {
         .absolute()
         .size_full();
         let shown = self.at.and_then(|at| self.frames.clone().map(|frames| (at, frames)));
+        let range = self.drag_anchor.zip(self.drag_current).and_then(|(a, b)| {
+            let frames = self.frames.as_ref()?;
+            let (s, e) = clip_range(a, b, frames.seconds)?;
+            let lo = a.min(b).clamp(0., 1.);
+            let hi = a.max(b).clamp(0., 1.);
+            Some((lo, hi, s, e))
+        });
         let overlay = shown.map(|(at, frames)| {
             let image = frames.at(at).cloned();
             self.drawn |= image.is_some();
-            let label = (frames.seconds > 0.).then(|| clock(f64::from(at) * frames.seconds));
+            let label = match range {
+                Some((_, _, s, e)) => Some(format!("{}–{}", clock(s), clock(e))),
+                None => (frames.seconds > 0.).then(|| clock(f64::from(at) * frames.seconds)),
+            };
+            let track = div()
+                .absolute()
+                .bottom(space(1.))
+                .left(space(1.))
+                .right(space(1.))
+                .h(px(if range.is_some() { 4. } else { 2. }))
+                .rounded_full()
+                .bg(gpui_kit::black().opacity(0.35))
+                .child(match range {
+                    Some((lo, hi, _, _)) => {
+                        let start_pct = if crate::i18n::is_rtl() { 1. - hi } else { lo };
+                        div()
+                            .relative()
+                            .size_full()
+                            .child(
+                                div()
+                                    .absolute()
+                                    .top_0()
+                                    .bottom_0()
+                                    .left(gpui_kit::relative(start_pct))
+                                    .w(gpui_kit::relative((hi - lo).max(0.02)))
+                                    .rounded_full()
+                                    .bg(t.primary),
+                            )
+                            .into_any_element()
+                    }
+                    None => div()
+                        .h_full()
+                        .w(gpui_kit::relative(at))
+                        .rounded_full()
+                        .bg(t.primary)
+                        .into_any_element(),
+                });
             div()
                 .absolute()
                 .size_full()
@@ -263,17 +409,7 @@ impl Render for Scrub {
                         .size_full()
                         .rounded(theme::size::RADIUS_SM)
                 }))
-                .child(
-                    div()
-                        .absolute()
-                        .bottom(space(1.))
-                        .left(space(1.))
-                        .right(space(1.))
-                        .h(px(2.))
-                        .rounded_full()
-                        .bg(gpui_kit::black().opacity(0.3))
-                        .child(div().h_full().w(gpui_kit::relative(at)).rounded_full().bg(t.primary)),
-                )
+                .child(track)
                 .children(label.map(|label| {
                     let tag = div()
                         .id("scrub-time")
@@ -308,7 +444,9 @@ impl Render for Scrub {
                     this.leave(cx);
                 }
             }))
+            .on_mouse_down(MouseButton::Left, cx.listener(Self::shift_down))
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| this.moved(event, cx)))
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::shift_up))
             .child(measuring)
             .children(overlay)
     }
@@ -384,5 +522,15 @@ mod tests {
         assert_eq!(Scrub::width_for(200., 1.), 200);
         assert_eq!(Scrub::width_for(200., 1.25), 250);
         assert_eq!(Scrub::width_for(200., 3.), 400);
+    }
+
+    #[test]
+    fn clip_range_orders_endpoints_and_rejects_tiny_drags() {
+        let (s, e) = clip_range(0.25, 0.5, 100.0).unwrap();
+        assert!((s - 25.0).abs() < 1e-6 && (e - 50.0).abs() < 1e-6);
+        let (s2, e2) = clip_range(0.75, 0.25, 40.0).unwrap();
+        assert!((s2 - 10.0).abs() < 1e-6 && (e2 - 30.0).abs() < 1e-6);
+        assert_eq!(clip_range(0.50, 0.51, 10.0), None);
+        assert_eq!(clip_range(0.1, 0.9, 0.0), None);
     }
 }

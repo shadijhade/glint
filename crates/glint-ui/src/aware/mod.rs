@@ -80,7 +80,9 @@ impl Sources {
             }),
             clip: Rc::new(clip::read),
             today: Rc::new(|| {
-                let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis());
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_or(0, |d| d.as_millis());
                 day_of(i64::try_from(now).unwrap_or(i64::MAX))
             }),
         }
@@ -165,7 +167,9 @@ fn today(cx: &App) -> u32 {
     match try_shared(cx) {
         Some(aware) => aware.read(cx).today(),
         None => {
-            let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis());
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |d| d.as_millis());
             day_of(i64::try_from(now).unwrap_or(i64::MAX))
         }
     }
@@ -245,9 +249,15 @@ impl Aware {
             return true;
         }
         // A file's checksums are a long read, made quietly: nothing waits for them.
-        let mut asked = self.pending(Lane::Quiet, &entry.path).and(self.pending(Lane::Now, &entry.path));
+        let mut asked = self
+            .pending(Lane::Quiet, &entry.path)
+            .and(self.pending(Lane::Now, &entry.path));
         asked.sums = SumsWant::default();
-        let counting = asked.inside && !self.probed(entry).and_then(|probed| probed.inside).is_some_and(|inside| inside.done);
+        let counting = asked.inside
+            && !self
+                .probed(entry)
+                .and_then(|probed| probed.inside)
+                .is_some_and(|inside| inside.done);
         !counting && self.cache.unanswered(entry, asked).is_empty()
     }
 
@@ -377,7 +387,9 @@ impl Aware {
                     continue;
                 }
                 let readable = !entry.dir && entry.size <= HASH_CAP;
-                let mut want = self.cache.plan(entry, now, if readable { sums } else { SumsWant::default() });
+                let mut want = self
+                    .cache
+                    .plan(entry, now, if readable { sums } else { SumsWant::default() });
                 want.twins &= one;
                 if lane == Lane::Now {
                     // What the quiet lane was asked and hasn't answered yet is wanted now: asked again here, it
@@ -385,8 +397,18 @@ impl Aware {
                     let quiet = self.pending(Lane::Quiet, &entry.path);
                     // Checksums stay with the quiet lane, which goes on reading while the menu opens.
                     hashing |= !quiet.sums.is_empty();
-                    let late = self.cache.unanswered(entry, Want { sums: SumsWant::default(), ..quiet });
-                    let late = if self.pending(Lane::Now, &entry.path).is_empty() { late } else { Want::default() };
+                    let late = self.cache.unanswered(
+                        entry,
+                        Want {
+                            sums: SumsWant::default(),
+                            ..quiet
+                        },
+                    );
+                    let late = if self.pending(Lane::Now, &entry.path).is_empty() {
+                        late
+                    } else {
+                        Want::default()
+                    };
                     if !late.is_empty() {
                         promoted = true;
                         want = want.and(late);
@@ -412,7 +434,12 @@ impl Aware {
         let mut asks = Vec::new();
         for (entry, want) in planned {
             self.cache.asking(entry, want, now);
-            asks.push(Ask { path: entry.path.clone(), dir: entry.dir, size: entry.size, want });
+            asks.push(Ask {
+                path: entry.path.clone(),
+                dir: entry.dir,
+                size: entry.size,
+                want,
+            });
         }
         if asks.is_empty() {
             return false;
@@ -442,8 +469,21 @@ impl Aware {
                 }
                 let applied = this.update(cx, |this, cx| {
                     let mut any = false;
+                    let mut matched_sum = false;
                     for answer in batch {
+                        if let (Some(copied), glint_model::aware::Part::Sums(ref sums)) = (&this.copied, &answer.part) {
+                            if matches!(
+                                glint_model::aware::verdict(sums, copied),
+                                Some(glint_model::aware::Verdict::Match(_))
+                            ) {
+                                matched_sum = true;
+                            }
+                        }
                         any |= this.cache.take(&answer.path, answer.part);
+                    }
+                    if matched_sum {
+                        let enabled = crate::state::try_settings(cx).is_none_or(|s| s.haptics);
+                        crate::platform::haptics::trigger(crate::platform::haptics::HapticCue::ChecksumMatch, enabled);
                     }
                     if any {
                         this.noticed(cx);
@@ -562,7 +602,9 @@ pub fn facts(cx: &App, targets: &[FileEntry]) -> Facts {
         fixed: targets
             .iter()
             .any(|entry| is_archived(entry) || is_remote(entry) || is_closed(entry) || is_recycled(entry)),
-        clip: try_shared(cx).map(|aware| aware.read(cx).clip().clone()).unwrap_or_default(),
+        clip: try_shared(cx)
+            .map(|aware| aware.read(cx).clip().clone())
+            .unwrap_or_default(),
     }
 }
 

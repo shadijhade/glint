@@ -7,10 +7,11 @@
 //! arrives), follows the pointer across the tile and lets its pictures go of the GPU's atlas when the pointer
 //! leaves, and by `release_retired` when it is dropped.
 
-use crate::components::preview::player::Scrub;
+use crate::components::preview::player::{Scrub, ScrubEvent};
 use crate::kit::prelude::*;
 use glint_model::entries::{is_archived, is_locked, FileEntry};
 use glint_model::file_types::is_video_entry;
+use gpui_kit::Subscription;
 
 /// Whether a tile gets a scrub overlay: a video that is on the disk and readable, not one in an archive or an
 /// export (`isVideoEntry && !isLocked && !isArchived`).
@@ -21,26 +22,48 @@ pub(super) fn scrubbable(entry: &FileEntry) -> bool {
 /// The one overlay, for the tile the pointer is on.
 #[derive(Default)]
 pub(super) struct ScrubSlot {
-    current: Option<(String, Entity<Scrub>)>,
+    current: Option<(String, Entity<Scrub>, Subscription)>,
 }
 
 impl ScrubSlot {
     /// The pointer came onto the tile of the video at `path`, whose thumbnail is `thumb` logical pixels across on
     /// a screen of `scale`: an overlay is made for it (the one for another tile is dropped). Whether the grid needs
     /// drawing again is for the caller to say.
-    pub fn enter<T: 'static>(&mut self, path: &str, thumb: f32, scale: f32, cx: &mut Context<T>) {
-        if self.current.as_ref().is_some_and(|(p, _)| p == path) {
+    pub fn enter(&mut self, path: &str, thumb: f32, scale: f32, cx: &mut Context<super::FileGrid>) {
+        if self.current.as_ref().is_some_and(|(p, _, _)| p == path) {
             return;
         }
         let width = Scrub::width_for(thumb, scale);
         let owned = path.to_string();
-        self.current = Some((owned.clone(), cx.new(|cx| Scrub::new(owned, width, cx))));
+        let entity = cx.new(|cx| Scrub::new(owned.clone(), width, cx));
+        let sub = cx.subscribe(&entity, |_, _, event: &ScrubEvent, cx| match event {
+            ScrubEvent::CopyFrame { path, seconds } => {
+                cx.emit(super::FileGridEvent::CopyVideoFrame {
+                    path: path.clone(),
+                    seconds: *seconds,
+                });
+            }
+            ScrubEvent::SliceClip {
+                path,
+                start_sec,
+                end_sec,
+                format,
+            } => {
+                cx.emit(super::FileGridEvent::SliceVideoClip {
+                    path: path.clone(),
+                    start_sec: *start_sec,
+                    end_sec: *end_sec,
+                    format: *format,
+                });
+            }
+        });
+        self.current = Some((owned, entity, sub));
     }
 
     /// The pointer left the tile of `path`: its overlay is dropped (not another tile's, which may have been entered
     /// already). Whether anything changed.
     pub fn leave(&mut self, path: &str) -> bool {
-        if self.current.as_ref().is_some_and(|(p, _)| p == path) {
+        if self.current.as_ref().is_some_and(|(p, _, _)| p == path) {
             self.current = None;
             return true;
         }
@@ -55,11 +78,11 @@ impl ScrubSlot {
     /// The path the overlay is over.
     #[cfg(test)]
     pub fn path(&self) -> Option<&str> {
-        self.current.as_ref().map(|(p, _)| p.as_str())
+        self.current.as_ref().map(|(p, _, _)| p.as_str())
     }
 
     /// The overlay and the path it is over, for a frame.
     pub fn current(&self) -> Option<(String, Entity<Scrub>)> {
-        self.current.clone()
+        self.current.as_ref().map(|(p, e, _)| (p.clone(), e.clone()))
     }
 }

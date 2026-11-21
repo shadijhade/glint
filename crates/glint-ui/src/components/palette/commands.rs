@@ -547,6 +547,27 @@ pub fn actions(inputs: &Inputs) -> Vec<Command> {
             || Box::new(actions::DiskUsage),
         ),
     );
+    push(
+        in_folder && !inputs.finding && !inputs.in_archive,
+        Command::action("time-machine", t!("Time Machine scrubber"), I::RotateCcwClock, || {
+            Box::new(actions::ToggleTimeMachine)
+        }),
+    );
+    push(
+        (in_folder || glint_model::paths::is_gallery(&inputs.path)) && !inputs.finding && !inputs.in_archive,
+        Command::action("photo-map", t!("Photo World Map"), I::Globe, || {
+            Box::new(actions::TogglePhotoMap)
+        }),
+    );
+    push(
+        in_folder || inputs.finding,
+        menu(
+            "color-wheel",
+            t!("Color Wheel: surf photos by color"),
+            I::Pipette,
+            MenuEvent::ToggleColorWheel,
+        ),
+    );
     let tile = inputs.tile_size.unwrap_or(TileSize::Medium);
     push(
         grid && zoom_tiles(tile.as_str(), 1) != tile,
@@ -1594,6 +1615,75 @@ fn inspect_and_clean(inputs: &Inputs, place: &Place) -> Vec<Command> {
             MenuEvent::Defender { paths: targets },
         ),
     );
+    add(
+        !chosen && on_disk_only && place.in_folder && super::super::menus::kinds::on_a_drive(&folder),
+        menu(
+            "copy-permalink",
+            t!("Copy unbreakable permalink"),
+            I::Link,
+            MenuEvent::CopyPermalink { path: folder.clone() },
+        ),
+    );
+    if let Some(sel) = chosen.then(|| inputs.selected.first()).flatten() {
+        add(
+            on_disk_only && inputs.selected.len() == 1 && super::super::menus::kinds::on_a_drive(sel),
+            menu(
+                "copy-permalink",
+                t!("Copy unbreakable permalink"),
+                I::Link,
+                MenuEvent::CopyPermalink { path: sel.clone() },
+            ),
+        );
+        let name = base_name(sel).to_string();
+        if glint_core::archive::is_archive_name(sel) {
+            add(
+                on_disk_only,
+                menu(
+                    "mount-portal-archive",
+                    t!("Mount archive “{name}” as live folder", name = name),
+                    I::Pin,
+                    MenuEvent::PinPortal {
+                        name: base_name(sel).to_string(),
+                        source: glint_core::portals::PortalSource::Archive {
+                            archive_path: sel.clone(),
+                        },
+                    },
+                ),
+            );
+        }
+    }
+    if inputs.finding {
+        let root = folder.clone();
+        let label_name = if root.is_empty() {
+            t!("Search Portal").to_string()
+        } else {
+            format!("Search {}", base_name(&root))
+        };
+        add(
+            true,
+            menu(
+                "mount-portal-search",
+                t!("Mount current folder view as live portal"),
+                I::Pin,
+                MenuEvent::PinPortal {
+                    name: label_name,
+                    source: glint_core::portals::PortalSource::SavedSearch {
+                        query: String::new(),
+                        root,
+                    },
+                },
+            ),
+        );
+    }
+    for portal in glint_core::portals::portals_list() {
+        let cmd_id = format!("unmount-portal-{}", portal.id);
+        out.push(menu(
+            &cmd_id,
+            t!("Unmount live portal: {name}", name = portal.name),
+            I::PinOff,
+            MenuEvent::UnpinPortal { id: portal.id },
+        ));
+    }
     out
 }
 
@@ -1650,13 +1740,15 @@ pub fn rank(commands: &[Command], query: &str) -> Vec<Command> {
             .filter(|c| c.kind == Kind::Action && !c.search_only)
             .cloned()
             .collect();
-        by_habit.sort_by(|a, b| (b.weight > 0.).cmp(&(a.weight > 0.)).then_with(|| {
-            if a.weight > 0. && b.weight > 0. {
-                b.weight.total_cmp(&a.weight)
-            } else {
-                std::cmp::Ordering::Equal
-            }
-        }));
+        by_habit.sort_by(|a, b| {
+            (b.weight > 0.).cmp(&(a.weight > 0.)).then_with(|| {
+                if a.weight > 0. && b.weight > 0. {
+                    b.weight.total_cmp(&a.weight)
+                } else {
+                    std::cmp::Ordering::Equal
+                }
+            })
+        });
         return folders
             .into_iter()
             .take(FOLDERS_WHEN_EMPTY)

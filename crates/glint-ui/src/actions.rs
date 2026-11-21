@@ -68,6 +68,8 @@ actions!(
         GridSmaller,
         GridReset,
         DiskUsage,
+        ToggleTimeMachine,
+        TogglePhotoMap,
         // The file list
         OpenItem,
         QuickLook,
@@ -249,6 +251,18 @@ pub static BINDINGS: &[Binding] = &[
         "Workspace",
         AddToBasket,
         "Add the selection to the basket, to move, copy, zip or rename together from any folder"
+    ),
+    bind!(
+        "ctrl-shift-h",
+        "Workspace",
+        ToggleTimeMachine,
+        "Time Machine: scrub this folder back through shadow copies, Git, and backups"
+    ),
+    bind!(
+        "ctrl-shift-g",
+        "Workspace",
+        TogglePhotoMap,
+        "Photo World Map: view geotagged photos on an offline vector map"
     ),
     bind!("ctrl-shift-2", "Workspace", GridView, "Grid"),
     bind!("ctrl-shift-6", "Workspace", ListView, "List"),
