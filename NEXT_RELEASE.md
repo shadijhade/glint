@@ -13,7 +13,7 @@ is [docs/gpui/aware/PLAN.md](docs/gpui/aware/PLAN.md) with its task cards beside
 Built on 2026-11-21, in the five commits from `d792e5b` to `77e7d69`: Time Machine (`Ctrl+Shift+H`), live portals
 (Cloud Files folders for archives, saved searches, Git commits and restic snapshots), `glint://` permalinks, rename by
 example, File Lego, the Photo World Map (`Ctrl+Shift+G`), the Color Wheel and Find similar colors, frames and clips
-from a video's preview, Drag clean and touchpad haptics; `docs/features.md` describes each. Fixed before the release:
+from a video's tile in the grid, Drag clean and touchpad haptics; `docs/features.md` describes each. Fixed before the release:
 
 - The `glint://` handler was written by every copy at every start, so a dev build or an e2e run took the links from
   the installed Glint. Only the copy the setup program or Scoop installed points it at itself now, writing only when
