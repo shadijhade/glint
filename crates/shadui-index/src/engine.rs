@@ -4,8 +4,9 @@
 use crate::growth::Growth;
 use crate::history::{self, History, Paths};
 use crate::proto::{
-    self, unix_ms, GrowthSummary, HistoryAnswer, HistoryEvent, HistoryRequest, Hit, Message, SearchRequest, Sizes, Status, UsageNode, UsageRequest, UsageSummary, VolumeStatus,
-    FRAME_GROWTH, FRAME_HITS, FRAME_USAGE, NEW, NO_PARENT, WRITTEN,
+    self, unix_ms, GrowthSummary, HistoryAnswer, HistoryEvent, HistoryRequest, Hit, Message, SearchRequest, Sizes,
+    Status, UsageNode, UsageRequest, UsageSummary, VolumeStatus, FRAME_GROWTH, FRAME_HITS, FRAME_USAGE, NEW, NO_PARENT,
+    WRITTEN,
 };
 use crate::query::{self, Excludes, Filters, NameMatcher};
 use crate::snapshot::{self, Meta};
@@ -17,7 +18,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -76,14 +77,19 @@ impl Stop {
 }
 
 pub fn now_ms() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as i64)
 }
 
 /// The day `ms` (Unix ms) falls on in this PC's time zone, counted from 1601: marks of what grew
 /// are taken a day apart, as people count days.
 fn local_day(ms: i64) -> i64 {
     let utc = ms * 10_000 + 116_444_736_000_000_000;
-    let at = FILETIME { dwLowDateTime: utc as u32, dwHighDateTime: (utc >> 32) as u32 };
+    let at = FILETIME {
+        dwLowDateTime: utc as u32,
+        dwHighDateTime: (utc >> 32) as u32,
+    };
     let mut local = FILETIME::default();
     let local = match unsafe { FileTimeToLocalFileTime(&at, &mut local) } {
         Ok(()) => (local.dwHighDateTime as i64) << 32 | local.dwLowDateTime as i64,
@@ -109,13 +115,21 @@ impl Log {
             let _ = fs::rename(path, path.with_extension("old.log"));
         }
         let file = fs::OpenOptions::new().create(true).append(true).open(path).ok();
-        Log { file: Mutex::new(file), echo }
+        Log {
+            file: Mutex::new(file),
+            echo,
+        }
     }
 
     pub fn line(&self, text: &str) {
         let secs = now_ms() / 1000;
         let (days, rest) = (secs / 86_400, secs % 86_400);
-        let line = format!("day {days} {:02}:{:02}:{:02} UTC  {text}\n", rest / 3600, rest / 60 % 60, rest % 60);
+        let line = format!(
+            "day {days} {:02}:{:02}:{:02} UTC  {text}\n",
+            rest / 3600,
+            rest / 60 % 60,
+            rest % 60
+        );
         if self.echo {
             eprint!("{line}");
         }
@@ -131,6 +145,7 @@ type MapAnswer = (Vec<u8>, Option<Vec<u8>>, UsageSummary);
 /// One drive's index and how it's doing.
 struct Slot {
     letter: char,
+    serial32: AtomicU32,
     tree: RwLock<Tree>,
     ready: AtomicBool,
     status: Mutex<VolumeStatus>,
@@ -148,7 +163,16 @@ const COUNTED_FOR: Duration = Duration::from_secs(2);
 
 impl Slot {
     fn new(letter: char, tree: Tree, ready: bool, status: VolumeStatus) -> Slot {
-        Slot { letter, tree: RwLock::new(tree), ready: AtomicBool::new(ready), status: Mutex::new(status), history: Mutex::default(), history_loaded: AtomicBool::new(false), counted: Mutex::new(None) }
+        Slot {
+            letter,
+            serial32: AtomicU32::new(0),
+            tree: RwLock::new(tree),
+            ready: AtomicBool::new(ready),
+            status: Mutex::new(status),
+            history: Mutex::default(),
+            history_loaded: AtomicBool::new(false),
+            counted: Mutex::new(None),
+        }
     }
 
     /// The tree's counts, worked out again once they're [`COUNTED_FOR`] old.
@@ -186,8 +210,17 @@ impl Engine {
     pub fn start(data: PathBuf, only: Option<Vec<char>>, echo: bool) -> Arc<Engine> {
         let _ = fs::create_dir_all(&data);
         let log = Log::open(&data.join("service.log"), echo);
-        let engine = Arc::new(Engine { data, only, slots: RwLock::default(), stop: Stop::default(), workers: Mutex::default(), log });
-        engine.log.line(&format!("starting {} {}", crate::SERVICE_NAME, crate::VERSION));
+        let engine = Arc::new(Engine {
+            data,
+            only,
+            slots: RwLock::default(),
+            stop: Stop::default(),
+            workers: Mutex::default(),
+            log,
+        });
+        engine
+            .log
+            .line(&format!("starting {} {}", crate::SERVICE_NAME, crate::VERSION));
         engine.discover();
         // Drives can appear later (an external disk, a volume unlocked by BitLocker).
         let watcher = engine.clone();
@@ -203,10 +236,24 @@ impl Engine {
     /// An engine serving one ready drive from `tree`, with no workers: for tests.
     #[cfg(test)]
     pub(crate) fn with_tree(letter: char, tree: Tree) -> Arc<Engine> {
-        let status = VolumeStatus { volume: format!("{letter}:"), state: "ready".into(), ..Default::default() };
+        let status = VolumeStatus {
+            volume: format!("{letter}:"),
+            state: "ready".into(),
+            ..Default::default()
+        };
         let slot = Arc::new(Slot::new(letter, tree, true, status));
-        let log = Log { file: Mutex::new(None), echo: false };
-        Arc::new(Engine { data: PathBuf::new(), only: None, slots: RwLock::new(vec![slot]), stop: Stop::default(), workers: Mutex::default(), log })
+        let log = Log {
+            file: Mutex::new(None),
+            echo: false,
+        };
+        Arc::new(Engine {
+            data: PathBuf::new(),
+            only: None,
+            slots: RwLock::new(vec![slot]),
+            stop: Stop::default(),
+            workers: Mutex::default(),
+            log,
+        })
     }
 
     /// Feeds journal records to the history of the first drive, as following the journal does: for tests.
@@ -234,14 +281,24 @@ impl Engine {
         let drives = volume::fixed_indexed_drives();
         let mut slots = self.slots.write().unwrap();
         for letter in drives {
-            if self.stop.is_set() || self.only.as_ref().is_some_and(|only| !only.contains(&letter)) || slots.iter().any(|s| s.letter == letter) {
+            if self.stop.is_set()
+                || self.only.as_ref().is_some_and(|only| !only.contains(&letter))
+                || slots.iter().any(|s| s.letter == letter)
+            {
                 continue;
             }
-            let status = VolumeStatus { volume: format!("{letter}:"), state: "scanning".into(), ..Default::default() };
+            let status = VolumeStatus {
+                volume: format!("{letter}:"),
+                state: "scanning".into(),
+                ..Default::default()
+            };
             let slot = Arc::new(Slot::new(letter, Tree::default(), false, status));
             slots.push(slot.clone());
             let engine = self.clone();
-            let handle = thread::Builder::new().name(format!("index {letter}:")).spawn(move || engine.worker(&slot)).expect("index worker");
+            let handle = thread::Builder::new()
+                .name(format!("index {letter}:"))
+                .spawn(move || engine.worker(&slot))
+                .expect("index worker");
             self.workers.lock().unwrap().push(handle);
         }
     }
@@ -256,13 +313,19 @@ impl Engine {
                     self.log.line(&format!("{}: {why}; reading the MFT again", slot.letter));
                     slot.ready.store(false, Ordering::SeqCst);
                     // A journal that keeps failing mustn't turn into back-to-back full reads of the disk.
-                    if last_rescan.is_some_and(|at| at.elapsed() < Duration::from_secs(60)) && self.stop.sleep(RETRY_AFTER) {
+                    if last_rescan.is_some_and(|at| at.elapsed() < Duration::from_secs(60))
+                        && self.stop.sleep(RETRY_AFTER)
+                    {
                         return;
                     }
                     (rescan, last_rescan) = (true, Some(Instant::now()));
                 }
                 Err(Restart::Retry(why)) => {
-                    self.log.line(&format!("{}: {why}; trying again in {}s", slot.letter, RETRY_AFTER.as_secs()));
+                    self.log.line(&format!(
+                        "{}: {why}; trying again in {}s",
+                        slot.letter,
+                        RETRY_AFTER.as_secs()
+                    ));
                     slot.ready.store(false, Ordering::SeqCst);
                     *slot.tree.write().unwrap() = Tree::default();
                     {
@@ -282,12 +345,20 @@ impl Engine {
     fn follow(&self, slot: &Slot, rescan: bool) -> Result<(), Restart> {
         let retry = |what: &str, e: io::Error| Restart::Retry(format!("{what}: {e}"));
         let volume = Volume::open(slot.letter).map_err(|e| retry("can't open the drive", e))?;
-        let journal = match volume.journal().map_err(|e| retry("can't read the change journal", e))? {
+        let journal = match volume
+            .journal()
+            .map_err(|e| retry("can't read the change journal", e))?
+        {
             Some(journal) => journal,
             None => {
-                volume.create_journal().map_err(|e| retry("can't turn the change journal on", e))?;
+                volume
+                    .create_journal()
+                    .map_err(|e| retry("can't turn the change journal on", e))?;
                 self.log.line(&format!("{}: turned the change journal on", slot.letter));
-                volume.journal().map_err(|e| retry("can't read the change journal", e))?.ok_or_else(|| Restart::Retry("no change journal".into()))?
+                volume
+                    .journal()
+                    .map_err(|e| retry("can't read the change journal", e))?
+                    .ok_or_else(|| Restart::Retry("no change journal".into()))?
             }
         };
         // By serial and letter: a cloned disk next to its original has the same serial (and journal).
@@ -319,7 +390,11 @@ impl Engine {
                 (meta.next_usn, None, "snapshot")
             }
             None => {
-                *slot.status.lock().unwrap() = VolumeStatus { volume: format!("{}:", slot.letter), state: "scanning".into(), ..Default::default() };
+                *slot.status.lock().unwrap() = VolumeStatus {
+                    volume: format!("{}:", slot.letter),
+                    state: "scanning".into(),
+                    ..Default::default()
+                };
                 let since = (now_ms() - SCAN_REPLAY.as_millis() as i64) * 10_000 + 116_444_736_000_000_000;
                 let progress = |done: u64, total: u64| {
                     let mut status = slot.status.lock().unwrap();
@@ -332,7 +407,8 @@ impl Engine {
                     Err(_) if self.stop.is_set() => return Ok(()),
                     Err(e) => return Err(retry(&format!("can't read {what}"), e)),
                 };
-                self.log.line(&format!("{}: read {what} in {:.0} ms", slot.letter, ms(started)));
+                self.log
+                    .line(&format!("{}: read {what} in {:.0} ms", slot.letter, ms(started)));
                 // Records may hold other folders now than the notes say: folders compare from now on.
                 if growth.tracking() {
                     growth.restart(now_ms(), tree.rec(ROOT).map_or(0, |r| r.size()));
@@ -355,7 +431,9 @@ impl Engine {
                 // left is enough if it still reaches back to where the journal was when the read
                 // began: every change the read could have missed comes after that.
                 Err(Restart::Rescan(why)) if since.is_some() => match volume.journal() {
-                    Ok(Some(now)) if now.id == journal.id && now.first_usn > cursor && now.first_usn <= journal.next_usn => {
+                    Ok(Some(now))
+                        if now.id == journal.id && now.first_usn > cursor && now.first_usn <= journal.next_usn =>
+                    {
                         cursor = now.first_usn;
                         continue;
                     }
@@ -380,6 +458,7 @@ impl Engine {
             status.error = None;
             status.progress = status.progress_total;
         }
+        slot.serial32.store(volume.serial as u32, Ordering::SeqCst);
         slot.ready.store(true, Ordering::SeqCst);
         let stats = slot.tree.read().unwrap().stats();
         self.log.line(&format!(
@@ -390,13 +469,22 @@ impl Engine {
             stats.memory >> 20
         ));
 
-        let meta = |cursor| Meta { volume_serial: volume.serial, journal_id: journal.id, next_usn: cursor, saved_at: now_ms() };
+        let meta = |cursor| Meta {
+            volume_serial: volume.serial,
+            journal_id: journal.id,
+            next_usn: cursor,
+            saved_at: now_ms(),
+        };
         let marked = self.mark_day(slot);
         if source == "scan" {
             self.save(slot, &volume, &path, meta(cursor));
         }
         // A snapshot the journal had to catch up gets saved again at the next chance.
-        let (mut dirty, mut saved_at, mut counted_at) = (source == "snapshot" && (replayed > 0 || marked), Instant::now(), Instant::now());
+        let (mut dirty, mut saved_at, mut counted_at) = (
+            source == "snapshot" && (replayed > 0 || marked),
+            Instant::now(),
+            Instant::now(),
+        );
         let mut today = local_day(now_ms());
         loop {
             if self.stop.is_set() {
@@ -445,19 +533,22 @@ impl Engine {
             return (None, Growth::default());
         }
         if meta.journal_id != journal.id || meta.next_usn < journal.first_usn || meta.next_usn > journal.next_usn {
-            self.log.line(&format!("{letter}: the journal no longer reaches back to the snapshot"));
+            self.log
+                .line(&format!("{letter}: the journal no longer reaches back to the snapshot"));
             return (None, tree.growth);
         }
         // A ReFS snapshot goes with the record numbers its file ids were given.
         if !volume.load_ids(&path.with_extension("ids")) {
-            self.log.line(&format!("{letter}: the snapshot's record numbers are missing"));
+            self.log
+                .line(&format!("{letter}: the snapshot's record numbers are missing"));
             return (None, tree.growth);
         }
         let mut tree = tree;
         // Tags are kept beside the snapshot (a snapshot from before them has none: they come back
         // as their files change, or at the next read of the disk).
         tree.tags = load_tags(&path.with_extension("tags"));
-        self.log.line(&format!("{letter}: loaded the snapshot in {:.0} ms", ms(started)));
+        self.log
+            .line(&format!("{letter}: loaded the snapshot in {:.0} ms", ms(started)));
         (Some((tree, meta)), Growth::default())
     }
 
@@ -476,18 +567,24 @@ impl Engine {
     fn save(&self, slot: &Slot, volume: &Volume, path: &Path, meta: Meta) {
         let started = Instant::now();
         if let Err(e) = volume.save_ids(&path.with_extension("ids")) {
-            self.log.line(&format!("{}: couldn't save the record numbers: {e}", slot.letter));
+            self.log
+                .line(&format!("{}: couldn't save the record numbers: {e}", slot.letter));
         }
         if let Err(e) = save_tags(&path.with_extension("tags"), &slot.tree.read().unwrap().tags) {
             self.log.line(&format!("{}: couldn't save the tags: {e}", slot.letter));
         }
         let saved = snapshot::save(path, &slot.tree.read().unwrap(), &meta);
         match saved {
-            Ok(()) => self.log.line(&format!("{}: saved the snapshot in {:.0} ms", slot.letter, ms(started))),
-            Err(e) => self.log.line(&format!("{}: couldn't save the snapshot: {e}", slot.letter)),
+            Ok(()) => self
+                .log
+                .line(&format!("{}: saved the snapshot in {:.0} ms", slot.letter, ms(started))),
+            Err(e) => self
+                .log
+                .line(&format!("{}: couldn't save the snapshot: {e}", slot.letter)),
         }
         if let Err(e) = history::save(&path.with_extension("hist"), &slot.history.lock().unwrap()) {
-            self.log.line(&format!("{}: couldn't save the history: {e}", slot.letter));
+            self.log
+                .line(&format!("{}: couldn't save the history: {e}", slot.letter));
         }
     }
 
@@ -497,7 +594,11 @@ impl Engine {
     /// for how the folders stood before them, then for what happened.
     fn catch_up_history(&self, volume: &Volume, slot: &Slot, journal: &Journal, to: i64, page: &mut [u8]) {
         let mut history = slot.history.lock().unwrap();
-        let kept = if history.journal == journal.id { history.next_usn } else { 0 };
+        let kept = if history.journal == journal.id {
+            history.next_usn
+        } else {
+            0
+        };
         // Reads start at a record (where history or the journal starts); a journal made far bigger
         // than Windows' 32 MB is told for its last 256 MB.
         let from = kept.max(journal.first_usn);
@@ -510,8 +611,12 @@ impl Engine {
             for learning in [true, false] {
                 let mut cursor = from;
                 while cursor < to {
-                    let Ok(len) = volume.read_journal(cursor, journal.id, page) else { break };
-                    let Some((next, records)) = usn::parse_page(&page[..len]) else { break };
+                    let Ok(len) = volume.read_journal(cursor, journal.id, page) else {
+                        break;
+                    };
+                    let Some((next, records)) = usn::parse_page(&page[..len]) else {
+                        break;
+                    };
                     let end = records.partition_point(|r| r.usn < to);
                     let start = records[..end].partition_point(|r| r.usn < oldest);
                     if learning {
@@ -526,7 +631,12 @@ impl Engine {
                     cursor = next;
                 }
             }
-            self.log.line(&format!("{}: read {read} journal records for history in {:.0} ms: {} events kept", slot.letter, ms(started), history.len()));
+            self.log.line(&format!(
+                "{}: read {read} journal records for history in {:.0} ms: {} events kept",
+                slot.letter,
+                ms(started),
+                history.len()
+            ));
         }
         history.journal = journal.id;
         history.next_usn = history.next_usn.max(to);
@@ -534,12 +644,22 @@ impl Engine {
 
     /// Reads the next page of the journal and brings every record it touched up to date. Returns
     /// how many journal records it read: 0 once caught up.
-    fn apply(&self, volume: &Volume, slot: &Slot, cursor: &mut i64, journal: u64, since: Option<i64>, page: &mut [u8]) -> Result<usize, Restart> {
+    fn apply(
+        &self,
+        volume: &Volume,
+        slot: &Slot,
+        cursor: &mut i64,
+        journal: u64,
+        since: Option<i64>,
+        page: &mut [u8],
+    ) -> Result<usize, Restart> {
         let len = volume.read_journal(*cursor, journal, page).map_err(|e| match e {
             JournalError::Lost => Restart::Rescan("the change journal no longer goes back far enough".into()),
             JournalError::Io(e) => Restart::Retry(format!("can't read the change journal: {e}")),
         })?;
-        let Some((next, records)) = usn::parse_page(&page[..len]) else { return Ok(0) };
+        let Some((next, records)) = usn::parse_page(&page[..len]) else {
+            return Ok(0);
+        };
         if records.is_empty() {
             *cursor = next.max(*cursor);
             return Ok(0);
@@ -561,7 +681,12 @@ impl Engine {
         }
         // Read what each record holds now before taking the lock, so searches don't wait on the disk.
         // A record that can't be read right now is left as it is.
-        let states = tree::parents_first(usn::touched(&records, since).into_iter().filter_map(|n| volume.record_state(n).ok().map(|s| (n, s))).collect());
+        let states = tree::parents_first(
+            usn::touched(&records, since)
+                .into_iter()
+                .filter_map(|n| volume.record_state(n).ok().map(|s| (n, s)))
+                .collect(),
+        );
         if !states.is_empty() {
             let mut tree = slot.tree.write().unwrap();
             for (number, state) in &states {
@@ -577,13 +702,24 @@ impl Engine {
     }
 
     fn ready_slot(&self, letter: char) -> Option<Arc<Slot>> {
-        self.slots.read().unwrap().iter().find(|s| s.letter == letter && s.ready.load(Ordering::SeqCst)).cloned()
+        self.slots
+            .read()
+            .unwrap()
+            .iter()
+            .find(|s| s.letter == letter && s.ready.load(Ordering::SeqCst))
+            .cloned()
     }
 
     /// Every tag on the ready drives, with how many items have it, most used first.
     pub fn tags(&self) -> Vec<(String, u64)> {
         let mut all: std::collections::HashMap<String, (String, u64)> = std::collections::HashMap::new();
-        for slot in self.slots.read().unwrap().iter().filter(|s| s.ready.load(Ordering::SeqCst)) {
+        for slot in self
+            .slots
+            .read()
+            .unwrap()
+            .iter()
+            .filter(|s| s.ready.load(Ordering::SeqCst))
+        {
             for (tag, count) in slot.tree.read().unwrap().tag_counts() {
                 all.entry(tag.to_lowercase()).or_insert_with(|| (tag, 0)).1 += count;
             }
@@ -606,22 +742,41 @@ impl Engine {
                 status
             })
             .collect();
-        Status { version: crate::VERSION.into(), volumes }
+        Status {
+            version: crate::VERSION.into(),
+            volumes,
+        }
     }
 
     /// Answers a name search: a plan, result frames, then a summary. Ended as soon as `gone` says the client has
     /// gone: an app typing fast closes the connection of the search a newer key press replaced, and that scan (all
     /// of every drive's names, then the ranking, under the tree's read lock) would otherwise run to its end, and
     /// its pipe be found closed only at the first write. Ends with a broken-pipe error, as such a write would.
-    pub fn search_until(&self, request: &SearchRequest, out: &mut dyn Write, gone: &(dyn Fn() -> bool + Sync)) -> io::Result<()> {
+    pub fn search_until(
+        &self,
+        request: &SearchRequest,
+        out: &mut dyn Write,
+        gone: &(dyn Fn() -> bool + Sync),
+    ) -> io::Result<()> {
         let started = Instant::now();
-        let check = || if gone() { Err(io::Error::from_raw_os_error(ERROR_BROKEN_PIPE)) } else { Ok(()) };
+        let check = || {
+            if gone() {
+                Err(io::Error::from_raw_os_error(ERROR_BROKEN_PIPE))
+            } else {
+                Ok(())
+            }
+        };
         let (names, filters) = match query::parse(&request.query) {
             Ok(parsed) => parsed,
             Err(message) => return proto::write_message(out, &Message::Error { message }),
         };
         if names.is_empty() && filters.is_empty() {
-            return proto::write_message(out, &Message::Error { message: "Type part of a file name to search for".into() });
+            return proto::write_message(
+                out,
+                &Message::Error {
+                    message: "Type part of a file name to search for".into(),
+                },
+            );
         }
         let matcher = NameMatcher::from_terms(names.clone());
         let now = now_ms() * 10_000 + 116_444_736_000_000_000;
@@ -655,7 +810,18 @@ impl Engine {
             .unwrap_or_default();
         let mut send = |matcher: &NameMatcher| -> io::Result<(usize, bool)> {
             if request.rank {
-                return send_ranked(&targets, matcher, &filters, now, request.hidden, &excludes, word.as_bytes(), max, gone, out);
+                return send_ranked(
+                    &targets,
+                    matcher,
+                    &filters,
+                    now,
+                    request.hidden,
+                    &excludes,
+                    word.as_bytes(),
+                    max,
+                    gone,
+                    out,
+                );
             }
             let (mut count, mut limited) = (0, false);
             for (slot, scope) in &targets {
@@ -667,7 +833,14 @@ impl Engine {
                 // Results are encoded under the lock (ids are only valid until the next change), then sent.
                 let (frames, found) = {
                     let tree = slot.tree.read().unwrap();
-                    let search = Search { matcher, filters: &filters, now, scope: *scope, hidden: request.hidden, excludes: &excludes };
+                    let search = Search {
+                        matcher,
+                        filters: &filters,
+                        now,
+                        scope: *scope,
+                        hidden: request.hidden,
+                        excludes: &excludes,
+                    };
                     collect_hits_until(&tree, slot.letter, &search, max - count, gone)
                 };
                 check()?;
@@ -682,12 +855,24 @@ impl Engine {
         };
         let (mut count, mut limited) = send(&matcher)?;
         // Nothing as typed: close matches, when asked for and a word is long enough to have typos.
-        let near = if count == 0 && request.fuzzy { NameMatcher::near(names) } else { None };
+        let near = if count == 0 && request.fuzzy {
+            NameMatcher::near(names)
+        } else {
+            None
+        };
         if let Some(near) = &near {
             check()?;
             (count, limited) = send(near)?;
         }
-        proto::write_message(out, &Message::Done { count: count as u64, limited, elapsed: ms(started), fuzzy: near.is_some() })
+        proto::write_message(
+            out,
+            &Message::Done {
+                count: count as u64,
+                limited,
+                elapsed: ms(started),
+                fuzzy: near.is_some(),
+            },
+        )
     }
 
     /// Folder sizes: the folder's total and the total of each folder in it; with `count`, how many files
@@ -701,7 +886,14 @@ impl Engine {
         let total = tree.rec(dir).filter(|r| r.dir()).ok_or("Not a folder")?.size();
         let (files, folders) = if count { tree.count_below(dir) } else { (0, 0) };
         let counted = |n| count.then_some(n);
-        Ok(Sizes { path: path.to_string(), total, sizes: tree.child_dirs(dir), elapsed: ms(started), files: counted(files), folders: counted(folders) })
+        Ok(Sizes {
+            path: path.to_string(),
+            total,
+            sizes: tree.child_dirs(dir),
+            elapsed: ms(started),
+            files: counted(files),
+            folders: counted(folders),
+        })
     }
 
     /// Answers what's right inside a folder: result frames, as for a search, then a summary.
@@ -715,16 +907,34 @@ impl Engine {
             let dir = tree.resolve(rest).ok_or("This folder isn't in the index")?;
             let ids = tree.list(dir);
             let drive = format!("{letter}:\\");
-            Ok((ids.par_chunks(BATCH).map(|ids| encode_hits(&tree, ids, &drive)).collect(), ids.len()))
+            Ok((
+                ids.par_chunks(BATCH)
+                    .map(|ids| encode_hits(&tree, ids, &drive))
+                    .collect(),
+                ids.len(),
+            ))
         })();
         match listed {
             Ok((frames, count)) => {
                 for frame in frames {
                     proto::write_frame(out, FRAME_HITS, &frame)?;
                 }
-                proto::write_message(out, &Message::Done { count: count as u64, limited: false, elapsed: ms(started), fuzzy: false })
+                proto::write_message(
+                    out,
+                    &Message::Done {
+                        count: count as u64,
+                        limited: false,
+                        elapsed: ms(started),
+                        fuzzy: false,
+                    },
+                )
             }
-            Err(message) => proto::write_message(out, &Message::Error { message: message.into() }),
+            Err(message) => proto::write_message(
+                out,
+                &Message::Error {
+                    message: message.into(),
+                },
+            ),
         }
     }
 
@@ -758,12 +968,27 @@ impl Engine {
         for item in &items {
             let (rec, name, parent) = if item.link == NONE {
                 let name = tree.rec(dir).map_or(NONE, |r| r.first_link);
-                (dir, if dir == ROOT || name == NONE { "" } else { tree.name(name) }, NO_PARENT)
+                (
+                    dir,
+                    if dir == ROOT || name == NONE {
+                        ""
+                    } else {
+                        tree.name(name)
+                    },
+                    NO_PARENT,
+                )
             } else {
                 (tree.link(item.link).rec, tree.name(item.link), item.parent)
             };
             let Some(r) = tree.rec(rec) else { continue };
-            let node = UsageNode { parent, name: name.to_string(), dir: item.dir, size: item.size, modified: unix_ms(r.modified), attrs: r.attrs() };
+            let node = UsageNode {
+                parent,
+                name: name.to_string(),
+                dir: item.dir,
+                size: item.size,
+                modified: unix_ms(r.modified),
+                attrs: r.attrs(),
+            };
             proto::encode_usage_node(&mut payload, &node);
             if let Some(mark) = mark {
                 // Files: whether they were written since (what they held isn't kept).
@@ -783,7 +1008,14 @@ impl Engine {
             drive_then: m.total,
             drive_now: tree.rec(ROOT).map_or(0, |r| r.size()),
         });
-        let summary = UsageSummary { path: request.path.clone(), total, items: items.len() as u64, limited, elapsed: ms(started), growth };
+        let summary = UsageSummary {
+            path: request.path.clone(),
+            total,
+            items: items.len() as u64,
+            limited,
+            elapsed: ms(started),
+            growth,
+        };
         Ok((payload, mark.map(|_| proto::encode_growth(&previous)), summary))
     }
 
@@ -805,8 +1037,22 @@ impl Engine {
             let ready = slot.ready.load(Ordering::SeqCst);
             let mut dirs = HashMap::new();
             for e in found {
-                let now = if ready && !e.burst && e.kind != history::Kind::Deleted && e.kind != history::Kind::Emptied { now_at(&tree, e.file, slot.letter, &mut dirs) } else { None };
-                events.push(HistoryEvent { time: e.time, kind: e.kind, dir: e.dir, path: e.path.clone(), to: e.to.clone(), was: e.was.clone(), now, items: e.items, burst: e.burst });
+                let now = if ready && !e.burst && e.kind != history::Kind::Deleted && e.kind != history::Kind::Emptied {
+                    now_at(&tree, e.file, slot.letter, &mut dirs)
+                } else {
+                    None
+                };
+                events.push(HistoryEvent {
+                    time: e.time,
+                    kind: e.kind,
+                    dir: e.dir,
+                    path: e.path.clone(),
+                    to: e.to.clone(),
+                    was: e.was.clone(),
+                    now,
+                    items: e.items,
+                    burst: e.burst,
+                });
             }
         }
         events.sort_by_key(|e| std::cmp::Reverse(e.time));
@@ -814,14 +1060,39 @@ impl Engine {
             events.truncate(max);
             limited = true;
         }
-        HistoryAnswer { events, limited, oldest, elapsed: ms(started) }
+        HistoryAnswer {
+            events,
+            limited,
+            oldest,
+            elapsed: ms(started),
+        }
+    }
+
+    /// Resolves `(volume_serial, frn)` across all ready indexed volumes.
+    pub fn resolve_id(&self, volume_serial: u32, frn: u64) -> Option<String> {
+        let slots = self.slots.read().unwrap().clone();
+        for slot in slots {
+            if !slot.ready.load(Ordering::SeqCst) {
+                continue;
+            }
+            if slot.serial32.load(Ordering::SeqCst) != volume_serial {
+                continue;
+            }
+            let tree = slot.tree.read().unwrap();
+            if let Some(rel) = tree.path_of_frn(frn) {
+                return Some(format!("{}:\\{}", slot.letter, rel));
+            }
+        }
+        None
     }
 }
 
 /// Where the file `file` (a file reference) is now, if its record still holds it.
 fn now_at(tree: &Tree, file: u64, letter: char, dirs: &mut HashMap<u32, String>) -> Option<String> {
     let (number, seq) = tree::split_ref(file);
-    let rec = tree.rec(u32::try_from(number).ok()?).filter(|r| r.used() && r.seq() == seq && r.first_link != NONE)?;
+    let rec = tree
+        .rec(u32::try_from(number).ok()?)
+        .filter(|r| r.used() && r.seq() == seq && r.first_link != NONE)?;
     Some(format!("{letter}:\\{}", tree.path(rec.first_link, dirs)?))
 }
 
@@ -830,21 +1101,53 @@ fn now_at(tree: &Tree, file: u64, letter: char, dirs: &mut HashMap<u32, String>)
 /// How many were sent, and whether there were more.
 /// Gives up (a broken-pipe error) once `gone` says the client has gone, between drives and before ranking.
 #[allow(clippy::too_many_arguments)]
-fn send_ranked(targets: &[(Arc<Slot>, u32)], matcher: &NameMatcher, filters: &Filters, now: i64, hidden: bool, excludes: &Excludes, word: &[u8], max: usize, gone: &(dyn Fn() -> bool + Sync), out: &mut dyn Write) -> io::Result<(usize, bool)> {
-    let check = || if gone() { Err(io::Error::from_raw_os_error(ERROR_BROKEN_PIPE)) } else { Ok(()) };
+fn send_ranked(
+    targets: &[(Arc<Slot>, u32)],
+    matcher: &NameMatcher,
+    filters: &Filters,
+    now: i64,
+    hidden: bool,
+    excludes: &Excludes,
+    word: &[u8],
+    max: usize,
+    gone: &(dyn Fn() -> bool + Sync),
+    out: &mut dyn Write,
+) -> io::Result<(usize, bool)> {
+    let check = || {
+        if gone() {
+            Err(io::Error::from_raw_os_error(ERROR_BROKEN_PIPE))
+        } else {
+            Ok(())
+        }
+    };
     let mut total = 0;
     let mut drives = Vec::with_capacity(targets.len());
     for (slot, scope) in targets {
         check()?;
         // Ranked and encoded under the lock: ids are only valid until the next change.
         let tree = slot.tree.read().unwrap();
-        let search = Search { matcher, filters, now, scope: *scope, hidden, excludes };
+        let search = Search {
+            matcher,
+            filters,
+            now,
+            scope: *scope,
+            hidden,
+            excludes,
+        };
         let found = tree.search_until(&search, gone);
         check()?;
         total += found.len();
-        drives.push(encode_ranked(&tree, &tree.rank(&found, &search, word, max), &format!("{}:\\", slot.letter)));
+        drives.push(encode_ranked(
+            &tree,
+            &tree.rank(&found, &search, word, max),
+            &format!("{}:\\", slot.letter),
+        ));
     }
-    let mut best: Vec<(Rank, usize, std::ops::Range<usize>)> = drives.iter().enumerate().flat_map(|(d, (_, hits))| hits.iter().map(move |(rank, at)| (*rank, d, at.clone()))).collect();
+    let mut best: Vec<(Rank, usize, std::ops::Range<usize>)> = drives
+        .iter()
+        .enumerate()
+        .flat_map(|(d, (_, hits))| hits.iter().map(move |(rank, at)| (*rank, d, at.clone())))
+        .collect();
     best.sort_unstable_by_key(|&(rank, ..)| (rank.score, rank.len));
     best.truncate(max);
     for chunk in best.chunks(BATCH) {
@@ -863,10 +1166,23 @@ fn encode_ranked(tree: &Tree, ranked: &[Rank], drive: &str) -> (Vec<u8>, Vec<(Ra
     let mut out = Vec::with_capacity(ranked.len() * 96);
     let mut hits = Vec::with_capacity(ranked.len());
     for &rank in ranked {
-        let Some(path) = tree.path(rank.id, &mut dirs) else { continue };
-        let Some(rec) = tree.rec(tree.link(rank.id).rec) else { continue };
+        let Some(path) = tree.path(rank.id, &mut dirs) else {
+            continue;
+        };
+        let Some(rec) = tree.rec(tree.link(rank.id).rec) else {
+            continue;
+        };
         let start = out.len();
-        proto::encode_hit(&mut out, &Hit { path: format!("{drive}{path}"), dir: rec.dir(), size: rec.size(), modified: unix_ms(rec.modified), attrs: rec.attrs() });
+        proto::encode_hit(
+            &mut out,
+            &Hit {
+                path: format!("{drive}{path}"),
+                dir: rec.dir(),
+                size: rec.size(),
+                modified: unix_ms(rec.modified),
+                attrs: rec.attrs(),
+            },
+        );
         hits.push((rank, start..out.len()));
     }
     (out, hits)
@@ -877,13 +1193,22 @@ pub(crate) fn collect_hits(tree: &Tree, letter: char, search: &Search, max: usiz
 }
 
 /// [`collect_hits`], with a scan that `gone` can end (see `Tree::search_until`); nothing is encoded then.
-fn collect_hits_until(tree: &Tree, letter: char, search: &Search, max: usize, gone: &(dyn Fn() -> bool + Sync)) -> (Vec<Vec<u8>>, usize) {
+fn collect_hits_until(
+    tree: &Tree,
+    letter: char,
+    search: &Search,
+    max: usize,
+    gone: &(dyn Fn() -> bool + Sync),
+) -> (Vec<Vec<u8>>, usize) {
     let found = tree.search_until(search, gone);
     if gone() {
         return (Vec::new(), 0);
     }
     let drive = format!("{letter}:\\");
-    let frames = found[..found.len().min(max)].par_chunks(BATCH).map(|ids| encode_hits(tree, ids, &drive)).collect();
+    let frames = found[..found.len().min(max)]
+        .par_chunks(BATCH)
+        .map(|ids| encode_hits(tree, ids, &drive))
+        .collect();
     (frames, found.len())
 }
 
@@ -892,8 +1217,16 @@ fn encode_hits(tree: &Tree, ids: &[u32], drive: &str) -> Vec<u8> {
     let mut out = Vec::with_capacity(ids.len() * 96);
     for &id in ids {
         let Some(path) = tree.path(id, &mut dirs) else { continue };
-        let Some(rec) = tree.rec(tree.link(id).rec) else { continue };
-        let hit = Hit { path: format!("{drive}{path}"), dir: rec.dir(), size: rec.size(), modified: unix_ms(rec.modified), attrs: rec.attrs() };
+        let Some(rec) = tree.rec(tree.link(id).rec) else {
+            continue;
+        };
+        let hit = Hit {
+            path: format!("{drive}{path}"),
+            dir: rec.dir(),
+            size: rec.size(),
+            modified: unix_ms(rec.modified),
+            attrs: rec.attrs(),
+        };
         proto::encode_hit(&mut out, &hit);
     }
     out
@@ -925,7 +1258,9 @@ fn load_tags(path: &Path) -> HashMap<u32, Box<str>> {
     while at + 8 <= bytes.len() {
         let n = u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
         let len = u32::from_le_bytes(bytes[at + 4..at + 8].try_into().unwrap()) as usize;
-        let Some(text) = bytes.get(at + 8..at + 8 + len) else { break };
+        let Some(text) = bytes.get(at + 8..at + 8 + len) else {
+            break;
+        };
         tags.insert(n, String::from_utf8_lossy(text).into());
         at += 8 + len;
     }
@@ -964,7 +1299,12 @@ mod tests {
     #[test]
     fn maps_what_grew_since_a_mark() {
         use crate::tree::{make_ref, RecordState};
-        let dir = |parent: u32, name: &str| RecordState { seq: 1, dir: true, names: vec![(make_ref(parent, if parent == ROOT { 5 } else { 1 }), name.into())], ..Default::default() };
+        let dir = |parent: u32, name: &str| RecordState {
+            seq: 1,
+            dir: true,
+            names: vec![(make_ref(parent, if parent == ROOT { 5 } else { 1 }), name.into())],
+            ..Default::default()
+        };
         let file = |size: u64, modified_ms: i64, parent: u32, name: &str| RecordState {
             seq: 1,
             size,
@@ -973,7 +1313,14 @@ mod tests {
             ..Default::default()
         };
         let mut tree = Tree::default();
-        tree.set_record(ROOT, &RecordState { seq: 5, dir: true, ..Default::default() });
+        tree.set_record(
+            ROOT,
+            &RecordState {
+                seq: 5,
+                dir: true,
+                ..Default::default()
+            },
+        );
         tree.set_record(20, &dir(ROOT, "Users"));
         tree.set_record(21, &file(1000, 10, 20, "old.bin"));
         tree.set_record(22, &file(500, 10, 20, "grows.log"));
@@ -985,13 +1332,43 @@ mod tests {
         tree.growth.mark(5_000, 5800);
         let engine = Engine::with_tree('T', tree);
 
-        let ask = |since| engine.map(&UsageRequest { path: r"T:\Users".into(), depth: 3, max_items: 100, since }).unwrap();
+        let ask = |since| {
+            engine
+                .map(&UsageRequest {
+                    path: r"T:\Users".into(),
+                    depth: 3,
+                    max_items: 100,
+                    since,
+                })
+                .unwrap()
+        };
         let (payload, earlier, summary) = ask(Some(0));
         let nodes = proto::decode_usage(&payload).unwrap();
         let earlier = proto::decode_growth(&earlier.unwrap()).unwrap();
-        let grew: Vec<_> = nodes.iter().zip(&earlier).map(|(n, &e)| (n.name.as_str(), n.size, e)).collect();
-        assert_eq!(grew, [("Users", 5800, 1500), ("New", 4000, NEW), ("old.bin", 1000, 1000), ("grows.log", 800, WRITTEN), ("big.iso", 4000, WRITTEN)]);
-        assert_eq!(summary.growth, Some(GrowthSummary { since: 1_000, oldest: 1_000, drive_then: 1500, drive_now: 5800 }));
+        let grew: Vec<_> = nodes
+            .iter()
+            .zip(&earlier)
+            .map(|(n, &e)| (n.name.as_str(), n.size, e))
+            .collect();
+        assert_eq!(
+            grew,
+            [
+                ("Users", 5800, 1500),
+                ("New", 4000, NEW),
+                ("old.bin", 1000, 1000),
+                ("grows.log", 800, WRITTEN),
+                ("big.iso", 4000, WRITTEN)
+            ]
+        );
+        assert_eq!(
+            summary.growth,
+            Some(GrowthSummary {
+                since: 1_000,
+                oldest: 1_000,
+                drive_then: 1500,
+                drive_now: 5800
+            })
+        );
         // The mark closest to what's asked: the second, where everything was as it is.
         let (_, earlier, summary) = ask(Some(4_000));
         assert_eq!(proto::decode_growth(&earlier.unwrap()).unwrap()[..2], [5800, 4000]);
