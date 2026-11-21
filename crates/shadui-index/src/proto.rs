@@ -36,7 +36,9 @@ pub enum Request {
     Usage(UsageRequest),
     /// Everything right inside a folder, for one Windows keeps the user out of: hit frames, as a
     /// search's results come, then Done.
-    List { path: String },
+    List {
+        path: String,
+    },
     /// What was renamed, moved and deleted on the indexed drives, newest first.
     History(HistoryRequest),
     /// A copy of Glint that isn't the Microsoft Store's says it uses the service, so it stays when the
@@ -46,13 +48,21 @@ pub enum Request {
     /// A later build of the service to replace this one (update.rs): its signature (a .sig file's
     /// text), and `size` bytes of the executable right after this request. Answered with Updating, then
     /// the service restarts into it; a service from before closes the pipe on it.
-    Update { signature: String, size: u64 },
+    Update {
+        signature: String,
+        size: u64,
+    },
     /// Every tag on the indexed drives with how many items have it (Tags). A service from before
     /// closes the pipe on it.
     Tags,
     /// Windows' shadow copies of every volume, through VSS, which lists them only for an administrator
     /// (shadow.rs): Snapshots. A service from before closes the pipe on it.
     Snapshots,
+    /// Resolves an NTFS/ReFS volume serial + 64-bit File Reference Number back to a full path.
+    ResolveId {
+        volume_serial: u32,
+        frn: u64,
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -142,7 +152,10 @@ pub enum Message {
     Status(Status),
     /// Sent first for a search: the roots the index answers for, and those it can't (not NTFS, not
     /// indexed yet, behind a junction…), which the app searches some other way.
-    Plan { indexed: Vec<String>, skipped: Vec<String> },
+    Plan {
+        indexed: Vec<String>,
+        skipped: Vec<String>,
+    },
     /// The search is complete. `elapsed` is the service's time in milliseconds; `fuzzy` when nothing
     /// matched as typed and these are close matches (a search that asked for them).
     Done {
@@ -157,12 +170,24 @@ pub enum Message {
     Usage(UsageSummary),
     History(HistoryAnswer),
     /// An update was taken: the service stops, and comes back as this version.
-    Updating { version: String },
+    Updating {
+        version: String,
+    },
     /// Every tag, most used first, with how many items have it.
-    Tags { tags: Vec<(String, u64)> },
+    Tags {
+        tags: Vec<(String, u64)>,
+    },
     /// Windows' shadow copies, newest first.
-    Snapshots { snapshots: Vec<crate::shadow::Snapshot> },
-    Error { message: String },
+    Snapshots {
+        snapshots: Vec<crate::shadow::Snapshot>,
+    },
+    /// Resolved path for a `(volume_serial, frn)` query.
+    Resolved {
+        path: Option<String>,
+    },
+    Error {
+        message: String,
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
@@ -399,7 +424,10 @@ pub fn read_frame<R: Read + ?Sized>(r: &mut R, max: usize) -> io::Result<Option<
     }
     let len = u32::from_le_bytes(len) as usize;
     if len == 0 || len > max {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, format!("frame of {len} bytes")));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("frame of {len} bytes"),
+        ));
     }
     let mut frame = vec![0u8; len];
     r.read_exact(&mut frame)?;
@@ -444,68 +472,189 @@ mod tests {
         let mut wire = Vec::new();
         write_request(&mut wire, &request).unwrap();
         assert_eq!(read_request(&mut wire.as_slice()).unwrap(), request);
-        assert!(serde_json::to_string(&Request::Status).unwrap().contains(r#""op":"status""#));
+        assert!(serde_json::to_string(&Request::Status)
+            .unwrap()
+            .contains(r#""op":"status""#));
         assert_eq!(serde_json::to_string(&Request::Claim).unwrap(), r#"{"op":"claim"}"#);
-        let update = Request::Update { signature: "c2ln".into(), size: 1_368_576 };
-        assert_eq!(serde_json::to_string(&update).unwrap(), r#"{"op":"update","signature":"c2ln","size":1368576}"#);
+        let update = Request::Update {
+            signature: "c2ln".into(),
+            size: 1_368_576,
+        };
+        assert_eq!(
+            serde_json::to_string(&update).unwrap(),
+            r#"{"op":"update","signature":"c2ln","size":1368576}"#
+        );
         let mut wire = Vec::new();
         write_request(&mut wire, &update).unwrap();
         assert_eq!(read_request(&mut wire.as_slice()).unwrap(), update);
-        assert_eq!(serde_json::to_string(&Message::Updating { version: "0.10.0".into() }).unwrap(), r#"{"type":"updating","version":"0.10.0"}"#);
+        assert_eq!(
+            serde_json::to_string(&Message::Updating {
+                version: "0.10.0".into()
+            })
+            .unwrap(),
+            r#"{"type":"updating","version":"0.10.0"}"#
+        );
         // Without close matches asked for, a request is as a service from before them reads it; with
         // them, an older service reads it too (it ignores what it doesn't know).
-        assert!(serde_json::to_string(&request).unwrap().ends_with(r#""maxResults":50000}"#));
-        let Request::Search(search) = &request else { unreachable!() };
-        let fuzzy = Request::Search(SearchRequest { fuzzy: true, ..search.clone() });
-        let ranked = Request::Search(SearchRequest { rank: true, ..search.clone() });
+        assert!(serde_json::to_string(&request)
+            .unwrap()
+            .ends_with(r#""maxResults":50000}"#));
+        let Request::Search(search) = &request else {
+            unreachable!()
+        };
+        let fuzzy = Request::Search(SearchRequest {
+            fuzzy: true,
+            ..search.clone()
+        });
+        let ranked = Request::Search(SearchRequest {
+            rank: true,
+            ..search.clone()
+        });
         assert!(serde_json::to_string(&ranked).unwrap().contains(r#""rank":true"#));
-        assert!(serde_json::to_string(&fuzzy).unwrap().ends_with(r#""maxResults":50000,"fuzzy":true}"#));
+        assert!(serde_json::to_string(&fuzzy)
+            .unwrap()
+            .ends_with(r#""maxResults":50000,"fuzzy":true}"#));
         let newer = r#"{"op":"search","query":"a","roots":[],"hidden":false,"exclude":[],"maxResults":null,"fuzzy":true,"fromLater":1}"#;
-        assert!(matches!(serde_json::from_str::<Request>(newer), Ok(Request::Search(SearchRequest { fuzzy: true, .. }))), "what a service doesn't know is left");
-        assert_eq!(serde_json::from_str::<Message>(r#"{"type":"done","count":1,"limited":false,"elapsed":0.5}"#).unwrap(), Message::Done { count: 1, limited: false, elapsed: 0.5, fuzzy: false });
+        assert!(
+            matches!(
+                serde_json::from_str::<Request>(newer),
+                Ok(Request::Search(SearchRequest { fuzzy: true, .. }))
+            ),
+            "what a service doesn't know is left"
+        );
+        assert_eq!(
+            serde_json::from_str::<Message>(r#"{"type":"done","count":1,"limited":false,"elapsed":0.5}"#).unwrap(),
+            Message::Done {
+                count: 1,
+                limited: false,
+                elapsed: 0.5,
+                fuzzy: false
+            }
+        );
 
         let hits = vec![
-            Hit { path: r"C:\Users\me\été.pdf".into(), dir: false, size: 1 << 40, modified: 1_700_000_000_000, attrs: 0x20 },
-            Hit { path: r"D:\Reports".into(), dir: true, size: 0, modified: 0, attrs: 0x10 },
+            Hit {
+                path: r"C:\Users\me\été.pdf".into(),
+                dir: false,
+                size: 1 << 40,
+                modified: 1_700_000_000_000,
+                attrs: 0x20,
+            },
+            Hit {
+                path: r"D:\Reports".into(),
+                dir: true,
+                size: 0,
+                modified: 0,
+                attrs: 0x10,
+            },
         ];
         let mut payload = Vec::new();
         hits.iter().for_each(|h| encode_hit(&mut payload, h));
         let mut wire = Vec::new();
         write_frame(&mut wire, FRAME_HITS, &payload).unwrap();
-        write_message(&mut wire, &Message::Done { count: 2, limited: false, elapsed: 1.5, fuzzy: true }).unwrap();
+        write_message(
+            &mut wire,
+            &Message::Done {
+                count: 2,
+                limited: false,
+                elapsed: 1.5,
+                fuzzy: true,
+            },
+        )
+        .unwrap();
         let mut reader = wire.as_slice();
         let (kind, payload) = read_frame(&mut reader, MAX_FRAME).unwrap().unwrap();
         assert_eq!((kind, decode_hits(&payload).unwrap()), (FRAME_HITS, hits));
         let (kind, json) = read_frame(&mut reader, MAX_FRAME).unwrap().unwrap();
         assert_eq!(kind, FRAME_JSON);
-        assert_eq!(serde_json::from_slice::<Message>(&json).unwrap(), Message::Done { count: 2, limited: false, elapsed: 1.5, fuzzy: true });
+        assert_eq!(
+            serde_json::from_slice::<Message>(&json).unwrap(),
+            Message::Done {
+                count: 2,
+                limited: false,
+                elapsed: 1.5,
+                fuzzy: true
+            }
+        );
         assert!(read_frame(&mut reader, MAX_FRAME).unwrap().is_none());
         assert!(decode_hits(&payload[..10]).is_err());
     }
 
     #[test]
     fn usage_maps_round_trip() {
-        let request = Request::Usage(UsageRequest { path: r"C:\".into(), depth: 4, max_items: 20_000, since: None });
+        let request = Request::Usage(UsageRequest {
+            path: r"C:\".into(),
+            depth: 4,
+            max_items: 20_000,
+            since: None,
+        });
         let mut wire = Vec::new();
         write_request(&mut wire, &request).unwrap();
         assert_eq!(read_request(&mut wire.as_slice()).unwrap(), request);
         // As a service from before growth reads it, with `since` or without.
-        assert!(serde_json::to_string(&request).unwrap().ends_with(r#""op":"usage","path":"C:\\","depth":4,"maxItems":20000}"#));
-        let asked = Request::Usage(UsageRequest { path: r"C:\".into(), depth: 4, max_items: 9, since: Some(1_700_000_000_000) });
+        assert!(serde_json::to_string(&request)
+            .unwrap()
+            .ends_with(r#""op":"usage","path":"C:\\","depth":4,"maxItems":20000}"#));
+        let asked = Request::Usage(UsageRequest {
+            path: r"C:\".into(),
+            depth: 4,
+            max_items: 9,
+            since: Some(1_700_000_000_000),
+        });
         let json = serde_json::to_string(&asked).unwrap();
         assert!(json.contains(r#""since":1700000000000"#), "{json}");
         assert_eq!(serde_json::from_str::<Request>(&json).unwrap(), asked);
 
         let nodes = vec![
-            UsageNode { parent: NO_PARENT, name: String::new(), dir: true, size: 3 << 40, modified: 0, attrs: 0x16 },
-            UsageNode { parent: 0, name: "Windows".into(), dir: true, size: 2 << 40, modified: 1_700_000_000_000, attrs: 0x10 },
-            UsageNode { parent: 0, name: "pagefile.sys".into(), dir: false, size: 1 << 34, modified: -1, attrs: 0x26 },
-            UsageNode { parent: 1, name: "Été😀.log".into(), dir: false, size: 7, modified: 5, attrs: 0x20 },
+            UsageNode {
+                parent: NO_PARENT,
+                name: String::new(),
+                dir: true,
+                size: 3 << 40,
+                modified: 0,
+                attrs: 0x16,
+            },
+            UsageNode {
+                parent: 0,
+                name: "Windows".into(),
+                dir: true,
+                size: 2 << 40,
+                modified: 1_700_000_000_000,
+                attrs: 0x10,
+            },
+            UsageNode {
+                parent: 0,
+                name: "pagefile.sys".into(),
+                dir: false,
+                size: 1 << 34,
+                modified: -1,
+                attrs: 0x26,
+            },
+            UsageNode {
+                parent: 1,
+                name: "Été😀.log".into(),
+                dir: false,
+                size: 7,
+                modified: 5,
+                attrs: 0x20,
+            },
         ];
         let mut payload = Vec::new();
         nodes.iter().for_each(|n| encode_usage_node(&mut payload, n));
-        let growth = GrowthSummary { since: 1_700_000_000_000, oldest: 1_690_000_000_000, drive_then: 2 << 40, drive_now: 3 << 40 };
-        let summary = UsageSummary { path: r"C:\".into(), total: 3 << 40, items: 4, limited: true, elapsed: 2.5, growth: Some(growth) };
+        let growth = GrowthSummary {
+            since: 1_700_000_000_000,
+            oldest: 1_690_000_000_000,
+            drive_then: 2 << 40,
+            drive_now: 3 << 40,
+        };
+        let summary = UsageSummary {
+            path: r"C:\".into(),
+            total: 3 << 40,
+            items: 4,
+            limited: true,
+            elapsed: 2.5,
+            growth: Some(growth),
+        };
         let previous = [2 << 40, NEW, 1 << 34, WRITTEN];
         let mut wire = Vec::new();
         write_frame(&mut wire, FRAME_USAGE, &payload).unwrap();
@@ -515,13 +664,22 @@ mod tests {
         let (kind, payload) = read_frame(&mut reader, MAX_FRAME).unwrap().unwrap();
         assert_eq!((kind, decode_usage(&payload).unwrap()), (FRAME_USAGE, nodes.clone()));
         let (kind, earlier) = read_frame(&mut reader, MAX_FRAME).unwrap().unwrap();
-        assert_eq!((kind, decode_growth(&earlier).unwrap()), (FRAME_GROWTH, previous.to_vec()));
+        assert_eq!(
+            (kind, decode_growth(&earlier).unwrap()),
+            (FRAME_GROWTH, previous.to_vec())
+        );
         assert!(decode_growth(&earlier[..9]).is_err());
         let (kind, json) = read_frame(&mut reader, MAX_FRAME).unwrap().unwrap();
-        assert_eq!((kind, serde_json::from_slice::<Message>(&json).unwrap()), (FRAME_JSON, Message::Usage(summary.clone())));
+        assert_eq!(
+            (kind, serde_json::from_slice::<Message>(&json).unwrap()),
+            (FRAME_JSON, Message::Usage(summary.clone()))
+        );
         assert!(read_frame(&mut reader, MAX_FRAME).unwrap().is_none());
         // A summary without growth reads as one from before it, and the other way round.
-        let plain = UsageSummary { growth: None, ..summary };
+        let plain = UsageSummary {
+            growth: None,
+            ..summary
+        };
         let json = serde_json::to_string(&Message::Usage(plain.clone())).unwrap();
         assert!(!json.contains("growth"));
         assert_eq!(serde_json::from_str::<Message>(&json).unwrap(), Message::Usage(plain));
@@ -531,11 +689,23 @@ mod tests {
         assert!(decode_usage(&payload[..20]).is_err());
         let mut orphan = Vec::new();
         encode_usage_node(&mut orphan, &nodes[0]);
-        encode_usage_node(&mut orphan, &UsageNode { parent: 1, ..nodes[1].clone() });
+        encode_usage_node(
+            &mut orphan,
+            &UsageNode {
+                parent: 1,
+                ..nodes[1].clone()
+            },
+        );
         assert!(decode_usage(&orphan).is_err());
         let mut inside_a_file = Vec::new();
         nodes[..3].iter().for_each(|n| encode_usage_node(&mut inside_a_file, n));
-        encode_usage_node(&mut inside_a_file, &UsageNode { parent: 2, ..nodes[3].clone() });
+        encode_usage_node(
+            &mut inside_a_file,
+            &UsageNode {
+                parent: 2,
+                ..nodes[3].clone()
+            },
+        );
         assert!(decode_usage(&inside_a_file).is_err());
         let mut rootless = Vec::new();
         encode_usage_node(&mut rootless, &nodes[1]);
@@ -545,24 +715,59 @@ mod tests {
 
     #[test]
     fn history_round_trips() {
-        let request = Request::History(HistoryRequest { query: "report".into(), since: 1, max: 100 });
+        let request = Request::History(HistoryRequest {
+            query: "report".into(),
+            since: 1,
+            max: 100,
+        });
         let mut wire = Vec::new();
         write_request(&mut wire, &request).unwrap();
         assert_eq!(read_request(&mut wire.as_slice()).unwrap(), request);
         assert!(serde_json::to_string(&request).unwrap().contains(r#""op":"history""#));
-        let moved = HistoryEvent { time: 5, kind: Kind::Moved, dir: false, path: r"C:\a.txt".into(), to: Some(r"D:\a.txt".into()), was: None, now: Some(r"D:\a.txt".into()), items: 0, burst: false };
-        let answer = HistoryAnswer { events: vec![moved], limited: true, oldest: 1, elapsed: 0.5 };
+        let moved = HistoryEvent {
+            time: 5,
+            kind: Kind::Moved,
+            dir: false,
+            path: r"C:\a.txt".into(),
+            to: Some(r"D:\a.txt".into()),
+            was: None,
+            now: Some(r"D:\a.txt".into()),
+            items: 0,
+            burst: false,
+        };
+        let answer = HistoryAnswer {
+            events: vec![moved],
+            limited: true,
+            oldest: 1,
+            elapsed: 0.5,
+        };
         let json = serde_json::to_string(&Message::History(answer.clone())).unwrap();
-        assert!(json.contains(r#""type":"history""#) && json.contains(r#""kind":"moved""#), "{json}");
-        assert_eq!(serde_json::from_str::<Message>(&json).unwrap(), Message::History(answer));
+        assert!(
+            json.contains(r#""type":"history""#) && json.contains(r#""kind":"moved""#),
+            "{json}"
+        );
+        assert_eq!(
+            serde_json::from_str::<Message>(&json).unwrap(),
+            Message::History(answer)
+        );
     }
 
     /// Sizes with counts and without, between an app and a service of either age.
     #[test]
     fn sizes_are_counted_only_when_asked_and_understood_across_versions() {
-        let plain = Request::Sizes { path: r"C:\Users".into(), count: false };
-        assert_eq!(serde_json::to_string(&plain).unwrap(), r#"{"op":"sizes","path":"C:\\Users"}"#, "as an app from before asked");
-        let counted = Request::Sizes { path: r"C:\Users".into(), count: true };
+        let plain = Request::Sizes {
+            path: r"C:\Users".into(),
+            count: false,
+        };
+        assert_eq!(
+            serde_json::to_string(&plain).unwrap(),
+            r#"{"op":"sizes","path":"C:\\Users"}"#,
+            "as an app from before asked"
+        );
+        let counted = Request::Sizes {
+            path: r"C:\Users".into(),
+            count: true,
+        };
         let mut wire = Vec::new();
         write_request(&mut wire, &counted).unwrap();
         assert_eq!(read_request(&mut wire.as_slice()).unwrap(), counted);
@@ -573,11 +778,34 @@ mod tests {
             Sizes { path: String },
         }
         let json = serde_json::to_string(&counted).unwrap();
-        assert_eq!(serde_json::from_str::<Before>(&json).unwrap(), Before::Sizes { path: r"C:\Users".into() });
+        assert_eq!(
+            serde_json::from_str::<Before>(&json).unwrap(),
+            Before::Sizes {
+                path: r"C:\Users".into()
+            }
+        );
         // Its answer has no counts.
-        let answer = serde_json::from_str::<Message>(r#"{"type":"sizes","path":"C:\\Users","total":5,"sizes":[],"elapsed":0.1}"#).unwrap();
-        assert!(matches!(answer, Message::Sizes(Sizes { files: None, folders: None, total: 5, .. })));
-        let answer = Sizes { path: r"C:\Users".into(), total: 5, sizes: vec![], elapsed: 0.1, files: Some(3), folders: Some(1) };
+        let answer = serde_json::from_str::<Message>(
+            r#"{"type":"sizes","path":"C:\\Users","total":5,"sizes":[],"elapsed":0.1}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            answer,
+            Message::Sizes(Sizes {
+                files: None,
+                folders: None,
+                total: 5,
+                ..
+            })
+        ));
+        let answer = Sizes {
+            path: r"C:\Users".into(),
+            total: 5,
+            sizes: vec![],
+            elapsed: 0.1,
+            files: Some(3),
+            folders: Some(1),
+        };
         let json = serde_json::to_string(&Message::Sizes(answer.clone())).unwrap();
         assert!(json.contains(r#""files":3,"folders":1"#), "{json}");
         assert_eq!(serde_json::from_str::<Message>(&json).unwrap(), Message::Sizes(answer));

@@ -3,19 +3,28 @@
 
 use crate::pipe::PipeIo;
 use crate::proto::{
-    self, HistoryAnswer, HistoryRequest, Hit, Message, Request, SearchRequest, Sizes, Status, UsageMap, UsageRequest, FRAME_GROWTH, FRAME_HITS, FRAME_JSON, FRAME_USAGE,
-    MAX_FRAME,
+    self, HistoryAnswer, HistoryRequest, Hit, Message, Request, SearchRequest, Sizes, Status, UsageMap, UsageRequest,
+    FRAME_GROWTH, FRAME_HITS, FRAME_JSON, FRAME_USAGE, MAX_FRAME,
 };
 use crate::win::{self, os_error, wide, Handle};
 use std::fmt;
 use std::io;
 use std::path::Path;
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{CloseHandle, ERROR_ACCESS_DENIED, ERROR_CANCELLED, ERROR_FILE_NOT_FOUND, ERROR_PIPE_BUSY, GENERIC_READ, GENERIC_WRITE, HANDLE, HWND};
-use windows::Win32::Storage::FileSystem::{CreateFileW, FILE_SHARE_NONE, OPEN_EXISTING, SECURITY_IDENTIFICATION, SECURITY_SQOS_PRESENT};
+use windows::Win32::Foundation::{
+    CloseHandle, ERROR_ACCESS_DENIED, ERROR_CANCELLED, ERROR_FILE_NOT_FOUND, ERROR_PIPE_BUSY, GENERIC_READ,
+    GENERIC_WRITE, HANDLE, HWND,
+};
+use windows::Win32::Storage::FileSystem::{
+    CreateFileW, FILE_SHARE_NONE, OPEN_EXISTING, SECURITY_IDENTIFICATION, SECURITY_SQOS_PRESENT,
+};
 use windows::Win32::System::Pipes::WaitNamedPipeW;
-use windows::Win32::System::Services::{CloseServiceHandle, OpenSCManagerW, OpenServiceW, SC_MANAGER_CONNECT, SERVICE_QUERY_STATUS};
-use windows::Win32::System::Threading::{GetCurrentThreadId, GetExitCodeProcess, OpenThread, WaitForSingleObject, INFINITE, THREAD_TERMINATE};
+use windows::Win32::System::Services::{
+    CloseServiceHandle, OpenSCManagerW, OpenServiceW, SC_MANAGER_CONNECT, SERVICE_QUERY_STATUS,
+};
+use windows::Win32::System::Threading::{
+    GetCurrentThreadId, GetExitCodeProcess, OpenThread, WaitForSingleObject, INFINITE, THREAD_TERMINATE,
+};
 use windows::Win32::System::IO::CancelSynchronousIo;
 use windows::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW};
 use windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
@@ -41,7 +50,10 @@ impl fmt::Display for Error {
         match self {
             Error::NotRunning => write!(f, "The instant search service isn't running"),
             Error::NoAccess => write!(f, "Instant search was turned on for another user"),
-            Error::Untrusted(owner) => write!(f, "The instant search pipe is owned by {owner}, not by the system: ignored"),
+            Error::Untrusted(owner) => write!(
+                f,
+                "The instant search pipe is owned by {owner}, not by the system: ignored"
+            ),
             Error::Service(message) => write!(f, "{message}"),
             Error::Io(e) => write!(f, "{e}"),
         }
@@ -95,7 +107,10 @@ pub(crate) fn connect_to(name: &str, trust: &dyn Fn(&str) -> bool) -> Result<Han
             Err(e) => return Err(Error::Io(os_error(e))),
         }
     }
-    Err(Error::Io(io::Error::new(io::ErrorKind::TimedOut, "the instant search service is busy")))
+    Err(Error::Io(io::Error::new(
+        io::ErrorKind::TimedOut,
+        "the instant search service is busy",
+    )))
 }
 
 fn ask(pipe: Handle, request: &Request) -> Result<Handle, Error> {
@@ -105,7 +120,10 @@ fn ask(pipe: Handle, request: &Request) -> Result<Handle, Error> {
 
 fn message(kind: u8, payload: &[u8]) -> Result<Message, Error> {
     if kind != FRAME_JSON {
-        return Err(Error::Io(io::Error::new(io::ErrorKind::InvalidData, "unexpected frame")));
+        return Err(Error::Io(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "unexpected frame",
+        )));
     }
     match serde_json::from_slice(payload).map_err(|e| Error::Io(io::Error::new(io::ErrorKind::InvalidData, e)))? {
         Message::Error { message } => Err(Error::Service(message)),
@@ -114,12 +132,17 @@ fn message(kind: u8, payload: &[u8]) -> Result<Message, Error> {
 }
 
 fn reply(pipe: &Handle) -> Result<Message, Error> {
-    let (kind, payload) = proto::read_frame(&mut PipeIo(pipe), MAX_FRAME).map_err(Error::Io)?.ok_or(Error::NotRunning)?;
+    let (kind, payload) = proto::read_frame(&mut PipeIo(pipe), MAX_FRAME)
+        .map_err(Error::Io)?
+        .ok_or(Error::NotRunning)?;
     message(kind, &payload)
 }
 
 fn unexpected() -> Error {
-    Error::Io(io::Error::new(io::ErrorKind::InvalidData, "unexpected answer from the instant search service"))
+    Error::Io(io::Error::new(
+        io::ErrorKind::InvalidData,
+        "unexpected answer from the instant search service",
+    ))
 }
 
 pub fn status() -> Result<Status, Error> {
@@ -158,7 +181,13 @@ pub fn sizes_counted(path: &str) -> Result<Sizes, Error> {
 }
 
 pub(crate) fn sizes_on(pipe: Handle, path: &str, count: bool) -> Result<Sizes, Error> {
-    match reply(&ask(pipe, &Request::Sizes { path: path.to_string(), count })?)? {
+    match reply(&ask(
+        pipe,
+        &Request::Sizes {
+            path: path.to_string(),
+            count,
+        },
+    )?)? {
         Message::Sizes(sizes) => Ok(sizes),
         _ => Err(unexpected()),
     }
@@ -185,14 +214,21 @@ pub(crate) fn usage_on(pipe: Handle, request: &UsageRequest) -> Result<UsageMap,
                     (Message::Usage(summary), Some(nodes)) => {
                         // Earlier sizes that don't line up with the map are no use.
                         let previous = previous.filter(|p: &Vec<u64>| p.len() == nodes.len());
-                        Ok(UsageMap { nodes, previous, summary })
+                        Ok(UsageMap {
+                            nodes,
+                            previous,
+                            summary,
+                        })
                     }
                     _ => Err(unexpected()),
                 };
             }
         }
     }
-    Err(Error::Io(io::Error::new(io::ErrorKind::UnexpectedEof, "the instant search service closed the connection")))
+    Err(Error::Io(io::Error::new(
+        io::ErrorKind::UnexpectedEof,
+        "the instant search service closed the connection",
+    )))
 }
 
 /// Everything right inside a folder, for one Windows keeps this user out of. An older service that
@@ -207,7 +243,9 @@ pub(crate) fn list_on(pipe: Handle, path: &str) -> Result<Vec<Hit>, Error> {
     let mut hits = Vec::new();
     while let Some((kind, payload)) = proto::read_frame(&mut io, MAX_FRAME).map_err(Error::Io)? {
         if kind == FRAME_HITS {
-            hits.extend(proto::decode_hits(&payload).map_err(|e| Error::Io(io::Error::new(io::ErrorKind::InvalidData, e)))?);
+            hits.extend(
+                proto::decode_hits(&payload).map_err(|e| Error::Io(io::Error::new(io::ErrorKind::InvalidData, e)))?,
+            );
             continue;
         }
         return match message(kind, &payload)? {
@@ -215,7 +253,10 @@ pub(crate) fn list_on(pipe: Handle, path: &str) -> Result<Vec<Hit>, Error> {
             _ => Err(unexpected()),
         };
     }
-    Err(Error::Io(io::Error::new(io::ErrorKind::UnexpectedEof, "the instant search service closed the connection")))
+    Err(Error::Io(io::Error::new(
+        io::ErrorKind::UnexpectedEof,
+        "the instant search service closed the connection",
+    )))
 }
 
 /// What was renamed, moved and deleted on the indexed drives (see `HistoryRequest`). An older service
@@ -231,7 +272,10 @@ pub(crate) fn history_on(pipe: Handle, request: &HistoryRequest) -> Result<Histo
             Message::History(answer) => Ok(answer),
             _ => Err(unexpected()),
         },
-        None => Err(Error::Io(io::Error::new(io::ErrorKind::UnexpectedEof, "the instant search service closed the connection"))),
+        None => Err(Error::Io(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "the instant search service closed the connection",
+        ))),
     }
 }
 
@@ -244,7 +288,10 @@ pub fn tags() -> Result<Vec<(String, u64)>, Error> {
             Message::Tags { tags } => Ok(tags),
             _ => Err(unexpected()),
         },
-        None => Err(Error::Io(io::Error::new(io::ErrorKind::UnexpectedEof, "the instant search service closed the connection"))),
+        None => Err(Error::Io(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "the instant search service closed the connection",
+        ))),
     }
 }
 
@@ -257,7 +304,25 @@ pub fn snapshots() -> Result<Vec<crate::shadow::Snapshot>, Error> {
             Message::Snapshots { snapshots } => Ok(snapshots),
             _ => Err(unexpected()),
         },
-        None => Err(Error::Io(io::Error::new(io::ErrorKind::UnexpectedEof, "the instant search service closed the connection"))),
+        None => Err(Error::Io(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "the instant search service closed the connection",
+        ))),
+    }
+}
+
+/// Resolves `(volume_serial, frn)` through the running index service, returning None when not indexed.
+pub fn resolve_id(volume_serial: u32, frn: u64) -> Result<Option<String>, Error> {
+    let pipe = ask(connect()?, &Request::ResolveId { volume_serial, frn })?;
+    match proto::read_frame(&mut PipeIo(&pipe), MAX_FRAME).map_err(Error::Io)? {
+        Some((kind, payload)) => match message(kind, &payload)? {
+            Message::Resolved { path } => Ok(path),
+            _ => Err(unexpected()),
+        },
+        None => Err(Error::Io(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "the instant search service closed the connection",
+        ))),
     }
 }
 
@@ -272,7 +337,10 @@ pub fn update(exe: &[u8], signature: &str) -> Result<Option<String>, Error> {
 pub(crate) fn update_on(pipe: Handle, exe: &[u8], signature: &str) -> Result<Option<String>, Error> {
     use std::io::Write;
     let mut io = PipeIo(&pipe);
-    let request = Request::Update { signature: signature.to_string(), size: exe.len() as u64 };
+    let request = Request::Update {
+        signature: signature.to_string(),
+        size: exe.len() as u64,
+    };
     let hung_up = |e: &io::Error| matches!(e.raw_os_error(), Some(109 | 232)); // ERROR_BROKEN_PIPE, ERROR_NO_DATA
     match proto::write_request(&mut io, &request).and_then(|()| io.write_all(exe)) {
         Ok(()) => {}
@@ -299,7 +367,10 @@ pub fn wait_for_version(version: &str, limit: std::time::Duration) -> Result<Sta
             Err(e) => return Err(e),
         }
         if started.elapsed() > limit {
-            return Err(Error::Io(io::Error::new(io::ErrorKind::TimedOut, format!("the instant search service didn't come back as version {version}"))));
+            return Err(Error::Io(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("the instant search service didn't come back as version {version}"),
+            )));
         }
         std::thread::sleep(std::time::Duration::from_millis(250));
     }
@@ -307,11 +378,19 @@ pub fn wait_for_version(version: &str, limit: std::time::Duration) -> Result<Sta
 
 pub enum Event {
     /// The roots the index answers for, and those it doesn't (to search some other way).
-    Plan { indexed: Vec<String>, skipped: Vec<String> },
+    Plan {
+        indexed: Vec<String>,
+        skipped: Vec<String>,
+    },
     Hits(Vec<Hit>),
     /// `elapsed` is the service's own time, in ms.
     /// `fuzzy`: nothing matched as typed, and these were close matches.
-    Done { count: u64, limited: bool, elapsed: f64, fuzzy: bool },
+    Done {
+        count: u64,
+        limited: bool,
+        elapsed: f64,
+        fuzzy: bool,
+    },
 }
 
 /// Runs a search, handing each event to `on` as it arrives; `on` returns false to stop listening
@@ -393,9 +472,16 @@ pub(crate) fn search_on(pipe: Handle, request: &SearchRequest, on: impl FnMut(Ev
     search_on_until(pipe, request, &Cancel::default(), on)
 }
 
-pub(crate) fn search_on_until(pipe: Handle, request: &SearchRequest, cancel: &Cancel, mut on: impl FnMut(Event) -> bool) -> Result<(), Error> {
+pub(crate) fn search_on_until(
+    pipe: Handle,
+    request: &SearchRequest,
+    cancel: &Cancel,
+    mut on: impl FnMut(Event) -> bool,
+) -> Result<(), Error> {
     let pipe = ask(pipe, &Request::Search(request.clone()))?;
-    let Some(_reading) = cancel.reading() else { return Ok(()) };
+    let Some(_reading) = cancel.reading() else {
+        return Ok(());
+    };
     let mut io = PipeIo(&pipe);
     loop {
         let frame = match proto::read_frame(&mut io, MAX_FRAME) {
@@ -408,11 +494,23 @@ pub(crate) fn search_on_until(pipe: Handle, request: &SearchRequest, cancel: &Ca
             return Ok(());
         }
         let event = if kind == FRAME_HITS {
-            Event::Hits(proto::decode_hits(&payload).map_err(|e| Error::Io(io::Error::new(io::ErrorKind::InvalidData, e)))?)
+            Event::Hits(
+                proto::decode_hits(&payload).map_err(|e| Error::Io(io::Error::new(io::ErrorKind::InvalidData, e)))?,
+            )
         } else {
             match message(kind, &payload)? {
                 Message::Plan { indexed, skipped } => Event::Plan { indexed, skipped },
-                Message::Done { count, limited, elapsed, fuzzy } => Event::Done { count, limited, elapsed, fuzzy },
+                Message::Done {
+                    count,
+                    limited,
+                    elapsed,
+                    fuzzy,
+                } => Event::Done {
+                    count,
+                    limited,
+                    elapsed,
+                    fuzzy,
+                },
                 _ => return Err(unexpected()),
             }
         };
@@ -421,14 +519,23 @@ pub(crate) fn search_on_until(pipe: Handle, request: &SearchRequest, cancel: &Ca
             return Ok(());
         }
     }
-    Err(Error::Io(io::Error::new(io::ErrorKind::UnexpectedEof, "the instant search service closed the connection")))
+    Err(Error::Io(io::Error::new(
+        io::ErrorKind::UnexpectedEof,
+        "the instant search service closed the connection",
+    )))
 }
 
 /// Whether the service is registered with Windows (running or not).
 pub fn installed() -> bool {
     unsafe {
-        let Ok(manager) = OpenSCManagerW(PCWSTR::null(), PCWSTR::null(), SC_MANAGER_CONNECT) else { return false };
-        let service = OpenServiceW(manager, PCWSTR(wide(crate::SERVICE_NAME).as_ptr()), SERVICE_QUERY_STATUS);
+        let Ok(manager) = OpenSCManagerW(PCWSTR::null(), PCWSTR::null(), SC_MANAGER_CONNECT) else {
+            return false;
+        };
+        let service = OpenServiceW(
+            manager,
+            PCWSTR(wide(crate::SERVICE_NAME).as_ptr()),
+            SERVICE_QUERY_STATUS,
+        );
         if let Ok(service) = service {
             let _ = CloseServiceHandle(service);
         }
@@ -454,7 +561,11 @@ pub(crate) fn run_elevated(exe: &Path, args: &str, owner: Option<isize>) -> Resu
         ..Default::default()
     };
     if let Err(e) = unsafe { ShellExecuteExW(&mut info) } {
-        return Err(if e.code() == ERROR_CANCELLED.to_hresult() { "cancelled".to_string() } else { os_error(e).to_string() });
+        return Err(if e.code() == ERROR_CANCELLED.to_hresult() {
+            "cancelled".to_string()
+        } else {
+            os_error(e).to_string()
+        });
     }
     let process = Handle(info.hProcess);
     let mut code = 0;
@@ -505,8 +616,14 @@ mod tests {
 
     #[test]
     fn names_the_store_package_only_for_the_stores_copy() {
-        assert_eq!(install_args("S-1-5-21-1-2-3-1001", None), "install --allow-sid S-1-5-21-1-2-3-1001");
-        assert_eq!(install_args("S-1-5-21-1-2-3-1001", Some("Glint.Test_4cqh9yg7jc6m4")), "install --allow-sid S-1-5-21-1-2-3-1001 --package Glint.Test_4cqh9yg7jc6m4");
+        assert_eq!(
+            install_args("S-1-5-21-1-2-3-1001", None),
+            "install --allow-sid S-1-5-21-1-2-3-1001"
+        );
+        assert_eq!(
+            install_args("S-1-5-21-1-2-3-1001", Some("Glint.Test_4cqh9yg7jc6m4")),
+            "install --allow-sid S-1-5-21-1-2-3-1001 --package Glint.Test_4cqh9yg7jc6m4"
+        );
     }
 
     #[test]

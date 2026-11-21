@@ -50,13 +50,22 @@ pub struct Rec {
 
 impl Default for Rec {
     fn default() -> Self {
-        Rec { size_seq: 0, modified: 0, attrs_flags: 0, first_link: NONE }
+        Rec {
+            size_seq: 0,
+            modified: 0,
+            attrs_flags: 0,
+            first_link: NONE,
+        }
     }
 }
 
 impl Rec {
     pub fn new(size: u64, modified: i64, attrs: u32, first_link: u32, seq: u16, flags: u16) -> Rec {
-        let mut rec = Rec { modified, first_link, ..Rec::default() };
+        let mut rec = Rec {
+            modified,
+            first_link,
+            ..Rec::default()
+        };
         rec.set_size(size);
         rec.set_seq(seq);
         rec.set_attrs(attrs);
@@ -212,12 +221,28 @@ pub struct Rank {
 /// Windows' own folders and caches, by the folders a match is in (from the drive down, case ignored):
 /// what a search for your files rarely means.
 fn in_system_folder(folders: &[&[u8]]) -> bool {
-    const WINDOWS: [&[u8]; 9] = [b"winsxs", b"servicing", b"assembly", b"installer", b"system32", b"syswow64", b"softwaredistribution", b"systemapps", b"immersivecontrolpanel"];
-    let is = |folder: Option<&&[u8]>, names: &[&[u8]]| folder.is_some_and(|f| names.iter().any(|n| f.eq_ignore_ascii_case(n)));
+    const WINDOWS: [&[u8]; 9] = [
+        b"winsxs",
+        b"servicing",
+        b"assembly",
+        b"installer",
+        b"system32",
+        b"syswow64",
+        b"softwaredistribution",
+        b"systemapps",
+        b"immersivecontrolpanel",
+    ];
+    let is = |folder: Option<&&[u8]>, names: &[&[u8]]| {
+        folder.is_some_and(|f| names.iter().any(|n| f.eq_ignore_ascii_case(n)))
+    };
     (0..folders.len()).any(|i| {
-        is(folders.get(i), &[b"programdata", b"$recycle.bin", b"node_modules", b".git"])
-            || (is(folders.get(i), &[b"windows"]) && is(folders.get(i + 1), &WINDOWS))
-            || (is(folders.get(i), &[b"appdata"]) && is(folders.get(i + 1), &[b"local"]) && is(folders.get(i + 2), &[b"temp", b"packages", b"microsoft"]))
+        is(
+            folders.get(i),
+            &[b"programdata", b"$recycle.bin", b"node_modules", b".git"],
+        ) || (is(folders.get(i), &[b"windows"]) && is(folders.get(i + 1), &WINDOWS))
+            || (is(folders.get(i), &[b"appdata"])
+                && is(folders.get(i + 1), &[b"local"])
+                && is(folders.get(i + 2), &[b"temp", b"packages", b"microsoft"]))
     })
 }
 
@@ -257,7 +282,13 @@ pub struct TreeStats {
 impl Tree {
     /// Rebuilds the lookups from saved arrays (see `snapshot`).
     pub(crate) fn from_parts(recs: Vec<Rec>, links: Vec<Link>, names: Vec<u8>, next_names: IdMap) -> Tree {
-        let mut tree = Tree { recs, links, names, next_names, ..Default::default() };
+        let mut tree = Tree {
+            recs,
+            links,
+            names,
+            next_names,
+            ..Default::default()
+        };
         // Links share names (see `compact`): each name counts once, by where it starts.
         let mut counted = vec![0u64; tree.names.len() / 64 + 1];
         let mut live = 0;
@@ -393,7 +424,13 @@ impl Tree {
 
     fn add_link(&mut self, rec: u32, parent: u32, name: &str) {
         let (at, len, flags) = self.push_name(name);
-        let link = Link { rec, parent, name: at, len, flags };
+        let link = Link {
+            rec,
+            parent,
+            name: at,
+            len,
+            flags,
+        };
         let id = match self.free.pop() {
             Some(id) => {
                 self.links[id as usize] = link;
@@ -443,14 +480,22 @@ impl Tree {
         }
         // Counted as gone even when other links share the name: compacting finds out.
         self.garbage += Tree::stored_len(&self.names, &link);
-        self.links[id as usize] = Link { rec: NONE, parent: NONE, name: 0, len: 0, flags: 0 };
+        self.links[id as usize] = Link {
+            rec: NONE,
+            parent: NONE,
+            name: 0,
+            len: 0,
+            flags: 0,
+        };
         self.free.push(id);
     }
 
     /// Adds `delta` bytes to `dir` and every folder above it.
     fn add_up(&mut self, mut dir: u32, delta: i64) {
         for _ in 0..MAX_DEPTH {
-            let Some(rec) = self.recs.get_mut(dir as usize) else { return };
+            let Some(rec) = self.recs.get_mut(dir as usize) else {
+                return;
+            };
             // A record not in use yet may be a folder still to come; it keeps what's below it.
             if rec.used() && !rec.dir() {
                 return;
@@ -510,12 +555,19 @@ impl Tree {
         if state.dir && !used {
             self.growth.note(n, state.seq, ABSENT);
         }
-        let mut wanted: Vec<(u32, &str)> =
-            state.names.iter().map(|(parent, name)| (self.parent_number(*parent), name.as_str())).filter(|&(p, _)| p != n).collect();
+        let mut wanted: Vec<(u32, &str)> = state
+            .names
+            .iter()
+            .map(|(parent, name)| (self.parent_number(*parent), name.as_str()))
+            .filter(|&(p, _)| p != n)
+            .collect();
         let current: Vec<u32> = self.links_of(n).collect();
         for id in current {
             let link = self.links[id as usize];
-            match wanted.iter().position(|&(p, name)| p == link.parent && name.as_bytes() == self.name_bytes(id)) {
+            match wanted
+                .iter()
+                .position(|&(p, name)| p == link.parent && name.as_bytes() == self.name_bytes(id))
+            {
                 Some(i) => {
                     wanted.swap_remove(i);
                 }
@@ -543,7 +595,9 @@ impl Tree {
     /// Whether record `n` has, for each group, one of its tags (any case).
     pub fn tagged(&self, n: u32, wanted: &[Vec<String>]) -> bool {
         let Some(tags) = self.tags.get(&n) else { return false };
-        wanted.iter().all(|any| tags.lines().any(|t| any.iter().any(|w| t.eq_ignore_ascii_case(w))))
+        wanted
+            .iter()
+            .all(|any| tags.lines().any(|t| any.iter().any(|w| t.eq_ignore_ascii_case(w))))
     }
 
     /// Every tag in the index, with how many items have it, most used first.
@@ -554,7 +608,10 @@ impl Tree {
                 continue;
             }
             for tag in tags.lines() {
-                counts.entry(tag.to_lowercase()).or_insert_with(|| (tag.to_string(), 0)).1 += 1;
+                counts
+                    .entry(tag.to_lowercase())
+                    .or_insert_with(|| (tag.to_string(), 0))
+                    .1 += 1;
             }
         }
         let mut out: Vec<(String, u64)> = counts.into_values().collect();
@@ -588,7 +645,9 @@ impl Tree {
         }
         // …then hands its total to its parent, deepest folders first.
         let depths = self.depths();
-        let mut order: Vec<u32> = (0..self.recs.len() as u32).filter(|&n| depths[n as usize] != u32::MAX && n != ROOT).collect();
+        let mut order: Vec<u32> = (0..self.recs.len() as u32)
+            .filter(|&n| depths[n as usize] != u32::MAX && n != ROOT)
+            .collect();
         order.sort_unstable_by_key(|&n| std::cmp::Reverse(depths[n as usize]));
         for n in order {
             let parent = self.parent(n);
@@ -682,6 +741,16 @@ impl Tree {
         Some(path)
     }
 
+    /// Resolves a 64-bit NTFS/ReFS File Reference Number back to its current relative path below the volume root.
+    pub fn path_of_frn(&self, frn: u64) -> Option<String> {
+        let (number, seq) = split_ref(frn);
+        let idx = u32::try_from(number).ok()?;
+        let rec = self
+            .rec(idx)
+            .filter(|r| r.used() && (seq == 0 || r.seq() == seq) && r.first_link != NONE)?;
+        self.path(rec.first_link, &mut HashMap::new())
+    }
+
     fn name_is(&self, id: u32, lower: &str) -> bool {
         match self.folded(id) {
             Some(folded) => folded == lower.as_bytes(),
@@ -701,7 +770,16 @@ impl Tree {
 
     /// The folders right inside `dir`, with the total size of each.
     pub fn child_dirs(&self, dir: u32) -> Vec<(String, u64)> {
-        self.kids.of(dir).iter().map(|&id| (self.name(id).to_string(), self.recs[self.links[id as usize].rec as usize].size())).collect()
+        self.kids
+            .of(dir)
+            .iter()
+            .map(|&id| {
+                (
+                    self.name(id).to_string(),
+                    self.recs[self.links[id as usize].rec as usize].size(),
+                )
+            })
+            .collect()
     }
 
     /// Every name right inside folder `dir`, files and folders, empty ones too, as a listing of the
@@ -715,11 +793,26 @@ impl Tree {
             .par_chunks(CHUNK)
             .enumerate()
             .map(|(chunk, links)| {
-                let inside = |link: &Link| link.flags & LINK_USED != 0 && link.parent == dir && link.rec >= FIRST_USER_RECORD && !self.recs[link.rec as usize].dir();
-                links.iter().enumerate().filter(|(_, link)| inside(link)).map(|(i, _)| (chunk * CHUNK + i) as u32).collect()
+                let inside = |link: &Link| {
+                    link.flags & LINK_USED != 0
+                        && link.parent == dir
+                        && link.rec >= FIRST_USER_RECORD
+                        && !self.recs[link.rec as usize].dir()
+                };
+                links
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, link)| inside(link))
+                    .map(|(i, _)| (chunk * CHUNK + i) as u32)
+                    .collect()
             })
             .collect();
-        folders.iter().copied().filter(|&id| self.links[id as usize].rec >= FIRST_USER_RECORD).chain(files.concat()).collect()
+        folders
+            .iter()
+            .copied()
+            .filter(|&id| self.links[id as usize].rec >= FIRST_USER_RECORD)
+            .chain(files.concat())
+            .collect()
     }
 
     /// How many files and folders are below folder `dir`, all the way down, as a walk of it counts them: a
@@ -753,7 +846,12 @@ impl Tree {
             .links
             .par_chunks(CHUNK)
             .map(|links| {
-                let inside = |link: &&Link| link.flags & LINK_USED != 0 && marked(&below, link.parent) && link.rec >= FIRST_USER_RECORD && !self.recs[link.rec as usize].dir();
+                let inside = |link: &&Link| {
+                    link.flags & LINK_USED != 0
+                        && marked(&below, link.parent)
+                        && link.rec >= FIRST_USER_RECORD
+                        && !self.recs[link.rec as usize].dir()
+                };
                 links.iter().filter(inside).count() as u64
             })
             .sum();
@@ -766,8 +864,15 @@ impl Tree {
     /// left out. The first item is `dir` itself; then each folder's items follow together, biggest
     /// first, and every folder comes before what's in it.
     pub fn usage(&self, dir: u32, depth: u32, max: usize) -> (Vec<UsageItem>, bool) {
-        let Some(top) = self.rec(dir).filter(|r| r.used() && r.dir()) else { return (Vec::new(), false) };
-        let mut items = vec![UsageItem { link: NONE, parent: NONE, size: top.size(), dir: true }];
+        let Some(top) = self.rec(dir).filter(|r| r.used() && r.dir()) else {
+            return (Vec::new(), false);
+        };
+        let mut items = vec![UsageItem {
+            link: NONE,
+            parent: NONE,
+            size: top.size(),
+            dir: true,
+        }];
         if max == 0 {
             return (items, top.size() != 0);
         }
@@ -799,7 +904,12 @@ impl Tree {
                     left_out = true;
                     continue;
                 }
-                items.push(UsageItem { link: id, parent: at, size, dir: true });
+                items.push(UsageItem {
+                    link: id,
+                    parent: at,
+                    size,
+                    dir: true,
+                });
                 biggest.push(Reverse(size));
                 if biggest.len() > max {
                     biggest.pop();
@@ -826,7 +936,10 @@ impl Tree {
                 let (mut found, mut smaller) = (Vec::new(), false);
                 for (i, link) in links.iter().enumerate() {
                     let parent = link.parent as usize;
-                    if link.flags & LINK_USED == 0 || parent >= self.recs.len() || wanted[parent / 64] & (1 << (parent % 64)) == 0 {
+                    if link.flags & LINK_USED == 0
+                        || parent >= self.recs.len()
+                        || wanted[parent / 64] & (1 << (parent % 64)) == 0
+                    {
                         continue;
                     }
                     let rec = &self.recs[link.rec as usize];
@@ -846,7 +959,12 @@ impl Tree {
             left_out |= smaller;
             for id in found {
                 let link = &self.links[id as usize];
-                items.push(UsageItem { link: id, parent: open[&link.parent], size: self.recs[link.rec as usize].size(), dir: false });
+                items.push(UsageItem {
+                    link: id,
+                    parent: open[&link.parent],
+                    size: self.recs[link.rec as usize].size(),
+                    dir: false,
+                });
             }
         }
 
@@ -856,7 +974,9 @@ impl Tree {
         let limited = left_out || items.len() - 1 > max;
         if items.len() - 1 > max {
             let mut order: Vec<u32> = (1..items.len() as u32).collect();
-            order.select_nth_unstable_by(max, |&a, &b| items[b as usize].size.cmp(&items[a as usize].size).then(a.cmp(&b)));
+            order.select_nth_unstable_by(max, |&a, &b| {
+                items[b as usize].size.cmp(&items[a as usize].size).then(a.cmp(&b))
+            });
             keep.fill(false);
             keep[0] = true;
             for &i in &order[..max] {
@@ -899,10 +1019,15 @@ impl Tree {
             let range = &mut inside[start[folder] as usize..start[folder + 1] as usize];
             range.sort_unstable_by(|&a, &b| {
                 let (a, b) = (&items[a as usize], &items[b as usize]);
-                b.size.cmp(&a.size).then_with(|| self.name_bytes(a.link).cmp(self.name_bytes(b.link)))
+                b.size
+                    .cmp(&a.size)
+                    .then_with(|| self.name_bytes(a.link).cmp(self.name_bytes(b.link)))
             });
             for &i in range.iter() {
-                map.push(UsageItem { parent: at as u32, ..items[i as usize] });
+                map.push(UsageItem {
+                    parent: at as u32,
+                    ..items[i as usize]
+                });
                 queue.push(i);
             }
             at += 1;
@@ -945,10 +1070,18 @@ impl Tree {
                     }
                     let name = &self.names[link.name as usize..link.name as usize + link.len as usize];
                     let folded = Tree::folded_in(&self.names, link);
-                    let Some(edits) = search.matcher.distance(name, folded) else { continue };
+                    let Some(edits) = search.matcher.distance(name, folded) else {
+                        continue;
+                    };
                     if !search.filters.is_empty() {
                         let rec = &self.recs[link.rec as usize];
-                        if !search.filters.accepts(name, folded, rec.dir(), rec.size(), (search.now - rec.modified) / 10_000_000) {
+                        if !search.filters.accepts(
+                            name,
+                            folded,
+                            rec.dir(),
+                            rec.size(),
+                            (search.now - rec.modified) / 10_000_000,
+                        ) {
                             continue;
                         }
                         if !search.filters.tags.is_empty() && !self.tagged(link.rec, &search.filters.tags) {
@@ -1045,11 +1178,20 @@ impl Tree {
         let folded = Tree::folded_in(&self.names, link);
         let lower = folded.unwrap_or(name);
         let is = |part: &[u8]| part.eq_ignore_ascii_case(word);
-        let class = if word.is_empty() || is(lower) || lower.iter().rposition(|&b| b == b'.').is_some_and(|dot| is(&lower[..dot])) {
+        let class = if word.is_empty()
+            || is(lower)
+            || lower
+                .iter()
+                .rposition(|&b| b == b'.')
+                .is_some_and(|dot| is(&lower[..dot]))
+        {
             0
         } else if lower.get(..word.len()).is_some_and(is) {
             1
-        } else if lower.windows(word.len() + 1).any(|w| matches!(w[0], b' ' | b'.' | b'_' | b'-') && is(&w[1..])) {
+        } else if lower
+            .windows(word.len() + 1)
+            .any(|w| matches!(w[0], b' ' | b'.' | b'_' | b'-') && is(&w[1..]))
+        {
             2
         } else if lower.windows(word.len()).any(is) {
             3
@@ -1062,7 +1204,13 @@ impl Tree {
         let mut len = link.len as u32 + 3;
         let mut dir = link.parent;
         for _ in 0..MAX_DEPTH {
-            let Some(rec) = self.recs.get(dir as usize).filter(|r| dir != ROOT && r.first_link != NONE) else { break };
+            let Some(rec) = self
+                .recs
+                .get(dir as usize)
+                .filter(|r| dir != ROOT && r.first_link != NONE)
+            else {
+                break;
+            };
             let up = &self.links[rec.first_link as usize];
             let up_name = &self.names[up.name as usize..up.name as usize + up.len as usize];
             folders.push(Tree::folded_in(&self.names, up).unwrap_or(up_name));
@@ -1071,7 +1219,11 @@ impl Tree {
         }
         folders.reverse();
         let hidden = is_hidden(self.recs[link.rec as usize].attrs(), name);
-        Rank { score: class * 4 + if in_system_folder(&folders) { 2 } else { 0 } + u32::from(hidden), len, id }
+        Rank {
+            score: class * 4 + if in_system_folder(&folders) { 2 } else { 0 } + u32::from(hidden),
+            len,
+            id,
+        }
     }
 
     /// Whether folder `dir` is the scope or below it, with nothing hidden (unless wanted) or excluded
@@ -1081,13 +1233,17 @@ impl Tree {
             if dir == search.scope {
                 return true;
             }
-            let Some(rec) = self.recs.get(dir as usize) else { return false };
+            let Some(rec) = self.recs.get(dir as usize) else {
+                return false;
+            };
             if dir == ROOT || !rec.used() || rec.first_link == NONE {
                 return false;
             }
             let link = &self.links[rec.first_link as usize];
             let name = &self.names[link.name as usize..link.name as usize + link.len as usize];
-            if (!search.hidden && is_hidden(rec.attrs(), name)) || search.excludes.name(name, Tree::folded_in(&self.names, link)) {
+            if (!search.hidden && is_hidden(rec.attrs(), name))
+                || search.excludes.name(name, Tree::folded_in(&self.names, link))
+            {
                 return false;
             }
             dir = link.parent;
@@ -1100,7 +1256,9 @@ impl Tree {
         let mut parts = vec![id];
         let mut dir = self.links[id as usize].parent;
         while dir != search.scope && dir != NONE && parts.len() < MAX_DEPTH {
-            let Some(rec) = self.recs.get(dir as usize).filter(|r| r.first_link != NONE) else { return false };
+            let Some(rec) = self.recs.get(dir as usize).filter(|r| r.first_link != NONE) else {
+                return false;
+            };
             parts.push(rec.first_link);
             dir = self.links[rec.first_link as usize].parent;
         }
@@ -1148,7 +1306,10 @@ impl Tree {
                 // The same name has the same folded copy after it.
                 let other = self.links[first as usize];
                 let len = link.len as usize;
-                if other.len == link.len && other.flags == link.flags && names[other.name as usize..other.name as usize + len] == stored[..len] {
+                if other.len == link.len
+                    && other.flags == link.flags
+                    && names[other.name as usize..other.name as usize + len] == stored[..len]
+                {
                     self.links[id].name = other.name;
                     break;
                 }
@@ -1158,7 +1319,10 @@ impl Tree {
                 let mut bigger = vec![NONE; firsts.len() * 2];
                 for &first in firsts.iter().filter(|&&f| f != NONE) {
                     let other = &self.links[first as usize];
-                    let mut slot = slot_of(&names[other.name as usize..other.name as usize + Tree::stored_len(&names, other)], bigger.len());
+                    let mut slot = slot_of(
+                        &names[other.name as usize..other.name as usize + Tree::stored_len(&names, other)],
+                        bigger.len(),
+                    );
                     while bigger[slot] != NONE {
                         slot = (slot + 1) & (bigger.len() - 1);
                     }
@@ -1232,7 +1396,11 @@ impl Kids {
 
     fn add(&mut self, dir: u32, link: u32) {
         let (mut at, len, room) = match self.at.get(&dir) {
-            Some(&at) => (at as usize, self.lists[at as usize] as usize, self.lists[at as usize + 1] as usize),
+            Some(&at) => (
+                at as usize,
+                self.lists[at as usize] as usize,
+                self.lists[at as usize + 1] as usize,
+            ),
             None => (usize::MAX, 0, 0),
         };
         if len == room {
@@ -1259,7 +1427,9 @@ impl Kids {
         let Some(&at) = self.at.get(&dir) else { return };
         let at = at as usize;
         let len = self.lists[at] as usize;
-        let Some(i) = self.lists[at + 2..at + 2 + len].iter().position(|&l| l == link) else { return };
+        let Some(i) = self.lists[at + 2..at + 2 + len].iter().position(|&l| l == link) else {
+            return;
+        };
         // The rest keep their order.
         self.lists.copy_within(at + 3 + i..at + 2 + len, at + 2 + i);
         self.lists[at] -= 1;
@@ -1309,8 +1479,15 @@ impl Builder {
             root.set_attrs(FILE_ATTRIBUTE_DIRECTORY);
             root.set_flags(REC_USED | REC_DIR);
         }
-        let tree = Tree { recs, names: Vec::with_capacity(records * 25), ..Default::default() };
-        Builder { tree, pending: Vec::with_capacity(records) }
+        let tree = Tree {
+            recs,
+            names: Vec::with_capacity(records * 25),
+            ..Default::default()
+        };
+        Builder {
+            tree,
+            pending: Vec::with_capacity(records),
+        }
     }
 
     /// Record `n`, if it's one of the records scanned: an extension record naming a base record
@@ -1373,7 +1550,13 @@ impl Builder {
                 continue;
             }
             let id = tree.links.len() as u32;
-            tree.links.push(Link { rec: n, parent, name: at, len, flags });
+            tree.links.push(Link {
+                rec: n,
+                parent,
+                name: at,
+                len,
+                flags,
+            });
             if rec.first_link != NONE {
                 tree.next_names.insert(id, rec.first_link);
             }
@@ -1406,7 +1589,9 @@ fn slot_of(stored: &[u8], slots: usize) -> usize {
     let (words, rest) = stored.as_chunks::<8>();
     let mut tail = [0u8; 8];
     tail[..rest.len()].copy_from_slice(rest);
-    let hash = words.iter().chain([&tail]).fold(stored.len() as u64, |h, w| (h.rotate_left(5) ^ u64::from_le_bytes(*w)).wrapping_mul(K));
+    let hash = words.iter().chain([&tail]).fold(stored.len() as u64, |h, w| {
+        (h.rotate_left(5) ^ u64::from_le_bytes(*w)).wrapping_mul(K)
+    });
     (hash >> (64 - slots.trailing_zeros())) as usize
 }
 
@@ -1430,17 +1615,41 @@ mod tests {
     }
 
     fn dir(seq: u16, names: &[(u32, &str)]) -> RecordState {
-        RecordState { seq, dir: true, attrs: 0, modified: 1, size: 0, names: names.iter().map(|&(p, n)| (parent_ref(p), n.into())).collect(), tags: None }
+        RecordState {
+            seq,
+            dir: true,
+            attrs: 0,
+            modified: 1,
+            size: 0,
+            names: names.iter().map(|&(p, n)| (parent_ref(p), n.into())).collect(),
+            tags: None,
+        }
     }
 
     fn file(size: u64, names: &[(u32, &str)]) -> RecordState {
-        RecordState { seq: 1, dir: false, attrs: 0x20, modified: 2, size, names: names.iter().map(|&(p, n)| (parent_ref(p), n.into())).collect(), tags: None }
+        RecordState {
+            seq: 1,
+            dir: false,
+            attrs: 0x20,
+            modified: 2,
+            size,
+            names: names.iter().map(|&(p, n)| (parent_ref(p), n.into())).collect(),
+            tags: None,
+        }
     }
 
     /// C:\Users\me\{a.txt 1K, docs\{b.pdf 10K, .hidden\c.pdf 100K}}, C:\Data\big.bin 1M.
     fn sample() -> Tree {
         let mut tree = Tree::default();
-        tree.set_record(ROOT, &RecordState { seq: 5, dir: true, names: vec![(make_ref(ROOT, 5), ".".into())], ..Default::default() });
+        tree.set_record(
+            ROOT,
+            &RecordState {
+                seq: 5,
+                dir: true,
+                names: vec![(make_ref(ROOT, 5), ".".into())],
+                ..Default::default()
+            },
+        );
         tree.set_record(20, &dir(1, &[(ROOT, "Users")]));
         tree.set_record(21, &dir(1, &[(20, "me")]));
         tree.set_record(22, &file(KB, &[(21, "a.txt")]));
@@ -1475,7 +1684,14 @@ mod tests {
         let excludes = Excludes::new(&excludes.iter().map(|e| e.to_string()).collect::<Vec<_>>());
         let mut cache = HashMap::new();
         let mut paths: Vec<String> = tree
-            .search(&Search { matcher: &matcher, filters: &filters, now, scope, hidden, excludes: &excludes })
+            .search(&Search {
+                matcher: &matcher,
+                filters: &filters,
+                now,
+                scope,
+                hidden,
+                excludes: &excludes,
+            })
             .into_iter()
             .map(|id| tree.path(id, &mut cache).unwrap())
             .collect();
@@ -1503,7 +1719,13 @@ mod tests {
         tree.remove_record(31);
         assert_eq!((size(&tree, 30), size(&tree, ROOT)), (120 * KB, 121 * KB));
         // A record is reused for a different file (new sequence number).
-        tree.set_record(22, &RecordState { seq: 2, ..file(5 * KB, &[(30, "new.txt")]) });
+        tree.set_record(
+            22,
+            &RecordState {
+                seq: 2,
+                ..file(5 * KB, &[(30, "new.txt")])
+            },
+        );
         assert_eq!((size(&tree, 21), size(&tree, 30)), (0, 125 * KB));
         assert_totals(&mut tree);
     }
@@ -1553,7 +1775,14 @@ mod tests {
     fn growth_notes_cost_little() {
         let build = || {
             let mut tree = Tree::default();
-            tree.set_record(ROOT, &RecordState { seq: 5, dir: true, ..Default::default() });
+            tree.set_record(
+                ROOT,
+                &RecordState {
+                    seq: 5,
+                    dir: true,
+                    ..Default::default()
+                },
+            );
             for (i, n) in (100..108u32).enumerate() {
                 tree.set_record(n, &dir(1, &[(if i == 0 { ROOT } else { n - 1 }, "d")]));
             }
@@ -1600,7 +1829,9 @@ mod tests {
         assert_eq!(listed(&tree, ROOT), ["Data", "Users"]);
         // A hard link is listed in each folder it's in.
         tree.set_record(42, &file(KB, &[(21, "one.dll"), (30, "two.dll")]));
-        assert!(listed(&tree, 21).contains(&"one.dll".to_string()) && listed(&tree, 30).contains(&"two.dll".to_string()));
+        assert!(
+            listed(&tree, 21).contains(&"one.dll".to_string()) && listed(&tree, 30).contains(&"two.dll".to_string())
+        );
     }
 
     #[test]
@@ -1608,7 +1839,10 @@ mod tests {
         let mut tree = sample();
         tree.set_record(40, &file(2 * KB, &[(21, "one.dll"), (30, "two.dll")]));
         assert_eq!((size(&tree, 21), size(&tree, 30)), (113 * KB, 1026 * KB));
-        assert_eq!(find(&tree, "dll", ROOT, false, &[]), [r"Data\two.dll", r"Users\me\one.dll"]);
+        assert_eq!(
+            find(&tree, "dll", ROOT, false, &[]),
+            [r"Data\two.dll", r"Users\me\one.dll"]
+        );
         // One link goes away, the other stays.
         tree.set_record(40, &file(2 * KB, &[(30, "two.dll")]));
         assert_eq!((size(&tree, 21), size(&tree, 30)), (111 * KB, 1026 * KB));
@@ -1620,19 +1854,37 @@ mod tests {
     fn searches_below_a_scope_like_fd() {
         let tree = sample();
         assert_eq!(find(&tree, "pdf", ROOT, false, &[]), [r"Users\me\docs\b.pdf"]);
-        assert_eq!(find(&tree, "pdf", ROOT, true, &[]), [r"Users\me\docs\.hidden\c.pdf", r"Users\me\docs\b.pdf"]);
+        assert_eq!(
+            find(&tree, "pdf", ROOT, true, &[]),
+            [r"Users\me\docs\.hidden\c.pdf", r"Users\me\docs\b.pdf"]
+        );
         // Searching inside a hidden folder finds what's in it, as fd does when given that folder.
         assert_eq!(find(&tree, "*.pdf", 25, false, &[]), [r"Users\me\docs\.hidden\c.pdf"]);
         assert_eq!(find(&tree, "a b", ROOT, true, &[]), Vec::<String>::new());
         assert_eq!(find(&tree, "e", 30, false, &[]), Vec::<String>::new());
         assert_eq!(find(&tree, "*", 21, true, &[]).len(), 5);
         assert_eq!(find(&tree, "*", 21, true, &["docs"]), [r"Users\me\a.txt"]);
-        assert_eq!(find(&tree, "*", 21, true, &[r"docs\.hidden", "*.txt"]), [r"Users\me\docs", r"Users\me\docs\b.pdf"]);
+        assert_eq!(
+            find(&tree, "*", 21, true, &[r"docs\.hidden", "*.txt"]),
+            [r"Users\me\docs", r"Users\me\docs\b.pdf"]
+        );
         // Path terms (`\`, `/` or `path:`) match against the item's path.
-        assert_eq!(find(&tree, r"me\docs\b.pdf", ROOT, false, &[]), [r"Users\me\docs\b.pdf"]);
-        assert_eq!(find(&tree, "Users/me/docs/b.pdf", ROOT, false, &[]), [r"Users\me\docs\b.pdf"]);
-        assert_eq!(find(&tree, r"C:\Users\me\docs\b.pdf", ROOT, false, &[]), [r"Users\me\docs\b.pdf"]);
-        assert_eq!(find(&tree, "path:docs b.pdf", ROOT, false, &[]), [r"Users\me\docs\b.pdf"]);
+        assert_eq!(
+            find(&tree, r"me\docs\b.pdf", ROOT, false, &[]),
+            [r"Users\me\docs\b.pdf"]
+        );
+        assert_eq!(
+            find(&tree, "Users/me/docs/b.pdf", ROOT, false, &[]),
+            [r"Users\me\docs\b.pdf"]
+        );
+        assert_eq!(
+            find(&tree, r"C:\Users\me\docs\b.pdf", ROOT, false, &[]),
+            [r"Users\me\docs\b.pdf"]
+        );
+        assert_eq!(
+            find(&tree, "path:docs b.pdf", ROOT, false, &[]),
+            [r"Users\me\docs\b.pdf"]
+        );
         // The root folder itself and NTFS metadata never show up.
         assert!(find(&tree, ".", ROOT, true, &[]).iter().all(|p| p.contains('.')));
     }
@@ -1649,18 +1901,40 @@ mod tests {
         tree.set_record(56, &file(KB, &[(30, "misreported.txt")]));
         tree.set_record(57, &file(KB, &[(21, "Report.docx")]));
         let matcher = NameMatcher::from_terms(vec!["report".into()]);
-        let search = Search { matcher: &matcher, filters: &Default::default(), now: 0, scope: ROOT, hidden: false, excludes: &Excludes::default() };
+        let search = Search {
+            matcher: &matcher,
+            filters: &Default::default(),
+            now: 0,
+            scope: ROOT,
+            hidden: false,
+            excludes: &Excludes::default(),
+        };
         let found = tree.search(&search);
         let mut cache = HashMap::new();
-        let mut paths = |ranked: Vec<Rank>| ranked.into_iter().map(|r| tree.path(r.id, &mut cache).unwrap()).collect::<Vec<_>>();
+        let mut paths = |ranked: Vec<Rank>| {
+            ranked
+                .into_iter()
+                .map(|r| tree.path(r.id, &mut cache).unwrap())
+                .collect::<Vec<_>>()
+        };
         // As typed (the shorter path first), starting with it, a word starting with it, then inside a
         // word; Windows' own copy, though named as typed, behind every other one named as typed.
         assert_eq!(
             paths(tree.rank(&found, &search, b"report", 10)),
-            [r"Users\me\Report.docx", r"Users\me\docs\Report.pdf", r"Windows\System32\report.dll", r"Users\me\docs\reports 2026.xlsx", r"Users\me\Q3 report.pdf", r"Data\misreported.txt"]
+            [
+                r"Users\me\Report.docx",
+                r"Users\me\docs\Report.pdf",
+                r"Windows\System32\report.dll",
+                r"Users\me\docs\reports 2026.xlsx",
+                r"Users\me\Q3 report.pdf",
+                r"Data\misreported.txt"
+            ]
         );
         // The best two of them all, whatever the index order.
-        assert_eq!(paths(tree.rank(&found, &search, b"report", 2)), [r"Users\me\Report.docx", r"Users\me\docs\Report.pdf"]);
+        assert_eq!(
+            paths(tree.rank(&found, &search, b"report", 2)),
+            [r"Users\me\Report.docx", r"Users\me\docs\Report.pdf"]
+        );
         // No one waits for the answer any more: the scan gives up.
         assert_eq!(tree.search_until(&search, &|| false), found);
         assert!(tree.search_until(&search, &|| true).is_empty());
@@ -1675,11 +1949,22 @@ mod tests {
         let matcher = NameMatcher::near(vec!["photgraphs".into()]).unwrap();
         let mut cache = HashMap::new();
         let found: Vec<String> = tree
-            .search(&Search { matcher: &matcher, filters: &Default::default(), now: 0, scope: ROOT, hidden: false, excludes: &Excludes::default() })
+            .search(&Search {
+                matcher: &matcher,
+                filters: &Default::default(),
+                now: 0,
+                scope: ROOT,
+                hidden: false,
+                excludes: &Excludes::default(),
+            })
             .into_iter()
             .map(|id| tree.path(id, &mut cache).unwrap())
             .collect();
-        assert_eq!(found, [r"Data\Photographs.zip", r"Data\Phtograhps 2.zip"], "one edit away before two, whatever the index order");
+        assert_eq!(
+            found,
+            [r"Data\Photographs.zip", r"Data\Phtograhps 2.zip"],
+            "one edit away before two, whatever the index order"
+        );
     }
 
     #[test]
@@ -1692,7 +1977,10 @@ mod tests {
         assert_eq!(tree.resolve(r"Users\me\a.txt"), None);
         let mut sizes = tree.child_dirs(ROOT);
         sizes.sort();
-        assert_eq!(sizes, [("Data".to_string(), 1024 * KB), ("Users".to_string(), 111 * KB)]);
+        assert_eq!(
+            sizes,
+            [("Data".to_string(), 1024 * KB), ("Users".to_string(), 111 * KB)]
+        );
         let mut cache = HashMap::new();
         assert_eq!(tree.dir_path(25, &mut cache), Some(r"Users\me\docs\.hidden"));
         assert_eq!(tree.dir_path(ROOT, &mut cache), Some(""));
@@ -1707,7 +1995,10 @@ mod tests {
         assert_eq!(tree.count_below(30), (1, 0));
         // A file with a name in two places counts in each, as a walk finds it.
         tree.set_record(40, &file(2 * KB, &[(21, "one.dll"), (30, "two.dll")]));
-        assert_eq!((tree.count_below(ROOT), tree.count_below(21), tree.count_below(30)), ((6, 5), (4, 2), (2, 0)));
+        assert_eq!(
+            (tree.count_below(ROOT), tree.count_below(21), tree.count_below(30)),
+            ((6, 5), (4, 2), (2, 0))
+        );
         // Moved and deleted: counted where they are now.
         tree.set_record(23, &dir(1, &[(30, "docs")]));
         tree.remove_record(26);
@@ -1718,7 +2009,21 @@ mod tests {
     /// A map as (name, parent's place, size, folder), the folder mapped first as "".
     fn map(tree: &Tree, dir: u32, depth: u32, max: usize) -> (Vec<(String, u32, u64, bool)>, bool) {
         let (items, limited) = tree.usage(dir, depth, max);
-        let named = items.iter().map(|i| (if i.link == NONE { String::new() } else { tree.name(i.link).to_string() }, i.parent, i.size, i.dir)).collect();
+        let named = items
+            .iter()
+            .map(|i| {
+                (
+                    if i.link == NONE {
+                        String::new()
+                    } else {
+                        tree.name(i.link).to_string()
+                    },
+                    i.parent,
+                    i.size,
+                    i.dir,
+                )
+            })
+            .collect();
         (named, limited)
     }
 
@@ -1732,7 +2037,17 @@ mod tests {
         // Empty things take no room in a map.
         tree.set_record(32, &dir(1, &[(30, "Empty")]));
         tree.set_record(33, &file(0, &[(30, "zero.txt")]));
-        assert_eq!(map(&tree, ROOT, 1, 100), (vec![item("", NONE, 1135 * KB, true), item("Data", 0, 1024 * KB, true), item("Users", 0, 111 * KB, true)], false));
+        assert_eq!(
+            map(&tree, ROOT, 1, 100),
+            (
+                vec![
+                    item("", NONE, 1135 * KB, true),
+                    item("Data", 0, 1024 * KB, true),
+                    item("Users", 0, 111 * KB, true)
+                ],
+                false
+            )
+        );
         // Every folder's items follow it together, biggest first; hidden ones too.
         let everything = vec![
             item("", NONE, 1135 * KB, true),
@@ -1749,7 +2064,14 @@ mod tests {
         assert_eq!(map(&tree, ROOT, 9, 100), (everything.clone(), false));
         assert_eq!(map(&tree, ROOT, 4, 100).0, everything[..9]);
         // A folder below the root, and a file instead of a folder.
-        assert_eq!(map(&tree, 21, 1, 100).0, [item("", NONE, 111 * KB, true), item("docs", 0, 110 * KB, true), item("a.txt", 0, KB, false)]);
+        assert_eq!(
+            map(&tree, 21, 1, 100).0,
+            [
+                item("", NONE, 111 * KB, true),
+                item("docs", 0, 110 * KB, true),
+                item("a.txt", 0, KB, false)
+            ]
+        );
         assert!(tree.usage(22, 3, 100).0.is_empty());
     }
 
@@ -1757,12 +2079,30 @@ mod tests {
     fn keeps_the_biggest_items_and_their_folders() {
         let mut tree = sample();
         // Only the biggest stay; ties go to the item found first (folders before files).
-        assert_eq!(map(&tree, ROOT, 9, 3), (vec![item("", NONE, 1135 * KB, true), item("Data", 0, 1024 * KB, true), item("Users", 0, 111 * KB, true), item("big.bin", 1, 1024 * KB, false)], true));
+        assert_eq!(
+            map(&tree, ROOT, 9, 3),
+            (
+                vec![
+                    item("", NONE, 1135 * KB, true),
+                    item("Data", 0, 1024 * KB, true),
+                    item("Users", 0, 111 * KB, true),
+                    item("big.bin", 1, 1024 * KB, false)
+                ],
+                true
+            )
+        );
         assert_eq!(map(&tree, ROOT, 9, 0), (vec![item("", NONE, 1135 * KB, true)], true));
         // A total that drifted below what's in the folder still brings the folder along.
         tree.recs[25].set_size(1);
         let (kept, limited) = map(&tree, 23, 9, 1);
-        assert_eq!(kept, [item("", NONE, 110 * KB, true), item(".hidden", 0, 1, true), item("c.pdf", 1, 100 * KB, false)]);
+        assert_eq!(
+            kept,
+            [
+                item("", NONE, 110 * KB, true),
+                item(".hidden", 0, 1, true),
+                item("c.pdf", 1, 100 * KB, false)
+            ]
+        );
         assert!(limited);
     }
 
@@ -1790,7 +2130,12 @@ mod tests {
         }
         for (id, link) in tree.links.iter().enumerate() {
             let rec = tree.recs[link.rec as usize];
-            if link.flags & LINK_USED != 0 && open.contains(&link.parent) && !rec.dir() && rec.size() > 0 && link.rec >= FIRST_USER_RECORD {
+            if link.flags & LINK_USED != 0
+                && open.contains(&link.parent)
+                && !rec.dir()
+                && rec.size() > 0
+                && link.rec >= FIRST_USER_RECORD
+            {
                 found.push((id as u32, rec.size(), false));
             }
         }
@@ -1812,7 +2157,12 @@ mod tests {
             .iter()
             .map(|&id| {
                 let rec = tree.recs[tree.link(id).rec as usize];
-                (tree.name(id).to_string(), rec.size(), rec.dir(), tree.dir_path(tree.link(id).parent, &mut cache).unwrap().to_string())
+                (
+                    tree.name(id).to_string(),
+                    rec.size(),
+                    rec.dir(),
+                    tree.dir_path(tree.link(id).parent, &mut cache).unwrap().to_string(),
+                )
             })
             .collect();
         items.sort();
@@ -1830,7 +2180,14 @@ mod tests {
         };
         for round in 0..30 {
             let mut tree = Tree::default();
-            tree.set_record(ROOT, &RecordState { seq: 5, dir: true, ..Default::default() });
+            tree.set_record(
+                ROOT,
+                &RecordState {
+                    seq: 5,
+                    dir: true,
+                    ..Default::default()
+                },
+            );
             let mut folders = vec![ROOT];
             for n in 20..45u32 {
                 let parent = folders[next(folders.len() as u64) as usize];
@@ -1851,10 +2208,21 @@ mod tests {
                     let mut cache = HashMap::new();
                     let mut got: Vec<(String, u64, bool, String)> = items[1..]
                         .iter()
-                        .map(|i| (tree.name(i.link).to_string(), i.size, i.dir, tree.dir_path(tree.link(i.link).parent, &mut cache).unwrap().to_string()))
+                        .map(|i| {
+                            (
+                                tree.name(i.link).to_string(),
+                                i.size,
+                                i.dir,
+                                tree.dir_path(tree.link(i.link).parent, &mut cache).unwrap().to_string(),
+                            )
+                        })
                         .collect();
                     got.sort();
-                    assert_eq!((got, limited), usage_by_hand(&tree, ROOT, depth, max), "round {round}, depth {depth}, max {max}");
+                    assert_eq!(
+                        (got, limited),
+                        usage_by_hand(&tree, ROOT, depth, max),
+                        "round {round}, depth {depth}, max {max}"
+                    );
                     // And in map order: each folder's items together after it, biggest first.
                     for (i, item) in items.iter().enumerate().skip(1) {
                         assert!(item.parent < i as u32 && items[item.parent as usize].dir);
@@ -1874,7 +2242,10 @@ mod tests {
         let (items, _) = map(&tree, ROOT, 3, 100);
         let dlls: Vec<_> = items.iter().filter(|i| i.0.ends_with(".dll")).collect();
         // Root, Data, Users, then Data's big.bin and two.dll, Users' me, and me's docs, one.dll, a.txt.
-        assert_eq!(dlls, [&item("two.dll", 1, 2 * KB, false), &item("one.dll", 5, 2 * KB, false)]);
+        assert_eq!(
+            dlls,
+            [&item("two.dll", 1, 2 * KB, false), &item("one.dll", 5, 2 * KB, false)]
+        );
         assert_eq!(items.len(), 9);
     }
 
@@ -1882,8 +2253,14 @@ mod tests {
     fn non_ascii_names() {
         let mut tree = sample();
         tree.set_record(50, &file(1, &[(21, "Ünïcödé Résumé.PDF")]));
-        assert_eq!(find(&tree, "résumé", ROOT, false, &[]), [r"Users\me\Ünïcödé Résumé.PDF"]);
-        assert_eq!(find(&tree, "ÜNÏ*.pdf", ROOT, false, &[]), [r"Users\me\Ünïcödé Résumé.PDF"]);
+        assert_eq!(
+            find(&tree, "résumé", ROOT, false, &[]),
+            [r"Users\me\Ünïcödé Résumé.PDF"]
+        );
+        assert_eq!(
+            find(&tree, "ÜNÏ*.pdf", ROOT, false, &[]),
+            [r"Users\me\Ünïcödé Résumé.PDF"]
+        );
         tree.set_record(51, &dir(1, &[(21, "Été")]));
         assert_eq!(tree.resolve(r"users\me\ÉTÉ"), Some(51));
     }
@@ -1892,7 +2269,13 @@ mod tests {
     fn orphans_and_stale_parents_are_not_found() {
         let mut tree = sample();
         // A name whose parent record was reused (sequence mismatch) hangs nowhere.
-        tree.set_record(60, &RecordState { names: vec![(make_ref(21, 9), "stale.txt".into())], ..file(1, &[]) });
+        tree.set_record(
+            60,
+            &RecordState {
+                names: vec![(make_ref(21, 9), "stale.txt".into())],
+                ..file(1, &[])
+            },
+        );
         // A name in NTFS metadata ($Extend is record 11).
         tree.set_record(61, &file(1, &[(11, "$Quota")]));
         assert!(find(&tree, "stale", ROOT, true, &[]).is_empty());
@@ -1905,8 +2288,15 @@ mod tests {
         // gives the new docs b.pdf's old record (24), and the new b.pdf docs' old one (23). The
         // journal lists 23 first (b.pdf's delete), so read in that order, b.pdf would find the old
         // b.pdf in 24 and hang nowhere.
-        let docs = RecordState { seq: 2, ..dir(2, &[(21, "docs")]) };
-        let pdf = RecordState { seq: 2, names: vec![(make_ref(24, 2), "b.pdf".into())], ..file(10 * KB, &[]) };
+        let docs = RecordState {
+            seq: 2,
+            ..dir(2, &[(21, "docs")])
+        };
+        let pdf = RecordState {
+            seq: 2,
+            names: vec![(make_ref(24, 2), "b.pdf".into())],
+            ..file(10 * KB, &[])
+        };
         let batch = vec![(23, Some(pdf)), (24, Some(docs)), (25, None), (26, None)];
         let order = |batch: &[(u32, Option<RecordState>)]| batch.iter().map(|(n, _)| *n).collect::<Vec<_>>();
         assert_eq!(order(&parents_first(batch.clone())), [24, 23, 25, 26]);
@@ -1928,9 +2318,18 @@ mod tests {
         assert_totals(&mut tree);
 
         // A cycle (a move between two reads) still places every record once.
-        let a = RecordState { names: vec![(parent_ref(41), "a".into())], ..dir(1, &[]) };
-        let b = RecordState { names: vec![(parent_ref(40), "b".into())], ..dir(1, &[]) };
-        assert_eq!(order(&parents_first(vec![(40, Some(a)), (41, Some(b)), (42, None)])), [41, 40, 42]);
+        let a = RecordState {
+            names: vec![(parent_ref(41), "a".into())],
+            ..dir(1, &[])
+        };
+        let b = RecordState {
+            names: vec![(parent_ref(40), "b".into())],
+            ..dir(1, &[])
+        };
+        assert_eq!(
+            order(&parents_first(vec![(40, Some(a)), (41, Some(b)), (42, None)])),
+            [41, 40, 42]
+        );
     }
 
     #[test]
@@ -1955,7 +2354,10 @@ mod tests {
         assert_eq!(find(&tree, "txt", ROOT, true, &[]), [r"Folder\late.txt"]);
         assert_eq!(tree.stats().files, 1);
         // Filters, from the records themselves: late.txt has 300 bytes, from 1601.
-        assert_eq!(find(&tree, "ext:TXT size:>100 dm:>1y", ROOT, true, &[]), [r"Folder\late.txt"]);
+        assert_eq!(
+            find(&tree, "ext:TXT size:>100 dm:>1y", ROOT, true, &[]),
+            [r"Folder\late.txt"]
+        );
         assert!(find(&tree, "size:>1kb", ROOT, true, &[]).is_empty());
         assert!(find(&tree, "late dm:7d", ROOT, true, &[]).is_empty());
         assert_eq!(find(&tree, "folder:", ROOT, true, &[]), ["Folder"]);
@@ -1967,7 +2369,11 @@ mod tests {
     #[test]
     #[ignore]
     fn common_words_under_many_exclusions_cost_little() {
-        const WORDS: &[&str] = &["report", "invoice", "budget", "photo", "download", "setup", "backup", "notes", "draft", "final", "project", "meeting", "summary", "scan", "image", "video", "music", "readme", "config", "data", "cache", "temp", "log", "build"];
+        const WORDS: &[&str] = &[
+            "report", "invoice", "budget", "photo", "download", "setup", "backup", "notes", "draft", "final",
+            "project", "meeting", "summary", "scan", "image", "video", "music", "readme", "config", "data", "cache",
+            "temp", "log", "build",
+        ];
         let mut seed = 0x9E37_79B9_7F4A_7C15u64;
         let mut next = |n: u64| {
             seed ^= seed << 13;
@@ -2003,23 +2409,72 @@ mod tests {
                 let f = n;
                 n += 1;
                 builder.record(f, 1, false, 0x20, 0);
-                let name = format!("{}_{} {}.{}", WORDS[next(24)], WORDS[next(24)], next(10_000), ["txt", "pdf", "jpg", "dll"][next(4)]);
+                let name = format!(
+                    "{}_{} {}.{}",
+                    WORDS[next(24)],
+                    WORDS[next(24)],
+                    next(10_000),
+                    ["txt", "pdf", "jpg", "dll"][next(4)]
+                );
                 builder.name(f, make_ref(leaf, 1), &name);
             }
         }
         let tree = builder.finish();
         let globs: Vec<String> = [
-            "node_modules", ".git", ".svn", ".hg", "target", "obj", "bin", ".vs", ".idea", ".vscode", "__pycache__", "*.pyc",
-            ".cache", ".gradle", ".m2", ".nuget", "packages", "vendor", "dist", "out", "*.tmp", "~$*", "*.bak", "*.swp",
-            "*.log", "Thumbs.db", "desktop.ini", "$RECYCLE.BIN", "System Volume Information", "Windows", "WinSxS",
-            "Program Files", "ProgramData", "AppData", "Temp", "*.etl", "*.dmp", "pagefile.sys", "hiberfil.sys", "*.cab",
+            "node_modules",
+            ".git",
+            ".svn",
+            ".hg",
+            "target",
+            "obj",
+            "bin",
+            ".vs",
+            ".idea",
+            ".vscode",
+            "__pycache__",
+            "*.pyc",
+            ".cache",
+            ".gradle",
+            ".m2",
+            ".nuget",
+            "packages",
+            "vendor",
+            "dist",
+            "out",
+            "*.tmp",
+            "~$*",
+            "*.bak",
+            "*.swp",
+            "*.log",
+            "Thumbs.db",
+            "desktop.ini",
+            "$RECYCLE.BIN",
+            "System Volume Information",
+            "Windows",
+            "WinSxS",
+            "Program Files",
+            "ProgramData",
+            "AppData",
+            "Temp",
+            "*.etl",
+            "*.dmp",
+            "pagefile.sys",
+            "hiberfil.sys",
+            "*.cab",
         ]
         .map(String::from)
         .into();
         let excludes = Excludes::new(&globs);
         for query in ["report", "photo 12", "notes.txt", "zzzz"] {
             let matcher = NameMatcher::from_terms(crate::query::terms(query));
-            let search = Search { matcher: &matcher, filters: &Default::default(), now: 0, scope: ROOT, hidden: false, excludes: &excludes };
+            let search = Search {
+                matcher: &matcher,
+                filters: &Default::default(),
+                now: 0,
+                scope: ROOT,
+                hidden: false,
+                excludes: &excludes,
+            };
             let mut best = f64::MAX;
             let mut found = 0;
             for _ in 0..5 {
@@ -2074,7 +2529,14 @@ mod tests {
         };
         for (what, dir) in [("a folder of 10,000 files", tops[7]), ("the drive", ROOT)] {
             let (counted, count_ms) = best(&|| tree.count_below(dir).0);
-            let search = Search { matcher: &matcher, filters: &filters, now: 0, scope: dir, hidden: true, excludes: &Excludes::default() };
+            let search = Search {
+                matcher: &matcher,
+                filters: &filters,
+                now: 0,
+                scope: dir,
+                hidden: true,
+                excludes: &Excludes::default(),
+            };
             let (found, search_ms) = best(&|| tree.search(&search).len() as u64);
             assert_eq!(counted, found);
             println!("{what}: {counted} files counted in {count_ms:.1} ms; the search for them took {search_ms:.1} ms");
@@ -2087,7 +2549,11 @@ mod tests {
     #[test]
     #[ignore]
     fn close_matches_cost_little_more() {
-        const WORDS: &[&str] = &["report", "invoice", "budget", "photo", "download", "setup", "backup", "notes", "draft", "final", "project", "meeting", "summary", "scan", "image", "video", "music", "readme", "config", "data", "cache", "temp", "log", "build"];
+        const WORDS: &[&str] = &[
+            "report", "invoice", "budget", "photo", "download", "setup", "backup", "notes", "draft", "final",
+            "project", "meeting", "summary", "scan", "image", "video", "music", "readme", "config", "data", "cache",
+            "temp", "log", "build",
+        ];
         let mut seed = 0x2545_F491_4F6C_DD1Du64;
         let mut next = |n: u64| {
             seed ^= seed << 13;
@@ -2102,13 +2568,28 @@ mod tests {
         builder.name(20, make_ref(ROOT, 5), "Folder");
         for n in 21..count {
             builder.record(n, 1, false, 0x20, 0);
-            let name = format!("{}_{} {}.{}", WORDS[next(24) as usize], WORDS[next(24) as usize], next(10_000), ["txt", "pdf", "jpg", "dll"][next(4) as usize]);
+            let name = format!(
+                "{}_{} {}.{}",
+                WORDS[next(24) as usize],
+                WORDS[next(24) as usize],
+                next(10_000),
+                ["txt", "pdf", "jpg", "dll"][next(4) as usize]
+            );
             builder.name(n, make_ref(20, 1), &name);
         }
         let tree = builder.finish();
         let time = |matcher: &NameMatcher| {
             let started = std::time::Instant::now();
-            let found = tree.search(&Search { matcher, filters: &Default::default(), now: 0, scope: ROOT, hidden: false, excludes: &Excludes::default() }).len();
+            let found = tree
+                .search(&Search {
+                    matcher,
+                    filters: &Default::default(),
+                    now: 0,
+                    scope: ROOT,
+                    hidden: false,
+                    excludes: &Excludes::default(),
+                })
+                .len();
             (found, started.elapsed().as_secs_f64() * 1000.0)
         };
         for query in ["reprot", "invoise", "downlaod", "summray meeting", "zzzzzz"] {
@@ -2144,12 +2625,31 @@ mod tests {
             let mut found = 0;
             for _ in 0..5 {
                 let started = std::time::Instant::now();
-                found = tree.search(&Search { matcher, filters: &Default::default(), now: 0, scope: ROOT, hidden: true, excludes: &Excludes::default() }).len();
+                found = tree
+                    .search(&Search {
+                        matcher,
+                        filters: &Default::default(),
+                        now: 0,
+                        scope: ROOT,
+                        hidden: true,
+                        excludes: &Excludes::default(),
+                    })
+                    .len();
                 ms = ms.min(started.elapsed().as_secs_f64() * 1000.0);
             }
             (found, ms)
         };
-        for query in ["reprot", "downlaod", "kernal32", "invoise", "documnets", "screenshto", "photgraphs", "summray meeting", "zzzzzz"] {
+        for query in [
+            "reprot",
+            "downlaod",
+            "kernal32",
+            "invoise",
+            "documnets",
+            "screenshto",
+            "photgraphs",
+            "summray meeting",
+            "zzzzzz",
+        ] {
             let terms = crate::query::terms(query);
             let (exact, exact_ms) = best(&NameMatcher::from_terms(terms.clone()));
             let near = NameMatcher::near(terms).unwrap();
@@ -2159,7 +2659,10 @@ mod tests {
             for name in &names {
                 let folded = crate::query::fold(name);
                 let folded = (!name.is_ascii()).then_some(folded.as_bytes());
-                let (with, without) = (near.distance(name.as_bytes(), folded), near.distance_unfiltered(name.as_bytes(), folded));
+                let (with, without) = (
+                    near.distance(name.as_bytes(), folded),
+                    near.distance_unfiltered(name.as_bytes(), folded),
+                );
                 kept += usize::from(with.is_some());
                 differ += usize::from(with != without);
                 past += usize::from(near.passes_checks(name.as_bytes(), folded));
@@ -2183,8 +2686,9 @@ mod tests {
         use std::fmt::Write as _;
         use windows::Win32::Foundation::FILETIME;
         use windows::Win32::System::Threading::{
-            GetCurrentProcess, GetProcessTimes, ProcessPowerThrottling, SetProcessAffinityMask, SetProcessInformation, PROCESS_POWER_THROTTLING_CURRENT_VERSION,
-            PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_STATE,
+            GetCurrentProcess, GetProcessTimes, ProcessPowerThrottling, SetProcessAffinityMask, SetProcessInformation,
+            PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+            PROCESS_POWER_THROTTLING_STATE,
         };
         let Ok(file) = std::env::var("NAMES") else { return };
         let env = |key: &str| std::env::var(key).ok().filter(|v| !v.is_empty());
@@ -2193,12 +2697,30 @@ mod tests {
             let state = PROCESS_POWER_THROTTLING_STATE {
                 Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
                 ControlMask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
-                StateMask: if qos == "eco" { PROCESS_POWER_THROTTLING_EXECUTION_SPEED } else { 0 },
+                StateMask: if qos == "eco" {
+                    PROCESS_POWER_THROTTLING_EXECUTION_SPEED
+                } else {
+                    0
+                },
             };
-            unsafe { SetProcessInformation(process, ProcessPowerThrottling, &state as *const _ as *const _, size_of_val(&state) as u32) }.unwrap();
+            unsafe {
+                SetProcessInformation(
+                    process,
+                    ProcessPowerThrottling,
+                    &state as *const _ as *const _,
+                    size_of_val(&state) as u32,
+                )
+            }
+            .unwrap();
         }
         if let Some(mask) = env("MASK") {
-            unsafe { SetProcessAffinityMask(process, usize::from_str_radix(mask.trim_start_matches("0x"), 16).unwrap()) }.unwrap();
+            unsafe {
+                SetProcessAffinityMask(
+                    process,
+                    usize::from_str_radix(mask.trim_start_matches("0x"), 16).unwrap(),
+                )
+            }
+            .unwrap();
         }
         let text = std::fs::read_to_string(file).unwrap();
         let names: Vec<&str> = text.lines().filter(|l| !l.is_empty() && l.len() < 250).collect();
@@ -2212,7 +2734,8 @@ mod tests {
             builder.name(n, make_ref(20, 1), name);
         }
         let tree = builder.finish();
-        let mut pool = rayon::ThreadPoolBuilder::new().num_threads(env("THREADS").and_then(|t| t.parse().ok()).unwrap_or(0));
+        let mut pool =
+            rayon::ThreadPoolBuilder::new().num_threads(env("THREADS").and_then(|t| t.parse().ok()).unwrap_or(0));
         if env("THREAD_QOS").is_some() {
             pool = pool.start_handler(|_| crate::win::high_qos());
         }
@@ -2235,9 +2758,18 @@ mod tests {
             pool.current_num_threads(),
             gap.as_millis()
         );
-        for (query, near) in [("reprot", false), ("downlaod", false), ("kernal32", false), ("kernal32", true)] {
+        for (query, near) in [
+            ("reprot", false),
+            ("downlaod", false),
+            ("kernal32", false),
+            ("kernal32", true),
+        ] {
             let terms = crate::query::terms(query);
-            let matcher = if near { NameMatcher::near(terms).unwrap() } else { NameMatcher::from_terms(terms) };
+            let matcher = if near {
+                NameMatcher::near(terms).unwrap()
+            } else {
+                NameMatcher::from_terms(terms)
+            };
             let mut times = Vec::with_capacity(runs);
             let mut found = 0;
             let before = cpu_ms();
@@ -2245,7 +2777,15 @@ mod tests {
                 std::thread::sleep(gap);
                 let started = std::time::Instant::now();
                 found = pool.install(|| {
-                    tree.search(&Search { matcher: &matcher, filters: &Default::default(), now: 0, scope: ROOT, hidden: true, excludes: &Excludes::default() }).len()
+                    tree.search(&Search {
+                        matcher: &matcher,
+                        filters: &Default::default(),
+                        now: 0,
+                        scope: ROOT,
+                        hidden: true,
+                        excludes: &Excludes::default(),
+                    })
+                    .len()
                 });
                 times.push(started.elapsed().as_secs_f64() * 1000.0);
             }
@@ -2257,7 +2797,13 @@ mod tests {
         print!("{report}");
         if let Some(out) = env("OUT") {
             use std::io::Write as _;
-            std::fs::OpenOptions::new().create(true).append(true).open(out).unwrap().write_all(report.as_bytes()).unwrap();
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(out)
+                .unwrap()
+                .write_all(report.as_bytes())
+                .unwrap();
         }
     }
 
@@ -2308,10 +2854,23 @@ mod tests {
     fn records_take_24_bytes() {
         assert_eq!(size_of::<Rec>(), 24);
         let mut rec = Rec::new(MAX_SIZE + 5, -1, 0x0040_0016, 7, 0xFFFF, REC_USED | REC_DIR);
-        assert_eq!((rec.size(), rec.modified, rec.attrs(), rec.first_link, rec.seq(), rec.flags()), (MAX_SIZE, -1, 0x0040_0016, 7, 0xFFFF, REC_USED | REC_DIR));
+        assert_eq!(
+            (
+                rec.size(),
+                rec.modified,
+                rec.attrs(),
+                rec.first_link,
+                rec.seq(),
+                rec.flags()
+            ),
+            (MAX_SIZE, -1, 0x0040_0016, 7, 0xFFFF, REC_USED | REC_DIR)
+        );
         rec.set_size(12);
         rec.set_attrs(u32::MAX);
-        assert_eq!((rec.size(), rec.seq(), rec.flags(), rec.attrs()), (12, 0xFFFF, REC_USED | REC_DIR, ATTRS));
+        assert_eq!(
+            (rec.size(), rec.seq(), rec.flags(), rec.attrs()),
+            (12, 0xFFFF, REC_USED | REC_DIR, ATTRS)
+        );
         rec.set_flags(0);
         rec.set_seq(3);
         assert!(!rec.used() && !rec.dir());
@@ -2327,16 +2886,30 @@ mod tests {
         let every = find(&tree, "*", ROOT, true, &[]);
         let arena = tree.names.len();
         tree.compact();
-        assert_eq!(arena - tree.names.len(), 2 * "a.txt".len() + "Ünï.txt".len() + 2 + fold("Ünï.txt").len());
+        assert_eq!(
+            arena - tree.names.len(),
+            2 * "a.txt".len() + "Ünï.txt".len() + 2 + fold("Ünï.txt").len()
+        );
         assert_eq!(find(&tree, "*", ROOT, true, &[]), every);
-        assert_eq!(find(&tree, "ünï", ROOT, true, &[]), [r"Users\me\docs\Ünï.txt", r"Users\me\Ünï.txt"]);
+        assert_eq!(
+            find(&tree, "ünï", ROOT, true, &[]),
+            [r"Users\me\docs\Ünï.txt", r"Users\me\Ünï.txt"]
+        );
         // Back from a snapshot, a shared name counts once…
-        let mut tree = Tree::from_parts(tree.recs.clone(), tree.links.clone(), tree.names.clone(), tree.next_names.clone());
+        let mut tree = Tree::from_parts(
+            tree.recs.clone(),
+            tree.links.clone(),
+            tree.names.clone(),
+            tree.next_names.clone(),
+        );
         assert_eq!(tree.garbage, 0);
         // …and a link going leaves the name to the others.
         tree.remove_record(40);
         tree.compact();
-        assert_eq!(find(&tree, "a.txt", ROOT, true, &[]), [r"Data\a.txt", r"Users\me\a.txt"]);
+        assert_eq!(
+            find(&tree, "a.txt", ROOT, true, &[]),
+            [r"Data\a.txt", r"Users\me\a.txt"]
+        );
         // Many different names: the table grows.
         let mut builder = Builder::new(20_000);
         builder.record(20, 1, true, 0, 0);
@@ -2346,7 +2919,10 @@ mod tests {
             builder.name(n, make_ref(20, 1), &format!("{}.txt", n % 7_000));
         }
         let tree = builder.finish();
-        assert_eq!(tree.names.len(), "Folder".len() + (0..7_000).map(|n| format!("{n}.txt").len()).sum::<usize>());
+        assert_eq!(
+            tree.names.len(),
+            "Folder".len() + (0..7_000).map(|n| format!("{n}.txt").len()).sum::<usize>()
+        );
         assert_eq!(find(&tree, "6999.txt", ROOT, true, &[]), [r"Folder\6999.txt"; 2]);
     }
 
@@ -2366,7 +2942,10 @@ mod tests {
         // 24 bytes a record, 16 a name (and a sixteenth more for what comes next), 5,000 different
         // names of about 13 bytes, each stored once, and the lists of folders.
         let memory = tree.stats().memory as usize;
-        assert!(memory < 101_000 * 24 + 100_000 * 17 + 5_000 * 15 + 1_000 * 8 + 64 * 1024, "{memory}");
+        assert!(
+            memory < 101_000 * 24 + 100_000 * 17 + 5_000 * 15 + 1_000 * 8 + 64 * 1024,
+            "{memory}"
+        );
         assert_eq!(find(&tree, "file 4999.txt", ROOT, true, &[]).len(), 20);
     }
 
@@ -2420,7 +2999,9 @@ mod tests {
                         continue;
                     }
                     let links = 1 + next(2) as usize;
-                    let names: Vec<(u32, String)> = (0..links).map(|i| (dirs[next(dirs.len() as u64) as usize], format!("f{n}-{i}"))).collect();
+                    let names: Vec<(u32, String)> = (0..links)
+                        .map(|i| (dirs[next(dirs.len() as u64) as usize], format!("f{n}-{i}")))
+                        .collect();
                     let names: Vec<(u32, &str)> = names.iter().map(|(p, s)| (*p, s.as_str())).collect();
                     tree.set_record(n, &file(next(10_000), &names));
                 }
@@ -2435,5 +3016,18 @@ mod tests {
         tree.compact();
         assert!(tree.names.len() < arena);
         assert_eq!(find(&tree, "*", ROOT, true, &[]), before);
+    }
+
+    #[test]
+    fn path_of_frn_survives_rename_and_move_and_rejects_stale_sequence() {
+        let mut tree = sample();
+        let frn = make_ref(24, 1);
+        assert_eq!(tree.path_of_frn(frn).as_deref(), Some(r"Users\me\docs\b.pdf"));
+        // Rename and move record 24 under C:\Data (dir 30) while keeping seq=1.
+        tree.set_record(24, &file(10 * KB, &[(30, "moved.pdf")]));
+        assert_eq!(tree.path_of_frn(frn).as_deref(), Some(r"Data\moved.pdf"));
+        // Stale sequence number must be rejected cleanly.
+        assert_eq!(tree.path_of_frn(make_ref(24, 2)), None);
+        assert_eq!(tree.path_of_frn(make_ref(999, 1)), None);
     }
 }

@@ -13,16 +13,18 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{ERROR_BROKEN_PIPE, ERROR_NO_DATA, ERROR_PIPE_CONNECTED, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE};
+use windows::Win32::Foundation::{
+    ERROR_BROKEN_PIPE, ERROR_NO_DATA, ERROR_PIPE_CONNECTED, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
+};
 use windows::Win32::Storage::FileSystem::{
-    CreateFileW, FlushFileBuffers, ReadFile, WriteFile, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_NONE,
-    OPEN_EXISTING, PIPE_ACCESS_DUPLEX,
+    CreateFileW, FlushFileBuffers, ReadFile, WriteFile, FILE_FLAGS_AND_ATTRIBUTES, FILE_FLAG_FIRST_PIPE_INSTANCE,
+    FILE_SHARE_NONE, OPEN_EXISTING, PIPE_ACCESS_DUPLEX,
+};
+use windows::Win32::System::Pipes::{
+    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PeekNamedPipe, PIPE_READMODE_BYTE,
+    PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
 };
 use windows::Win32::System::IO::CancelSynchronousIo;
-use windows::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PeekNamedPipe, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE,
-    PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
-};
 
 /// Read and write (FILE_GENERIC_READ | FILE_GENERIC_WRITE) without FILE_CREATE_PIPE_INSTANCE (0x4).
 const USER_ACCESS: u32 = (0x0012_0089 | 0x0012_0116) & !0x4;
@@ -75,7 +77,12 @@ pub struct Server {
 fn instance(name: &str, sd: &SecurityDescriptor, first: bool) -> io::Result<Handle> {
     let attributes = sd.attributes();
     // The first instance must be ours: if anything else already serves the name, fail.
-    let mode = PIPE_ACCESS_DUPLEX | if first { FILE_FLAG_FIRST_PIPE_INSTANCE } else { FILE_FLAGS_AND_ATTRIBUTES(0) };
+    let mode = PIPE_ACCESS_DUPLEX
+        | if first {
+            FILE_FLAG_FIRST_PIPE_INSTANCE
+        } else {
+            FILE_FLAGS_AND_ATTRIBUTES(0)
+        };
     let handle = unsafe {
         CreateNamedPipeW(
             PCWSTR(wide(name).as_ptr()),
@@ -99,7 +106,10 @@ fn instance(name: &str, sd: &SecurityDescriptor, first: bool) -> io::Result<Hand
 pub fn serve(engine: Arc<Engine>, allowed: &[String], updater: Option<Arc<Updater>>) -> io::Result<Server> {
     let sddl = sddl(allowed);
     serve_on(crate::PIPE_NAME, engine.clone(), &sddl, updater.clone()).or_else(|e| {
-        engine.log.line(&format!("can't serve under the protected prefix ({e}); serving on {}", crate::LEGACY_PIPE_NAME));
+        engine.log.line(&format!(
+            "can't serve under the protected prefix ({e}); serving on {}",
+            crate::LEGACY_PIPE_NAME
+        ));
         serve_on(crate::LEGACY_PIPE_NAME, engine, &sddl, updater)
     })
 }
@@ -113,7 +123,12 @@ const REQUEST_WAIT: Duration = Duration::from_secs(10);
 
 /// Serves `name` with the given DACL. Each connection gets a fresh pipe instance, which takes
 /// FILE_CREATE_PIPE_INSTANCE: SYSTEM and administrators have it, users never do.
-pub(crate) fn serve_on(name: &str, engine: Arc<Engine>, sddl: &str, updater: Option<Arc<Updater>>) -> io::Result<Server> {
+pub(crate) fn serve_on(
+    name: &str,
+    engine: Arc<Engine>,
+    sddl: &str,
+    updater: Option<Arc<Updater>>,
+) -> io::Result<Server> {
     let sd = SecurityDescriptor::from_sddl(sddl)?;
     let mut next = instance(name, &sd, true)?;
     let pipe_name = name.to_string();
@@ -132,7 +147,10 @@ pub(crate) fn serve_on(name: &str, engine: Arc<Engine>, sddl: &str, updater: Opt
             if stop.load(Ordering::SeqCst) {
                 return;
             }
-            let client = connected.is_ok() || connected.as_ref().is_err_and(|e| e.code() == ERROR_PIPE_CONNECTED.to_hresult());
+            let client = connected.is_ok()
+                || connected
+                    .as_ref()
+                    .is_err_and(|e| e.code() == ERROR_PIPE_CONNECTED.to_hresult());
             let pipe = loop {
                 match instance(&pipe_name, &sd, false) {
                     Ok(fresh) => break std::mem::replace(&mut next, fresh),
@@ -147,7 +165,12 @@ pub(crate) fn serve_on(name: &str, engine: Arc<Engine>, sddl: &str, updater: Opt
             }
             if active.load(Ordering::SeqCst) >= MAX_CLIENTS {
                 // Small enough for the pipe's buffer, so this never waits on the client.
-                let _ = proto::write_message(&mut PipeIo(&pipe), &Message::Error { message: "The instant search service is busy; try again".into() });
+                let _ = proto::write_message(
+                    &mut PipeIo(&pipe),
+                    &Message::Error {
+                        message: "The instant search service is busy; try again".into(),
+                    },
+                );
                 continue;
             }
             active.fetch_add(1, Ordering::SeqCst);
@@ -159,7 +182,11 @@ pub(crate) fn serve_on(name: &str, engine: Arc<Engine>, sddl: &str, updater: Opt
             });
         }
     });
-    Ok(Server { name: name.to_string(), stopping, thread: Some(thread) })
+    Ok(Server {
+        name: name.to_string(),
+        stopping,
+        thread: Some(thread),
+    })
 }
 
 impl Server {
@@ -173,7 +200,15 @@ impl Server {
                 let _ = CancelSynchronousIo(HANDLE(thread.as_raw_handle()));
             }
             let _wake = unsafe {
-                CreateFileW(PCWSTR(wide(&self.name).as_ptr()), (GENERIC_READ | GENERIC_WRITE).0, FILE_SHARE_NONE, None, OPEN_EXISTING, Default::default(), None)
+                CreateFileW(
+                    PCWSTR(wide(&self.name).as_ptr()),
+                    (GENERIC_READ | GENERIC_WRITE).0,
+                    FILE_SHARE_NONE,
+                    None,
+                    OPEN_EXISTING,
+                    Default::default(),
+                    None,
+                )
             }
             .map(Handle);
             thread::sleep(Duration::from_millis(5));
@@ -217,10 +252,14 @@ fn receive_update(io: &mut PipeIo, signature: &str, size: u64, updater: Option<&
         return Err("another update is arriving".into());
     }
     let mut exe = vec![0u8; size as usize];
-    let arrived = io.read_exact(&mut exe).map_err(|e| format!("it didn't all arrive: {e}"));
+    let arrived = io
+        .read_exact(&mut exe)
+        .map_err(|e| format!("it didn't all arrive: {e}"));
     RECEIVING.store(false, Ordering::SeqCst);
     arrived?;
-    updater.ok_or("this one doesn't update itself (it isn't running as the installed service)")?.take(&exe, signature)
+    updater
+        .ok_or("this one doesn't update itself (it isn't running as the installed service)")?
+        .take(&exe, signature)
 }
 
 /// Whether the client of a connection has gone (closed its end): an app typing fast closes the connection of
@@ -239,7 +278,12 @@ impl ClientGone {
     const EVERY_US: u64 = 2_000;
 
     fn new(pipe: &Handle) -> Self {
-        ClientGone { pipe: pipe.0 .0 as isize, began: Instant::now(), asked: AtomicU64::new(0), gone: AtomicBool::new(false) }
+        ClientGone {
+            pipe: pipe.0 .0 as isize,
+            began: Instant::now(),
+            asked: AtomicU64::new(0),
+            gone: AtomicBool::new(false),
+        }
     }
 
     fn check(&self) -> bool {
@@ -249,7 +293,10 @@ impl ClientGone {
         let now = self.began.elapsed().as_micros() as u64;
         let asked = self.asked.load(Ordering::Relaxed);
         if now.saturating_sub(asked) < Self::EVERY_US
-            || self.asked.compare_exchange(asked, now, Ordering::Relaxed, Ordering::Relaxed).is_err()
+            || self
+                .asked
+                .compare_exchange(asked, now, Ordering::Relaxed, Ordering::Relaxed)
+                .is_err()
         {
             return false;
         }
@@ -267,7 +314,9 @@ fn answer(pipe: Handle, engine: &Engine, updater: Option<&Updater>) {
         return;
     }
     let mut io = PipeIo(&pipe);
-    let Ok(request) = proto::read_request(&mut io) else { return };
+    let Ok(request) = proto::read_request(&mut io) else {
+        return;
+    };
     // Set once an update is in place: the service stops after answering.
     let mut stop_after = None;
     let result = match request {
@@ -288,9 +337,13 @@ fn answer(pipe: Handle, engine: &Engine, updater: Option<&Updater>) {
         Request::History(request) => proto::write_message(&mut io, &Message::History(engine.history(&request))),
         Request::Claim => {
             match crate::service::claim() {
-                Ok(true) => engine.log.line("a copy of Glint that isn't the Microsoft Store's uses the service: it stays when the Store's goes"),
+                Ok(true) => engine.log.line(
+                    "a copy of Glint that isn't the Microsoft Store's uses the service: it stays when the Store's goes",
+                ),
                 Ok(false) => {}
-                Err(e) => engine.log.line(&format!("couldn't keep the service for a copy that uses it: {e}")),
+                Err(e) => engine
+                    .log
+                    .line(&format!("couldn't keep the service for a copy that uses it: {e}")),
             }
             proto::write_message(&mut io, &Message::Status(engine.status()))
         }
@@ -302,6 +355,12 @@ fn answer(pipe: Handle, engine: &Engine, updater: Option<&Updater>) {
                 Err(message) => Message::Error { message },
             },
         ),
+        Request::ResolveId { volume_serial, frn } => proto::write_message(
+            &mut io,
+            &Message::Resolved {
+                path: engine.resolve_id(volume_serial, frn),
+            },
+        ),
         Request::Update { signature, size } => match receive_update(&mut io, &signature, size, updater) {
             Ok(version) => {
                 engine.log.line(&format!("updating to {version}: restarting into it"));
@@ -310,7 +369,12 @@ fn answer(pipe: Handle, engine: &Engine, updater: Option<&Updater>) {
             }
             Err(message) => {
                 engine.log.line(&format!("didn't take an update: {message}"));
-                proto::write_message(&mut io, &Message::Error { message: format!("The instant search service didn't take the update: {message}") })
+                proto::write_message(
+                    &mut io,
+                    &Message::Error {
+                        message: format!("The instant search service didn't take the update: {message}"),
+                    },
+                )
             }
         },
     };
@@ -319,7 +383,9 @@ fn answer(pipe: Handle, engine: &Engine, updater: Option<&Updater>) {
         Ok(()) => unsafe {
             let _ = FlushFileBuffers(pipe.0);
         },
-        Err(e) if e.raw_os_error() == Some(ERROR_NO_DATA.0 as i32) || e.raw_os_error() == Some(ERROR_BROKEN_PIPE.0 as i32) => {}
+        Err(e)
+            if e.raw_os_error() == Some(ERROR_NO_DATA.0 as i32)
+                || e.raw_os_error() == Some(ERROR_BROKEN_PIPE.0 as i32) => {}
         Err(e) => engine.log.line(&format!("answering a request failed: {e}")),
     }
     unsafe {
@@ -342,11 +408,52 @@ mod tests {
     /// T:\Users\me\{report.pdf 1000 B, notes.txt 24 B}
     fn sample() -> Tree {
         let mut tree = Tree::default();
-        tree.set_record(ROOT, &RecordState { seq: 5, dir: true, ..Default::default() });
-        tree.set_record(20, &RecordState { seq: 1, dir: true, names: vec![(make_ref(ROOT, 5), "Users".into())], ..Default::default() });
-        tree.set_record(21, &RecordState { seq: 1, dir: true, names: vec![(make_ref(20, 1), "me".into())], ..Default::default() });
-        tree.set_record(22, &RecordState { seq: 1, size: 1000, modified: 133_000_000_000_000_000, attrs: 0x20, names: vec![(make_ref(21, 1), "report.pdf".into())], ..Default::default() });
-        tree.set_record(23, &RecordState { seq: 1, size: 24, names: vec![(make_ref(21, 1), "notes.txt".into())], ..Default::default() });
+        tree.set_record(
+            ROOT,
+            &RecordState {
+                seq: 5,
+                dir: true,
+                ..Default::default()
+            },
+        );
+        tree.set_record(
+            20,
+            &RecordState {
+                seq: 1,
+                dir: true,
+                names: vec![(make_ref(ROOT, 5), "Users".into())],
+                ..Default::default()
+            },
+        );
+        tree.set_record(
+            21,
+            &RecordState {
+                seq: 1,
+                dir: true,
+                names: vec![(make_ref(20, 1), "me".into())],
+                ..Default::default()
+            },
+        );
+        tree.set_record(
+            22,
+            &RecordState {
+                seq: 1,
+                size: 1000,
+                modified: 133_000_000_000_000_000,
+                attrs: 0x20,
+                names: vec![(make_ref(21, 1), "report.pdf".into())],
+                ..Default::default()
+            },
+        );
+        tree.set_record(
+            23,
+            &RecordState {
+                seq: 1,
+                size: 24,
+                names: vec![(make_ref(21, 1), "notes.txt".into())],
+                ..Default::default()
+            },
+        );
         // A mark of what grew, with nothing changed since.
         tree.growth.mark(1_000, 1024);
         tree
@@ -369,15 +476,27 @@ mod tests {
             let (name, cancel) = (name.clone(), cancel.clone());
             thread::spawn(move || {
                 let trust = |_: &str| true;
-                let request = SearchRequest { query: "pdf".into(), roots: vec![r"T:\".into()], hidden: false, exclude: vec![], max_results: None, fuzzy: false, rank: false };
-                let ended = client::search_on_until(client::connect_to(&name, &trust).unwrap(), &request, &cancel, |_| true);
+                let request = SearchRequest {
+                    query: "pdf".into(),
+                    roots: vec![r"T:\".into()],
+                    hidden: false,
+                    exclude: vec![],
+                    max_results: None,
+                    fuzzy: false,
+                    rank: false,
+                };
+                let ended =
+                    client::search_on_until(client::connect_to(&name, &trust).unwrap(), &request, &cancel, |_| true);
                 (ended.is_ok(), Instant::now())
             })
         };
         // The service's side: the request arrives, and no answer comes yet (a scan of millions of names).
         let _ = unsafe { ConnectNamedPipe(pipe.0, None) };
         assert!(request_arrives(&pipe, Duration::from_secs(10)));
-        assert!(matches!(proto::read_request(&mut PipeIo(&pipe)), Ok(Request::Search(_))));
+        assert!(matches!(
+            proto::read_request(&mut PipeIo(&pipe)),
+            Ok(Request::Search(_))
+        ));
         let gone = ClientGone::new(&pipe);
         thread::sleep(Duration::from_millis(50));
         assert!(!gone.check(), "the app still waits");
@@ -385,7 +504,10 @@ mod tests {
         cancel.cancel();
         let (ok, ended) = app.join().unwrap();
         assert!(ok, "ending it isn't an error");
-        assert!(ended.duration_since(cancelled) < Duration::from_secs(2), "the wait ended at once");
+        assert!(
+            ended.duration_since(cancelled) < Duration::from_secs(2),
+            "the wait ended at once"
+        );
         let asked = Instant::now();
         while !gone.check() && asked.elapsed() < Duration::from_secs(2) {
             thread::sleep(Duration::from_millis(3));
@@ -418,15 +540,33 @@ mod tests {
         let server = serve_on(&name, engine, &dacl, None).unwrap();
         // The app refuses a server that isn't SYSTEM or administrators: a test run isn't.
         if !win::is_elevated() {
-            assert!(matches!(client::connect_to(&name, &client::trusted), Err(Error::Untrusted(_))));
+            assert!(matches!(
+                client::connect_to(&name, &client::trusted),
+                Err(Error::Untrusted(_))
+            ));
         }
         let trust = |_: &str| true;
 
         let status = client::status_on(client::connect_to(&name, &trust).unwrap()).unwrap();
         assert_eq!(status.volumes.len(), 1);
-        assert_eq!((status.volumes[0].volume.as_str(), status.volumes[0].state.as_str(), status.volumes[0].files), ("T:", "ready", 2));
+        assert_eq!(
+            (
+                status.volumes[0].volume.as_str(),
+                status.volumes[0].state.as_str(),
+                status.volumes[0].files
+            ),
+            ("T:", "ready", 2)
+        );
 
-        let request = SearchRequest { query: "pdf".into(), roots: vec![r"T:\".into(), r"Z:\Elsewhere".into()], hidden: false, exclude: vec![], max_results: None, fuzzy: false, rank: false };
+        let request = SearchRequest {
+            query: "pdf".into(),
+            roots: vec![r"T:\".into(), r"Z:\Elsewhere".into()],
+            hidden: false,
+            exclude: vec![],
+            max_results: None,
+            fuzzy: false,
+            rank: false,
+        };
         let (mut plan, mut hits, mut done) = (None, Vec::new(), None);
         client::search_on(client::connect_to(&name, &trust).unwrap(), &request, |event| {
             match event {
@@ -437,14 +577,28 @@ mod tests {
             true
         })
         .unwrap();
-        assert_eq!(plan, Some((vec![r"T:\".to_string()], vec![r"Z:\Elsewhere".to_string()])));
+        assert_eq!(
+            plan,
+            Some((vec![r"T:\".to_string()], vec![r"Z:\Elsewhere".to_string()]))
+        );
         assert_eq!(hits.len(), 1);
-        assert_eq!((hits[0].path.as_str(), hits[0].size, hits[0].dir, hits[0].modified), (r"T:\Users\me\report.pdf", 1000, false, 1_655_526_400_000));
+        assert_eq!(
+            (hits[0].path.as_str(), hits[0].size, hits[0].dir, hits[0].modified),
+            (r"T:\Users\me\report.pdf", 1000, false, 1_655_526_400_000)
+        );
         assert_eq!(done, Some((1, false)));
 
         // A typo: nothing as typed, so close matches when asked for, said to be so.
         let search = |query: &str, fuzzy, rank| {
-            let request = SearchRequest { query: query.into(), roots: vec![r"T:\".into()], hidden: false, exclude: vec![], max_results: None, fuzzy, rank };
+            let request = SearchRequest {
+                query: query.into(),
+                roots: vec![r"T:\".into()],
+                hidden: false,
+                exclude: vec![],
+                max_results: None,
+                fuzzy,
+                rank,
+            };
             let (mut paths, mut done) = (Vec::new(), None);
             client::search_on(client::connect_to(&name, &trust).unwrap(), &request, |event| {
                 match event {
@@ -458,36 +612,104 @@ mod tests {
             (paths, done)
         };
         assert_eq!(search("reprot", false, false), (vec![], Some((0, false))));
-        assert_eq!(search("reprot", true, false), (vec![r"T:\Users\me\report.pdf".to_string()], Some((1, true))));
-        assert_eq!(search("report", true, false), (vec![r"T:\Users\me\report.pdf".to_string()], Some((1, false))), "as typed first");
+        assert_eq!(
+            search("reprot", true, false),
+            (vec![r"T:\Users\me\report.pdf".to_string()], Some((1, true)))
+        );
+        assert_eq!(
+            search("report", true, false),
+            (vec![r"T:\Users\me\report.pdf".to_string()], Some((1, false))),
+            "as typed first"
+        );
         assert_eq!(search("zzzzzz", true, false), (vec![], Some((0, true))));
         // Ranked: the best of every drive's matches, best first, close matches too.
-        assert_eq!(search("report", false, true), (vec![r"T:\Users\me\report.pdf".to_string()], Some((1, false))));
-        assert_eq!(search("reprot", true, true), (vec![r"T:\Users\me\report.pdf".to_string()], Some((1, true))));
-        assert_eq!(search("*", false, true).0, [r"T:\Users", r"T:\Users\me", r"T:\Users\me\notes.txt", r"T:\Users\me\report.pdf"], "the shorter path first, among names as good");
+        assert_eq!(
+            search("report", false, true),
+            (vec![r"T:\Users\me\report.pdf".to_string()], Some((1, false)))
+        );
+        assert_eq!(
+            search("reprot", true, true),
+            (vec![r"T:\Users\me\report.pdf".to_string()], Some((1, true)))
+        );
+        assert_eq!(
+            search("*", false, true).0,
+            [
+                r"T:\Users",
+                r"T:\Users\me",
+                r"T:\Users\me\notes.txt",
+                r"T:\Users\me\report.pdf"
+            ],
+            "the shorter path first, among names as good"
+        );
 
         let sizes = client::sizes_on(client::connect_to(&name, &trust).unwrap(), r"t:\users", false).unwrap();
         assert_eq!((sizes.total, sizes.sizes), (1024, vec![("me".to_string(), 1024)]));
         assert_eq!((sizes.files, sizes.folders), (None, None), "counted only when asked");
         let counted = client::sizes_on(client::connect_to(&name, &trust).unwrap(), r"t:\users", true).unwrap();
-        assert_eq!((counted.total, counted.files, counted.folders), (1024, Some(2), Some(1)));
-        assert!(matches!(client::sizes_on(client::connect_to(&name, &trust).unwrap(), r"T:\Nowhere", true), Err(Error::Service(_))));
+        assert_eq!(
+            (counted.total, counted.files, counted.folders),
+            (1024, Some(2), Some(1))
+        );
+        assert!(matches!(
+            client::sizes_on(client::connect_to(&name, &trust).unwrap(), r"T:\Nowhere", true),
+            Err(Error::Service(_))
+        ));
 
-        let map = |path: &str, depth, since| client::usage_on(client::connect_to(&name, &trust).unwrap(), &UsageRequest { path: path.into(), depth, max_items: 100, since });
+        let map = |path: &str, depth, since| {
+            client::usage_on(
+                client::connect_to(&name, &trust).unwrap(),
+                &UsageRequest {
+                    path: path.into(),
+                    depth,
+                    max_items: 100,
+                    since,
+                },
+            )
+        };
         let found = map(r"t:\users", 2, None).unwrap();
         let (nodes, summary) = (&found.nodes, &found.summary);
-        let shape: Vec<_> = nodes.iter().map(|n| (n.parent, n.name.as_str(), n.dir, n.size)).collect();
-        assert_eq!(shape, [(NO_PARENT, "Users", true, 1024), (0, "me", true, 1024), (1, "report.pdf", false, 1000), (1, "notes.txt", false, 24)]);
+        let shape: Vec<_> = nodes
+            .iter()
+            .map(|n| (n.parent, n.name.as_str(), n.dir, n.size))
+            .collect();
+        assert_eq!(
+            shape,
+            [
+                (NO_PARENT, "Users", true, 1024),
+                (0, "me", true, 1024),
+                (1, "report.pdf", false, 1000),
+                (1, "notes.txt", false, 24)
+            ]
+        );
         assert_eq!((nodes[2].modified, nodes[2].attrs), (1_655_526_400_000, 0x20));
-        assert_eq!((summary.path.as_str(), summary.total, summary.items, summary.limited), (r"t:\users", 1024, 4, false));
+        assert_eq!(
+            (summary.path.as_str(), summary.total, summary.items, summary.limited),
+            (r"t:\users", 1024, 4, false)
+        );
         assert_eq!((found.previous.as_ref(), summary.growth), (None, None));
         // What each item held at the mark comes along when asked for: the folders as big, report.pdf
         // written since.
         let grew = map(r"t:\users", 2, Some(0)).unwrap();
         assert_eq!(grew.previous, Some(vec![1024, 1024, proto::WRITTEN, 24]));
-        assert_eq!(grew.summary.growth.map(|g| (g.since, g.oldest, g.drive_then, g.drive_now)), Some((1_000, 1_000, 1024, 1024)));
-        assert_eq!(map(r"T:\", 1, None).unwrap().nodes.iter().map(|n| n.name.as_str()).collect::<Vec<_>>(), ["", "Users"]);
-        assert!(matches!(map(r"T:\Users\me\report.pdf", 2, None), Err(Error::Service(_))));
+        assert_eq!(
+            grew.summary
+                .growth
+                .map(|g| (g.since, g.oldest, g.drive_then, g.drive_now)),
+            Some((1_000, 1_000, 1024, 1024))
+        );
+        assert_eq!(
+            map(r"T:\", 1, None)
+                .unwrap()
+                .nodes
+                .iter()
+                .map(|n| n.name.as_str())
+                .collect::<Vec<_>>(),
+            ["", "Users"]
+        );
+        assert!(matches!(
+            map(r"T:\Users\me\report.pdf", 2, None),
+            Err(Error::Service(_))
+        ));
         assert!(matches!(map(r"Z:\", 2, None), Err(Error::Service(_))));
 
         let list = |path: &str| {
@@ -498,20 +720,42 @@ mod tests {
         };
         assert_eq!(
             list(r"t:\users\me").unwrap(),
-            [(r"T:\Users\me\notes.txt".to_string(), false, 24, 0), (r"T:\Users\me\report.pdf".to_string(), false, 1000, 1_655_526_400_000)]
+            [
+                (r"T:\Users\me\notes.txt".to_string(), false, 24, 0),
+                (r"T:\Users\me\report.pdf".to_string(), false, 1000, 1_655_526_400_000)
+            ]
         );
         assert_eq!(list(r"T:\").unwrap(), [(r"T:\Users".to_string(), true, 1024, 0)]);
         assert!(matches!(list(r"T:\Nowhere"), Err(Error::Service(_))));
 
         // What was renamed, moved and deleted: newest first, with where it is now.
-        let history = |query: &str, since| client::history_on(client::connect_to(&name, &trust).unwrap(), &HistoryRequest { query: query.into(), since, max: 10 }).unwrap();
+        let history = |query: &str, since| {
+            client::history_on(
+                client::connect_to(&name, &trust).unwrap(),
+                &HistoryRequest {
+                    query: query.into(),
+                    since,
+                    max: 10,
+                },
+            )
+            .unwrap()
+        };
         let found = history("", 0);
-        let told: Vec<_> = found.events.iter().map(|e| (e.kind, e.path.as_str(), e.to.as_deref(), e.now.as_deref())).collect();
+        let told: Vec<_> = found
+            .events
+            .iter()
+            .map(|e| (e.kind, e.path.as_str(), e.to.as_deref(), e.now.as_deref()))
+            .collect();
         assert_eq!(
             told,
             [
                 (Kind::Deleted, r"T:\Users\me\old.txt", None, None),
-                (Kind::Renamed, r"T:\Users\me\draft.pdf", Some(r"T:\Users\me\report.pdf"), Some(r"T:\Users\me\report.pdf")),
+                (
+                    Kind::Renamed,
+                    r"T:\Users\me\draft.pdf",
+                    Some(r"T:\Users\me\report.pdf"),
+                    Some(r"T:\Users\me\report.pdf")
+                ),
             ]
         );
         assert_eq!((found.limited, found.oldest), (false, 1_001));
@@ -535,7 +779,10 @@ mod tests {
         }
         let name = test_pipe("refuses");
         let server = serve_on(&name, Engine::with_tree('T', sample()), &sddl(&[]), None).unwrap();
-        assert!(matches!(client::connect_to(&name, &|_: &str| true), Err(Error::NoAccess)));
+        assert!(matches!(
+            client::connect_to(&name, &|_: &str| true),
+            Err(Error::NoAccess)
+        ));
         server.stop();
     }
 
@@ -557,7 +804,10 @@ mod tests {
         let name = test_pipe("no-update");
         let server = serve_on(&name, Engine::with_tree('T', sample()), &dacl, None).unwrap();
         let said = client::update_on(client::connect_to(&name, &trust).unwrap(), EXE, SIGNED);
-        assert!(matches!(&said, Err(Error::Service(m)) if m.contains("doesn't update itself")), "{said:?}");
+        assert!(
+            matches!(&said, Err(Error::Service(m)) if m.contains("doesn't update itself")),
+            "{said:?}"
+        );
         server.stop();
 
         static STARTED: Mutex<Vec<std::path::PathBuf>> = Mutex::new(Vec::new());
@@ -570,7 +820,10 @@ mod tests {
         let server = serve_on(&name, Engine::with_tree('T', sample()), &dacl, Some(updater.clone())).unwrap();
         // Bytes that aren't what was signed: refused, nothing changed, still running.
         let said = client::update_on(client::connect_to(&name, &trust).unwrap(), b"MZ something else", SIGNED);
-        assert!(matches!(&said, Err(Error::Service(m)) if m.contains("doesn't hold")), "{said:?}");
+        assert!(
+            matches!(&said, Err(Error::Service(m)) if m.contains("doesn't hold")),
+            "{said:?}"
+        );
         assert_eq!(std::fs::read(&installed).unwrap(), b"the running one");
         assert!(!updater.stop.is_set());
         // What was signed: in place, finish-update started from it, and the service stopping.
@@ -581,7 +834,10 @@ mod tests {
         assert!(updater.stop.is_set());
         // One at a time.
         let said = client::update_on(client::connect_to(&name, &trust).unwrap(), EXE, SIGNED);
-        assert!(matches!(&said, Err(Error::Service(m)) if m.contains("already under way")), "{said:?}");
+        assert!(
+            matches!(&said, Err(Error::Service(m)) if m.contains("already under way")),
+            "{said:?}"
+        );
         server.stop();
         let _ = std::fs::remove_dir_all(&dir);
     }
