@@ -10,6 +10,8 @@
 //! rights: a backup goes on without them and lists them as skipped.
 
 use crate::fsx::blocking;
+use crate::host::ipc::Channel;
+use crate::host::{AppHandle, Event, Window};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
@@ -18,8 +20,6 @@ use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use crate::host::ipc::Channel;
-use crate::host::{AppHandle, Event, Window};
 
 /// What backs a folder up, and how it went last time.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -90,7 +90,9 @@ static RUNNING: Mutex<Option<HashSet<String>>> = Mutex::new(None);
 static STOP: AtomicBool = AtomicBool::new(false);
 
 fn now_ms() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as i64)
 }
 
 fn plans_file() -> Option<PathBuf> {
@@ -100,7 +102,12 @@ fn plans_file() -> Option<PathBuf> {
 fn plans() -> Vec<Plan> {
     let mut known = PLANS.lock().unwrap_or_else(|e| e.into_inner());
     if known.is_none() {
-        *known = Some(plans_file().and_then(|f| fs::read_to_string(f).ok()).and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default());
+        *known = Some(
+            plans_file()
+                .and_then(|f| fs::read_to_string(f).ok())
+                .and_then(|t| serde_json::from_str(&t).ok())
+                .unwrap_or_default(),
+        );
     }
     known.clone().unwrap_or_default()
 }
@@ -117,7 +124,10 @@ fn save(list: Vec<Plan>) -> Result<(), String> {
 
 fn update(id: &str, change: impl FnOnce(&mut Plan)) -> Result<Plan, String> {
     let mut list = plans();
-    let plan = list.iter_mut().find(|p| p.id == id).ok_or("That backup isn't set up any more")?;
+    let plan = list
+        .iter_mut()
+        .find(|p| p.id == id)
+        .ok_or("That backup isn't set up any more")?;
     change(plan);
     let changed = plan.clone();
     save(list)?;
@@ -137,12 +147,23 @@ fn restic_path(path: &str) -> Option<String> {
     }
     let rest = path[2..].replace('\\', "/");
     let rest = rest.trim_end_matches('/');
-    Some(format!("/{}{}", path[..1].to_ascii_uppercase(), if rest.starts_with('/') || rest.is_empty() { rest.to_string() } else { format!("/{rest}") }))
+    Some(format!(
+        "/{}{}",
+        path[..1].to_ascii_uppercase(),
+        if rest.starts_with('/') || rest.is_empty() {
+            rest.to_string()
+        } else {
+            format!("/{rest}")
+        }
+    ))
 }
 
 /// Whether `path` is `folder` or inside it.
 fn within(path: &str, folder: &str) -> bool {
-    let (path, folder) = (path.trim_end_matches('\\').to_lowercase(), folder.trim_end_matches('\\').to_lowercase());
+    let (path, folder) = (
+        path.trim_end_matches('\\').to_lowercase(),
+        folder.trim_end_matches('\\').to_lowercase(),
+    );
     path == folder || path.starts_with(&format!("{folder}\\"))
 }
 
@@ -152,9 +173,15 @@ fn restic(repository: &str, password: Option<&str>) -> Result<Command, String> {
     let mut command = crate::tools::command("restic")?;
     let password = match password {
         Some(p) => p.to_string(),
-        None => crate::remote::secrets::read_target(&credential(repository)).ok_or("This backup's password isn't kept on this PC: set the backup up again with it")?,
+        None => crate::remote::secrets::read_target(&credential(repository))
+            .ok_or("This backup's password isn't kept on this PC: set the backup up again with it")?,
     };
-    for variable in ["RESTIC_REPOSITORY", "RESTIC_REPOSITORY_FILE", "RESTIC_PASSWORD_FILE", "RESTIC_PASSWORD_COMMAND"] {
+    for variable in [
+        "RESTIC_REPOSITORY",
+        "RESTIC_REPOSITORY_FILE",
+        "RESTIC_PASSWORD_FILE",
+        "RESTIC_PASSWORD_COMMAND",
+    ] {
         command.env_remove(variable);
     }
     command.env("RESTIC_PASSWORD", password).env("RESTIC_PROGRESS_FPS", "4");
@@ -174,9 +201,16 @@ fn restic(repository: &str, password: Option<&str>) -> Result<Command, String> {
 }
 
 /// Runs restic to its end: its exit code, standard output and error output.
-fn finish(mut command: Command, stop: &AtomicBool, mut on_line: impl FnMut(&str)) -> Result<(i32, String, String), String> {
+fn finish(
+    mut command: Command,
+    stop: &AtomicBool,
+    mut on_line: impl FnMut(&str),
+) -> Result<(i32, String, String), String> {
     use std::io::{BufRead, BufReader, Read};
-    command.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
     crate::proc::no_window(&mut command);
     let mut child = command.spawn().map_err(|e| format!("Couldn't start restic: {e}"))?;
     let job = crate::proc::Job::ending().ok();
@@ -233,7 +267,11 @@ fn finish(mut command: Command, stop: &AtomicBool, mut on_line: impl FnMut(&str)
 
 /// restic's error in plain words: its last line, without its "Fatal:" prefix.
 fn said(stderr: &str) -> String {
-    let line = stderr.lines().map(str::trim).rfind(|l| !l.is_empty()).unwrap_or("restic stopped");
+    let line = stderr
+        .lines()
+        .map(str::trim)
+        .rfind(|l| !l.is_empty())
+        .unwrap_or("restic stopped");
     line.trim_start_matches("Fatal: ").to_string()
 }
 
@@ -241,9 +279,74 @@ pub async fn backup_plans() -> Result<Vec<Plan>, String> {
     blocking(|| Ok(plans())).await
 }
 
+/// Whether any configured backup plan covers `folder`.
+pub(crate) fn has_plan_for(folder: &str) -> bool {
+    plans().iter().any(|p| within(folder, &p.source))
+}
+
+/// Lists direct child entries of `folder` inside restic `snapshot` for `plan_id`.
+pub(crate) fn list_folder_in_snapshot(
+    plan_id: &str,
+    snapshot: &str,
+    folder: &str,
+) -> Result<Vec<crate::fsx::Entry>, String> {
+    let plan = plans()
+        .into_iter()
+        .find(|p| p.id == plan_id)
+        .ok_or_else(|| "That backup isn't set up any more".to_string())?;
+    let inside = restic_path(folder).ok_or_else(|| "Only local drive folders are supported".to_string())?;
+    let prefix = if inside == "/" {
+        "/".to_string()
+    } else {
+        format!("{inside}/")
+    };
+    let mut cmd = restic(&plan.repository, None)?;
+    cmd.args(["ls", "--json", snapshot, &inside]);
+    let stop = AtomicBool::new(false);
+    let (code, out, stderr) = finish(cmd, &stop, |_| {})?;
+    if code != 0 {
+        return Err(said(&stderr));
+    }
+    let mut entries = Vec::new();
+    for line in out.lines() {
+        let Ok(val) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if val["struct_type"].as_str() != Some("node") {
+            continue;
+        }
+        let Some(node_path) = val["path"].as_str() else {
+            continue;
+        };
+        let Some(rel) = node_path.strip_prefix(&prefix) else {
+            continue;
+        };
+        if rel.is_empty() || rel.contains('/') {
+            continue;
+        }
+        let dir = val["type"].as_str() == Some("dir");
+        let size = val["size"].as_u64().unwrap_or(0);
+        let modified = val["mtime"].as_str().and_then(chrono_ms).unwrap_or(0);
+        entries.push(crate::fsx::Entry {
+            name: rel.to_string(),
+            path: None,
+            dir,
+            size,
+            modified,
+            attrs: if dir { 0x10 } else { 0x80 },
+        });
+    }
+    Ok(entries)
+}
+
 /// Sets a folder's backup up (or changes it): the password kept, the repository made if there isn't one
 /// there yet, or opened with the password if there is.
-pub async fn backup_setup(source: String, repository: String, password: String, schedule: Schedule) -> Result<Plan, String> {
+pub async fn backup_setup(
+    source: String,
+    repository: String,
+    password: String,
+    schedule: Schedule,
+) -> Result<Plan, String> {
     blocking(move || {
         let source = source.trim_end_matches('\\').to_string();
         let repository = repository.trim().trim_end_matches('\\').to_string();
@@ -279,9 +382,13 @@ pub async fn backup_setup(source: String, repository: String, password: String, 
         }
         crate::remote::secrets::write_target(&credential(&repository), &password)?;
         let mut list = plans();
-        let existing = list.iter().position(|p| within(&p.source, &source) && within(&source, &p.source));
+        let existing = list
+            .iter()
+            .position(|p| within(&p.source, &source) && within(&source, &p.source));
         let plan = Plan {
-            id: existing.map(|i| list[i].id.clone()).unwrap_or_else(|| format!("{:x}", now_ms())),
+            id: existing
+                .map(|i| list[i].id.clone())
+                .unwrap_or_else(|| format!("{:x}", now_ms())),
             source,
             repository,
             schedule,
@@ -303,7 +410,9 @@ pub async fn backup_setup(source: String, repository: String, password: String, 
 pub async fn backup_remove(id: String) -> Result<(), String> {
     blocking(move || {
         let mut list = plans();
-        let Some(at) = list.iter().position(|p| p.id == id) else { return Ok(()) };
+        let Some(at) = list.iter().position(|p| p.id == id) else {
+            return Ok(());
+        };
         let gone = list.remove(at);
         // The password goes too unless another folder backs up to the same place.
         if !list.iter().any(|p| p.repository.eq_ignore_ascii_case(&gone.repository)) {
@@ -335,7 +444,10 @@ pub async fn backup_run(id: String, on_progress: Channel<BackupProgress>) -> Res
 }
 
 fn run(id: &str, progress: &dyn Fn(BackupProgress)) -> Result<LastRun, String> {
-    let plan = plans().into_iter().find(|p| p.id == id).ok_or("That backup isn't set up any more")?;
+    let plan = plans()
+        .into_iter()
+        .find(|p| p.id == id)
+        .ok_or("That backup isn't set up any more")?;
     {
         let mut running = RUNNING.lock().unwrap_or_else(|e| e.into_inner());
         if !running.get_or_insert_with(HashSet::new).insert(plan.id.clone()) {
@@ -343,11 +455,20 @@ fn run(id: &str, progress: &dyn Fn(BackupProgress)) -> Result<LastRun, String> {
         }
     }
     let result = run_plan(&plan, progress);
-    RUNNING.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashSet::new).remove(&plan.id);
+    RUNNING
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(HashSet::new)
+        .remove(&plan.id);
     let last = match result {
         Ok(last) => last,
         Err(e) if e == "cancelled" => return Err(e),
-        Err(e) => LastRun { at: now_ms(), ok: false, error: Some(e), ..LastRun::default() },
+        Err(e) => LastRun {
+            at: now_ms(),
+            ok: false,
+            error: Some(e),
+            ..LastRun::default()
+        },
     };
     update(&plan.id, |p| p.last = Some(last.clone()))?;
     Ok(last)
@@ -355,12 +476,19 @@ fn run(id: &str, progress: &dyn Fn(BackupProgress)) -> Result<LastRun, String> {
 
 fn run_plan(plan: &Plan, progress: &dyn Fn(BackupProgress)) -> Result<LastRun, String> {
     let started = Instant::now();
-    progress(BackupProgress { stage: "Starting".into(), ..BackupProgress::default() });
+    progress(BackupProgress {
+        stage: "Starting".into(),
+        ..BackupProgress::default()
+    });
     let mut backup = restic(&plan.repository, None)?;
-    backup.args(["backup", "--json", "--exclude-caches", "--tag", "glint", "--"]).arg(&plan.source);
+    backup
+        .args(["backup", "--json", "--exclude-caches", "--tag", "glint", "--"])
+        .arg(&plan.source);
     let mut last = LastRun::default();
     let (code, _, stderr) = finish(backup, &STOP, |line| {
-        let Ok(said) = serde_json::from_str::<serde_json::Value>(line) else { return };
+        let Ok(said) = serde_json::from_str::<serde_json::Value>(line) else {
+            return;
+        };
         let number = |key: &str| said[key].as_u64().unwrap_or(0);
         match said["message_type"].as_str() {
             Some("status") => progress(BackupProgress {
@@ -384,7 +512,12 @@ fn run_plan(plan: &Plan, progress: &dyn Fn(BackupProgress)) -> Result<LastRun, S
                 last.bytes_added = number("data_added");
                 last.total_files = number("total_files_processed");
                 last.total_bytes = number("total_bytes_processed");
-                last.snapshot = said["snapshot_id"].as_str().unwrap_or_default().chars().take(8).collect();
+                last.snapshot = said["snapshot_id"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .chars()
+                    .take(8)
+                    .collect();
             }
             _ => {}
         }
@@ -395,9 +528,27 @@ fn run_plan(plan: &Plan, progress: &dyn Fn(BackupProgress)) -> Result<LastRun, S
     }
     last.ok = true;
     // Old backups thinned out: 7 daily, 4 weekly and 12 monthly kept.
-    progress(BackupProgress { stage: "Tidying older backups".into(), fraction: 1.0, ..BackupProgress::default() });
+    progress(BackupProgress {
+        stage: "Tidying older backups".into(),
+        fraction: 1.0,
+        ..BackupProgress::default()
+    });
     let mut forget = restic(&plan.repository, None)?;
-    forget.args(["forget", "--prune", "--tag", "glint", "--keep-daily", "7", "--keep-weekly", "4", "--keep-monthly", "12", "--path"]).arg(&plan.source);
+    forget
+        .args([
+            "forget",
+            "--prune",
+            "--tag",
+            "glint",
+            "--keep-daily",
+            "7",
+            "--keep-weekly",
+            "4",
+            "--keep-monthly",
+            "12",
+            "--path",
+        ])
+        .arg(&plan.source);
     if let Ok((code, _, stderr)) = finish(forget, &STOP, |_| {}) {
         if code != 0 {
             last.error = Some(format!("Older backups weren't thinned out: {}", said(&stderr)));
@@ -405,12 +556,18 @@ fn run_plan(plan: &Plan, progress: &dyn Fn(BackupProgress)) -> Result<LastRun, S
     }
     // The repository's structure checked once a month.
     if now_ms() - plan.checked > 30 * 24 * 3600 * 1000 {
-        progress(BackupProgress { stage: "Checking the backups".into(), fraction: 1.0, ..BackupProgress::default() });
+        progress(BackupProgress {
+            stage: "Checking the backups".into(),
+            fraction: 1.0,
+            ..BackupProgress::default()
+        });
         let mut check = restic(&plan.repository, None)?;
         check.arg("check");
         match finish(check, &STOP, |_| {}) {
             Ok((0, _, _)) => drop(update(&plan.id, |p| p.checked = now_ms())),
-            Ok((_, _, stderr)) => last.error = Some(format!("The check of the backups found a problem: {}", said(&stderr))),
+            Ok((_, _, stderr)) => {
+                last.error = Some(format!("The check of the backups found a problem: {}", said(&stderr)))
+            }
             Err(_) => {}
         }
     }
@@ -439,12 +596,23 @@ pub async fn backup_versions(path: String) -> Result<Vec<BackupVersion>, String>
         let dir = Path::new(&path).is_dir();
         for plan in plans().into_iter().filter(|p| within(&path, &p.source)) {
             let mut list = restic(&plan.repository, None)?;
-            list.args(["snapshots", "--json", "--tag", "glint", "--path"]).arg(&plan.source);
+            list.args(["snapshots", "--json", "--tag", "glint", "--path"])
+                .arg(&plan.source);
             let (code, out, stderr) = finish(list, &stop, |_| {})?;
             if code != 0 {
-                return Err(format!("The backups at {} couldn't be read: {}", plan.repository, said(&stderr)));
+                return Err(format!(
+                    "The backups at {} couldn't be read: {}",
+                    plan.repository,
+                    said(&stderr)
+                ));
             }
-            found.extend(snapshots_of(&out).into_iter().map(|(snapshot, time)| BackupVersion { plan: plan.id.clone(), repository: plan.repository.clone(), snapshot, time, dir }));
+            found.extend(snapshots_of(&out).into_iter().map(|(snapshot, time)| BackupVersion {
+                plan: plan.id.clone(),
+                repository: plan.repository.clone(),
+                snapshot,
+                time,
+                dir,
+            }));
         }
         found.sort_by_key(|v| std::cmp::Reverse(v.time));
         Ok(found)
@@ -457,7 +625,12 @@ fn snapshots_of(json: &str) -> Vec<(String, i64)> {
     let list: Vec<serde_json::Value> = serde_json::from_str(json.trim()).unwrap_or_default();
     list.iter()
         .filter_map(|s| {
-            let id = s["short_id"].as_str().or_else(|| s["id"].as_str())?.chars().take(8).collect::<String>();
+            let id = s["short_id"]
+                .as_str()
+                .or_else(|| s["id"].as_str())?
+                .chars()
+                .take(8)
+                .collect::<String>();
             let time = chrono_ms(s["time"].as_str()?)?;
             Some((id, time))
         })
@@ -493,7 +666,9 @@ fn chrono_ms(text: &str) -> Option<i64> {
 
 /// Where a path from a backup is made, for Open: a folder of its own in the temp folder.
 fn temp_for(snapshot: &str) -> Result<PathBuf, String> {
-    let dir = std::env::temp_dir().join("Glint backups").join(format!("{snapshot}-{:x}", now_ms()));
+    let dir = std::env::temp_dir()
+        .join("Glint backups")
+        .join(format!("{snapshot}-{:x}", now_ms()));
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir)
 }
@@ -501,15 +676,28 @@ fn temp_for(snapshot: &str) -> Result<PathBuf, String> {
 /// Takes `path` (a file, or with `dir` a folder) as it was in a backup out into `into`: where it is there.
 fn take_out(plan: &Plan, snapshot: &str, path: &str, dir: bool, into: &Path) -> Result<PathBuf, String> {
     let inside = restic_path(path).ok_or("Only folders on this PC's drives are backed up")?;
-    let name = Path::new(path).file_name().ok_or("It has no name")?.to_string_lossy().into_owned();
+    let name = Path::new(path)
+        .file_name()
+        .ok_or("It has no name")?
+        .to_string_lossy()
+        .into_owned();
     let stop = AtomicBool::new(false);
     let mut restore = restic(&plan.repository, None)?;
     let target = if dir { into.join(&name) } else { into.to_path_buf() };
     if dir {
-        restore.args(["restore", &format!("{snapshot}:{inside}"), "--target"]).arg(&target);
+        restore
+            .args(["restore", &format!("{snapshot}:{inside}"), "--target"])
+            .arg(&target);
     } else {
-        let parent = inside.rsplit_once('/').map(|(p, _)| if p.is_empty() { "/" } else { p }).unwrap_or("/").to_string();
-        restore.args(["restore", &format!("{snapshot}:{parent}"), "--target"]).arg(&target).args(["--include", &format!("/{name}")]);
+        let parent = inside
+            .rsplit_once('/')
+            .map(|(p, _)| if p.is_empty() { "/" } else { p })
+            .unwrap_or("/")
+            .to_string();
+        restore
+            .args(["restore", &format!("{snapshot}:{parent}"), "--target"])
+            .arg(&target)
+            .args(["--include", &format!("/{name}")]);
     }
     let (code, _, stderr) = finish(restore, &stop, |_| {})?;
     if code != 0 {
@@ -525,7 +713,10 @@ fn take_out(plan: &Plan, snapshot: &str, path: &str, dir: bool, into: &Path) -> 
 /// A file or folder as it was in a backup, made in the temp folder to open or compare: where.
 pub async fn backup_open(plan: String, snapshot: String, path: String, dir: bool) -> Result<String, String> {
     blocking(move || {
-        let plan = plans().into_iter().find(|p| p.id == plan).ok_or("That backup isn't set up any more")?;
+        let plan = plans()
+            .into_iter()
+            .find(|p| p.id == plan)
+            .ok_or("That backup isn't set up any more")?;
         let made = take_out(&plan, &snapshot, &path, dir, &temp_for(&snapshot)?)?;
         Ok(made.to_string_lossy().into_owned())
     })
@@ -534,10 +725,21 @@ pub async fn backup_open(plan: String, snapshot: String, path: String, dir: bool
 
 /// Restores a file or folder from a backup: in its place (what's there goes to the Recycle Bin), or as a
 /// copy beside it, named for the backup's date. Where it went.
-pub async fn backup_restore(window: Window, plan: String, snapshot: String, path: String, dir: bool, replace: bool, label: String) -> Result<String, String> {
+pub async fn backup_restore(
+    window: Window,
+    plan: String,
+    snapshot: String,
+    path: String,
+    dir: bool,
+    replace: bool,
+    label: String,
+) -> Result<String, String> {
     let owner = crate::shell::owner(&window);
     blocking(move || {
-        let plan = plans().into_iter().find(|p| p.id == plan).ok_or("That backup isn't set up any more")?;
+        let plan = plans()
+            .into_iter()
+            .find(|p| p.id == plan)
+            .ok_or("That backup isn't set up any more")?;
         let target = Path::new(&path);
         let folder = target.parent().ok_or("It has no folder")?;
         let work = folder.join(format!(".glint-restore-{}", std::process::id()));
@@ -549,13 +751,25 @@ pub async fn backup_restore(window: Window, plan: String, snapshot: String, path
                 crate::shell::recycle(owner, vec![path.clone()])?;
             }
             let name = if replace {
-                target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+                target
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default()
             } else {
                 // "report (backup 2026-11-09).docx"
-                let stem = target.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                let stem = target
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default();
                 match (dir, target.extension()) {
                     (false, Some(ext)) => format!("{stem} ({label}).{}", ext.to_string_lossy()),
-                    _ => format!("{} ({label})", target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()),
+                    _ => format!(
+                        "{} ({label})",
+                        target
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_default()
+                    ),
                 }
             };
             let to = crate::fsx::create_numbered(&folder.to_string_lossy(), &name, dir)?;
@@ -587,7 +801,9 @@ pub fn start_scheduler(app: AppHandle) {
 /// Starts the scheduler's thread when a folder has a schedule, the app has started the scheduler, and the
 /// thread isn't running already; it ends once no folder has a schedule.
 fn ensure_scheduler() {
-    let Some(app) = SCHEDULER_APP.get().cloned() else { return };
+    let Some(app) = SCHEDULER_APP.get().cloned() else {
+        return;
+    };
     if !scheduled(&plans()) || SCHEDULER.swap(true, Ordering::SeqCst) {
         return;
     }
@@ -595,11 +811,16 @@ fn ensure_scheduler() {
         std::thread::sleep(Duration::from_secs(60));
         loop {
             for plan in plans() {
-                if !due(&plan, now_ms()) || (!plan.repository.starts_with("rclone:") && !Path::new(&plan.repository).exists()) {
+                if !due(&plan, now_ms())
+                    || (!plan.repository.starts_with("rclone:") && !Path::new(&plan.repository).exists())
+                {
                     continue;
                 }
                 let result = run(&plan.id, &|_| {});
-                app.emit(Event::BackupFinished(Finished { source: plan.source.clone(), result }));
+                app.emit(Event::BackupFinished(Finished {
+                    source: plan.source.clone(),
+                    result,
+                }));
             }
             if !scheduled(&plans()) {
                 SCHEDULER.store(false, Ordering::SeqCst);
@@ -639,7 +860,10 @@ mod tests {
 
     #[test]
     fn names_paths_as_restic_does() {
-        assert_eq!(restic_path(r"C:\Users\me\Documents").as_deref(), Some("/C/Users/me/Documents"));
+        assert_eq!(
+            restic_path(r"C:\Users\me\Documents").as_deref(),
+            Some("/C/Users/me/Documents")
+        );
         assert_eq!(restic_path(r"d:\Photos\").as_deref(), Some("/D/Photos"));
         assert_eq!(restic_path(r"E:\").as_deref(), Some("/E"));
         assert_eq!(restic_path(r"\\server\share\x"), None);
@@ -662,7 +886,14 @@ mod tests {
 
     #[test]
     fn the_scheduler_runs_only_while_a_folder_has_a_schedule() {
-        let plan = |schedule| Plan { id: "1".into(), source: r"C:\x".into(), repository: r"E:\b".into(), schedule, last: None, checked: 0 };
+        let plan = |schedule| Plan {
+            id: "1".into(),
+            source: r"C:\x".into(),
+            repository: r"E:\b".into(),
+            schedule,
+            last: None,
+            checked: 0,
+        };
         assert!(!scheduled(&[]));
         assert!(!scheduled(&[plan(Schedule::Manual), plan(Schedule::Manual)]));
         assert!(scheduled(&[plan(Schedule::Manual), plan(Schedule::Weekly)]));
@@ -675,11 +906,26 @@ mod tests {
     #[test]
     fn knows_when_a_backup_is_due() {
         let hour = 3600 * 1000;
-        let mut plan = Plan { id: "1".into(), source: r"C:\x".into(), repository: r"E:\b".into(), schedule: Schedule::Daily, last: None, checked: 0 };
+        let mut plan = Plan {
+            id: "1".into(),
+            source: r"C:\x".into(),
+            repository: r"E:\b".into(),
+            schedule: Schedule::Daily,
+            last: None,
+            checked: 0,
+        };
         assert!(due(&plan, 0));
-        plan.last = Some(LastRun { at: 0, ok: true, ..LastRun::default() });
+        plan.last = Some(LastRun {
+            at: 0,
+            ok: true,
+            ..LastRun::default()
+        });
         assert!(!due(&plan, 19 * hour) && due(&plan, 21 * hour));
-        plan.last = Some(LastRun { at: 0, ok: false, ..LastRun::default() });
+        plan.last = Some(LastRun {
+            at: 0,
+            ok: false,
+            ..LastRun::default()
+        });
         assert!(due(&plan, 2 * hour));
         plan.schedule = Schedule::Manual;
         assert!(!due(&plan, 1000 * hour));
@@ -698,22 +944,50 @@ mod tests {
         fs::create_dir_all(source.join("sub")).unwrap();
         fs::write(source.join("notes.txt"), "first").unwrap();
         fs::write(source.join("sub").join("رحلة.txt"), "trip").unwrap();
-        let plan = crate::host::async_runtime::block_on(backup_setup(source.to_string_lossy().into(), repository.to_string_lossy().into(), "correct horse battery".into(), Schedule::Manual)).unwrap();
+        let plan = crate::host::async_runtime::block_on(backup_setup(
+            source.to_string_lossy().into(),
+            repository.to_string_lossy().into(),
+            "correct horse battery".into(),
+            Schedule::Manual,
+        ))
+        .unwrap();
         let first = run(&plan.id, &|_| {}).unwrap();
         assert!(first.ok && first.files_new == 2, "{first:?}");
         fs::write(source.join("notes.txt"), "second").unwrap();
         std::thread::sleep(Duration::from_millis(1100));
         let second = run(&plan.id, &|_| {}).unwrap();
-        assert!(second.ok && second.files_changed == 1 && second.files_new == 0, "{second:?}");
-        let versions = crate::host::async_runtime::block_on(backup_versions(source.join("notes.txt").to_string_lossy().into())).unwrap();
+        assert!(
+            second.ok && second.files_changed == 1 && second.files_new == 0,
+            "{second:?}"
+        );
+        let versions =
+            crate::host::async_runtime::block_on(backup_versions(source.join("notes.txt").to_string_lossy().into()))
+                .unwrap();
         assert_eq!(versions.len(), 2);
         let oldest = &versions[1];
-        let opened = crate::host::async_runtime::block_on(backup_open(plan.id.clone(), oldest.snapshot.clone(), source.join("notes.txt").to_string_lossy().into(), false)).unwrap();
+        let opened = crate::host::async_runtime::block_on(backup_open(
+            plan.id.clone(),
+            oldest.snapshot.clone(),
+            source.join("notes.txt").to_string_lossy().into(),
+            false,
+        ))
+        .unwrap();
         assert_eq!(fs::read_to_string(&opened).unwrap(), "first");
-        let folder = crate::host::async_runtime::block_on(backup_open(plan.id.clone(), oldest.snapshot.clone(), source.join("sub").to_string_lossy().into(), true)).unwrap();
+        let folder = crate::host::async_runtime::block_on(backup_open(
+            plan.id.clone(),
+            oldest.snapshot.clone(),
+            source.join("sub").to_string_lossy().into(),
+            true,
+        ))
+        .unwrap();
         assert_eq!(fs::read_to_string(Path::new(&folder).join("رحلة.txt")).unwrap(), "trip");
         // A wrong password for the same place is refused.
-        let wrong = crate::host::async_runtime::block_on(backup_setup(source.to_string_lossy().into(), repository.to_string_lossy().into(), "not the password".into(), Schedule::Manual));
+        let wrong = crate::host::async_runtime::block_on(backup_setup(
+            source.to_string_lossy().into(),
+            repository.to_string_lossy().into(),
+            "not the password".into(),
+            Schedule::Manual,
+        ));
         assert!(wrong.unwrap_err().contains("doesn't open"));
         crate::host::async_runtime::block_on(backup_remove(plan.id.clone())).unwrap();
         let _ = fs::remove_dir_all(&base);

@@ -14,12 +14,15 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 const PICTURES: &[&str] = &[
-    "jpg", "jpeg", "jpe", "jfif", "heic", "heif", "avif", "png", "tif", "tiff", "webp", "dng", "cr2", "cr3", "nef", "nrw", "arw", "srf", "sr2", "raf", "orf", "rw2", "pef", "iiq", "srw",
+    "jpg", "jpeg", "jpe", "jfif", "heic", "heif", "avif", "png", "tif", "tiff", "webp", "dng", "cr2", "cr3", "nef",
+    "nrw", "arw", "srf", "sr2", "raf", "orf", "rw2", "pef", "iiq", "srw",
     // Without EXIF: only their size, from their header.
     "gif", "bmp", "ico", "jxl", "psd", "qoi",
 ];
 const VIDEOS: &[&str] = &["mp4", "m4v", "mov", "3gp", "3g2", "mkv", "webm"];
-const SONGS: &[&str] = &["mp3", "flac", "m4a", "m4b", "ogg", "oga", "opus", "wav", "aif", "aiff", "aifc", "ape", "wv", "mpc", "spx", "aac"];
+const SONGS: &[&str] = &[
+    "mp3", "flac", "m4a", "m4b", "ogg", "oga", "opus", "wav", "aif", "aiff", "aifc", "ape", "wv", "mpc", "spx", "aac",
+];
 /// A cover bigger than this isn't sent to the preview.
 const MAX_COVER: usize = 1 << 20;
 
@@ -50,11 +53,21 @@ pub struct MediaDetails {
 
 /// Camera RAW files: their header is a TIFF whose first image is often a small preview, so their size
 /// is the EXIF's.
-const RAW: &[&str] = &["dng", "cr2", "cr3", "nef", "nrw", "arw", "srf", "sr2", "raf", "orf", "rw2", "pef", "iiq", "srw"];
+const RAW: &[&str] = &[
+    "dng", "cr2", "cr3", "nef", "nrw", "arw", "srf", "sr2", "raf", "orf", "rw2", "pef", "iiq", "srw",
+];
 
 /// When a photo or a video was taken (or recorded), as ms since 1970: None when it doesn't say.
 pub(crate) fn taken_of(path: &str) -> Option<i64> {
     details(path, false)?.taken.map(|ms| ms as i64)
+}
+
+/// Returns `(taken_ms, gps_lat_lon)` from a photo or video's EXIF/container metadata.
+pub fn taken_and_place(path: &str) -> (Option<i64>, Option<[f64; 2]>) {
+    match picture_or_video(path) {
+        Some(d) => (d.taken.map(|ms| ms as i64), d.place),
+        None => (None, None),
+    }
 }
 
 fn kind_of(path: &str) -> Option<&'static str> {
@@ -88,8 +101,17 @@ fn details_kept(path: &str) -> Option<MediaDetails> {
         return details(path, true);
     }
     let meta = std::fs::metadata(path).ok();
-    let key = (path.to_lowercase(), meta.as_ref().map_or(0, |m| m.len()), meta.and_then(|m| m.modified().ok()));
-    if let Some((_, found)) = RECENT_SONGS.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(k, _)| *k == key) {
+    let key = (
+        path.to_lowercase(),
+        meta.as_ref().map_or(0, |m| m.len()),
+        meta.and_then(|m| m.modified().ok()),
+    );
+    if let Some((_, found)) = RECENT_SONGS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .find(|(k, _)| *k == key)
+    {
         return found.clone();
     }
     let found = details(path, true);
@@ -108,14 +130,27 @@ pub async fn media_details_many(paths: Vec<String>) -> Result<Vec<Option<MediaDe
         // JPEGs keep what's asked of them in their first bytes: with many, those are read all at once
         // through an I/O ring (ioring.rs) and parsed from memory; a header longer than that, and every
         // other kind, is read from its file.
-        let jpeg = |p: &String| Path::new(p).extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("jpg") || e.eq_ignore_ascii_case("jpeg"));
+        let jpeg = |p: &String| {
+            Path::new(p)
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case("jpg") || e.eq_ignore_ascii_case("jpeg"))
+        };
         let mut known: HashMap<usize, Option<MediaDetails>> = HashMap::new();
         let jpegs: Vec<usize> = (0..paths.len()).filter(|&i| jpeg(&paths[i])).collect();
         if jpegs.len() >= 16 {
-            let asks: Vec<crate::ioring::Ask> = jpegs.iter().map(|&i| crate::ioring::Ask { path: &paths[i], slices: vec![(0, HEADER_BYTES)] }).collect();
+            let asks: Vec<crate::ioring::Ask> = jpegs
+                .iter()
+                .map(|&i| crate::ioring::Ask {
+                    path: &paths[i],
+                    slices: vec![(0, HEADER_BYTES)],
+                })
+                .collect();
             if let Some(got) = crate::ioring::read_many(&asks) {
                 for (&i, got) in jpegs.iter().zip(got) {
-                    let Some(bytes) = got.and_then(|g| g.slices.into_iter().next()) else { continue };
+                    let Some(bytes) = got.and_then(|g| g.slices.into_iter().next()) else {
+                        continue;
+                    };
                     let whole = bytes.len() < HEADER_BYTES as usize;
                     match jpeg_details(bytes) {
                         Some(found) => {
@@ -133,7 +168,12 @@ pub async fn media_details_many(paths: Vec<String>) -> Result<Vec<Option<MediaDe
         let chunk = rest.len().div_ceil(4).max(1);
         let read: Vec<(usize, Option<MediaDetails>)> = std::thread::scope(|scope| {
             let paths = &paths;
-            let parts: Vec<_> = rest.chunks(chunk).map(|part| scope.spawn(move || part.iter().map(|&i| (i, details(&paths[i], false))).collect::<Vec<_>>())).collect();
+            let parts: Vec<_> = rest
+                .chunks(chunk)
+                .map(|part| {
+                    scope.spawn(move || part.iter().map(|&i| (i, details(&paths[i], false))).collect::<Vec<_>>())
+                })
+                .collect();
             parts.into_iter().flat_map(|h| h.join().unwrap_or_default()).collect()
         });
         known.extend(read);
@@ -174,10 +214,17 @@ fn details(path: &str, cover: bool) -> Option<MediaDetails> {
         use std::io::Seek;
         let mut reader = std::io::BufReader::new(std::fs::File::open(path).ok()?);
         let size = imagesize::reader_size(&mut reader).ok();
-        found = reader.rewind().ok().and_then(|()| MediaSource::seekable(reader).ok()).and_then(picture_or_video_from);
+        found = reader
+            .rewind()
+            .ok()
+            .and_then(|()| MediaSource::seekable(reader).ok())
+            .and_then(picture_or_video_from);
         // A picture's size from its header (EXIF sizes go stale when a photo is resized), but a RAW file's
         // from its EXIF; turned as the photo shows.
-        let raw = Path::new(path).extension().and_then(|e| e.to_str()).is_some_and(|e| RAW.contains(&e.to_ascii_lowercase().as_str()));
+        let raw = Path::new(path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| RAW.contains(&e.to_ascii_lowercase().as_str()));
         if let Some(size) = size.filter(|_| !raw || found.as_ref().is_none_or(|f| f.width.is_none())) {
             let found = found.get_or_insert_with(MediaDetails::default);
             let (w, h) = (u32::try_from(size.width).ok(), u32::try_from(size.height).ok());
@@ -190,12 +237,18 @@ fn details(path: &str, cover: bool) -> Option<MediaDetails> {
 
 /// A naive date's milliseconds, read as this PC's local time (a camera writes its own clock's time).
 fn local_ms(naive: &NaiveDateTime) -> Option<f64> {
-    Local.from_local_datetime(naive).earliest().map(|t| t.timestamp_millis() as f64)
+    Local
+        .from_local_datetime(naive)
+        .earliest()
+        .map(|t| t.timestamp_millis() as f64)
 }
 
 fn when(value: &ExifDateTime) -> (String, Option<f64>) {
     match value {
-        ExifDateTime::Aware(t) => (format!("{} {}", t.format("%Y-%m-%d %H:%M:%S"), t.offset()), Some(t.timestamp_millis() as f64)),
+        ExifDateTime::Aware(t) => (
+            format!("{} {}", t.format("%Y-%m-%d %H:%M:%S"), t.offset()),
+            Some(t.timestamp_millis() as f64),
+        ),
         ExifDateTime::Naive(t) => (t.format("%Y-%m-%d %H:%M:%S").to_string(), local_ms(t)),
     }
 }
@@ -216,7 +269,13 @@ fn text(value: Option<&EntryValue>) -> Option<String> {
 /// "Canon EOS R5", not "Canon Canon EOS R5": a model that names its maker goes on its own.
 fn camera_name(make: Option<String>, model: Option<String>) -> Option<String> {
     match (make, model) {
-        (Some(make), Some(model)) if model.to_lowercase().starts_with(&make.split_whitespace().next().unwrap_or("").to_lowercase()) => Some(model),
+        (Some(make), Some(model))
+            if model
+                .to_lowercase()
+                .starts_with(&make.split_whitespace().next().unwrap_or("").to_lowercase()) =>
+        {
+            Some(model)
+        }
         (Some(make), Some(model)) => Some(format!("{make} {model}")),
         (make, model) => model.or(make),
     }
@@ -242,7 +301,10 @@ fn picture_or_video_from<R: std::io::Read + std::io::Seek>(source: MediaSource<R
         MediaKind::Image => {
             let exif: nom_exif::Exif = parser.parse_exif(source).ok()?.into();
             let get = |tag| exif.get(tag);
-            if let Some((shown, ms)) = [ExifTag::DateTimeOriginal, ExifTag::CreateDate].into_iter().find_map(|t| get(t).and_then(date_of)) {
+            if let Some((shown, ms)) = [ExifTag::DateTimeOriginal, ExifTag::CreateDate]
+                .into_iter()
+                .find_map(|t| get(t).and_then(date_of))
+            {
                 out.rows.push(["Taken".into(), shown]);
                 out.taken = ms;
             }
@@ -253,7 +315,12 @@ fn picture_or_video_from<R: std::io::Read + std::io::Seek>(source: MediaSource<R
             if let Some(lens) = text(get(ExifTag::LensModel)) {
                 out.rows.push(["Lens".into(), lens]);
             }
-            let rational = |tag| get(tag).and_then(|v| v.as_urational()).and_then(|r| r.to_f64()).filter(|f| *f > 0.0);
+            let rational = |tag| {
+                get(tag)
+                    .and_then(|v| v.as_urational())
+                    .and_then(|r| r.to_f64())
+                    .filter(|f| *f > 0.0)
+            };
             let mut settings = Vec::new();
             if let Some(t) = rational(ExifTag::ExposureTime) {
                 settings.push(exposure(t));
@@ -261,11 +328,16 @@ fn picture_or_video_from<R: std::io::Read + std::io::Seek>(source: MediaSource<R
             if let Some(f) = rational(ExifTag::FNumber) {
                 settings.push(format!("f/{}", (f * 10.0).round() / 10.0));
             }
-            if let Some(iso) = get(ExifTag::ISOSpeedRatings).and_then(|v| v.try_as_integer()).filter(|i| *i > 0) {
+            if let Some(iso) = get(ExifTag::ISOSpeedRatings)
+                .and_then(|v| v.try_as_integer())
+                .filter(|i| *i > 0)
+            {
                 settings.push(format!("ISO {iso}"));
             }
             if let Some(mm) = rational(ExifTag::FocalLength) {
-                let full = get(ExifTag::FocalLengthIn35mmFilm).and_then(|v| v.try_as_integer()).filter(|i| *i > 0 && (*i as f64 - mm).abs() > 1.0);
+                let full = get(ExifTag::FocalLengthIn35mmFilm)
+                    .and_then(|v| v.try_as_integer())
+                    .filter(|i| *i > 0 && (*i as f64 - mm).abs() > 1.0);
                 settings.push(match full {
                     Some(full) => format!("{} mm ({full} mm full-frame)", mm.round()),
                     None => format!("{} mm", mm.round()),
@@ -282,10 +354,26 @@ fn picture_or_video_from<R: std::io::Read + std::io::Seek>(source: MediaSource<R
                 }
             }
             // Its size as its EXIF says it (the header's is preferred, in `details`), turned as it shows.
-            out.turned = get(ExifTag::Orientation).and_then(|v| v.try_as_integer()).is_some_and(|o| (5..=8).contains(&o));
-            let pixels = |tags: [ExifTag; 2]| tags.into_iter().find_map(|t| get(t).and_then(|v| v.try_as_integer()).and_then(|n| u32::try_from(n).ok()).filter(|n| *n > 0));
-            if let (Some(w), Some(h)) = (pixels([ExifTag::ExifImageWidth, ExifTag::ImageWidth]), pixels([ExifTag::ExifImageHeight, ExifTag::ImageHeight])) {
-                (out.width, out.height) = if out.turned { (Some(h), Some(w)) } else { (Some(w), Some(h)) };
+            out.turned = get(ExifTag::Orientation)
+                .and_then(|v| v.try_as_integer())
+                .is_some_and(|o| (5..=8).contains(&o));
+            let pixels = |tags: [ExifTag; 2]| {
+                tags.into_iter().find_map(|t| {
+                    get(t)
+                        .and_then(|v| v.try_as_integer())
+                        .and_then(|n| u32::try_from(n).ok())
+                        .filter(|n| *n > 0)
+                })
+            };
+            if let (Some(w), Some(h)) = (
+                pixels([ExifTag::ExifImageWidth, ExifTag::ImageWidth]),
+                pixels([ExifTag::ExifImageHeight, ExifTag::ImageHeight]),
+            ) {
+                (out.width, out.height) = if out.turned {
+                    (Some(h), Some(w))
+                } else {
+                    (Some(w), Some(h))
+                };
             }
         }
         MediaKind::Track => {
@@ -297,16 +385,29 @@ fn picture_or_video_from<R: std::io::Read + std::io::Seek>(source: MediaSource<R
                     out.taken = ms;
                 }
             }
-            if let Some(ms) = track.get(TrackInfoTag::DurationMs).and_then(|v| v.try_as_integer()).filter(|ms| *ms > 0) {
+            if let Some(ms) = track
+                .get(TrackInfoTag::DurationMs)
+                .and_then(|v| v.try_as_integer())
+                .filter(|ms| *ms > 0)
+            {
                 out.duration = Some(ms as f64 / 1000.0);
                 out.rows.push(["Length".into(), duration(ms as f64 / 1000.0)]);
             }
-            let pixels = |tag| track.get(tag).and_then(|v| v.try_as_integer()).and_then(|n| u32::try_from(n).ok()).filter(|n| *n > 0);
+            let pixels = |tag| {
+                track
+                    .get(tag)
+                    .and_then(|v| v.try_as_integer())
+                    .and_then(|n| u32::try_from(n).ok())
+                    .filter(|n| *n > 0)
+            };
             if let (Some(w), Some(h)) = (pixels(TrackInfoTag::Width), pixels(TrackInfoTag::Height)) {
                 (out.width, out.height) = (Some(w), Some(h));
                 out.rows.push(["Dimensions".into(), format!("{w} × {h}")]);
             }
-            out.camera = camera_name(text(track.get(TrackInfoTag::Make)), text(track.get(TrackInfoTag::Model)));
+            out.camera = camera_name(
+                text(track.get(TrackInfoTag::Make)),
+                text(track.get(TrackInfoTag::Model)),
+            );
             if let Some(camera) = &out.camera {
                 out.rows.push(["Camera".into(), camera.clone()]);
             }
@@ -353,17 +454,23 @@ fn song(path: &str, cover: bool) -> Option<MediaDetails> {
             out.rows.push(["Album".into(), format!("{album}{year}")]);
         }
         if let Some(n) = out.track {
-            out.rows.push(["Track".into(), match tag.track_total() {
-                Some(total) => format!("{n} of {total}"),
-                None => n.to_string(),
-            }]);
+            out.rows.push([
+                "Track".into(),
+                match tag.track_total() {
+                    Some(total) => format!("{n} of {total}"),
+                    None => n.to_string(),
+                },
+            ]);
         }
         if let Some(genre) = clean(tag.genre()) {
             out.rows.push(["Genre".into(), genre]);
         }
         if cover {
             if let Some(picture) = tag.pictures().iter().find(|p| p.data().len() <= MAX_COVER) {
-                if picture.mime_type().is_none_or(|mime| mime.as_str().starts_with("image/")) {
+                if picture
+                    .mime_type()
+                    .is_none_or(|mime| mime.as_str().starts_with("image/"))
+                {
                     out.cover = Some(picture.data().to_vec());
                 }
             }
@@ -372,11 +479,15 @@ fn song(path: &str, cover: bool) -> Option<MediaDetails> {
     let props = file.properties();
     if props.duration().as_secs_f64() > 0.0 {
         out.duration = Some(props.duration().as_secs_f64());
-        out.rows.push(["Length".into(), duration(props.duration().as_secs_f64())]);
+        out.rows
+            .push(["Length".into(), duration(props.duration().as_secs_f64())]);
     }
     let quality: Vec<String> = [
         props.audio_bitrate().filter(|b| *b > 0).map(|b| format!("{b} kbps")),
-        props.sample_rate().filter(|r| *r > 0).map(|r| format!("{} kHz", r as f64 / 1000.0)),
+        props
+            .sample_rate()
+            .filter(|r| *r > 0)
+            .map(|r| format!("{} kHz", r as f64 / 1000.0)),
         props.bit_depth().filter(|b| *b > 0).map(|b| format!("{b}-bit")),
         props.channels().map(|c| match c {
             1 => "mono".to_string(),
@@ -409,7 +520,11 @@ pub(crate) fn exts_for(props: &[Prop]) -> Vec<&'static str> {
                 Prop::Duration(_) => VIDEO | SONG,
             }
     });
-    [(PICTURE, PICTURES), (VIDEO, VIDEOS), (SONG, SONGS)].into_iter().filter(|(kind, _)| kinds & kind != 0).flat_map(|(_, exts)| exts.iter().copied()).collect()
+    [(PICTURE, PICTURES), (VIDEO, VIDEOS), (SONG, SONGS)]
+        .into_iter()
+        .filter(|(kind, _)| kinds & kind != 0)
+        .flat_map(|(_, exts)| exts.iter().copied())
+        .collect()
 }
 
 /// What property filters look at, of one version of a file.
@@ -433,11 +548,26 @@ const MAX_FACTS: usize = 200_000;
 
 fn facts(path: &str, size: u64, modified: i64) -> Option<Arc<Facts>> {
     let key = (path.to_lowercase(), size, modified);
-    if let Some(known) = FACTS.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|cache| cache.get(&key)) {
+    if let Some(known) = FACTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .and_then(|cache| cache.get(&key))
+    {
         return known.clone();
     }
     let lower = |s: Option<String>| s.map(|s| s.to_lowercase());
-    let found = details(path, false).map(|d| Arc::new(Facts { width: d.width, height: d.height, duration: d.duration, taken: d.taken, camera: lower(d.camera), artist: lower(d.artist), album: lower(d.album) }));
+    let found = details(path, false).map(|d| {
+        Arc::new(Facts {
+            width: d.width,
+            height: d.height,
+            duration: d.duration,
+            taken: d.taken,
+            camera: lower(d.camera),
+            artist: lower(d.artist),
+            album: lower(d.album),
+        })
+    });
     let mut cache = FACTS.lock().unwrap_or_else(|e| e.into_inner());
     let cache = cache.get_or_insert_with(HashMap::new);
     if cache.len() >= MAX_FACTS {
@@ -449,7 +579,10 @@ fn facts(path: &str, size: u64, modified: i64) -> Option<Arc<Facts>> {
 
 /// Midnight of a day, here, in ms.
 fn midnight((year, month, day): shadui_index::query::Day) -> Option<f64> {
-    Local.with_ymd_and_hms(year, month, day, 0, 0, 0).earliest().map(|t| t.timestamp_millis() as f64)
+    Local
+        .with_ymd_and_hms(year, month, day, 0, 0, 0)
+        .earliest()
+        .map(|t| t.timestamp_millis() as f64)
 }
 
 fn holds(prop: &Prop, facts: &Facts, now: f64) -> bool {
@@ -464,7 +597,10 @@ fn holds(prop: &Prop, facts: &Facts, now: f64) -> bool {
         Prop::Taken(taken) => facts.taken.is_some_and(|ms| match *taken {
             Taken::Within(secs) => ms >= now - secs as f64 * 1000.0,
             Taken::Before(secs) => ms < now - secs as f64 * 1000.0,
-            Taken::Days { from, to } => from.is_none_or(|day| midnight(day).is_some_and(|m| ms >= m)) && to.is_none_or(|day| midnight(day).is_some_and(|m| ms < m)),
+            Taken::Days { from, to } => {
+                from.is_none_or(|day| midnight(day).is_some_and(|m| ms >= m))
+                    && to.is_none_or(|day| midnight(day).is_some_and(|m| ms < m))
+            }
         }),
     }
 }
@@ -487,16 +623,37 @@ mod tests {
 
     #[test]
     fn says_cameras_exposures_and_lengths_as_photographers_do() {
-        assert_eq!(camera_name(Some("Canon".into()), Some("Canon EOS R5".into())).as_deref(), Some("Canon EOS R5"));
-        assert_eq!(camera_name(Some("NIKON CORPORATION".into()), Some("NIKON Z 6".into())).as_deref(), Some("NIKON Z 6"));
-        assert_eq!(camera_name(Some("Google".into()), Some("Pixel 8".into())).as_deref(), Some("Google Pixel 8"));
-        assert_eq!(camera_name(None, Some("iPhone 15".into())).as_deref(), Some("iPhone 15"));
+        assert_eq!(
+            camera_name(Some("Canon".into()), Some("Canon EOS R5".into())).as_deref(),
+            Some("Canon EOS R5")
+        );
+        assert_eq!(
+            camera_name(Some("NIKON CORPORATION".into()), Some("NIKON Z 6".into())).as_deref(),
+            Some("NIKON Z 6")
+        );
+        assert_eq!(
+            camera_name(Some("Google".into()), Some("Pixel 8".into())).as_deref(),
+            Some("Google Pixel 8")
+        );
+        assert_eq!(
+            camera_name(None, Some("iPhone 15".into())).as_deref(),
+            Some("iPhone 15")
+        );
         assert_eq!(exposure(0.004), "1/250 s");
         assert_eq!(exposure(2.5), "2.5 s");
         assert_eq!(duration(187.4), "3:07");
         assert_eq!(duration(3723.0), "1:02:03");
-        let t = FixedOffset::east_opt(7200).unwrap().with_ymd_and_hms(2026, 1, 2, 8, 30, 15).unwrap();
-        assert_eq!(aware(t), ("2026-01-02 08:30:15 +02:00".to_string(), Some(t.timestamp_millis() as f64)));
+        let t = FixedOffset::east_opt(7200)
+            .unwrap()
+            .with_ymd_and_hms(2026, 1, 2, 8, 30, 15)
+            .unwrap();
+        assert_eq!(
+            aware(t),
+            (
+                "2026-01-02 08:30:15 +02:00".to_string(),
+                Some(t.timestamp_millis() as f64)
+            )
+        );
         assert_eq!(kind_of("C:\\a\\IMG_1.HEIC"), Some("picture"));
         assert_eq!(kind_of("C:\\a\\song.flac"), Some("song"));
         assert_eq!(kind_of("C:\\a\\notes.txt"), None);
@@ -537,21 +694,46 @@ mod tests {
     #[test]
     fn property_filters_hold_as_they_read() {
         let props = |query: &str| shadui_index::query::parse(query).unwrap().1.props;
-        let photo = Facts { width: Some(4032), height: Some(3024), taken: midnight((2024, 6, 15)).map(|m| m + 3_600_000.0), camera: Some("canon eos r5".into()), ..Default::default() };
-        let song = Facts { duration: Some(187.4), artist: Some("the beatles".into()), album: Some("abbey road".into()), ..Default::default() };
+        let photo = Facts {
+            width: Some(4032),
+            height: Some(3024),
+            taken: midnight((2024, 6, 15)).map(|m| m + 3_600_000.0),
+            camera: Some("canon eos r5".into()),
+            ..Default::default()
+        };
+        let song = Facts {
+            duration: Some(187.4),
+            artist: Some("the beatles".into()),
+            album: Some("abbey road".into()),
+            ..Default::default()
+        };
         let now = midnight((2026, 10, 23)).unwrap();
         let all = |facts: &Facts, query: &str| props(query).iter().all(|p| holds(p, facts, now));
         assert!(all(&photo, "width:>4000 height:>=3024 camera:eos"));
         assert!(!all(&photo, "width:>4032"));
-        assert!(all(&photo, "taken:2024 taken:2024-06 taken:2024-06-15 taken:>2023 taken:<2025-01 taken:>1y"));
+        assert!(all(
+            &photo,
+            "taken:2024 taken:2024-06 taken:2024-06-15 taken:>2023 taken:<2025-01 taken:>1y"
+        ));
         assert!(!all(&photo, "taken:2024-06-16") && !all(&photo, "taken:>2024") && !all(&photo, "taken:30d"));
-        assert!(all(&song, "duration:>3m duration:<=3:07 artist:beatles album:\"abbey road\""));
+        assert!(all(
+            &song,
+            "duration:>3m duration:<=3:07 artist:beatles album:\"abbey road\""
+        ));
         assert!(!all(&song, "duration:>3:07") && !all(&song, "width:>1") && !all(&photo, "artist:"));
         assert!(all(&song, "album:"), "a word left out: any album");
 
         let exts = |query: &str| exts_for(&props(query));
-        assert!(exts("width:>1920").contains(&"png") && exts("width:>1920").contains(&"mp4") && !exts("width:>1920").contains(&"mp3"));
-        assert!(exts("duration:>5m").contains(&"mp3") && exts("duration:>5m").contains(&"mkv") && !exts("duration:>5m").contains(&"jpg"));
+        assert!(
+            exts("width:>1920").contains(&"png")
+                && exts("width:>1920").contains(&"mp4")
+                && !exts("width:>1920").contains(&"mp3")
+        );
+        assert!(
+            exts("duration:>5m").contains(&"mp3")
+                && exts("duration:>5m").contains(&"mkv")
+                && !exts("duration:>5m").contains(&"jpg")
+        );
         assert!(exts("width:>1 artist:x").is_empty(), "nothing has both");
     }
 
@@ -567,7 +749,12 @@ mod tests {
         std::fs::write(&png, &bytes).unwrap();
         let found = details(png.to_str().unwrap(), false).unwrap();
         assert_eq!((found.width, found.height), (Some(3), Some(2)));
-        assert!(matches(png.to_str().unwrap(), 33, 1, &shadui_index::query::parse("width:3 height:<3").unwrap().1.props));
+        assert!(matches(
+            png.to_str().unwrap(),
+            33,
+            1,
+            &shadui_index::query::parse("width:3 height:<3").unwrap().1.props
+        ));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -575,7 +762,11 @@ mod tests {
     fn reads_nothing_from_what_isnt_media() {
         let dir = std::env::temp_dir().join(format!("glint-media-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        for (name, bytes) in [("broken.jpg", &b"\xFF\xD8\xFF\xE1\x00\x10Exif\x00\x00garbage"[..]), ("empty.mp3", &b""[..]), ("text.mp4", &b"not a video"[..])] {
+        for (name, bytes) in [
+            ("broken.jpg", &b"\xFF\xD8\xFF\xE1\x00\x10Exif\x00\x00garbage"[..]),
+            ("empty.mp3", &b""[..]),
+            ("text.mp4", &b"not a video"[..]),
+        ] {
             let path = dir.join(name);
             std::fs::write(&path, bytes).unwrap();
             assert_eq!(details(path.to_str().unwrap(), true), None, "{name}");

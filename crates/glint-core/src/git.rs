@@ -7,6 +7,7 @@
 //! and `core.fsmonitor`): one whose `.git/config` does is *limited* (no status) until it's trusted.
 
 use crate::fsx::{blocking, ms_since};
+use crate::host::{State, Window};
 use gix::bstr::{BStr, BString, ByteSlice};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::{HashMap, HashSet};
@@ -14,7 +15,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, LazyLock, Mutex};
 use std::time::{Duration, Instant};
-use crate::host::{State, Window};
 
 /// What a name in a folder has, strongest last: a folder shows the strongest of what's below it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -125,9 +125,13 @@ fn on_network(path: &str) -> bool {
 fn runs_programs(repo: &gix::Repository) -> bool {
     let config = repo.config_snapshot();
     let runs = config.plumbing().sections().any(|section| {
-        let own = matches!(section.meta().source, gix::config::Source::Local | gix::config::Source::Worktree);
+        let own = matches!(
+            section.meta().source,
+            gix::config::Source::Local | gix::config::Source::Worktree
+        );
         let name = section.header().name();
-        own && ((name.eq_ignore_ascii_case(b"filter") && (section.contains_value_name("clean") || section.contains_value_name("process")))
+        own && ((name.eq_ignore_ascii_case(b"filter")
+            && (section.contains_value_name("clean") || section.contains_value_name("process")))
             || (name.eq_ignore_ascii_case(b"core") && section.contains_value_name("fsmonitor")))
     });
     runs
@@ -136,12 +140,17 @@ fn runs_programs(repo: &gix::Repository) -> bool {
 /// `folder` as a path from `root` with forward slashes ("src/lib"), "" for the root itself; None when
 /// it isn't in it.
 fn inside(root: &Path, folder: &Path) -> Option<String> {
-    let (root, folder) = (root.to_string_lossy().replace('/', "\\"), folder.to_string_lossy().replace('/', "\\"));
+    let (root, folder) = (
+        root.to_string_lossy().replace('/', "\\"),
+        folder.to_string_lossy().replace('/', "\\"),
+    );
     let (root, folder) = (root.trim_end_matches('\\'), folder.trim_end_matches('\\'));
     if folder.eq_ignore_ascii_case(root) {
         return Some(String::new());
     }
-    let rest = folder.get(root.len()..).filter(|rest| rest.starts_with('\\') && folder[..root.len()].eq_ignore_ascii_case(root))?;
+    let rest = folder
+        .get(root.len()..)
+        .filter(|rest| rest.starts_with('\\') && folder[..root.len()].eq_ignore_ascii_case(root))?;
     Some(rest.trim_start_matches('\\').replace('\\', "/"))
 }
 
@@ -154,7 +163,9 @@ fn mark_of(item: &gix::status::Item) -> Option<(Mark, &BStr)> {
             let mark = match item.summary()? {
                 Summary::Conflict => Mark::Conflicted,
                 Summary::Added | Summary::IntentToAdd => Mark::Untracked,
-                Summary::Removed | Summary::Modified | Summary::TypeChange | Summary::Renamed | Summary::Copied => Mark::Modified,
+                Summary::Removed | Summary::Modified | Summary::TypeChange | Summary::Renamed | Summary::Copied => {
+                    Mark::Modified
+                }
             };
             Some((mark, item.rela_path()))
         }
@@ -172,8 +183,12 @@ fn record(view: &mut GitView, prefix: &str, path: &BStr, mark: Mark) {
         Mark::Conflicted => counts.conflicted += 1,
         Mark::Ignored => {}
     }
-    let Some(rest) = path.to_str_lossy().strip_prefix(prefix).map(str::to_string) else { return };
-    let Some(name) = rest.split('/').find(|p| !p.is_empty()) else { return };
+    let Some(rest) = path.to_str_lossy().strip_prefix(prefix).map(str::to_string) else {
+        return;
+    };
+    let Some(name) = rest.split('/').find(|p| !p.is_empty()) else {
+        return;
+    };
     let name = name.to_lowercase();
     let strongest = view.marks.get(&name).map_or(mark, |&had| had.max(mark));
     view.marks.insert(name, strongest);
@@ -188,29 +203,63 @@ fn view(folder: &str, trusted: &[String], force: bool, stop: Arc<AtomicBool>) ->
 }
 
 /// [`view`] with the repository `folder` is in, as `gix::discover` found it (None: not in one).
-fn view_in(folder: &str, repo: Option<gix::Repository>, trusted: &[String], force: bool, stop: Arc<AtomicBool>) -> Result<Option<GitView>, String> {
+fn view_in(
+    folder: &str,
+    repo: Option<gix::Repository>,
+    trusted: &[String],
+    force: bool,
+    stop: Arc<AtomicBool>,
+) -> Result<Option<GitView>, String> {
     let started = Instant::now();
     if folder.to_lowercase().split(['\\', '/']).any(|part| part == ".git") {
         return Ok(None);
     }
     let Some(repo) = repo else { return Ok(None) };
-    let Some(workdir) = repo.workdir().map(Path::to_path_buf) else { return Ok(None) };
-    let Some(relative) = inside(&workdir, Path::new(folder)) else { return Ok(None) };
-    let root = workdir.to_string_lossy().trim_end_matches(['\\', '/']).replace('/', "\\");
+    let Some(workdir) = repo.workdir().map(Path::to_path_buf) else {
+        return Ok(None);
+    };
+    let Some(relative) = inside(&workdir, Path::new(folder)) else {
+        return Ok(None);
+    };
+    let root = workdir
+        .to_string_lossy()
+        .trim_end_matches(['\\', '/'])
+        .replace('/', "\\");
 
-    let mut view = GitView { root: root.clone(), ..Default::default() };
+    let mut view = GitView {
+        root: root.clone(),
+        ..Default::default()
+    };
     let head_name = repo.head_name().ok().flatten();
     view.branch = head_name.as_ref().map(|name| name.shorten().to_string());
     let head = repo.head_id().ok().map(|id| id.detach());
     view.head = head.map(|id| id.to_hex_with_len(7).to_string());
-    let upstream = head_name.as_ref().and_then(|name| repo.branch_remote_tracking_ref_name(name.as_ref(), gix::remote::Direction::Fetch)).and_then(Result::ok);
+    let upstream = head_name
+        .as_ref()
+        .and_then(|name| repo.branch_remote_tracking_ref_name(name.as_ref(), gix::remote::Direction::Fetch))
+        .and_then(Result::ok);
     if let Some(upstream) = upstream {
-        view.upstream = Some(upstream.shorten().to_string().trim_start_matches("remotes/").to_string());
-        let theirs = repo.find_reference(upstream.as_ref()).ok().and_then(|mut r| r.peel_to_id().ok()).map(|id| id.detach());
+        view.upstream = Some(
+            upstream
+                .shorten()
+                .to_string()
+                .trim_start_matches("remotes/")
+                .to_string(),
+        );
+        let theirs = repo
+            .find_reference(upstream.as_ref())
+            .ok()
+            .and_then(|mut r| r.peel_to_id().ok())
+            .map(|id| id.detach());
         if let (Some(ours), Some(theirs)) = (head, theirs) {
             // On the same commit as its upstream (a synced branch) there is nothing to walk.
             if ours != theirs {
-                let count = |tip: gix::ObjectId, hidden: gix::ObjectId| repo.rev_walk([tip]).with_hidden([hidden]).all().map_or(0, |walk| walk.take(MAX_WALK).filter(Result::is_ok).count() as u32);
+                let count = |tip: gix::ObjectId, hidden: gix::ObjectId| {
+                    repo.rev_walk([tip])
+                        .with_hidden([hidden])
+                        .all()
+                        .map_or(0, |walk| walk.take(MAX_WALK).filter(Result::is_ok).count() as u32)
+                };
                 view.ahead = count(ours, theirs);
                 view.behind = count(theirs, ours);
             }
@@ -249,17 +298,31 @@ fn view_in(folder: &str, repo: Option<gix::Repository>, trusted: &[String], forc
                     interrupt.store(true, Ordering::Relaxed);
                     return;
                 }
-                done = woken.wait_timeout(done, Duration::from_millis(50)).unwrap_or_else(|e| e.into_inner()).0;
+                done = woken
+                    .wait_timeout(done, Duration::from_millis(50))
+                    .unwrap_or_else(|e| e.into_inner())
+                    .0;
             }
         })
     };
-    let prefix = if relative.is_empty() { String::new() } else { format!("{relative}/") };
-    let patterns: Vec<BString> = if relative.is_empty() { Vec::new() } else { vec![BString::from(prefix.clone())] };
+    let prefix = if relative.is_empty() {
+        String::new()
+    } else {
+        format!("{relative}/")
+    };
+    let patterns: Vec<BString> = if relative.is_empty() {
+        Vec::new()
+    } else {
+        vec![BString::from(prefix.clone())]
+    };
     let items = repo
         .status(gix::progress::Discard)
         .map_err(|e| e.to_string())?
         .untracked_files(gix::status::UntrackedFiles::Collapsed)
-        .index_worktree_submodules(gix::status::Submodule::Given { ignore: gix::submodule::config::Ignore::All, check_dirty: false })
+        .index_worktree_submodules(gix::status::Submodule::Given {
+            ignore: gix::submodule::config::Ignore::All,
+            check_dirty: false,
+        })
         .index_worktree_rewrites(None)
         .index_worktree_options_mut(|options| options.thread_limit = Some(8))
         .should_interrupt_owned(interrupt.clone())
@@ -285,7 +348,11 @@ fn view_in(folder: &str, repo: Option<gix::Repository>, trusted: &[String], forc
     view.partial = interrupt.load(Ordering::Relaxed);
 
     // What's left out by .gitignore, of what's right in the folder and isn't tracked.
-    if let Ok(mut excludes) = repo.excludes(&index, None, gix::worktree::stack::state::ignore::Source::WorktreeThenIdMappingIfNotSkipped) {
+    if let Ok(mut excludes) = repo.excludes(
+        &index,
+        None,
+        gix::worktree::stack::state::ignore::Source::WorktreeThenIdMappingIfNotSkipped,
+    ) {
         let tracked = tracked_names(&index, &prefix);
         for entry in std::fs::read_dir(folder).into_iter().flatten().flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
@@ -294,8 +361,15 @@ fn view_in(folder: &str, repo: Option<gix::Repository>, trusted: &[String], forc
                 continue;
             }
             let dir = entry.file_type().is_ok_and(|t| t.is_dir());
-            let mode = if dir { gix::index::entry::Mode::DIR } else { gix::index::entry::Mode::FILE };
-            if excludes.at_entry(format!("{prefix}{name}").as_str(), Some(mode)).is_ok_and(|p| p.is_excluded()) {
+            let mode = if dir {
+                gix::index::entry::Mode::DIR
+            } else {
+                gix::index::entry::Mode::FILE
+            };
+            if excludes
+                .at_entry(format!("{prefix}{name}").as_str(), Some(mode))
+                .is_ok_and(|p| p.is_excluded())
+            {
                 view.marks.insert(lower, Mark::Ignored);
             }
         }
@@ -315,7 +389,9 @@ fn tracked_names(index: &gix::index::State, prefix: &str) -> HashSet<String> {
     let mut names = HashSet::new();
     let mut last: &[u8] = &[];
     for entry in &entries[start..] {
-        let Some(rest) = entry.path(index).as_bytes().strip_prefix(prefix) else { break };
+        let Some(rest) = entry.path(index).as_bytes().strip_prefix(prefix) else {
+            break;
+        };
         let name = rest.split(|&b| b == b'/').next().unwrap_or(rest);
         if name != last {
             last = name;
@@ -327,25 +403,49 @@ fn tracked_names(index: &gix::index::State, prefix: &str) -> HashSet<String> {
 
 /// Git in `folder` for the tab `lane` (a newer request there, or Stop, ends this one): None when it
 /// isn't in a repository. A view worked out since its repository last changed comes back at once.
-pub async fn git_view(folder: String, lane: String, trusted: Vec<String>, force: bool) -> Result<Option<GitView>, String> {
+pub async fn git_view(
+    folder: String,
+    lane: String,
+    trusted: Vec<String>,
+    force: bool,
+) -> Result<Option<GitView>, String> {
     let stop = Arc::new(AtomicBool::new(false));
-    if let Some(old) = RUNS.lock().unwrap_or_else(|e| e.into_inner()).insert(lane.clone(), stop.clone()) {
+    if let Some(old) = RUNS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(lane.clone(), stop.clone())
+    {
         old.store(true, Ordering::SeqCst);
     }
     blocking(move || {
         let cached = |root: &str| {
-            let generation = GENERATIONS.lock().unwrap_or_else(|e| e.into_inner()).get(&key(root)).copied()?;
+            let generation = GENERATIONS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&key(root))
+                .copied()?;
             let cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-            cache.get(&(key(root), key(&folder))).filter(|(g, _)| *g == generation).map(|(_, v)| v.clone())
+            cache
+                .get(&(key(root), key(&folder)))
+                .filter(|(g, _)| *g == generation)
+                .map(|(_, v)| v.clone())
         };
         // The repository is found again each time (cheap), and its view reused if nothing changed; once found,
         // it isn't looked for again to work the view out.
         let repo = gix::discover(&folder).ok();
-        let root = repo.as_ref().and_then(|r| r.workdir().map(|w| w.to_string_lossy().replace('/', "\\")));
+        let root = repo
+            .as_ref()
+            .and_then(|r| r.workdir().map(|w| w.to_string_lossy().replace('/', "\\")));
         if let Some(view) = root.as_deref().filter(|_| !force).and_then(cached) {
             return Ok(Some(view));
         }
-        let generation = root.as_deref().and_then(|r| GENERATIONS.lock().unwrap_or_else(|e| e.into_inner()).get(&key(r)).copied());
+        let generation = root.as_deref().and_then(|r| {
+            GENERATIONS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&key(r))
+                .copied()
+        });
         let found = view_in(&folder, repo, &trusted, force, stop.clone());
         let mut runs = RUNS.lock().unwrap_or_else(|e| e.into_inner());
         if runs.get(&lane).is_some_and(|s| Arc::ptr_eq(s, &stop)) {
@@ -442,13 +542,37 @@ fn line_diff(old: &str, new: &str, diff: &mut FileDiff) {
         let from = hunk.before.start.saturating_sub(CONTEXT).max(shown_to);
         let offset = hunk.after.start as i64 - hunk.before.start as i64;
         for at in from..hunk.before.start {
-            push(diff, DiffLine { kind: LineKind::Same, old: at + 1, new: (at as i64 + offset) as u32 + 1, text: text(input.before[at as usize]) });
+            push(
+                diff,
+                DiffLine {
+                    kind: LineKind::Same,
+                    old: at + 1,
+                    new: (at as i64 + offset) as u32 + 1,
+                    text: text(input.before[at as usize]),
+                },
+            );
         }
         for at in hunk.before.clone() {
-            push(diff, DiffLine { kind: LineKind::Removed, old: at + 1, new: 0, text: text(input.before[at as usize]) });
+            push(
+                diff,
+                DiffLine {
+                    kind: LineKind::Removed,
+                    old: at + 1,
+                    new: 0,
+                    text: text(input.before[at as usize]),
+                },
+            );
         }
         for at in hunk.after.clone() {
-            push(diff, DiffLine { kind: LineKind::Added, old: 0, new: at + 1, text: text(input.after[at as usize]) });
+            push(
+                diff,
+                DiffLine {
+                    kind: LineKind::Added,
+                    old: 0,
+                    new: at + 1,
+                    text: text(input.after[at as usize]),
+                },
+            );
         }
         // Context after: up to the next change, which brings its own.
         let next = hunks.get(n + 1).map_or(before, |h| h.before.start);
@@ -457,7 +581,15 @@ fn line_diff(old: &str, new: &str, diff: &mut FileDiff) {
         for at in hunk.before.end..to {
             let new = (at as i64 + offset) as u32;
             if new < after {
-                push(diff, DiffLine { kind: LineKind::Same, old: at + 1, new: new + 1, text: text(input.before[at as usize]) });
+                push(
+                    diff,
+                    DiffLine {
+                        kind: LineKind::Same,
+                        old: at + 1,
+                        new: new + 1,
+                        text: text(input.before[at as usize]),
+                    },
+                );
             }
         }
         shown_to = to;
@@ -468,7 +600,9 @@ fn line_diff(old: &str, new: &str, diff: &mut FileDiff) {
 fn head_blob(repo: &gix::Repository, relative: &str) -> Option<Vec<u8>> {
     let tree = repo.find_tree(repo.head_tree_id().ok()?.detach()).ok()?;
     let entry = tree.lookup_entry_by_path(relative).ok().flatten()?;
-    repo.find_object(entry.object_id()).ok().map(|object| object.detach().data)
+    repo.find_object(entry.object_id())
+        .ok()
+        .map(|object| object.detach().data)
 }
 
 /// The repository a file is in, and where the file is in it ("src/lib/fs.ts").
@@ -491,15 +625,27 @@ pub async fn git_head_copy(path: String) -> Result<Option<String>, String> {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     blocking(move || {
         let file = Path::new(&path);
-        let Some((repo, relative)) = repo_of(file) else { return Ok(None) };
-        let Some(data) = head_blob(&repo, &relative) else { return Ok(None) };
+        let Some((repo, relative)) = repo_of(file) else {
+            return Ok(None);
+        };
+        let Some(data) = head_blob(&repo, &relative) else {
+            return Ok(None);
+        };
         let copies = head_copies();
         for old in std::fs::read_dir(&copies).into_iter().flatten().flatten() {
-            if old.metadata().and_then(|m| m.modified()).is_ok_and(|t| t.elapsed().is_ok_and(|age| age > Duration::from_secs(86_400))) {
+            if old
+                .metadata()
+                .and_then(|m| m.modified())
+                .is_ok_and(|t| t.elapsed().is_ok_and(|age| age > Duration::from_secs(86_400)))
+            {
                 let _ = std::fs::remove_dir_all(old.path());
             }
         }
-        let folder = copies.join(format!("{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+        let folder = copies.join(format!(
+            "{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
         std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
         let copy = folder.join(file.file_name().unwrap_or_default());
         std::fs::write(&copy, data).map_err(|e| e.to_string())?;
@@ -511,7 +657,10 @@ pub async fn git_head_copy(path: String) -> Result<Option<String>, String> {
 /// Removes a copy [`git_head_copy`] made (and nothing else).
 pub fn git_head_discard(path: String) {
     let copies = head_copies();
-    if let Some(folder) = Path::new(&path).parent().filter(|f| f.parent() == Some(copies.as_path())) {
+    if let Some(folder) = Path::new(&path)
+        .parent()
+        .filter(|f| f.parent() == Some(copies.as_path()))
+    {
         let _ = std::fs::remove_dir_all(folder);
     }
 }
@@ -526,8 +675,13 @@ fn binary(bytes: &[u8]) -> bool {
 fn file_diff(path: &str) -> Result<Option<FileDiff>, String> {
     let started = Instant::now();
     let file = Path::new(path);
-    let Some((repo, relative)) = repo_of(file) else { return Ok(None) };
-    let mut diff = FileDiff { path: relative.clone(), ..Default::default() };
+    let Some((repo, relative)) = repo_of(file) else {
+        return Ok(None);
+    };
+    let mut diff = FileDiff {
+        path: relative.clone(),
+        ..Default::default()
+    };
 
     let now = std::fs::read(file).map_err(|e| e.to_string())?;
     let then = head_blob(&repo, &relative);
@@ -537,7 +691,11 @@ fn file_diff(path: &str) -> Result<Option<FileDiff>, String> {
     diff.binary = binary(&then) || binary(&now);
     diff.too_big = then.len() > DIFF_BYTES || now.len() > DIFF_BYTES;
     if !diff.binary && !diff.too_big {
-        line_diff(&String::from_utf8_lossy(&then), &String::from_utf8_lossy(&now), &mut diff);
+        line_diff(
+            &String::from_utf8_lossy(&then),
+            &String::from_utf8_lossy(&now),
+            &mut diff,
+        );
     }
     diff.elapsed = ms_since(started);
     Ok(Some(diff))
@@ -546,6 +704,189 @@ fn file_diff(path: &str) -> Result<Option<FileDiff>, String> {
 /// What changed in the file at `path` since the last commit (the Changes view); None outside a repository.
 pub async fn git_diff(path: String) -> Result<Option<FileDiff>, String> {
     blocking(move || file_diff(&path)).await
+}
+
+/// Returns up to `max` recent commits (`(oid_hex, time_ms, subject, repo_root)`) for the Git
+/// repository containing `folder`, walking newest-first without modifying the repository.
+pub fn folder_commits(folder: &str, max: usize) -> Vec<(String, i64, String, String)> {
+    let Ok(repo) = gix::discover(folder) else {
+        return Vec::new();
+    };
+    let Some(workdir) = repo.workdir().map(Path::to_path_buf) else {
+        return Vec::new();
+    };
+    let Some(relative) = inside(&workdir, Path::new(folder)) else {
+        return Vec::new();
+    };
+    let root = workdir
+        .to_string_lossy()
+        .trim_end_matches(['\\', '/'])
+        .replace('/', "\\");
+    let Ok(head) = repo.head_id() else {
+        return Vec::new();
+    };
+    let Ok(walk) = repo.rev_walk([head.detach()]).all() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for info in walk {
+        if out.len() >= max {
+            break;
+        }
+        let Ok(info) = info else { continue };
+        let Ok(commit) = repo.find_commit(info.id) else {
+            continue;
+        };
+        if !relative.is_empty() {
+            let has_folder = commit
+                .tree()
+                .ok()
+                .and_then(|tree| tree.lookup_entry_by_path(relative.as_str()).ok().flatten())
+                .is_some_and(|entry| entry.mode().is_tree());
+            if !has_folder {
+                continue;
+            }
+        }
+        let time_ms = commit.time().map(|t| t.seconds * 1000).unwrap_or(0);
+        let msg = commit
+            .message_raw()
+            .ok()
+            .map(|b| {
+                let text = b.to_str_lossy();
+                text.lines().next().unwrap_or("").trim().to_string()
+            })
+            .unwrap_or_default();
+        out.push((info.id.to_hex().to_string(), time_ms, msg, root.clone()));
+    }
+    out
+}
+
+/// Relative forward-slash path of `path` within `repo_root` (`""` for the root itself).
+pub fn rel_path_in(repo_root: &str, path: &str) -> Option<String> {
+    inside(Path::new(repo_root), Path::new(path))
+}
+
+/// Resolves a full hex commit OID, `"HEAD"`, or branch/tag ref name without requiring `revision` rev-parse features.
+fn resolve_commit<'repo>(repo: &'repo gix::Repository, rev: &str) -> Result<gix::Commit<'repo>, String> {
+    let trimmed = rev.trim();
+    if trimmed.eq_ignore_ascii_case("HEAD") {
+        return repo.head_commit().map_err(|e| format!("Couldn't resolve HEAD: {e}"));
+    }
+    if let Ok(oid) = gix::ObjectId::from_hex(trimmed.as_bytes()) {
+        return repo
+            .find_commit(oid)
+            .map_err(|e| format!("Commit not found ({rev}): {e}"));
+    }
+    let mut reference = repo
+        .find_reference(trimmed)
+        .map_err(|e| format!("Revision not found ({rev}): {e}"))?;
+    let id = reference.peel_to_id().map_err(|e| e.to_string())?;
+    repo.find_commit(id.detach()).map_err(|e| e.to_string())
+}
+
+/// Lists the direct entries of `folder` inside commit/rev `rev` of `repo_root`.
+pub fn list_tree_at(repo_root: &str, rev: &str, folder: &str) -> Result<Vec<crate::fsx::Entry>, String> {
+    let repo = gix::open(repo_root).map_err(|e| format!("Couldn't open repository: {e}"))?;
+    let commit = resolve_commit(&repo, rev)?;
+    let time_ms = commit.time().map(|t| t.seconds * 1000).unwrap_or(0);
+    let root_tree = commit.tree().map_err(|e| e.to_string())?;
+    let workdir = repo
+        .workdir()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from(repo_root));
+    let relative =
+        inside(&workdir, Path::new(folder)).unwrap_or_else(|| folder.trim_matches(['\\', '/']).replace('\\', "/"));
+
+    let target_tree = if relative.is_empty() {
+        root_tree
+    } else {
+        let entry = root_tree
+            .lookup_entry_by_path(relative.as_str())
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("Folder not found in commit {rev}"))?;
+        entry
+            .object()
+            .map_err(|e| e.to_string())?
+            .try_into_tree()
+            .map_err(|e| e.to_string())?
+    };
+
+    let mut entries = Vec::new();
+    for item in target_tree.iter() {
+        let Ok(entry) = item else { continue };
+        let name = entry.filename().to_str_lossy().into_owned();
+        if name == ".git" {
+            continue;
+        }
+        let dir = entry.mode().is_tree();
+        let size = if dir {
+            0
+        } else {
+            repo.find_header(entry.object_id()).map(|h| h.size()).unwrap_or(0)
+        };
+        entries.push(crate::fsx::Entry {
+            name,
+            path: None,
+            dir,
+            size,
+            modified: time_ms,
+            attrs: if dir { 0x10 } else { 0x80 },
+        });
+    }
+    Ok(entries)
+}
+
+/// Extracts a blob or directory tree at `rel_path` in commit/rev `rev` of `repo_root` to `dest`.
+pub fn extract_blob_at(repo_root: &str, rev: &str, rel_path: &str, dest: &Path) -> Result<(), String> {
+    let repo = gix::open(repo_root).map_err(|e| format!("Couldn't open repository: {e}"))?;
+    let commit = resolve_commit(&repo, rev)?;
+    let root_tree = commit.tree().map_err(|e| e.to_string())?;
+    let rel = rel_path.trim_matches(['\\', '/']).replace('\\', "/");
+    if rel.is_empty() {
+        return write_git_tree(&root_tree, dest);
+    }
+    let entry = root_tree
+        .lookup_entry_by_path(rel.as_str())
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("“{rel}” was not in {rev}"))?;
+    if entry.mode().is_tree() {
+        let subtree = entry
+            .object()
+            .map_err(|e| e.to_string())?
+            .try_into_tree()
+            .map_err(|e| e.to_string())?;
+        write_git_tree(&subtree, dest)
+    } else {
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let data = entry.object().map_err(|e| e.to_string())?.detach().data;
+        std::fs::write(dest, data).map_err(|e| e.to_string())
+    }
+}
+
+fn write_git_tree(tree: &gix::Tree<'_>, dest: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(dest).map_err(|e| e.to_string())?;
+    for item in tree.iter() {
+        let Ok(entry) = item else { continue };
+        let name = entry.filename().to_str_lossy().into_owned();
+        if name == ".git" || name == ".." || name == "." || name.contains(['\\', '/']) {
+            continue;
+        }
+        let out = dest.join(&name);
+        if entry.mode().is_tree() {
+            let sub = entry
+                .object()
+                .map_err(|e| e.to_string())?
+                .try_into_tree()
+                .map_err(|e| e.to_string())?;
+            write_git_tree(&sub, &out)?;
+        } else {
+            let data = entry.object().map_err(|e| e.to_string())?.detach().data;
+            std::fs::write(&out, data).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
 }
 
 /// One recursive watcher per repository on screen, by its lowercase root.
@@ -596,7 +937,10 @@ pub async fn git_watch(window: Window, state: State<'_, RepoWatcher>, roots: Vec
                 }
                 // What was worked out before this change is out of date at once; the UI asks again
                 // once things settle.
-                GENERATIONS.lock().unwrap_or_else(|e| e.into_inner()).insert(root_key.clone(), NEXT_GENERATION.fetch_add(1, Ordering::Relaxed));
+                GENERATIONS
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(root_key.clone(), NEXT_GENERATION.fetch_add(1, Ordering::Relaxed));
                 if !pending.swap(true, Ordering::SeqCst) {
                     let (window, root, pending) = (window.clone(), changed.clone(), pending.clone());
                     std::thread::spawn(move || {
@@ -625,10 +969,22 @@ mod tests {
 
     #[test]
     fn gits_own_store_logs_and_lock_files_are_noise_and_the_rest_is_not() {
-        for path in [r"C:\repo\.git\objects\ab\cdef", r"C:\repo\.GIT\Logs\HEAD", r"C:\repo\.git\index.lock", "C:/repo/.git/objects/pack/x.pack", r"C:\repo\a\Cargo.LOCK"] {
+        for path in [
+            r"C:\repo\.git\objects\ab\cdef",
+            r"C:\repo\.GIT\Logs\HEAD",
+            r"C:\repo\.git\index.lock",
+            "C:/repo/.git/objects/pack/x.pack",
+            r"C:\repo\a\Cargo.LOCK",
+        ] {
             assert!(noise(Path::new(path)), "{path}");
         }
-        for path in [r"C:\repo\src\main.rs", r"C:\repo\.git\index", r"C:\repo\.git\HEAD", r"C:\repo\objects\a.txt", r"C:\repo\logs\today.log"] {
+        for path in [
+            r"C:\repo\src\main.rs",
+            r"C:\repo\.git\index",
+            r"C:\repo\.git\HEAD",
+            r"C:\repo\objects\a.txt",
+            r"C:\repo\logs\today.log",
+        ] {
             assert!(!noise(Path::new(path)), "{path}");
         }
     }
@@ -702,12 +1058,34 @@ mod tests {
         let top = view(&repo.at(""), &[], false, stop.clone()).unwrap().unwrap();
         assert_eq!(top.branch.as_deref(), Some("main"));
         assert_eq!(top.head.as_ref().map(String::len), Some(7));
-        assert_eq!(marks(&top), [("build.log".into(), Mark::Ignored), ("src".into(), Mark::Modified), ("target".into(), Mark::Ignored)]);
-        assert_eq!(top.counts, Counts { modified: 1, staged: 1, untracked: 1, conflicted: 0 });
+        assert_eq!(
+            marks(&top),
+            [
+                ("build.log".into(), Mark::Ignored),
+                ("src".into(), Mark::Modified),
+                ("target".into(), Mark::Ignored)
+            ]
+        );
+        assert_eq!(
+            top.counts,
+            Counts {
+                modified: 1,
+                staged: 1,
+                untracked: 1,
+                conflicted: 0
+            }
+        );
         assert!(!top.partial && !top.limited);
 
         let src = view(&repo.at("src"), &[], false, stop.clone()).unwrap().unwrap();
-        assert_eq!(marks(&src), [("lib".into(), Mark::Modified), ("main.rs".into(), Mark::Staged), ("new.rs".into(), Mark::Untracked)]);
+        assert_eq!(
+            marks(&src),
+            [
+                ("lib".into(), Mark::Modified),
+                ("main.rs".into(), Mark::Staged),
+                ("new.rs".into(), Mark::Untracked)
+            ]
+        );
         let lib = view(&repo.at("src\\lib"), &[], false, stop.clone()).unwrap().unwrap();
         assert_eq!(marks(&lib), [("a.rs".into(), Mark::Modified)]);
         assert_eq!(lib.counts.modified, 1);
@@ -715,7 +1093,12 @@ mod tests {
         // Not a repository; the .git folder itself.
         let outside = std::env::temp_dir().join(format!("glint-git-none-{}", std::process::id()));
         fs::create_dir_all(&outside).unwrap();
-        assert!(view(&outside.to_string_lossy(), &[], false, stop.clone()).unwrap().is_none() || std::env::temp_dir().join(".git").exists());
+        assert!(
+            view(&outside.to_string_lossy(), &[], false, stop.clone())
+                .unwrap()
+                .is_none()
+                || std::env::temp_dir().join(".git").exists()
+        );
         let _ = fs::remove_dir_all(&outside);
         assert!(view(&repo.at(".git"), &[], false, stop).unwrap().is_none());
     }
@@ -748,33 +1131,64 @@ mod tests {
         upstream.git(&["commit", "-q", "-m", "1"]).unwrap();
         let Some(clone) = Repo::new("clone") else { return };
         fs::remove_dir_all(&clone.0).unwrap();
-        Command::new("git").args(["clone", "-q"]).arg(&upstream.0).arg(&clone.0).output().unwrap();
+        Command::new("git")
+            .args(["clone", "-q"])
+            .arg(&upstream.0)
+            .arg(&clone.0)
+            .output()
+            .unwrap();
         clone.git(&["config", "user.email", "test@example.com"]).unwrap();
         clone.git(&["config", "user.name", "Test"]).unwrap();
         // Two commits here, one there (fetched).
         for n in ["2", "3"] {
             clone.put("b.txt", n);
-            clone.git(&["commit", "-q", "-am", n]).or_else(|| clone.git(&["add", "."]).and_then(|_| clone.git(&["commit", "-q", "-m", n]))).unwrap();
+            clone
+                .git(&["commit", "-q", "-am", n])
+                .or_else(|| {
+                    clone
+                        .git(&["add", "."])
+                        .and_then(|_| clone.git(&["commit", "-q", "-m", n]))
+                })
+                .unwrap();
         }
         upstream.put("a.txt", "4\n");
         upstream.git(&["commit", "-q", "-am", "4"]).unwrap();
         clone.git(&["fetch", "-q"]).unwrap();
-        let view = view(&clone.at(""), &[], false, Arc::new(AtomicBool::new(false))).unwrap().unwrap();
-        assert_eq!((view.upstream.as_deref(), view.ahead, view.behind), (Some("origin/main"), 2, 1));
+        let view = view(&clone.at(""), &[], false, Arc::new(AtomicBool::new(false)))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (view.upstream.as_deref(), view.ahead, view.behind),
+            (Some("origin/main"), 2, 1)
+        );
     }
 
     #[test]
     fn a_branch_level_with_its_upstream_is_neither_ahead_nor_behind() {
-        let Some(upstream) = Repo::new("level-upstream") else { return };
-        upstream.put("a.txt", "1
-");
+        let Some(upstream) = Repo::new("level-upstream") else {
+            return;
+        };
+        upstream.put(
+            "a.txt", "1
+",
+        );
         upstream.git(&["add", "."]).unwrap();
         upstream.git(&["commit", "-q", "-m", "1"]).unwrap();
         let Some(clone) = Repo::new("level-clone") else { return };
         fs::remove_dir_all(&clone.0).unwrap();
-        Command::new("git").args(["clone", "-q"]).arg(&upstream.0).arg(&clone.0).output().unwrap();
-        let view = view(&clone.at(""), &[], false, Arc::new(AtomicBool::new(false))).unwrap().unwrap();
-        assert_eq!((view.upstream.as_deref(), view.ahead, view.behind), (Some("origin/main"), 0, 0));
+        Command::new("git")
+            .args(["clone", "-q"])
+            .arg(&upstream.0)
+            .arg(&clone.0)
+            .output()
+            .unwrap();
+        let view = view(&clone.at(""), &[], false, Arc::new(AtomicBool::new(false)))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (view.upstream.as_deref(), view.ahead, view.behind),
+            (Some("origin/main"), 0, 0)
+        );
     }
 
     #[test]
@@ -785,7 +1199,8 @@ mod tests {
         repo.git(&["commit", "-q", "-m", "1"]).unwrap();
         repo.put("a.txt", "changed\n");
         // As Git LFS sets it up. (No .gitattributes names it, so nothing runs it here either way.)
-        repo.git(&["config", "filter.lfs.clean", "git-lfs clean -- %f"]).unwrap();
+        repo.git(&["config", "filter.lfs.clean", "git-lfs clean -- %f"])
+            .unwrap();
         let stop = Arc::new(AtomicBool::new(false));
         let limited = view(&repo.at(""), &[], false, stop.clone()).unwrap().unwrap();
         assert!(limited.limited && limited.marks.is_empty());
@@ -798,11 +1213,18 @@ mod tests {
     fn diffs_lines_with_some_around_each_change() {
         // Committed with LF, on disk with CRLF: only what changed differs.
         let old = (1..=20).map(|n| format!("line {n}\n")).collect::<String>();
-        let new = old.replace("line 5\n", "line five\n").replace("line 18\n", "").replace('\n', "\r\n");
+        let new = old
+            .replace("line 5\n", "line five\n")
+            .replace("line 18\n", "")
+            .replace('\n', "\r\n");
         let mut diff = FileDiff::default();
         line_diff(&old, &new, &mut diff);
         assert_eq!((diff.added, diff.removed), (1, 2));
-        let shown: Vec<(LineKind, u32, u32, &str)> = diff.lines.iter().map(|l| (l.kind, l.old, l.new, l.text.as_str())).collect();
+        let shown: Vec<(LineKind, u32, u32, &str)> = diff
+            .lines
+            .iter()
+            .map(|l| (l.kind, l.old, l.new, l.text.as_str()))
+            .collect();
         use LineKind::*;
         assert_eq!(
             shown,
@@ -836,7 +1258,10 @@ mod tests {
         repo.put("a.txt", "one\n2\nthree\nfour\n");
         repo.put("new.txt", "fresh\n");
         let diff = file_diff(&repo.at("a.txt")).unwrap().unwrap();
-        assert_eq!((diff.path.as_str(), diff.new_file, diff.added, diff.removed), ("a.txt", false, 2, 1));
+        assert_eq!(
+            (diff.path.as_str(), diff.new_file, diff.added, diff.removed),
+            ("a.txt", false, 2, 1)
+        );
         let fresh = file_diff(&repo.at("new.txt")).unwrap().unwrap();
         assert!(fresh.new_file && fresh.added == 1 && fresh.lines[0].kind == LineKind::Added);
         assert!(file_diff(&repo.at("pic.bin")).unwrap().unwrap().binary);
@@ -847,21 +1272,46 @@ mod tests {
     #[test]
     #[ignore]
     fn views_a_real_folder() {
-        let Ok(folder) = std::env::var("GLINT_GIT_FOLDER") else { return };
+        let Ok(folder) = std::env::var("GLINT_GIT_FOLDER") else {
+            return;
+        };
         for run in 0..3 {
             let view = view(&folder, &[], true, Arc::new(AtomicBool::new(false))).unwrap();
-            let Some(view) = view else { return println!("not in a repository") };
+            let Some(view) = view else {
+                return println!("not in a repository");
+            };
             let mut marks: Vec<_> = view.marks.iter().collect();
             marks.sort();
-            println!("run {run}: {:.0} ms · {} {:?} ↑{} ↓{} · {:?} · partial {} · {} marks: {:?}", view.elapsed, view.branch.as_deref().unwrap_or("(detached)"), view.upstream, view.ahead, view.behind, view.counts, view.partial, marks.len(), marks.iter().take(8).collect::<Vec<_>>());
+            println!(
+                "run {run}: {:.0} ms · {} {:?} ↑{} ↓{} · {:?} · partial {} · {} marks: {:?}",
+                view.elapsed,
+                view.branch.as_deref().unwrap_or("(detached)"),
+                view.upstream,
+                view.ahead,
+                view.behind,
+                view.counts,
+                view.partial,
+                marks.len(),
+                marks.iter().take(8).collect::<Vec<_>>()
+            );
         }
     }
 
     #[test]
     fn finds_a_folder_in_its_repository() {
-        assert_eq!(inside(Path::new(r"C:\Repos\App"), Path::new(r"c:\repos\app\src\lib")).as_deref(), Some("src/lib"));
-        assert_eq!(inside(Path::new(r"C:\Repos\App\"), Path::new(r"C:\Repos\App")).as_deref(), Some(""));
+        assert_eq!(
+            inside(Path::new(r"C:\Repos\App"), Path::new(r"c:\repos\app\src\lib")).as_deref(),
+            Some("src/lib")
+        );
+        assert_eq!(
+            inside(Path::new(r"C:\Repos\App\"), Path::new(r"C:\Repos\App")).as_deref(),
+            Some("")
+        );
         assert_eq!(inside(Path::new(r"C:\Repos\App"), Path::new(r"C:\Repos\Apple")), None);
-        assert!(noise(Path::new(r"C:\r\.git\objects\ab\cd")) && noise(Path::new(r"C:\r\.git\index.lock")) && !noise(Path::new(r"C:\r\.git\index")));
+        assert!(
+            noise(Path::new(r"C:\r\.git\objects\ab\cd"))
+                && noise(Path::new(r"C:\r\.git\index.lock"))
+                && !noise(Path::new(r"C:\r\.git\index"))
+        );
     }
 }
