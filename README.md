@@ -63,7 +63,7 @@ Glint needs Windows 10 or 11, 64-bit, and nothing else: it draws its own window,
 
 ## What's new
 
-**0.15.1** (coming soon) fixes updates that stopped at *Error opening file for writing … rg.exe* (a search Glint had left running held the file), and Space while renaming, which opened Quick Look instead of typing a space.
+**0.15.1** (November 21, 2026) fixes updates that stopped at *Error opening file for writing … rg.exe* (a search Glint had left running held the file), and Space while renaming, which opened Quick Look instead of typing a space.
 
 **0.15.0** (November 21, 2026) gives files a past, a place on the map and links that follow them. **Time Machine** steps through a folder's history, **live portals** open archives, Git commits and backups as real folders for every app, and a `glint://` link finds a file wherever it moves on its drive.
 
