@@ -350,7 +350,7 @@ fn search_fd(slot: &Slot, roots: &[String], query: &str, options: &FindOptions, 
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = command.spawn().map_err(|e| format!("Failed to start fd: {e}"))?;
+    let mut child = crate::proc::spawn_tool(&mut command).map_err(|e| format!("Failed to start fd: {e}"))?;
     let stdout = child.stdout.take().ok_or("Failed to open fd's output")?;
     let mut stderr = child.stderr.take().ok_or("Failed to open fd's errors")?;
     let pid = slot.replace(child);
