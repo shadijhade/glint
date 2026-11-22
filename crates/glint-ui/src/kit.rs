@@ -77,12 +77,21 @@ impl gpui_kit::Render for NoTooltip {
     }
 }
 
-/// The tallest a menu, dropdown or popover may be: 70 % of the window's height and never more than 600 px, so no
-/// menu takes the whole window (what doesn't fit scrolls inside it). A very short window still gets 160 px.
-/// Every menu uses this one rule: the right-click menus, the dock's menus, the kit's popup menus, flyouts.
+/// The tallest a menu, dropdown or popover may be, so no menu takes the whole window (what doesn't fit scrolls
+/// inside it): three quarters of the window's height, never more than 600 px; in a small window up to 80 % of it,
+/// at most 480 px. A file's menu (head, strip, twelve rows) is about 550 px, so it shows whole in a window 740 px
+/// tall or more. A very short window still gets 160 px. Every menu uses this one rule: the right-click menus, the
+/// dock's menus, the kit's popup menus (`vendor/gpui-component-0.9.1/src/menu/popup_menu.rs` has a copy), flyouts.
 pub fn menu_max_height(window: &Window) -> Pixels {
-    let height = window.viewport_size().height;
-    (height * 0.7).min(px(600.)).max(px(160.).min(height))
+    menu_height_cap(window.viewport_size().height)
+}
+
+/// [`menu_max_height`] for a window `height` tall.
+pub fn menu_height_cap(height: Pixels) -> Pixels {
+    (height * 0.75)
+        .max((height * 0.8).min(px(480.)))
+        .min(px(600.))
+        .max(px(160.).min(height))
 }
 
 /// A known folder's icon, as the sidebar, This PC and the address bar draw it (`KNOWN_ICONS`).
@@ -456,6 +465,21 @@ impl RenderOnce for Placeholder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn no_menu_is_as_tall_as_the_window() {
+        // A small window: up to 80 %, at most 480.
+        assert_eq!(menu_height_cap(px(630.)), px(480.));
+        // A taller one: three quarters (a file's menu, about 550 px, shows whole).
+        assert_eq!(menu_height_cap(px(780.)), px(585.));
+        // A big one: never more than 600.
+        assert_eq!(menu_height_cap(px(1400.)), px(600.));
+        // A small one: 80 %.
+        assert_eq!(menu_height_cap(px(300.)), px(240.));
+        for height in [300., 500., 630., 800., 1000., 1400.] {
+            assert!(menu_height_cap(px(height)) <= px(height * 0.8), "{height}");
+        }
+    }
 
     #[test]
     fn space_is_a_quarter_rem_a_unit() {

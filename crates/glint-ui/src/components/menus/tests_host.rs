@@ -881,7 +881,7 @@ fn a_menu_asked_for_near_the_bottom_opens_upward_from_the_pointer(cx: &mut TestA
     let menu = rig.ui.menu_bounds("Item menu");
     assert!(menu.bottom() <= px(651.), "above the pointer: {menu:?}");
     assert!(menu.top() >= px(0.), "{menu:?}");
-    assert!(menu.size.height <= px(491.), "{menu:?}");
+    assert!(menu.size.height <= px(526.), "{menu:?}");
     assert_eq!(menu.origin.x, px(100.), "the start edge is still at the pointer");
 }
 
@@ -912,12 +912,12 @@ fn no_right_click_menu_is_taller_than_the_cap(cx: &mut TestAppContext) {
     let mut rig = rig(cx, "C:\\x");
     rig.ui.select(&[ALPHA]);
     rig.ui.open_menu(Some(ALPHA), Some(at(100., 10.)), false);
-    assert!(rig.ui.menu_bounds("Item menu").size.height <= px(491.));
+    assert!(rig.ui.menu_bounds("Item menu").size.height <= px(526.));
     rig.ui.press("escape");
     rig.ui.open_background(at(100., 10.));
     let height = rig
         .ui
         .visual
         .update(|window, _| window.find_all_by_role(Role::Menu)[0].bounds().size.height);
-    assert!(height <= px(491.), "{height:?}");
+    assert!(height <= px(526.), "{height:?}");
 }

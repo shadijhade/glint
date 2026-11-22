@@ -105,9 +105,9 @@ fn a_long_menu_stays_within_the_cap_and_scrolls_inside(cx: &mut TestAppContext) 
     let _guard = testing::lock();
     let nodes: Vec<Node> = (0..40).map(|i| item(&format!("Row {i}"))).collect();
     let mut rig = rig(cx, nodes);
-    // 70 % of the 700 px window.
+    // Three quarters of the 700 px window.
     let menu = rig.bounds("Item menu");
-    assert!(menu.size.height <= px(491.), "{:?}", menu.size);
+    assert!(menu.size.height <= px(526.), "{:?}", menu.size);
     assert!(
         menu.size.height > px(300.),
         "it is as tall as the cap lets it be: {:?}",
@@ -126,12 +126,12 @@ fn a_long_menu_stays_within_the_cap_and_scrolls_inside(cx: &mut TestAppContext) 
         first.bottom() <= menu.top() + px(2.),
         "the first row scrolled out above"
     );
-    // A shorter window makes it shorter: 70 % of 300 px.
+    // A shorter window makes it shorter: 80 % of 300 px (a small window may use up to 80 %).
     rig.visual.simulate_resize(size(px(800.), px(300.)));
     rig.frame();
     rig.frame();
     let short = rig.bounds("Item menu").size.height;
-    assert!(short <= px(211.), "{short:?}");
+    assert!(short <= px(241.), "{short:?}");
 }
 
 #[gpui_kit::test]
@@ -145,7 +145,7 @@ fn the_head_and_the_strip_stay_put_while_the_rows_scroll(cx: &mut TestAppContext
     rig.frame();
     assert_eq!(rig.bounds("setup.exe").origin, head_at);
     assert_eq!(rig.bounds("Cut").origin, strip_at);
-    assert!(rig.bounds("Item menu").size.height <= px(491.));
+    assert!(rig.bounds("Item menu").size.height <= px(526.));
 }
 
 #[gpui_kit::test]
@@ -321,7 +321,7 @@ fn a_flyout_is_capped_like_the_menu_and_scrolls(cx: &mut TestAppContext) {
     rig.press("right");
     rig.frame();
     let flyout = rig.bounds("More ›");
-    assert!(flyout.size.height <= px(491.), "{:?}", flyout.size);
+    assert!(flyout.size.height <= px(526.), "{:?}", flyout.size);
     assert!(flyout.size.height > px(300.));
     rig.press("end");
     rig.frame();
@@ -505,7 +505,7 @@ fn a_kit_popup_menu_with_no_height_of_its_own_is_capped_and_scrolls(cx: &mut Tes
     visual.update(|window, cx| window.render_frame(cx));
     visual.update(|window, cx| window.render_frame(cx));
     let height = visual.update(|window, _| window.find("popup-menu").bounds().size.height);
-    // 70 % of the 700 px window, never the whole of it.
-    assert!(height <= px(491.), "{height:?}");
+    // Three quarters of the 700 px window, never the whole of it.
+    assert!(height <= px(526.), "{height:?}");
     assert!(height > px(300.), "{height:?}");
 }

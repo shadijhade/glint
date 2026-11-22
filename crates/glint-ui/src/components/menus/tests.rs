@@ -1298,7 +1298,7 @@ impl Ui {
                 _ => None,
             })
             .unwrap_or_else(|| panic!("no {label:?} in {:?}", labels(&nodes)));
-        // A menu is capped at 70 % of the window and scrolls: bring the row into view first.
+        // A menu is capped (`kit::menu_max_height`) and scrolls: bring the row into view first.
         let index = nodes.iter().position(|node| match node {
             Node::Item(e) => e.label == label,
             Node::Menu { label: l, .. } => l == label,

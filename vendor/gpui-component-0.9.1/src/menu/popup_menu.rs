@@ -1578,12 +1578,13 @@ impl Render for PopupMenu {
         let view = cx.entity().clone();
         let items_count = self.menu_items.len();
 
-        // Glint: a menu with no height of its own is capped (70 % of the window, 600 px at most) and scrolls
+        // Glint: a menu with no height of its own is capped (`kit::menu_max_height`'s rule) and scrolls
         // inside, as every menu in the app does (`kit::menu_max_height`); a scroll bar shows when it overflows.
         let scrollable = self.scrollable || self.max_height.is_none();
         let max_height = self.max_height.unwrap_or_else(|| {
+            // The same rule as `kit::menu_max_height` (75 %, or up to 80 % and 480 px in a small window).
             let height = window.viewport_size().height;
-            (height * 0.7).min(px(600.)).max(px(160.).min(height))
+            (height * 0.75).max((height * 0.8).min(px(480.))).min(px(600.)).max(px(160.).min(height))
         });
 
         let has_left_icon = self
