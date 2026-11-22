@@ -291,7 +291,6 @@ fn files_get_the_tools_that_read_them() {
         [
             "Turn pages…",
             "Save its pictures…",
-            "Make smaller…",
             "-",
             "Add a password…",
             "Take the password off…",

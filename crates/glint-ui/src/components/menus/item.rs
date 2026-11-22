@@ -407,7 +407,9 @@ pub fn item_menu(targets: &[FileEntry], c: &ItemCtx) -> Vec<Node> {
         None
     };
     let smaller_for = |home: &str| -> Option<Node> {
-        if shrinks && shrink_home == Some(home) {
+        // Every item a PDF: the PDF tools' own "Make smaller" is the one, not a second near-twin.
+        let only_pdfs = targets.iter().all(|e| e.ext() == "pdf");
+        if shrinks && shrink_home == Some(home) && !(home == "pdf" && only_pdfs) {
             Entry::ask(
                 t!("Make smaller…"),
                 IconName::Minimize2,
@@ -456,6 +458,16 @@ pub fn item_menu(targets: &[FileEntry], c: &ItemCtx) -> Vec<Node> {
                 },
             ))
         }));
+        sections.push(when(!rotatable.is_empty(), || {
+            entry_node(Entry::ask(
+                t!("Rotate left"),
+                IconName::RotateCcwSquare,
+                MenuEvent::Rotate {
+                    paths: rotate_paths.clone(),
+                    clockwise: false,
+                },
+            ))
+        }));
         if let Some(e) = one.filter(|e| can_wallpaper(e)) {
             sections.push(
                 Entry::ask(
@@ -466,9 +478,9 @@ pub fn item_menu(targets: &[FileEntry], c: &ItemCtx) -> Vec<Node> {
                 .node(),
             );
         }
-        if !pictures.is_empty() {
-            sections.push(
-                Entry::ask(
+        let mut more: Vec<Option<Node>> = vec![
+            when(!pictures.is_empty(), || {
+                entry_node(Entry::ask(
                     if pictures.len() > 1 {
                         t!("Convert {n} pictures…", n = pictures.len())
                     } else {
@@ -477,19 +489,6 @@ pub fn item_menu(targets: &[FileEntry], c: &ItemCtx) -> Vec<Node> {
                     IconName::ImageDown,
                     MenuEvent::ConvertPictures {
                         paths: pictures.iter().map(|e| e.path.clone()).collect(),
-                    },
-                )
-                .node(),
-            );
-        }
-        let mut more: Vec<Option<Node>> = vec![
-            when(!rotatable.is_empty(), || {
-                entry_node(Entry::ask(
-                    t!("Rotate left"),
-                    IconName::RotateCcwSquare,
-                    MenuEvent::Rotate {
-                        paths: rotate_paths.clone(),
-                        clockwise: false,
                     },
                 ))
             }),

@@ -94,8 +94,8 @@ fn a_picture_leads_with_open_then_its_own_section_then_organize_then_more() {
             "Quick Look",
             "# Picture",
             "Rotate right",
+            "Rotate left",
             "Set as desktop background",
-            "Convert picture…",
             "More picture tools>",
             "-",
             "Move or copy to>",
@@ -108,7 +108,7 @@ fn a_picture_leads_with_open_then_its_own_section_then_organize_then_more() {
     );
     let more = labels(submenu(&menu, "More picture tools"));
     for want in [
-        "Rotate left",
+        "Convert picture…",
         "Copy the text in it",
         "Make smaller…",
         "Find similar colors",
@@ -300,6 +300,8 @@ fn nothing_the_old_menus_had_for_these_kinds_is_lost() {
                 "do:make-smaller",
             ],
         ),
+        // A PDF's own "Make smaller" (do:pdf:optimize) is the one: the generic do:make-smaller is dropped there on
+        // purpose, as two near-identical rows in one menu confuse.
         (
             vec![text("a.pdf")],
             vec![
@@ -311,7 +313,6 @@ fn nothing_the_old_menus_had_for_these_kinds_is_lost() {
                 "do:pdf:encrypt",
                 "do:pdf:decrypt",
                 "do:pdf:stamp",
-                "do:make-smaller",
             ],
         ),
         (
@@ -557,4 +558,15 @@ fn typing_finds_rows_inside_more_and_ren_finds_rename_first() {
     );
     let found = filter::matches(&menu, "rotate left");
     assert!(found.iter().any(|f| f.entry.label == "Rotate left"));
+}
+
+#[test]
+fn a_pdf_has_one_make_smaller_and_a_mixed_selection_keeps_the_generic_one() {
+    let _guard = english();
+    let pdf = item_menu(&[text("a.pdf")], &ctx());
+    assert!(find(&pdf, "Make smaller").is_some() && find(&pdf, "Make smaller…").is_none());
+    let mixed = item_menu(&[text("a.pdf"), text("b.jpg")], &ctx());
+    assert!(find(&mixed, "Make smaller…").is_some());
+    let picture = item_menu(&[text("a.jpg")], &ctx());
+    assert!(top(&picture).len() <= 12);
 }
