@@ -3,12 +3,13 @@
 //! Populated passively whenever [`crate::thumbs`] decodes thumbnails (`record_bgra`), and warmed
 //! on demand via Windows thumbnail extraction when opening the Color Wheel in an uncached folder.
 
-use crate::thumbs::Outcome;
+use crate::thumbs::{Outcome, Pixels};
 use glint_model::oklab::{extract_palette_bgra, Oklab, Palette3};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{LazyLock, Mutex, MutexGuard};
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard, OnceLock};
 
 const MAGIC: &[u8; 5] = b"GLOK1";
 const SAVE_BATCH_THRESHOLD: usize = 24;
@@ -172,7 +173,108 @@ fn schedule_save() {
     });
 }
 
-/// Passively records an extracted OKLab palette from already-decoded BGRA thumbnail pixels.
+/// How many thumbnails wait for their palette at most: past it a new one is dropped, never waited for.
+const OFFER_QUEUE: usize = 64;
+/// How many waiting thumbnails the recorder takes together (one look at the cache to see which are new, one to
+/// add the palettes made).
+const RECORD_BATCH: usize = 16;
+
+/// A thumbnail's pixels waiting for their palette.
+struct Offer {
+    path: String,
+    modified: i64,
+    pixels: Arc<Pixels>,
+}
+
+static OFFERS: OnceLock<SyncSender<Offer>> = OnceLock::new();
+
+/// Hands a thumbnail that was just made or found to the palette recorder, after its waiters have been answered.
+/// Never blocks and never copies the pixels: when the recorder is behind (a screenful of thumbnails at once) the
+/// offer is dropped, and the photo's palette comes the next time its thumbnail does, or from the wheel's warming.
+pub fn offer(path: &str, modified: i64, pixels: &Arc<Pixels>) {
+    if !is_color_image(path) {
+        return;
+    }
+    let sender = OFFERS.get_or_init(|| {
+        let (sender, receiver) = sync_channel(OFFER_QUEUE);
+        // If the thread can't start the receiver goes with it and every offer is dropped, which is harmless.
+        let _ = std::thread::Builder::new()
+            .name("color-palettes".into())
+            .spawn(move || record_offers(&receiver));
+        sender
+    });
+    let _ = try_offer(sender, path, modified, pixels);
+}
+
+/// One offer into `sender` without waiting; `false` when it was dropped (the queue is full or the recorder gone).
+fn try_offer(sender: &SyncSender<Offer>, path: &str, modified: i64, pixels: &Arc<Pixels>) -> bool {
+    sender
+        .try_send(Offer {
+            path: path.to_string(),
+            modified,
+            pixels: pixels.clone(),
+        })
+        .is_ok()
+}
+
+/// The recorder: one background thread that makes palettes out of the offers, a batch at a time.
+fn record_offers(receiver: &Receiver<Offer>) {
+    #[cfg(windows)]
+    crate::thumbs::win::init_thread(true);
+    while let Ok(first) = receiver.recv() {
+        let mut batch = vec![first];
+        while batch.len() < RECORD_BATCH {
+            match receiver.try_recv() {
+                Ok(next) => batch.push(next),
+                Err(_) => break,
+            }
+        }
+        record_offered(batch);
+    }
+}
+
+/// Records a batch: the cache is locked once to see which photos are new, the palettes are made without it, and
+/// locked once more to add them.
+fn record_offered(batch: Vec<Offer>) {
+    let keyed: Vec<(String, Offer)> = batch.into_iter().map(|o| (o.path.to_lowercase(), o)).collect();
+    let fresh: Vec<&(String, Offer)> = {
+        let cache = lock_cache();
+        keyed
+            .iter()
+            .filter(|(key, o)| cache.entries.get(key).is_none_or(|r| r.modified != o.modified))
+            .collect()
+    };
+    let made: Vec<(&String, Record)> = fresh
+        .into_iter()
+        .filter_map(|(key, o)| {
+            let palette = extract_palette_bgra(o.pixels.width, o.pixels.height, &o.pixels.bgra)?;
+            Some((
+                key,
+                Record {
+                    modified: o.modified,
+                    palette,
+                },
+            ))
+        })
+        .collect();
+    if made.is_empty() {
+        return;
+    }
+    let should_save = {
+        let mut cache = lock_cache();
+        for (key, record) in made {
+            cache.entries.insert(key.clone(), record);
+            cache.dirty_adds += 1;
+        }
+        cache.dirty_adds >= SAVE_BATCH_THRESHOLD
+    };
+    if should_save {
+        schedule_save();
+    }
+}
+
+/// Records an extracted OKLab palette from already-decoded BGRA pixels, on the calling thread. The thumbnails
+/// themselves go through [`offer`] instead, which keeps this work off their path.
 pub fn record_bgra(path: &str, modified: i64, width: u32, height: u32, bgra: &[u8]) {
     if !is_color_image(path) {
         return;
@@ -226,67 +328,109 @@ pub fn lookup_batch(items: &[(String, i64)]) -> HashMap<String, Palette3> {
     out
 }
 
+/// Photos warmed per call at most.
+const WARM_LIMIT: usize = 256;
+/// Threads that warm at once.
+const WARM_WORKERS: usize = 4;
+/// A worker hands over its palettes this many at a time, so matches show while the rest are being made.
+const WARM_STREAM: usize = 8;
+
 /// Extracts and caches palettes for uncached images in `items` (up to 256 per call), returning the merged map.
 pub fn warm_missing(items: &[(String, i64)]) -> HashMap<String, Palette3> {
     let mut result = lookup_batch(items);
-    let missing: Vec<(String, String, i64)> = items
+    warm_missing_streaming(items, |batch| result.extend(batch));
+    result
+}
+
+/// Like [`warm_missing`] but hands each group of palettes made to `on_batch` as it is ready (on the calling thread),
+/// keyed by lowercase path, so the photos that match can show before the rest are done. Photos already in the cache
+/// are not repeated: the caller has them from [`lookup_batch`].
+pub fn warm_missing_streaming(items: &[(String, i64)], on_batch: impl FnMut(HashMap<String, Palette3>)) {
+    warm_with(items, WARM_WORKERS, on_batch);
+}
+
+/// The photos among `items` with no palette yet (at most [`WARM_LIMIT`]), as (key, path, modified).
+fn missing_of(items: &[(String, i64)]) -> Vec<(String, String, i64)> {
+    let cache = lock_cache();
+    items
         .iter()
         .filter(|(p, _)| is_color_image(p))
         .filter_map(|(p, m)| {
             let key = p.to_lowercase();
-            if result.contains_key(&key) {
-                None
-            } else {
-                Some((key, p.clone(), *m))
+            match cache.entries.get(&key) {
+                Some(rec) if *m == 0 || rec.modified == *m => None,
+                _ => Some((key, p.clone(), *m)),
             }
         })
-        .take(256)
-        .collect();
+        .take(WARM_LIMIT)
+        .collect()
+}
 
+/// [`warm_missing_streaming`] with `workers` threads: each is set up like the thumbnail threads
+/// (`thumbs::win::init_thread`), takes the next photo from a shared counter, and sends its palettes in groups.
+fn warm_with(items: &[(String, i64)], workers: usize, mut on_batch: impl FnMut(HashMap<String, Palette3>)) {
+    let missing = missing_of(items);
     if missing.is_empty() {
-        return result;
+        return;
     }
-
     #[cfg(windows)]
     {
-        crate::thumbs::win::init_thread(true);
-        let extracted = std::sync::Mutex::new(Vec::with_capacity(missing.len()));
-        for chunk in missing.chunks(64) {
-            for (key, path, modified) in chunk {
-                let outcome = crate::thumbs::win::outcome(path, 64, false);
-                if let Outcome::Found { pixels, .. } | Outcome::Smaller { pixels, .. } = outcome {
-                    if let Some(palette) = extract_palette_bgra(pixels.width, pixels.height, &pixels.bgra) {
-                        extracted
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .push((key.clone(), *modified, palette));
+        type Made = Vec<(String, i64, Palette3)>;
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let (sender, receiver) = std::sync::mpsc::channel::<Made>();
+        let (missing_ref, next_ref) = (&missing, &next);
+        let mut added = false;
+        std::thread::scope(|scope| {
+            for _ in 0..workers.clamp(1, WARM_WORKERS).min(missing.len()) {
+                let sender = sender.clone();
+                scope.spawn(move || {
+                    crate::thumbs::win::init_thread(true);
+                    let mut group: Made = Vec::with_capacity(WARM_STREAM);
+                    loop {
+                        let at = next_ref.fetch_add(1, Ordering::SeqCst);
+                        let Some((key, path, modified)) = missing_ref.get(at) else {
+                            break;
+                        };
+                        // A bug in a decoder mustn't take the whole warming down with it.
+                        let outcome = std::panic::catch_unwind(|| crate::thumbs::win::outcome(path, 64, false))
+                            .unwrap_or(Outcome::Nothing { lasting: false });
+                        if let Outcome::Found { pixels, .. } | Outcome::Smaller { pixels, .. } = outcome {
+                            if let Some(palette) = extract_palette_bgra(pixels.width, pixels.height, &pixels.bgra) {
+                                group.push((key.clone(), *modified, palette));
+                            }
+                        }
+                        if group.len() >= WARM_STREAM {
+                            let _ = sender.send(std::mem::take(&mut group));
+                        }
+                    }
+                    if !group.is_empty() {
+                        let _ = sender.send(group);
+                    }
+                });
+            }
+            drop(sender);
+            for group in receiver {
+                let mut batch = HashMap::with_capacity(group.len());
+                {
+                    let mut cache = lock_cache();
+                    for (key, modified, palette) in group {
+                        cache.entries.insert(key.clone(), Record { modified, palette });
+                        batch.insert(key, palette);
                     }
                 }
+                added = true;
+                on_batch(batch);
             }
-        }
-        let added = extracted.into_inner().unwrap_or_else(|e| e.into_inner());
-        if !added.is_empty() {
-            {
-                let mut cache = lock_cache();
-                for (key, modified, palette) in &added {
-                    cache.entries.insert(
-                        key.clone(),
-                        Record {
-                            modified: *modified,
-                            palette: *palette,
-                        },
-                    );
-                    result.insert(key.clone(), *palette);
-                }
-            }
+        });
+        if added {
             schedule_save();
         }
     }
 
     #[cfg(not(windows))]
-    let _ = Outcome::NotCached;
-
-    result
+    {
+        let _ = (workers, &mut on_batch, Outcome::NotCached);
+    }
 }
 
 /// Decodes a single image's dominant palette synchronously when not yet in cache.
@@ -361,5 +505,174 @@ mod tests {
 
         // Clean test entry from global cache.
         lock_cache().entries.remove(&key);
+    }
+
+    fn red_pixels(side: u32) -> Arc<Pixels> {
+        Arc::new(Pixels {
+            width: side,
+            height: side,
+            bgra: [0u8, 0, 255, 255].repeat((side * side) as usize),
+        })
+    }
+
+    #[test]
+    fn an_offered_thumbnail_gets_its_palette_from_the_recorder_thread() {
+        let path = format!(r"C:\__glint_color_offer_{}\Sample.JPG", std::process::id());
+        offer(&path, 777, &red_pixels(8));
+        let started = std::time::Instant::now();
+        let got = loop {
+            if let Some(palette) = palette_of(&path, 777) {
+                break palette;
+            }
+            assert!(started.elapsed().as_secs() < 10, "the recorder never made the palette");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        assert!(got.colors[0].a > 0.15, "red is on the a axis: {:?}", got.colors[0]);
+        // Not an image: nothing is queued for it.
+        offer(r"C:\__glint_color_offer\notes.txt", 1, &red_pixels(8));
+        assert!(palette_of(r"C:\__glint_color_offer\notes.txt", 1).is_none());
+        lock_cache().entries.remove(&path.to_lowercase());
+    }
+
+    #[test]
+    fn a_full_queue_drops_offers_instead_of_waiting() {
+        let (sender, _receiver) = sync_channel(1);
+        let pixels = red_pixels(4);
+        assert!(try_offer(&sender, "a.jpg", 1, &pixels));
+        let started = std::time::Instant::now();
+        assert!(!try_offer(&sender, "b.jpg", 1, &pixels), "the second doesn't fit");
+        assert!(started.elapsed().as_millis() < 100, "a full queue is never waited for");
+    }
+
+    #[test]
+    fn a_batch_records_each_new_photo_once_and_skips_the_known() {
+        let dir = format!(r"C:\__glint_color_batch_{}", std::process::id());
+        let known = format!(r"{dir}\known.png");
+        record_bgra(&known, 5, 4, 4, &red_pixels(4).bgra);
+        let before = palette_of(&known, 5).expect("recorded");
+        let blue = Arc::new(Pixels {
+            width: 4,
+            height: 4,
+            bgra: [255u8, 0, 0, 255].repeat(16),
+        });
+        record_offered(vec![
+            // Same photo, same date: left as it is, whatever pixels come.
+            Offer {
+                path: known.clone(),
+                modified: 5,
+                pixels: blue.clone(),
+            },
+            Offer {
+                path: format!(r"{dir}\New.PNG"),
+                modified: 9,
+                pixels: blue,
+            },
+        ]);
+        assert_eq!(palette_of(&known, 5), Some(before));
+        let new = palette_of(&format!(r"{dir}\new.png"), 9).expect("the new one is recorded under its lowercase path");
+        assert!(new.colors[0].b < -0.1, "blue is on the b axis: {:?}", new.colors[0]);
+        let mut cache = lock_cache();
+        cache.entries.remove(&known.to_lowercase());
+        cache.entries.remove(&format!(r"{dir}\new.png"));
+    }
+
+    /// A 64 x 64 32-bit BMP of one color per image (Windows makes thumbnails of BMPs, so these are real files to
+    /// warm), as bytes.
+    #[cfg(windows)]
+    fn bmp(n: usize) -> Vec<u8> {
+        let side = 64u32;
+        let mut out = Vec::with_capacity(54 + (side * side * 4) as usize);
+        out.extend_from_slice(b"BM");
+        out.extend_from_slice(&(54 + side * side * 4).to_le_bytes());
+        out.extend_from_slice(&[0, 0, 0, 0]);
+        out.extend_from_slice(&54u32.to_le_bytes());
+        out.extend_from_slice(&40u32.to_le_bytes());
+        out.extend_from_slice(&side.to_le_bytes());
+        out.extend_from_slice(&(-(side as i32)).to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&32u16.to_le_bytes());
+        out.extend_from_slice(&[0; 24]);
+        let (r, g, b) = ((n * 37 % 256) as u8, (n * 91 % 256) as u8, (n * 53 % 256) as u8);
+        for y in 0..side {
+            for x in 0..side {
+                // A left half in the image's color and a right half in its opposite, so there are two colors.
+                let flip = x >= side / 2 || y >= side * 3 / 4;
+                out.extend_from_slice(&if flip {
+                    [r, g, b, 255]
+                } else {
+                    [b, 255 - g, 255 - r, 255]
+                });
+            }
+        }
+        out
+    }
+
+    /// Warming 256 real images with one thread (the old `warm_missing`) and with four, and what a thumbnail pays
+    /// for its palette inline (`record_bgra`) against handing it off (`offer`). Prints the numbers.
+    /// `cargo test -p glint-core --lib color_index::tests::warming_and_recording_cost_little -- --nocapture`
+    #[cfg(windows)]
+    #[test]
+    fn warming_and_recording_cost_little() {
+        let dir = std::env::temp_dir().join(format!("glint-color-warm-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp folder");
+        let make = |set: &str, count: usize| -> Vec<(String, i64)> {
+            (0..count)
+                .map(|n| {
+                    let path = dir.join(format!("{set}-{n:03}.bmp"));
+                    std::fs::write(&path, bmp(n)).expect("image written");
+                    (path.to_string_lossy().into_owned(), 1_000 + n as i64)
+                })
+                .collect()
+        };
+        // Windows' thumbnail machinery wakes up on the first few; those aren't what is measured.
+        let warmup = make("warm", 8);
+        warm_with(&warmup, 1, |_| {});
+        let alone = make("one", 256);
+        let together = make("four", 256);
+
+        let time = |items: &[(String, i64)], workers: usize| {
+            let started = std::time::Instant::now();
+            let (mut batches, mut photos) = (0usize, 0usize);
+            warm_with(items, workers, |batch| {
+                batches += 1;
+                photos += batch.len();
+            });
+            (started.elapsed().as_secs_f64() * 1000.0, batches, photos)
+        };
+        let (one_ms, one_batches, one_photos) = time(&alone, 1);
+        let (four_ms, four_batches, four_photos) = time(&together, WARM_WORKERS);
+        println!(
+            "warming 256 images: 1 thread {one_ms:.0} ms ({one_photos} palettes, {one_batches} batches), \
+             {WARM_WORKERS} threads {four_ms:.0} ms ({four_photos} palettes, {four_batches} batches)"
+        );
+        // Whatever Windows made of them, the same photos are warmed either way and are in the cache after.
+        assert_eq!(one_photos, four_photos);
+        if four_photos > 0 {
+            assert!(four_batches > 1, "palettes stream in groups, not all at the end");
+            assert!(palette_of(&together[0].0, together[0].1).is_some());
+        }
+
+        // The thumbnail's side: inline against handed off, over a 256 x 256 thumbnail.
+        let pixels = Arc::new(Pixels {
+            width: 256,
+            height: 256,
+            bgra: bmp(3)[54..].to_vec().repeat(16),
+        });
+        let rounds = 200;
+        let started = std::time::Instant::now();
+        for n in 0..rounds {
+            record_bgra(&format!(r"{}\inline-{n}.jpg", dir.display()), 1, 256, 256, &pixels.bgra);
+        }
+        let inline_us = started.elapsed().as_secs_f64() * 1e6 / rounds as f64;
+        let started = std::time::Instant::now();
+        for n in 0..rounds {
+            offer(&format!(r"{}\handoff-{n}.jpg", dir.display()), 1, &pixels);
+        }
+        let handoff_us = started.elapsed().as_secs_f64() * 1e6 / rounds as f64;
+        println!("a thumbnail's palette: inline {inline_us:.0} us on its thread, handed off {handoff_us:.1} us");
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let prefix = dir.to_string_lossy().to_lowercase();
+        lock_cache().entries.retain(|key, _| !key.starts_with(&prefix));
     }
 }

@@ -526,14 +526,15 @@ fn work(shared: &Shared, makes: bool) {
             win::outcome(&task.path, task.size, task.phase == Phase::Lookup)
         }))
         .unwrap_or(Outcome::Nothing { lasting: false });
-        if let Outcome::Found { ref pixels, .. } | Outcome::Smaller { ref pixels, .. } = outcome {
-            crate::color_index::record_bgra(&task.path, task.key.modified, pixels.width, pixels.height, &pixels.bgra);
-        }
         let answer = shared.lock().finish(&task.key, outcome);
         match answer {
             Some((thumb, replies)) => {
                 for reply in replies {
                     let _ = reply.try_send(thumb.clone());
+                }
+                // The photo's palette is made after the tiles have their picture, by the color index's own thread.
+                if let Some(pixels) = &thumb.pixels {
+                    crate::color_index::offer(&task.path, task.key.modified, pixels);
                 }
             }
             // On to a thread that makes thumbnails.

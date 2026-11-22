@@ -31,6 +31,8 @@ use std::time::Duration;
 const ROWS_IN_BACKGROUND: usize = 5_000;
 /// How long a flashed path stays highlighted (the TypeScript's 1200 ms).
 const FLASH_FOR: Duration = Duration::from_millis(1200);
+/// How long the Color Wheel's warming waits between merging the palettes it has made into the tab's (and ranking).
+const WARM_MERGE_EVERY: Duration = Duration::from_millis(60);
 
 /// A tab Ctrl+Shift+T can bring back.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -550,16 +552,34 @@ impl Explorer {
         self.rebuild_rows(id, cx);
         self.tab_changed(id, cx);
         if needs_warm {
+            // The palettes come in groups as they are made, so the photos that match show while the rest are still
+            // being read; groups that arrive close together are merged and ranked once.
             cx.spawn(async move |this, cx| {
-                let warmed = cx
-                    .background_executor()
-                    .spawn(async move { glint_core::color_index::warm_missing(&items) })
-                    .await;
-                let _ = this.update(cx, |this, cx| {
-                    this.update_tab(id, |t| t.color_palettes = Arc::new(warmed));
-                    this.rebuild_rows(id, cx);
-                    this.tab_changed(id, cx);
+                let (sender, receiver) = async_channel::unbounded();
+                let work = cx.background_executor().spawn(async move {
+                    glint_core::color_index::warm_missing_streaming(&items, |batch| {
+                        let _ = sender.try_send(batch);
+                    });
                 });
+                while let Ok(mut merged) = receiver.recv().await {
+                    while let Ok(more) = receiver.try_recv() {
+                        merged.extend(more);
+                    }
+                    let alive = this.update(cx, |this, cx| {
+                        this.update_tab(id, |t| {
+                            let mut all = (*t.color_palettes).clone();
+                            all.extend(merged);
+                            t.color_palettes = Arc::new(all);
+                        });
+                        this.rebuild_rows(id, cx);
+                        this.tab_changed(id, cx);
+                    });
+                    if alive.is_err() {
+                        break;
+                    }
+                    cx.background_executor().timer(WARM_MERGE_EVERY).await;
+                }
+                work.await;
             })
             .detach();
         }
