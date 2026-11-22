@@ -108,6 +108,46 @@ whole workspace was checked at the end (**Checks**). 36 commits on master, not p
 10. **Hover cards.** A background tab, a parent crumb or its arrow shows a card after 400 ms: the folder's name,
     path, counts, size and make-up band, from what's already known (`2de403f`, `ad6b5e2`).
 
+### Polished before release (the same evening)
+
+*The user's words: "a huge ux\ui polishing all around … remove useless icons from the header of each opened
+directory and make them smart … reimagine the right click menu … sorted on how important they are and no right
+click menu should take the whole page height". Nine agents, each in a worktree from `f3b0505`; then checked in the
+real window (debug build, generated photos with places, a Git repository, a program, a PDF) and fixed where it fell
+short. 34 commits on master with this note, not pushed.*
+
+1. **A smart head.** Color Wheel, Photo map and Time Machine no longer sit on every folder as three icons that open
+   empty panels. Labelled pills appear only when they would show something: **Map N** for photos with a place (GPS
+   read off the UI thread, the first 400 pictures, kept per listing), **Colors** from 12 pictures (always in the
+   Gallery), **History** when Git, a backup or a shadow copy has the folder (`0ac1952`). The kind chips are there on
+   the first frame, the arrival plays only on a real change of place, and hidden items the list leaves out aren't
+   counted (`527d810`). The search bar's buttons are the same pills and don't jump (`91b5fd8`).
+2. **Right-click menus by importance.** Head, strip (Cut, Copy, Rename, Copy path, Share, Delete), what opens it,
+   Suggested (at most two, never repeating a row above), the kind's own short section ("Picture": Rotate right,
+   Rotate left, Set as desktop background, More picture tools ›), Move or copy to ›, Compress to ›, More ›
+   (everything rare; nothing was lost), Properties, Show more options. A picture's top level went from 22 rows to
+   12, a folder's from 19 to 9, a program's from 16 to 10; Run in Windows Sandbox only for programs, scripts and
+   installers (`b1f2d1f`, `cebcc74`). The folder's own menu gained View ›, Sort by › and Group by ›.
+3. **Menus that fit.** Submenus open beside the menu on hover (a safe triangle, the keys, mirrored, flipping at the
+   window's edges) instead of replacing it. No menu is taller than three quarters of the window (600 px at most), and
+   a file's menu shows whole in a normal window; near the bottom a menu opens upward; menus pop in from the pointer;
+   tooltips never cover a menu (`d0b07e6`, `9b4fca8`, `c8b7d64`, `956aa74`). Every context menu has the one look:
+   tabs, panes, portals, workspaces, the column header (Columns, then Sort by › and Group by ›), the terminal's
+   shells, the text preview's encodings (`41058e4`, `bf57986`, `02952e1`, `e2255d1`, `19f41c4`).
+4. **The dock** shows only buttons that can act here (no New folder or Paste in search results, Folder sizes only
+   with subfolders, the pane buttons with two panes), its menus drop rows that can't apply, and its width eases
+   instead of jumping (`6b79139`); the status bar's time fades in once per folder (`3c3d71c`).
+5. **The rest.** The preview pane keeps the last file up until the next is ready (no empty frame between two files),
+   puts rare header actions under "…" and keeps a picture's chips on one row (`dc9dd24`, `3f84269`, `761c1a2`). The
+   sidebar fades at its bottom edge and shows "+" on hover or focus; the address bar's flyouts obey the height rule
+   (`3c072ed`, `6d402e5`, `528ae73`). A selection's fill eases in, empty states are alike, This PC's cards fill the
+   row with whole names (`bf57986`, `02952e1`). Enter runs a dialog's main button, never one that destroys, the
+   palette's rows match the menus, Settings' rows line up (`1874d4a`, `b6a3877`, `e11ba91`, `f6fef2c`). The 0.16
+   panels share one header, close with Esc and use icon buttons (`9cec9c6`, `385cd9b`).
+
+Not seen in the real window: Enter in each dialog, the motion (the island's width easing, the preview's hold, the
+fades), the flyouts' hover timing under a person's hand, History from a real shadow copy.
+
 ### Not tried for real
 
 - The journal wait on a real volume (it needs the service, elevated): tested against a fake journal through the
@@ -128,6 +168,11 @@ Alt+J hop mode, Alt+B the basket's drawer, Ctrl+Alt+F Freeze order.
 `cargo test --workspace` (core 385, model 348, ui 2,544, index 103) and `cargo clippy --workspace --all-targets
 -- -D warnings` clean at `32fe440`; the release build's imports all exist on Windows 10 1809
 (`scripts/check-imports.mjs`); e2e (`tests\e2e\run.ps1`) 21/21 with the debug build of `32fe440`.
+
+After the polish: `cargo test --workspace --no-fail-fast` (core 386, model 348, ui 2,630, index 103) and `cargo
+clippy --workspace --all-targets -- -D warnings` clean at `16ebac1`. The polish adds no Windows API calls and no
+dependencies (the release build's import check wasn't run again). e2e not run yet (its `smart-menu` check follows the
+new order, `16ebac1`).
 
 ## 0.15.1: updates that finish, and Space while renaming
 
