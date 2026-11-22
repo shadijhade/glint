@@ -29,8 +29,16 @@ use windows::Win32::Storage::FileSystem::FileTimeToLocalFileTime;
 /// server says nothing of.
 const ERROR_BROKEN_PIPE: i32 = windows::Win32::Foundation::ERROR_BROKEN_PIPE.0 as i32;
 
-/// How often an idle journal is checked.
+/// How often a journal is checked where it can't be waited on (its watcher couldn't start, or failed).
 const POLL: Duration = Duration::from_millis(250);
+/// After the journal says it has something new, and between small batches of a trickle of changes, the index
+/// lets them gather this long before it reads them: a burst is a few batches, not thousands.
+const SETTLE: Duration = Duration::from_millis(5);
+/// A batch of fewer records than this is a trickle: the next waits for `SETTLE`.
+const SMALL_BATCH: usize = 64;
+/// The longest an idle drive sleeps, so a day's change, a replaced journal and the like are noticed even if
+/// the journal itself says nothing.
+const IDLE_CHECK: Duration = Duration::from_secs(5 * 60);
 /// After a scan, changes younger than this are read again: the disk's copy of the MFT can lag.
 const SCAN_REPLAY: Duration = Duration::from_secs(120);
 const SAVE_EVERY: Duration = Duration::from_secs(30 * 60);
@@ -47,32 +55,256 @@ const MAX_USAGE_ITEMS: usize = 500_000;
 /// Events a history request gets at most.
 const MAX_HISTORY: usize = 10_000;
 
-/// A stop signal that sleeping threads wake up for.
+/// What a `Stop` holds: whether it was set, and which drives' watchers have something to say.
 #[derive(Default)]
-pub struct Stop {
-    stopped: Mutex<bool>,
+struct StopState {
+    stopped: bool,
+    /// One bit for each drive letter (`poke_bit`), set by that drive's watcher.
+    pokes: u32,
+}
+
+/// What `Stop` shares with the threads that wake a sleeper (a drive's journal watcher).
+#[derive(Default)]
+pub struct StopShared {
+    state: Mutex<StopState>,
     wake: Condvar,
 }
 
-impl Stop {
+/// Why `StopShared::wait_poke` returned.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Woken {
+    Stopped,
+    Poked,
+    TimedOut,
+}
+
+/// The bit a drive's watcher pokes (0 for what isn't a letter: no watcher then).
+fn poke_bit(letter: char) -> u32 {
+    let letter = letter.to_ascii_uppercase();
+    if letter.is_ascii_uppercase() {
+        1 << (letter as u8 - b'A')
+    } else {
+        0
+    }
+}
+
+impl StopShared {
     pub fn set(&self) {
-        *self.stopped.lock().unwrap() = true;
+        self.state.lock().unwrap().stopped = true;
         self.wake.notify_all();
     }
 
     pub fn is_set(&self) -> bool {
-        *self.stopped.lock().unwrap()
+        self.state.lock().unwrap().stopped
     }
 
     /// Sleeps up to `time`; true if it was stopped meanwhile.
     pub fn sleep(&self, time: Duration) -> bool {
-        let stopped = self.stopped.lock().unwrap();
-        *self.wake.wait_timeout_while(stopped, time, |s| !*s).unwrap().0
+        let state = self.state.lock().unwrap();
+        self.wake.wait_timeout_while(state, time, |s| !s.stopped).unwrap().0.stopped
     }
 
     pub fn wait(&self) {
-        let stopped = self.stopped.lock().unwrap();
-        drop(self.wake.wait_while(stopped, |s| !*s).unwrap());
+        let state = self.state.lock().unwrap();
+        drop(self.wake.wait_while(state, |s| !s.stopped).unwrap());
+    }
+
+    /// Sets `bit` and wakes whoever waits for it. A poke made before the wait begins is kept for it.
+    fn poke(&self, bit: u32) {
+        self.state.lock().unwrap().pokes |= bit;
+        self.wake.notify_all();
+    }
+
+    fn clear_poke(&self, bit: u32) {
+        self.state.lock().unwrap().pokes &= !bit;
+    }
+
+    /// Sleeps until stopped, until `bit` is poked (which it takes), or until `time` has passed. Another
+    /// drive's poke doesn't end it: the wait is only for its own bit.
+    fn wait_poke(&self, bit: u32, time: Duration) -> Woken {
+        let state = self.state.lock().unwrap();
+        let mut state = self.wake.wait_timeout_while(state, time, |s| !s.stopped && s.pokes & bit == 0).unwrap().0;
+        if state.stopped {
+            Woken::Stopped
+        } else if state.pokes & bit != 0 {
+            state.pokes &= !bit;
+            Woken::Poked
+        } else {
+            Woken::TimedOut
+        }
+    }
+}
+
+/// A stop signal that sleeping threads wake up for.
+#[derive(Default)]
+pub struct Stop {
+    shared: Arc<StopShared>,
+}
+
+impl Stop {
+    /// The signal, for a thread of its own to poke a sleeper with.
+    fn shared(&self) -> Arc<StopShared> {
+        self.shared.clone()
+    }
+}
+
+impl std::ops::Deref for Stop {
+    type Target = StopShared;
+    fn deref(&self) -> &StopShared {
+        &self.shared
+    }
+}
+
+/// What a drive's change journal can be waited on with.
+trait JournalWait: Send + Sync + 'static {
+    /// Blocks until the journal has a record at or after `start` (an error ends the wait too).
+    fn wait(&self, start: i64, id: u64) -> io::Result<()>;
+    /// Ends a wait in progress on another thread.
+    fn cancel(&self);
+}
+
+impl JournalWait for volume::Waiter {
+    fn wait(&self, start: i64, id: u64) -> io::Result<()> {
+        let mut buf = [0u8; 16 << 10];
+        volume::Waiter::wait(self, start, id, &mut buf).map(drop)
+    }
+
+    fn cancel(&self) {
+        volume::Waiter::cancel(self);
+    }
+}
+
+#[derive(Default)]
+struct WatchState {
+    /// Where to wait from (the journal's position and id), until the thread takes it up.
+    arm: Option<(i64, u64)>,
+    quit: bool,
+    exited: bool,
+    /// The wait ended with an error: the journal, or the drive, has a problem the index's own read will name.
+    failed: bool,
+}
+
+struct WatchInner {
+    source: Box<dyn JournalWait>,
+    state: Mutex<WatchState>,
+    cv: Condvar,
+}
+
+/// What `Watch::wait` ended with.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Idle {
+    Stopped,
+    /// The journal has something new (or something's wrong with it: reading it will say).
+    Changed,
+    TimedOut,
+    /// The watcher can't go on: poll instead.
+    Failed,
+}
+
+/// A thread that sits in a blocking read of the drive's change journal and pokes the index's thread when
+/// the journal has something new, so a change shows at once and an idle drive costs no wakeups.
+struct Watch {
+    inner: Arc<WatchInner>,
+    stop: Arc<StopShared>,
+    bit: u32,
+    /// The thread is waiting (or about to) from the position it was given.
+    armed: bool,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl Watch {
+    fn start(source: Box<dyn JournalWait>, stop: Arc<StopShared>, letter: char) -> Option<Watch> {
+        let bit = poke_bit(letter);
+        if bit == 0 {
+            return None;
+        }
+        stop.clear_poke(bit);
+        let inner = Arc::new(WatchInner { source, state: Mutex::default(), cv: Condvar::new() });
+        let (shared, poke) = (inner.clone(), stop.clone());
+        let thread = thread::Builder::new()
+            .name(format!("journal-watch-{letter}"))
+            .spawn(move || {
+                loop {
+                    let (start, id) = {
+                        let mut state = shared.state.lock().unwrap();
+                        while state.arm.is_none() && !state.quit {
+                            state = shared.cv.wait(state).unwrap();
+                        }
+                        match state.arm.take() {
+                            Some(arm) if !state.quit => arm,
+                            _ => break,
+                        }
+                    };
+                    let result = shared.source.wait(start, id);
+                    let mut state = shared.state.lock().unwrap();
+                    if state.quit {
+                        break;
+                    }
+                    state.failed = result.is_err();
+                    drop(state);
+                    poke.poke(bit);
+                }
+                shared.state.lock().unwrap().exited = true;
+                shared.cv.notify_all();
+            })
+            .ok()?;
+        Some(Watch { inner, stop, bit, armed: false, thread: Some(thread) })
+    }
+
+    /// Waits for the journal to have something past `cursor`, for the stop, or for `time` to pass.
+    fn wait(&mut self, cursor: i64, journal: u64, time: Duration) -> Idle {
+        if !self.armed {
+            self.inner.state.lock().unwrap().arm = Some((cursor, journal));
+            self.inner.cv.notify_all();
+            self.armed = true;
+        }
+        match self.stop.wait_poke(self.bit, time) {
+            Woken::Stopped => Idle::Stopped,
+            Woken::TimedOut => Idle::TimedOut,
+            Woken::Poked => {
+                self.armed = false;
+                if self.inner.state.lock().unwrap().failed {
+                    Idle::Failed
+                } else {
+                    Idle::Changed
+                }
+            }
+        }
+    }
+}
+
+/// How long stopping a drive's watcher keeps cancelling its read before leaving the thread to end with the
+/// process: the service's stop, and so its updates, must never hang on a driver that won't let a read go.
+const WATCH_STOP_PATIENCE: Duration = Duration::from_secs(2);
+
+impl Drop for Watch {
+    fn drop(&mut self) {
+        let mut state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.quit = true;
+        // A cancel that comes before the thread has begun its read is lost: repeat it until the thread is gone.
+        let started = Instant::now();
+        while !state.exited && started.elapsed() < WATCH_STOP_PATIENCE {
+            drop(state);
+            self.inner.source.cancel();
+            self.inner.cv.notify_all();
+            state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
+            if !state.exited {
+                state = self
+                    .inner
+                    .cv
+                    .wait_timeout(state, Duration::from_millis(5))
+                    .unwrap_or_else(|e| e.into_inner())
+                    .0;
+            }
+        }
+        let exited = state.exited;
+        drop(state);
+        if let Some(thread) = self.thread.take() {
+            // A thread still in its read is left behind (it ends with the process) rather than joined forever.
+            if exited {
+                let _ = thread.join();
+            }
+        }
     }
 }
 
@@ -486,6 +718,11 @@ impl Engine {
             Instant::now(),
         );
         let mut today = local_day(now_ms());
+        // A thread that waits in the journal for what's new: none (polling instead) if it can't start.
+        let mut watch = volume
+            .waiter()
+            .ok()
+            .and_then(|w| Watch::start(Box::new(w), self.stop.shared(), slot.letter));
         loop {
             if self.stop.is_set() {
                 if dirty {
@@ -493,8 +730,12 @@ impl Engine {
                 }
                 return Ok(());
             }
-            if self.apply(&volume, slot, &mut cursor, journal.id, None, &mut page)? > 0 {
+            let read = self.apply(&volume, slot, &mut cursor, journal.id, None, &mut page)?;
+            if read > 0 {
                 dirty = true;
+                if read < SMALL_BATCH {
+                    self.stop.sleep(SETTLE);
+                }
                 continue;
             }
             if local_day(now_ms()) != today {
@@ -511,7 +752,22 @@ impl Engine {
                 tree.maybe_compact();
                 counted_at = Instant::now();
             }
-            self.stop.sleep(POLL);
+            let Some(watching) = watch.as_mut() else {
+                self.stop.sleep(POLL);
+                continue;
+            };
+            // Asleep until the journal has something, or until something else is due.
+            let mut due = IDLE_CHECK.min(RECOUNT_EVERY.saturating_sub(counted_at.elapsed()));
+            if dirty {
+                due = due.min(SAVE_EVERY.saturating_sub(saved_at.elapsed()));
+            }
+            match watching.wait(cursor, journal.id, due.max(Duration::from_secs(1))) {
+                Idle::Changed => {
+                    self.stop.sleep(SETTLE);
+                }
+                Idle::Failed => watch = None,
+                Idle::Stopped | Idle::TimedOut => {}
+            }
         }
     }
 
@@ -1389,5 +1645,133 @@ mod tests {
         assert!(handle.join().unwrap());
         assert!(started.elapsed() < Duration::from_secs(5));
         assert!(stop.sleep(Duration::from_secs(30)));
+    }
+
+    /// A journal that lives in memory: `append` adds a record, and a wait ends once there's one at or past
+    /// where it started, as the real journal's blocking read does.
+    #[derive(Default)]
+    struct FakeJournal {
+        state: Mutex<(i64, bool, bool)>,
+        cv: Condvar,
+        waits: std::sync::atomic::AtomicUsize,
+    }
+
+    impl FakeJournal {
+        fn append(&self) {
+            self.state.lock().unwrap().0 += 1;
+            self.cv.notify_all();
+        }
+    }
+
+    struct Fake(Arc<FakeJournal>);
+
+    impl JournalWait for Fake {
+        fn wait(&self, start: i64, _id: u64) -> io::Result<()> {
+            self.0.waits.fetch_add(1, Ordering::SeqCst);
+            let mut state = self.0.state.lock().unwrap();
+            loop {
+                if state.2 {
+                    state.2 = false;
+                    return Err(io::Error::other("cancelled"));
+                }
+                if state.1 {
+                    return Err(io::Error::other("journal gone"));
+                }
+                if state.0 > start {
+                    return Ok(());
+                }
+                state = self.0.cv.wait(state).unwrap();
+            }
+        }
+
+        fn cancel(&self) {
+            self.0.state.lock().unwrap().2 = true;
+            self.0.cv.notify_all();
+        }
+    }
+
+    fn watched(journal: &Arc<FakeJournal>, stop: &Stop) -> Watch {
+        Watch::start(Box::new(Fake(journal.clone())), stop.shared(), 'C').unwrap()
+    }
+
+    #[test]
+    fn an_idle_journal_wakes_nobody_and_a_change_shows_at_once() {
+        let (journal, stop) = (Arc::new(FakeJournal::default()), Stop::default());
+        let mut watch = watched(&journal, &stop);
+        // Idle: the wait returns only when its time is up, with one blocking read behind it and no polling.
+        let started = Instant::now();
+        assert_eq!(watch.wait(0, 1, Duration::from_millis(1000)), Idle::TimedOut);
+        assert!(started.elapsed() >= Duration::from_millis(990));
+        assert_eq!(journal.waits.load(Ordering::SeqCst), 1, "one blocking read for the whole idle second (was 4)");
+        // A change from another thread: the wait ends within a few milliseconds of it.
+        let mut worst = Duration::ZERO;
+        for cursor in 0..20 {
+            let writer = journal.clone();
+            let appended = Arc::new(Mutex::new(None));
+            let at = appended.clone();
+            let handle = thread::spawn(move || {
+                thread::sleep(Duration::from_millis(30));
+                *at.lock().unwrap() = Some(Instant::now());
+                writer.append();
+            });
+            assert_eq!(watch.wait(cursor, 1, Duration::from_secs(10)), Idle::Changed);
+            let seen = Instant::now();
+            handle.join().unwrap();
+            let latency = seen.duration_since(appended.lock().unwrap().unwrap());
+            worst = worst.max(latency);
+        }
+        println!("journal change to the index's thread awake: worst of 20 = {worst:?} (the poll made it up to 250 ms, 125 ms on average)");
+        assert!(worst < Duration::from_millis(50), "{worst:?}");
+    }
+
+    #[test]
+    fn a_watch_ends_when_stopped_and_when_dropped_mid_wait() {
+        let (journal, stop) = (Arc::new(FakeJournal::default()), Stop::default());
+        let mut watch = watched(&journal, &stop);
+        let shared = stop.shared();
+        let stopper = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(30));
+            shared.set();
+        });
+        assert_eq!(watch.wait(0, 1, Duration::from_secs(30)), Idle::Stopped);
+        stopper.join().unwrap();
+        // Dropped while its thread sits in the blocking read: the read is cancelled and the thread gone.
+        let started = Instant::now();
+        drop(watch);
+        assert!(started.elapsed() < Duration::from_secs(2));
+        // Dropped before its thread has begun to wait, and one never armed.
+        let (fresh, journal) = (Stop::default(), Arc::new(FakeJournal::default()));
+        drop(watched(&journal, &fresh));
+        let journal = Arc::new(FakeJournal::default());
+        let mut armed = watched(&journal, &fresh);
+        assert_eq!(armed.wait(0, 1, Duration::from_millis(20)), Idle::TimedOut);
+        drop(armed);
+    }
+
+    #[test]
+    fn a_failing_wait_is_told_so_the_index_polls_instead() {
+        let (journal, stop) = (Arc::new(FakeJournal::default()), Stop::default());
+        let mut watch = watched(&journal, &stop);
+        journal.state.lock().unwrap().1 = true;
+        journal.cv.notify_all();
+        assert_eq!(watch.wait(0, 1, Duration::from_secs(10)), Idle::Failed);
+    }
+
+    #[test]
+    fn another_drives_poke_does_not_end_a_wait() {
+        let stop = Stop::default();
+        let shared = stop.shared();
+        let poker = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(20));
+            shared.poke(poke_bit('D'));
+            thread::sleep(Duration::from_millis(20));
+            shared.poke(poke_bit('c'));
+        });
+        let started = Instant::now();
+        assert_eq!(stop.wait_poke(poke_bit('C'), Duration::from_secs(10)), Woken::Poked);
+        assert!(started.elapsed() >= Duration::from_millis(35), "D's poke didn't count");
+        assert_eq!(stop.wait_poke(poke_bit('C'), Duration::from_millis(10)), Woken::TimedOut, "taken once");
+        poker.join().unwrap();
+        assert_eq!(poke_bit('1'), 0);
     }
 }

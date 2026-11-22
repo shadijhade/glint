@@ -23,7 +23,7 @@ use windows::Win32::System::Ioctl::{
     CREATE_USN_JOURNAL_DATA, FSCTL_CREATE_USN_JOURNAL, FSCTL_GET_NTFS_FILE_RECORD, FSCTL_GET_NTFS_VOLUME_DATA, FSCTL_QUERY_USN_JOURNAL,
     FSCTL_READ_USN_JOURNAL, NTFS_FILE_RECORD_INPUT_BUFFER, NTFS_VOLUME_DATA_BUFFER, READ_USN_JOURNAL_DATA_V1, USN_JOURNAL_DATA_V0,
 };
-use windows::Win32::System::IO::{DeviceIoControl, OVERLAPPED};
+use windows::Win32::System::IO::{CancelIoEx, DeviceIoControl, OVERLAPPED};
 
 /// Bytes per sequential read of the $MFT.
 const CHUNK: u64 = 8 << 20;
@@ -514,6 +514,25 @@ impl Volume {
         ioctl(&Handle(handle), FSCTL_CREATE_USN_JOURNAL, as_bytes(&input), &mut []).map(|_| ())
     }
 
+    /// A second handle on the volume for waiting on the journal (`Waiter`): a blocking read holds its handle's
+    /// file object, so it can't share the one the index reads records through.
+    pub fn waiter(&self) -> io::Result<Waiter> {
+        let path = wide(format!(r"\\.\{}:", self.letter));
+        let handle = unsafe {
+            CreateFileW(
+                PCWSTR(path.as_ptr()),
+                GENERIC_READ.0,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                None,
+                OPEN_EXISTING,
+                Default::default(),
+                None,
+            )
+        }
+        .map_err(os_error)?;
+        Ok(Waiter { handle: Handle(handle) })
+    }
+
     /// Reads journal records from `start` into `buf`; returns the bytes filled (the next USN, then
     /// records, as `usn::parse_page` takes them).
     pub fn read_journal(&self, start: i64, id: u64, buf: &mut [u8]) -> Result<usize, JournalError> {
@@ -538,6 +557,40 @@ impl Volume {
             Some(ids) => refs::translate_page(buf, len, &mut ids.lock().unwrap()),
             None => len,
         })
+    }
+}
+
+/// A volume handle that waits for the journal to have something new, and can be told to stop waiting from
+/// another thread.
+pub struct Waiter {
+    handle: Handle,
+}
+
+impl Waiter {
+    /// Blocks until the journal has a record at or after `start` (at once if it has), then returns the bytes
+    /// read into `buf` (the next USN, and whatever records fit). An error also ends the wait: the journal went
+    /// away, its records at `start` were deleted, the volume left, or `cancel` was called.
+    pub fn wait(&self, start: i64, id: u64, buf: &mut [u8]) -> io::Result<usize> {
+        let input = READ_USN_JOURNAL_DATA_V1 {
+            StartUsn: start,
+            ReasonMask: u32::MAX,
+            ReturnOnlyOnClose: 0,
+            // 0 with a byte count to wait for: no time-out.
+            Timeout: 0,
+            BytesToWaitFor: 1,
+            UsnJournalID: id,
+            MinMajorVersion: 2,
+            MaxMajorVersion: 3,
+        };
+        ioctl(&self.handle, FSCTL_READ_USN_JOURNAL, as_bytes(&input), buf)
+    }
+
+    /// Ends a `wait` in progress on another thread (its call fails with ERROR_OPERATION_ABORTED). One that
+    /// hasn't begun yet isn't caught: the caller repeats it until the thread has stopped.
+    pub fn cancel(&self) {
+        // SAFETY: the handle is open as long as `self` is; cancelling with no overlapped is for every
+        // request the process has pending on it.
+        let _ = unsafe { CancelIoEx(self.handle.0, None) };
     }
 }
 
