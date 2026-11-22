@@ -11,6 +11,7 @@ use crate::explorer::{Drive, DriveKind, NavOptions};
 use glint_core::aware::{Answer, Ask, Lane};
 use glint_model::aware::{Clip, Origin, Part, Why};
 use glint_model::entries::attr;
+use gpui_kit::test::TestQueryExt as _;
 use gpui_kit::TestAppContext;
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -869,4 +870,54 @@ fn a_menu_asked_for_while_another_waits_is_the_one_that_opens(cx: &mut TestAppCo
     rig.ui.frame();
     assert!(rig.ui.is_open());
     assert!(find(&rig.ui.nodes(), "New folder").is_some(), "the folder's menu, not the file's");
+}
+
+#[gpui_kit::test]
+fn a_menu_asked_for_near_the_bottom_opens_upward_from_the_pointer(cx: &mut TestAppContext) {
+    let _guard = english();
+    let mut rig = rig(cx, "C:\\x");
+    rig.ui.select(&[ALPHA]);
+    rig.ui.open_menu(Some(ALPHA), Some(at(100., 650.)), false);
+    let menu = rig.ui.menu_bounds("Item menu");
+    assert!(menu.bottom() <= px(651.), "above the pointer: {menu:?}");
+    assert!(menu.top() >= px(0.), "{menu:?}");
+    assert!(menu.size.height <= px(491.), "{menu:?}");
+    assert_eq!(menu.origin.x, px(100.), "the start edge is still at the pointer");
+}
+
+#[gpui_kit::test]
+fn a_menu_asked_for_near_the_top_hangs_from_the_pointer(cx: &mut TestAppContext) {
+    let _guard = english();
+    let mut rig = rig(cx, "C:\\x");
+    rig.ui.select(&[ALPHA]);
+    rig.ui.open_menu(Some(ALPHA), Some(at(100., 30.)), false);
+    let menu = rig.ui.menu_bounds("Item menu");
+    assert_eq!((menu.origin.x, menu.origin.y), (px(100.), px(30.)));
+}
+
+#[gpui_kit::test]
+fn a_menu_asked_for_at_the_right_edge_opens_toward_the_start_inside_the_window(cx: &mut TestAppContext) {
+    let _guard = english();
+    let mut rig = rig(cx, "C:\\x");
+    rig.ui.select(&[ALPHA]);
+    rig.ui.open_menu(Some(ALPHA), Some(at(980., 20.)), false);
+    let menu = rig.ui.menu_bounds("Item menu");
+    assert!(menu.right() <= px(981.), "{menu:?}");
+    assert!(menu.left() >= px(0.), "{menu:?}");
+}
+
+#[gpui_kit::test]
+fn no_right_click_menu_is_taller_than_the_cap(cx: &mut TestAppContext) {
+    let _guard = english();
+    let mut rig = rig(cx, "C:\\x");
+    rig.ui.select(&[ALPHA]);
+    rig.ui.open_menu(Some(ALPHA), Some(at(100., 10.)), false);
+    assert!(rig.ui.menu_bounds("Item menu").size.height <= px(491.));
+    rig.ui.press("escape");
+    rig.ui.open_background(at(100., 10.));
+    let height = rig
+        .ui
+        .visual
+        .update(|window, _| window.find_all_by_role(Role::Menu)[0].bounds().size.height);
+    assert!(height <= px(491.), "{height:?}");
 }

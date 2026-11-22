@@ -1280,19 +1280,36 @@ impl Ui {
     /// Clicks the row, submenu or strip button with this label.
     pub(super) fn click(&mut self, label: &str) {
         let nodes = self.nodes();
+        // A flyout's rows are numbered from its column's own place (`view::LEVEL_STEP`).
+        let level = {
+            let view = self.view();
+            view.read_with(&self.visual, |v, _| v.active_level())
+        } * super::view::LEVEL_STEP;
         let id: ElementId = nodes
             .iter()
             .enumerate()
             .find_map(|(i, node)| match node {
-                Node::Item(e) if e.label == label => Some(ElementId::from(("menu-row", i))),
-                Node::Menu { label: l, .. } if l == label => Some(ElementId::from(("menu-row", i))),
+                Node::Item(e) if e.label == label => Some(ElementId::from(("menu-row", level + i))),
+                Node::Menu { label: l, .. } if l == label => Some(ElementId::from(("menu-row", level + i))),
                 Node::Strip(entries) => entries
                     .iter()
                     .position(|e| e.label == label)
-                    .map(|j| ElementId::from(("menu-strip-button", i * 32 + j))),
+                    .map(|j| ElementId::from(("menu-strip-button", (level + i) * 32 + j))),
                 _ => None,
             })
             .unwrap_or_else(|| panic!("no {label:?} in {:?}", labels(&nodes)));
+        // A menu is capped at 70 % of the window and scrolls: bring the row into view first.
+        let index = nodes.iter().position(|node| match node {
+            Node::Item(e) => e.label == label,
+            Node::Menu { label: l, .. } => l == label,
+            Node::Strip(entries) => entries.iter().any(|e| e.label == label),
+            _ => false,
+        });
+        if let Some(index) = index {
+            let (view, lv) = (self.view(), level / super::view::LEVEL_STEP);
+            view.update(&mut self.visual, |v, _| v.reveal(lv, index));
+            self.frame();
+        }
         self.visual.update(|window, cx| {
             window.render_frame(cx);
             window.click(id, cx);
@@ -1500,7 +1517,7 @@ fn clicking_a_strip_button_dispatches_its_command_and_closes(cx: &mut TestAppCon
 }
 
 #[gpui_kit::test]
-fn a_submenu_replaces_the_menu_with_a_back_row_and_choosing_in_it_tells_the_window(cx: &mut TestAppContext) {
+fn a_submenu_opens_beside_the_menu_and_choosing_in_it_tells_the_window(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let mut ui = open(cx, &disk(), "C:\\x");
     ui.select(&[ALPHA]);
@@ -1515,14 +1532,10 @@ fn a_submenu_replaces_the_menu_with_a_back_row_and_choosing_in_it_tells_the_wind
     ui.press("right");
     assert_eq!(ui.depth(), 2);
     assert_eq!(labels(&ui.nodes())[0], "Zip file");
-    assert_eq!(ui.selected().as_deref(), Some("Zip file"), "the first row, not Back");
-    ui.press("up");
-    assert_eq!(
-        ui.selected().as_deref(),
-        Some("Compress to"),
-        "the Back row is named for the menu it leaves"
-    );
+    assert_eq!(ui.selected().as_deref(), Some("Zip file"), "the flyout's first row");
     ui.press("down");
+    assert_ne!(ui.selected().as_deref(), Some("Zip file"));
+    ui.press("up");
     assert_eq!(ui.selected().as_deref(), Some("Zip file"));
     // The arrow toward the start goes back; toward the end goes in again.
     ui.press("left");

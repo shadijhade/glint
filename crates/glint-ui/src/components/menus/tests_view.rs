@@ -13,20 +13,20 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 /// A row that does something of its own (so no two rows are the same thing), named `label`.
-fn entry(label: &str) -> Entry {
+pub(super) fn entry(label: &str) -> Entry {
     Entry::task(label.to_string().into(), IconName::File, Task::OpenTerminal(label.to_string()))
 }
 
-fn item(label: &str) -> Node {
+pub(super) fn item(label: &str) -> Node {
     Node::Item(entry(label))
 }
 
 /// What choosing the row `label` says.
-fn chose(label: &str) -> MenuViewEvent {
+pub(super) fn chose(label: &str) -> MenuViewEvent {
     MenuViewEvent::Chose(Run::Do(Task::OpenTerminal(label.to_string())))
 }
 
-fn badge(label: &str, tone: Tone, run: Run) -> Badge {
+pub(super) fn badge(label: &str, tone: Tone, run: Run) -> Badge {
     Badge {
         label: label.to_string().into(),
         icon: IconName::Info,
@@ -36,7 +36,7 @@ fn badge(label: &str, tone: Tone, run: Run) -> Badge {
     }
 }
 
-fn head(badges: Vec<Badge>) -> Head {
+pub(super) fn head(badges: Vec<Badge>) -> Head {
     Head {
         title: "setup.exe".into(),
         picture: HeadPicture::Folder,
@@ -47,7 +47,7 @@ fn head(badges: Vec<Badge>) -> Head {
 }
 
 /// A head, a strip of two buttons, then rows.
-fn menu_with(head: Head) -> Vec<Node> {
+pub(super) fn menu_with(head: Head) -> Vec<Node> {
     vec![
         Node::Head(head),
         Node::Strip(vec![entry("Cut"), entry("Copy")]),
@@ -57,13 +57,13 @@ fn menu_with(head: Head) -> Vec<Node> {
     ]
 }
 
-struct Rig {
-    visual: VisualTestContext,
-    view: Entity<MenuView>,
-    events: Rc<RefCell<Vec<MenuViewEvent>>>,
+pub(super) struct Rig {
+    pub(super) visual: VisualTestContext,
+    pub(super) view: Entity<MenuView>,
+    pub(super) events: Rc<RefCell<Vec<MenuViewEvent>>>,
 }
 
-fn rig(cx: &mut TestAppContext, nodes: Vec<Node>) -> Rig {
+pub(super) fn rig(cx: &mut TestAppContext, nodes: Vec<Node>) -> Rig {
     cx.update(testing::init);
     let (mut visual, view) = testing::open_window(cx, move |window, cx| {
         let view = cx.new(|cx| MenuView::new(nodes, "Item menu".into(), cx));
@@ -84,12 +84,12 @@ fn rig(cx: &mut TestAppContext, nodes: Vec<Node>) -> Rig {
 }
 
 impl Rig {
-    fn frame(&mut self) {
+    pub(super) fn frame(&mut self) {
         self.visual.run_until_parked();
         self.visual.update(|window, cx| window.render_frame(cx));
     }
 
-    fn press(&mut self, key: &str) {
+    pub(super) fn press(&mut self, key: &str) {
         self.visual.update(|window, cx| {
             window.render_frame(cx);
             window.press(key, cx);
@@ -98,13 +98,13 @@ impl Rig {
     }
 
     /// Types `text`, a key for each letter.
-    fn type_text(&mut self, text: &str) {
+    pub(super) fn type_text(&mut self, text: &str) {
         for letter in text.chars() {
             self.press(&letter.to_string());
         }
     }
 
-    fn click(&mut self, id: impl Into<ElementId>) {
+    pub(super) fn click(&mut self, id: impl Into<ElementId>) {
         let id = id.into();
         self.visual.update(|window, cx| {
             window.render_frame(cx);
@@ -113,31 +113,31 @@ impl Rig {
         self.frame();
     }
 
-    fn selected(&mut self) -> Option<String> {
+    pub(super) fn selected(&mut self) -> Option<String> {
         self.view
             .read_with(&self.visual, |v, _| v.selected_label().map(|s| s.to_string()))
     }
 
-    fn depth(&mut self) -> usize {
+    pub(super) fn depth(&mut self) -> usize {
         self.view.read_with(&self.visual, |v, _| v.depth())
     }
 
-    fn found(&mut self) -> Vec<String> {
+    pub(super) fn found(&mut self) -> Vec<String> {
         self.view
             .read_with(&self.visual, |v, _| v.found_labels().iter().map(|l| l.to_string()).collect())
     }
 
-    fn drawn(&mut self, label: &str) -> bool {
+    pub(super) fn drawn(&mut self, label: &str) -> bool {
         self.visual
             .update(|window, _| window.try_find_by_label(label).is_some())
     }
 
-    fn description(&mut self, label: &str) -> Option<String> {
+    pub(super) fn description(&mut self, label: &str) -> Option<String> {
         self.visual
             .update(|window, _| window.find_by_label(label).description().map(str::to_string))
     }
 
-    fn events(&self) -> Vec<MenuViewEvent> {
+    pub(super) fn events(&self) -> Vec<MenuViewEvent> {
         self.events.borrow().clone()
     }
 }

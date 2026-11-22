@@ -73,6 +73,8 @@ mod tests;
 #[cfg(test)]
 mod tests_content;
 #[cfg(test)]
+mod tests_flyout;
+#[cfg(test)]
 mod tests_host;
 #[cfg(test)]
 mod tests_send_to;
@@ -108,6 +110,9 @@ const FRESH_FOR: Duration = Duration::from_secs(10);
 /// came from, who signed it), so that what it suggests is there from its first frame and never moves. Two or
 /// three frames: nobody sees it, and a menu whose item is already known doesn't wait at all.
 const LOOK_FIRST: Duration = Duration::from_millis(40);
+
+/// How near the window's edge a menu comes: the transparent ring that keeps it from touching the edge.
+const EDGE: f32 = 8.;
 
 /// A call that would have shown Windows' own menu: the paths and the point (tests).
 #[cfg(test)]
@@ -972,7 +977,10 @@ impl MenuHost {
         self.read_lists(false, cx);
         let focus = window.focused(cx);
         let view = cx.new(|cx| MenuView::new(nodes, label, cx));
-        view.update(cx, |view, cx| view.focus(window, cx));
+        view.update(cx, |view, cx| {
+            view.anchored_at(at);
+            view.focus(window, cx)
+        });
         let subscription = cx.subscribe_in(&view, window, |this, _, event: &MenuViewEvent, window, cx| {
             this.on_view(event.clone(), window, cx);
         });
@@ -1194,21 +1202,23 @@ fn editor_name(editor_path: &str) -> String {
 
 impl Render for MenuHost {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        // The menu is drawn in a deferred layer over the whole window, positioned at its point. In the
-        // Arabic interface its end edge meets the point, so it opens toward the start, as Windows' menus do.
-        let anchor = if i18n::is_rtl() {
-            Anchor::TopRight
-        } else {
-            Anchor::TopLeft
-        };
+        // The menu is drawn in a deferred layer over the whole window, hanging from its point by its start
+        // corner. In the Arabic interface its end edge meets the point, so it opens toward the start, as
+        // Windows' menus do. Where it doesn't fit below the point it opens upward from it, and where it doesn't
+        // fit to the side it opens the other way (the anchor switches in the layout itself, so there is no frame
+        // in the wrong place); never closer than `EDGE` to the window's edge, which the transparent ring around
+        // it keeps.
+        let rtl = i18n::is_rtl();
+        let anchor = if rtl { Anchor::TopRight } else { Anchor::TopLeft };
         div().when_some(self.open.as_ref(), |layer, open| {
+            let ring = px(EDGE);
+            let from = point(if rtl { open.at.x + ring } else { open.at.x - ring }, open.at.y - ring);
             layer.child(
                 deferred(
                     anchored()
-                        .position(open.at)
+                        .position(from)
                         .anchor(anchor)
-                        .snap_to_window_with_margin(px(4.))
-                        .child(open.view.clone()),
+                        .child(div().p(ring).child(open.view.clone())),
                 )
                 .with_priority(gpui_kit::base::POPUP_PRIORITY),
             )
