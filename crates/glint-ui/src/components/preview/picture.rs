@@ -10,9 +10,11 @@
 //! Zoom is the wheel (up zooms in, 1× to 8×), double-click toggles 1× and 2×, and a zoomed picture is dragged to
 //! pan. The frame is the size of the fitted picture and clips what is zoomed past it, as the TypeScript's did.
 
+use super::more::{self, OpenMore};
 use super::sources::{sources, Sources};
 use super::states::{big_icon, Waiting};
 use crate::components::file_grid::thumbnail::Thumbnail;
+use crate::components::menus::Node;
 use crate::explorer;
 use crate::kit::prelude::*;
 use crate::{t, theme};
@@ -91,6 +93,8 @@ struct Ready {
     image: Arc<RenderImage>,
     width: u32,
     height: u32,
+    /// Some of it is see-through: only then is there a backdrop to choose.
+    alpha: bool,
 }
 
 enum Load {
@@ -130,6 +134,8 @@ pub struct PictureView {
     frame: Rc<Cell<Bounds<Pixels>>>,
     reading: bool,
     rotating: bool,
+    /// The "..." of the tools under the picture, while its menu is open.
+    menu: Option<OpenMore>,
     task: Option<Task<()>>,
 }
 
@@ -163,10 +169,16 @@ impl PictureView {
             frame: Rc::new(Cell::new(Bounds::default())),
             reading: false,
             rotating: false,
+            menu: None,
             task: None,
         };
         view.load(window, cx);
         view
+    }
+
+    /// Whether the picture is in (drawn or failed), so there is something to show in the place of the wait.
+    pub fn is_ready(&self) -> bool {
+        !matches!(self.load, Load::Loading)
     }
 
     /// The picture's size in pixels once it has been decoded.
@@ -188,6 +200,31 @@ impl PictureView {
     /// The zoom, 1 to 8.
     pub fn zoom(&self) -> f32 {
         self.zoom
+    }
+
+    /// Says the picture is (or is not) see-through, as reading its pixels would.
+    #[cfg(test)]
+    pub fn set_alpha(&mut self, alpha: bool, cx: &mut Context<Self>) {
+        if let Load::Ready(ready) = &mut self.load {
+            ready.alpha = alpha;
+            cx.notify();
+        }
+    }
+
+    /// The labels of the rows of the "..." menu while it is open.
+    #[cfg(test)]
+    pub fn menu_labels(&self, cx: &App) -> Vec<String> {
+        self.menu.as_ref().map_or_else(Vec::new, |open| {
+            open.view()
+                .read(cx)
+                .nodes()
+                .iter()
+                .filter_map(|node| match node {
+                    Node::Item(entry) => Some(entry.label.to_string()),
+                    _ => None,
+                })
+                .collect()
+        })
     }
 
     /// What shows through it.
@@ -237,7 +274,7 @@ impl PictureView {
                     if too_big {
                         Err(t!("Too big to preview here: open it to read it.").to_string())
                     } else {
-                        decode_file(&read_path, &ext, read_renderer)
+                        decode_file(&read_path, &ext, read_renderer).map(with_alpha)
                     }
                 })
                 .await;
@@ -248,13 +285,13 @@ impl PictureView {
                     let answer = (sources.thumbnail)(&path, entry.modified, entry.size).await;
                     let from_thumbnail = cx
                         .background_executor()
-                        .spawn(async move { answer.ok().and_then(|thumb| decode_thumbnail(&thumb)) })
+                        .spawn(async move { answer.ok().and_then(|thumb| decode_thumbnail(&thumb)).map(with_alpha) })
                         .await;
                     from_thumbnail.ok_or(reason)
                 }
             };
             this.update(cx, |this, cx| match decoded {
-                Ok(image) => this.decoded(image, cx),
+                Ok((image, alpha)) => this.decoded(image, alpha, cx),
                 Err(reason) => {
                     // The reason a file couldn't be read is for the log; the person is told what the TypeScript said.
                     let note = if reason.starts_with("Too big") {
@@ -269,9 +306,10 @@ impl PictureView {
         }));
     }
 
-    fn decoded(&mut self, image: Arc<RenderImage>, cx: &mut Context<Self>) {
+    fn decoded(&mut self, image: Arc<RenderImage>, alpha: bool, cx: &mut Context<Self>) {
         let size = image.size(0);
         self.load = Load::Ready(Ready {
+            alpha,
             width: u32::try_from(size.width.0).unwrap_or(0),
             height: u32::try_from(size.height.0).unwrap_or(0),
             image,
@@ -553,6 +591,18 @@ fn decode_file(path: &str, ext: &str, renderer: gpui_kit::SvgRenderer) -> Result
         .map_err(|e| e.to_string())
 }
 
+/// The decoded picture, and whether any of it is see-through (read on the background thread: a big picture has
+/// millions of pixels).
+fn with_alpha(image: Arc<RenderImage>) -> (Arc<RenderImage>, bool) {
+    let alpha = image.as_bytes(0).is_some_and(has_alpha);
+    (image, alpha)
+}
+
+/// Whether any pixel of `bgra` (four bytes each) is not fully opaque.
+pub(super) fn has_alpha(bgra: &[u8]) -> bool {
+    bgra.as_chunks::<4>().0.iter().any(|pixel| pixel[3] != 255)
+}
+
 /// Windows' thumbnail as core answers it (an 8-byte header, then a BMP), decoded.
 fn decode_thumbnail(answer: &Thumbnail) -> Option<Arc<RenderImage>> {
     answer.pixels.as_deref().and_then(crate::core_bridge::picture)
@@ -693,6 +743,7 @@ impl Render for PictureView {
             .map(|loupe| deferred(loupe_view(&loupe, &t, window)).with_priority(1));
 
         let tools = self.tools(&ready, &t, cx);
+        let menu = self.menu.as_ref().map(more::element);
         col()
             .id("preview-picture-pane")
             .size_full()
@@ -713,6 +764,7 @@ impl Render for PictureView {
             )
             .child(tools)
             .children(loupe)
+            .children(menu)
             .into_any_element()
     }
 }
@@ -806,6 +858,65 @@ fn loupe_view(loupe: &Loupe, t: &theme::Tokens, window: &Window) -> impl IntoEle
         )
 }
 
+/// A chip under the picture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Tool {
+    Rotate,
+    Colors,
+    CopyText,
+    Wallpaper,
+    Backdrop,
+}
+
+/// How many chips stay in the row under the picture; the rest are under "...".
+const INLINE_TOOLS: usize = 2;
+
+impl Tool {
+    /// Its id, icon, words and tooltip (`busy`: it is working, so its icon spins).
+    fn look(self, busy: bool) -> (&'static str, IconName, SharedString, SharedString) {
+        match self {
+            Tool::Rotate => (
+                "preview-rotate",
+                if busy {
+                    IconName::LoaderCircle
+                } else {
+                    IconName::RotateCwSquare
+                },
+                t!("Rotate"),
+                t!("Turn it a quarter clockwise, in place (a photo keeps its quality: only its orientation changes)"),
+            ),
+            Tool::Colors => (
+                "preview-colors",
+                IconName::Pipette,
+                t!("Colors"),
+                t!("A magnifier that shows each pixel's color: click the picture to copy it (#RRGGBB)"),
+            ),
+            Tool::CopyText => (
+                "preview-copy-text",
+                if busy {
+                    IconName::LoaderCircle
+                } else {
+                    IconName::ScanText
+                },
+                t!("Copy text"),
+                t!("Copy the text in this picture, read by Windows' OCR"),
+            ),
+            Tool::Wallpaper => (
+                "preview-wallpaper",
+                IconName::Wallpaper,
+                t!("Wallpaper"),
+                t!("Set as desktop background"),
+            ),
+            Tool::Backdrop => (
+                "preview-backdrop",
+                IconName::Layers,
+                t!("Backdrop"),
+                t!("What shows through a transparent picture: checks, dark or light"),
+            ),
+        }
+    }
+}
+
 impl PictureView {
     /// The row under the picture: its size, the zoom, Colors, what shows through, and Windows' tools.
     fn tools(&self, ready: &Ready, t: &theme::Tokens, cx: &mut Context<Self>) -> Div {
@@ -835,64 +946,24 @@ impl PictureView {
                 .tooltip(t!("Click to reset zoom to 1×"))
                 .on_click(cx.listener(|this, _, _, cx| this.reset_zoom(cx)))
         });
-        let colors = small(
-            "preview-colors",
-            IconName::Pipette,
-            t!("Colors"),
-            t!("A magnifier that shows each pixel's color: click the picture to copy it (#RRGGBB)"),
-        )
-        .selected(self.loupe_on)
-        .on_click(cx.listener(|this, _, _, cx| {
-            this.loupe_on = !this.loupe_on;
-            this.loupe = None;
-            cx.notify();
-        }));
-        let backdrop = Button::new("preview-backdrop")
-            .ghost()
-            .small()
-            .label(self.backdrop.label())
-            .accessibility_label(t!("Backdrop: {name}", name = self.backdrop.label()))
-            .tooltip(t!("What shows through a transparent picture: checks, dark or light"))
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.backdrop = this.backdrop.next();
-                cx.notify();
-            }));
-        let copy = (!is_archived(&self.entry)).then(|| {
-            small(
-                "preview-copy-text",
-                if self.reading {
-                    IconName::LoaderCircle
-                } else {
-                    IconName::ScanText
-                },
-                t!("Copy text"),
-                t!("Copy the text in this picture, read by Windows' OCR"),
-            )
-            .disabled(self.reading)
-            .on_click(cx.listener(|this, _, window, cx| this.copy_text(window, cx)))
-        });
-        let rotate = self.rotatable().then(|| {
-            small(
-                "preview-rotate",
-                if self.rotating {
-                    IconName::LoaderCircle
-                } else {
-                    IconName::RotateCwSquare
-                },
-                t!("Rotate"),
-                t!("Turn it a quarter clockwise, in place (a photo keeps its quality: only its orientation changes)"),
-            )
-            .disabled(self.rotating)
-            .on_click(cx.listener(|this, _, window, cx| this.rotate(window, cx)))
-        });
-        let wallpaper = self.can_be_wallpaper().then(|| {
-            small(
-                "preview-wallpaper",
-                IconName::Wallpaper,
-                t!("Wallpaper"),
-                t!("Set as desktop background"),
-            )
-            .on_click(cx.listener(|this, _, window, cx| this.set_wallpaper(window, cx)))
+        let order = self.tool_order(ready.alpha);
+        let inline = order.len().min(INLINE_TOOLS);
+        let chips: Vec<Button> = order[..inline]
+            .iter()
+            .map(|tool| self.chip(*tool, &small, cx))
+            .collect();
+        let more = (order.len() > inline).then(|| {
+            let label = t!("More picture tools");
+            Button::new("preview-picture-more")
+                .ghost()
+                .small()
+                .icon(IconName::Ellipsis)
+                .accessibility_label(label.clone())
+                .tooltip(label)
+                .selected(self.menu.is_some())
+                .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                    this.open_tools(more::below(event), window, cx)
+                }))
         });
         row_start()
             .flex_none()
@@ -910,11 +981,118 @@ impl PictureView {
                     .child(dims),
             )
             .children(zoom_chip)
-            .child(colors)
-            .child(backdrop)
-            .children(copy)
-            .children(rotate)
-            .children(wallpaper)
+            .children(chips)
+            .children(more)
+    }
+
+    /// The tools that apply to this picture, most used first. The Colors lens comes first while it is on, so it
+    /// is where it can be turned off.
+    fn tool_order(&self, alpha: bool) -> Vec<Tool> {
+        let mut tools = Vec::new();
+        if self.rotatable() {
+            tools.push(Tool::Rotate);
+        }
+        tools.push(Tool::Colors);
+        if !is_archived(&self.entry) {
+            tools.push(Tool::CopyText);
+        }
+        if self.can_be_wallpaper() {
+            tools.push(Tool::Wallpaper);
+        }
+        if alpha {
+            tools.push(Tool::Backdrop);
+        }
+        if self.loupe_on {
+            tools.sort_by_key(|tool| *tool != Tool::Colors);
+        }
+        tools
+    }
+
+    fn busy(&self, tool: Tool) -> bool {
+        match tool {
+            Tool::Rotate => self.rotating,
+            Tool::CopyText => self.reading,
+            _ => false,
+        }
+    }
+
+    /// A chip of the row under the picture.
+    fn chip(
+        &self,
+        tool: Tool,
+        small: &impl Fn(&'static str, IconName, SharedString, SharedString) -> Button,
+        cx: &mut Context<Self>,
+    ) -> Button {
+        let busy = self.busy(tool);
+        let (id, glyph, label, hint) = tool.look(busy);
+        let button = small(id, glyph, label, hint);
+        // The backdrop's own name says which it is on now.
+        let button = if tool == Tool::Backdrop {
+            button
+                .label(self.backdrop.label())
+                .accessibility_label(t!("Backdrop: {name}", name = self.backdrop.label()))
+        } else {
+            button
+        };
+        button
+            .selected(tool == Tool::Colors && self.loupe_on)
+            .disabled(busy)
+            .on_click(cx.listener(move |this, _, window, cx| this.run_tool(tool, window, cx)))
+    }
+
+    /// What a chip does.
+    fn run_tool(&mut self, tool: Tool, window: &mut Window, cx: &mut Context<Self>) {
+        match tool {
+            Tool::Rotate => self.rotate(window, cx),
+            Tool::Colors => {
+                self.loupe_on = !self.loupe_on;
+                self.loupe = None;
+                cx.notify();
+            }
+            Tool::CopyText => self.copy_text(window, cx),
+            Tool::Wallpaper => self.set_wallpaper(window, cx),
+            Tool::Backdrop => {
+                self.backdrop = self.backdrop.next();
+                cx.notify();
+            }
+        }
+    }
+
+    /// The tools that did not fit the row, as a menu under the click.
+    fn open_tools(&mut self, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        let Load::Ready(ready) = &self.load else { return };
+        let order = self.tool_order(ready.alpha);
+        let spare = order.get(INLINE_TOOLS..).unwrap_or_default().to_vec();
+        let nodes: Vec<Node> = spare
+            .iter()
+            .map(|tool| {
+                let busy = self.busy(*tool);
+                let (id, glyph, label, _) = tool.look(busy);
+                let mut row = more::row_of(id, label, glyph).disabled(busy);
+                if *tool == Tool::Backdrop {
+                    row.label = t!("Backdrop: {name}", name = self.backdrop.label());
+                }
+                if *tool == Tool::Colors {
+                    row = row.checked(self.loupe_on);
+                }
+                Node::Item(row)
+            })
+            .collect();
+        self.menu = more::open(
+            nodes,
+            t!("More picture tools"),
+            at,
+            window,
+            cx,
+            move |this, id, window, cx| {
+                this.menu = None;
+                cx.notify();
+                if let Some(tool) = id.and_then(|id| spare.iter().copied().find(|tool| tool.look(false).0 == id)) {
+                    this.run_tool(tool, window, cx);
+                }
+            },
+        );
+        cx.notify();
     }
 }
 
