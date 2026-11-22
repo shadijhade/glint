@@ -24,15 +24,15 @@
 //! The web app ignored the action's progress (`() => {}`), and so does this.
 
 use super::hex::HexPreview;
+use super::more::{self, OpenMore};
+use crate::components::menus::{Entry, Node};
 use crate::dialogs::action_run::{self, Fut};
 use crate::kit::prelude::*;
 use crate::kit::{Editor, EditorState};
 use crate::{actions, core_bridge, i18n, state, t, theme};
 use glint_core::actions::{Output, Report};
 use glint_core::fsx::TextPreview as TextRead;
-use gpui_kit::{
-    anchored, deferred, Anchor, ClipboardItem, DismissEvent, ScrollHandle, Task, UniformListScrollHandle, WeakEntity,
-};
+use gpui_kit::{ClipboardItem, ScrollHandle, Task, UniformListScrollHandle};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -133,6 +133,10 @@ pub fn editor_language(prism: &str) -> Option<&'static str> {
 }
 
 // ---- Encodings --------------------------------------------------------------------------------------------
+
+/// The ids of the encoding menu's rows: Convert, and Read as + the encoding's name.
+const CONVERT_ROW: &str = "convert";
+const READ_AS: &str = "read-as:";
 
 /// Encodings to read a text file as (encoding_rs's names), with what people call them (`ENCODINGS`).
 pub const ENCODINGS: [(&str, &str); 22] = [
@@ -455,13 +459,6 @@ struct Shown {
     guessed: bool,
 }
 
-/// The encoding menu while it is open.
-struct OpenMenu {
-    at: Point<Pixels>,
-    menu: Entity<PopupMenu>,
-    _dismissed: Subscription,
-}
-
 /// Text and code, highlighted with the kit's Editor (read-only).
 pub struct TextPreview {
     path: String,
@@ -472,7 +469,8 @@ pub struct TextPreview {
     encoding: Option<String>,
     wrap: bool,
     copied: bool,
-    menu: Option<OpenMenu>,
+    /// The encoding menu while it is open.
+    menu: Option<OpenMore>,
     /// Which read is current: an answer for an older one is dropped.
     generation: u64,
     _read: Task<()>,
@@ -530,6 +528,11 @@ impl TextPreview {
             editor.reveal_line(usize::try_from(line.saturating_sub(1)).unwrap_or(0), cx)
         });
         cx.notify();
+    }
+
+    /// Whether the text is read (shown, or why not): not still waiting for the first read.
+    pub fn is_ready(&self) -> bool {
+        !matches!(self.state, Load::Waiting)
     }
 
     /// The file shown.
@@ -730,52 +733,58 @@ impl TextPreview {
         }));
     }
 
+    /// The encoding menu's rows: Convert to UTF-8 when the file isn't UTF-8, then what it can be read as.
+    fn encoding_nodes(&self) -> Vec<Node> {
+        let Load::Shown(shown) = &self.state else {
+            return Vec::new();
+        };
+        let current = shown.encoding.clone().unwrap_or_default();
+        let mut nodes = Vec::new();
+        if can_convert_to_utf8(&self.path, shown.encoding.as_deref()) {
+            nodes.push(Node::Item(more::row_of(
+                CONVERT_ROW,
+                t!("Convert to UTF-8"),
+                IconName::FileCheck,
+            )));
+            nodes.push(Node::Separator);
+        }
+        nodes.push(Node::Heading(t!("Read as")));
+        for (label, name) in ENCODINGS {
+            let mut row = Entry::new(
+                name.into(),
+                IconName::Languages,
+                more::pick(&format!("{READ_AS}{label}")),
+            );
+            row.icon = None;
+            nodes.push(Node::Item(row.checked(label.eq_ignore_ascii_case(&current))));
+        }
+        nodes
+    }
+
     /// Opens the encoding menu below the click.
     fn open_encoding_menu(&mut self, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
         let Load::Shown(shown) = &self.state else { return };
-        let current = shown.encoding.clone().unwrap_or_default();
-        let this: WeakEntity<Self> = cx.weak_entity();
-        let convertible = can_convert_to_utf8(&self.path, shown.encoding.as_deref());
-        let menu = PopupMenu::build(window, cx, move |menu, _, _| {
-            let mut menu = menu;
-            if convertible {
-                let this = this.clone();
-                let read_as = current.clone();
-                menu = menu
-                    .item(
-                        PopupMenuItem::new(t!("Convert to UTF-8"))
-                            .icon(IconName::FileCheck)
-                            .on_click(move |_, window, cx| {
-                                let read_as = read_as.clone();
-                                this.update(cx, |this, cx| this.convert(read_as, window, cx)).ok();
-                            }),
-                    )
-                    .separator();
-            }
-            let mut menu = menu.item(PopupMenuItem::label(t!("Read as")));
-            for (label, name) in ENCODINGS {
-                let this = this.clone();
-                menu = menu.item(
-                    PopupMenuItem::new(name)
-                        .checked(label.eq_ignore_ascii_case(&current))
-                        .on_click(move |_, window, cx| {
-                            this.update(cx, |this, cx| this.set_encoding(Some(label.to_string()), window, cx))
-                                .ok();
-                        }),
-                );
-            }
-            menu
-        });
-        window.focus(&menu.focus_handle(cx), cx);
-        let dismissed = cx.subscribe(&menu, |this, _, _: &DismissEvent, cx| {
-            this.menu = None;
-            cx.notify();
-        });
-        self.menu = Some(OpenMenu {
+        let read_as = shown.encoding.clone().unwrap_or_default();
+        self.menu = more::open(
+            self.encoding_nodes(),
+            t!("Text encoding"),
             at,
-            menu,
-            _dismissed: dismissed,
-        });
+            window,
+            cx,
+            move |this, id, window, cx| {
+                this.menu = None;
+                cx.notify();
+                match id.as_deref() {
+                    Some(CONVERT_ROW) => this.convert(read_as.clone(), window, cx),
+                    Some(id) => {
+                        if let Some(label) = id.strip_prefix(READ_AS) {
+                            this.set_encoding(Some(label.to_string()), window, cx);
+                        }
+                    }
+                    None => {}
+                }
+            },
+        );
         cx.notify();
     }
 
@@ -849,7 +858,6 @@ impl TextPreview {
             .child(wrap_button)
             .child(copy_button)
     }
-
 }
 
 impl Render for TextPreview {
@@ -903,16 +911,7 @@ impl Render for TextPreview {
                     .into_any_element()
             }
         };
-        let menu = self.menu.as_ref().map(|open| {
-            deferred(
-                anchored()
-                    .position(open.at)
-                    .anchor(Anchor::TopLeft)
-                    .snap_to_window_with_margin(px(8.))
-                    .child(open.menu.clone()),
-            )
-            .with_priority(1)
-        });
+        let menu = self.menu.as_ref().map(more::element);
         root.text_start()
             .on_action(cx.listener(|this, _: &actions::QuickLookScrollDown, _, cx| {
                 this.page(true, cx);
@@ -1346,6 +1345,19 @@ mod tests {
         read
     }
 
+    /// Whether the open encoding menu has a heading with these words.
+    fn has_heading(view: &Entity<TextPreview>, visual: &VisualTestContext, words: &str) -> bool {
+        view.read_with(visual, |v, cx| {
+            v.menu.as_ref().is_some_and(|open| {
+                open.view()
+                    .read(cx)
+                    .nodes()
+                    .iter()
+                    .any(|node| matches!(node, Node::Heading(text) if text.as_ref() == words))
+            })
+        })
+    }
+
     #[gpui_kit::test]
     fn the_encoding_menu_offers_convert_only_for_a_file_that_is_not_utf8(cx: &mut TestAppContext) {
         let _guard = testing::lock();
@@ -1359,7 +1371,7 @@ mod tests {
         visual.update(|window, cx| window.click("text-encoding", cx));
         visual.run_until_parked();
         assert!(has(&mut visual, "Convert to UTF-8"));
-        assert!(has(&mut visual, "Read as"));
+        assert!(has_heading(&view, &visual, "Read as"));
 
         // A UTF-8 file: the menu has the encodings only.
         let (source, _) = fake(Ok(read_of("plain")));
@@ -1370,7 +1382,7 @@ mod tests {
         assert!(view.read_with(&visual, |v, _| v.encoding_read().is_none()));
         visual.update(|window, cx| view.update(cx, |v, cx| v.open_encoding_menu(point(px(10.), px(10.)), window, cx)));
         visual.run_until_parked();
-        assert!(has(&mut visual, "Read as"));
+        assert!(has_heading(&view, &visual, "Read as"));
         assert!(!has(&mut visual, "Convert to UTF-8"));
 
         // A file in an archive is read, never rewritten.
@@ -1381,8 +1393,62 @@ mod tests {
         });
         visual.update(|window, cx| view.update(cx, |v, cx| v.open_encoding_menu(point(px(10.), px(10.)), window, cx)));
         visual.run_until_parked();
-        assert!(has(&mut visual, "Read as"));
+        assert!(has_heading(&view, &visual, "Read as"));
         assert!(!has(&mut visual, "Convert to UTF-8"));
+    }
+
+    #[gpui_kit::test]
+    fn the_encoding_menu_is_a_menu_view_and_choosing_a_row_reads_the_file_again(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        testing::set_rtl(false);
+        let (source, asked) = fake(Ok(old_arabic_read()));
+        let (view, mut visual) = preview(cx, r"C:\old\a.txt", source);
+        settle(&mut visual, |cx| {
+            view.read_with(cx, |v, _| matches!(v.state, Load::Shown(_)))
+        });
+        visual.update(|window, cx| window.click("text-encoding", cx));
+        visual.run_until_parked();
+        // The rows: Convert, a line, the heading, then every encoding, the one it was read as checked.
+        let labels = view.read_with(&visual, |v, cx| {
+            let menu = v.menu.as_ref().expect("the menu is open").view().read(cx);
+            menu.nodes()
+                .iter()
+                .filter_map(|node| match node {
+                    Node::Item(entry) => Some((entry.label.to_string(), entry.check)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(labels[0].0, "Convert to UTF-8");
+        assert_eq!(labels.len(), 1 + ENCODINGS.len());
+        assert_eq!(
+            labels.iter().filter(|(_, check)| *check == Some(true)).count(),
+            1,
+            "one encoding is the one it was read as"
+        );
+        assert!(labels
+            .iter()
+            .any(|(label, check)| label == "Arabic (Windows-1256)" && *check == Some(true)));
+        // Choosing "Arabic (ISO-8859-6)" reads it again as that, and the menu is gone.
+        let index = view.read_with(&visual, |v, cx| {
+            v.menu
+                .as_ref()
+                .expect("open")
+                .view()
+                .read(cx)
+                .nodes()
+                .iter()
+                .position(|node| matches!(node, Node::Item(e) if e.label == "Arabic (ISO-8859-6)"))
+                .expect("the row")
+        });
+        let before = asked.lock().map(|a| a.len()).unwrap_or(0);
+        visual.update(|window, cx| window.click(("menu-row", index), cx));
+        settle(&mut visual, |_| asked.lock().map(|a| a.len()).unwrap_or(0) > before);
+        assert_eq!(
+            asked.lock().ok().and_then(|a| a.last().cloned()),
+            Some((r"C:\old\a.txt".to_string(), Some("ISO-8859-6".to_string())))
+        );
+        assert!(view.read_with(&visual, |v, _| v.menu.is_none()));
     }
 
     #[gpui_kit::test]

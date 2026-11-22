@@ -57,6 +57,8 @@ pub mod details;
 /// Word documents laid out without Office (DocxView.tsx).
 pub mod docx;
 pub mod frame;
+/// The "…" menus: the header's rare actions, a picture's spare chips, the text's encodings.
+pub mod more;
 /// Jupyter notebooks as they read (NotebookView.tsx).
 pub mod notebook;
 pub mod pane;
