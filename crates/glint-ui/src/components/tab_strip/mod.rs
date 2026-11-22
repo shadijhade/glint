@@ -485,6 +485,8 @@ pub struct TabStrip {
     explorer: Entity<Explorer>,
     /// Each pane's strip scroll, by pane.
     scrolls: Vec<ScrollHandle>,
+    /// Around each pane's + button, to show it while the keyboard is on it (it is hidden otherwise).
+    plus_focus: Vec<FocusHandle>,
     /// The tab last scrolled into view in each pane, to scroll again only when another becomes active.
     scrolled_to: Vec<Option<TabId>>,
     /// Where a dragged tab would drop.
@@ -518,6 +520,7 @@ impl TabStrip {
         Self {
             explorer,
             scrolls: Vec::new(),
+            plus_focus: Vec::new(),
             scrolled_to: Vec::new(),
             slot: None,
             drag_from: None,
@@ -546,6 +549,7 @@ impl TabStrip {
         };
         while self.scrolls.len() < panes.len() {
             self.scrolls.push(ScrollHandle::new());
+            self.plus_focus.push(cx.focus_handle());
             self.scrolled_to.push(None);
         }
         self.focus.retain(|id, _| data.contains_key(id));
@@ -1281,8 +1285,11 @@ impl Render for TabStrip {
                     div()
                         .id(SharedString::from(format!("new-tab-wrap-{index}")))
                         .flex_none()
+                        .track_focus(&self.plus_focus[index])
                         .opacity(if dragging { 1. } else { 0. })
                         .group_hover(header_group.clone(), |s| s.opacity(1.))
+                        // Never an invisible button with the keyboard on it.
+                        .in_focus(|s| s.opacity(1.))
                         .child(new_tab),
                 );
             strips.push(
