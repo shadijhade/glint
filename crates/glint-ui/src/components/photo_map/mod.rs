@@ -1011,7 +1011,7 @@ mod tests {
     use crate::explorer::fake::{file, FakeDisk};
     use crate::explorer::NavOptions;
     use crate::testing;
-    use gpui_kit::test::{ClickOptions, TestWindowExt as _};
+    use gpui_kit::test::{ClickOptions, TestQueryExt as _, TestWindowExt as _};
     use gpui_kit::VisualTestContext;
     use std::cell::RefCell;
 
@@ -1064,9 +1064,34 @@ mod tests {
         let loaded = visual.update(|_, cx| shared(cx).read(cx).state_of(tab).map(|s| (s.loading, s.photos.len())));
         assert_eq!(loaded, Some((false, 2)));
 
+        // The header is the shared one: icon buttons with names, and a close button named for what it closes.
+        for name in [
+            "Fit all photos",
+            "Zoom in",
+            "Zoom out",
+            "Show the whole world",
+            "Close Photo World Map",
+        ] {
+            let role = visual.update(|window, _| window.try_find_by_label(name).and_then(|e| e.role()));
+            assert_eq!(role, Some(Role::Button), "{name}");
+        }
+
         visual.update(|window, cx| window.click(("pm-close", 0usize), cx));
         visual.run_until_parked();
         assert!(!visual.update(|_, cx| shows(cx, tab)));
+
+        // Escape on the map closes it too, the pin chosen first.
+        visual.update(|_, cx| toggle(cx, tab));
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            window.render_frame(cx);
+            let focus = _view.read(cx).focus_handle();
+            window.focus(&focus, cx);
+            window.render_frame(cx);
+            window.press("escape", cx);
+        });
+        visual.run_until_parked();
+        assert!(!visual.update(|_, cx| shows(cx, tab)), "Escape closes the map");
     }
     #[gpui_kit::test]
     fn a_scan_that_finds_in_pieces_ends_as_one_set_newest_first(cx: &mut gpui_kit::TestAppContext) {
