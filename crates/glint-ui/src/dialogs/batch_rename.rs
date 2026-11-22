@@ -34,6 +34,7 @@ use crate::explorer::{try_explorer, BatchPair, UndoAction, UndoId};
 use crate::kit::prelude::*;
 use crate::{core_bridge, t, theme};
 use glint_core::batch_rename::{BatchRenameResult, RenamePair};
+use glint_model::chardiff::{self, CharDiff, Edit};
 use glint_model::entries::FileEntry;
 use glint_model::format::{format_count, plural};
 use glint_model::js::{is_js_space, js_trim, to_fixed};
@@ -41,10 +42,12 @@ use glint_model::paths::{base_name, join_path, parent_path};
 use glint_model::store::SearchOptions;
 use glint_model::text::{escape_regex, replace_text};
 use gpui_kit::{Task, UniformListScrollHandle};
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::ops::Range;
 use std::pin::Pin;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -699,6 +702,46 @@ pub enum RenameMode {
     ByExample,
 }
 
+/// The character diffs of the rows shown in By example, each kept for as long as the row's two names stay as they are:
+/// scrolling, typing in the other box or re-inferring the same rule asks for them again and finds them here.
+#[derive(Default)]
+struct DiffCache {
+    /// By a hash of the pair; the pair itself is kept to check a hit.
+    diffs: HashMap<u64, (String, String, Arc<CharDiff>)>,
+    /// How many diffs were worked out (for the tests).
+    computed: usize,
+}
+
+impl DiffCache {
+    /// More than a long list's worth of rows seen: start over rather than grow.
+    const CAP: usize = 4096;
+
+    fn key(old: &str, new: &str) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        old.hash(&mut hasher);
+        new.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// What `old` becomes as `new`, worked out the first time and kept.
+    fn get(&mut self, old: &str, new: &str) -> Arc<CharDiff> {
+        let key = Self::key(old, new);
+        if let Some((o, n, diff)) = self.diffs.get(&key) {
+            if o == old && n == new {
+                return diff.clone();
+            }
+        }
+        if self.diffs.len() >= Self::CAP {
+            self.diffs.clear();
+        }
+        self.computed += 1;
+        let diff = Arc::new(chardiff::diff(old, new));
+        self.diffs.insert(key, (old.to_string(), new.to_string(), diff.clone()));
+        diff
+    }
+}
+
 /// The dialog's data: the items, the rules, and the preview they make.
 pub struct BatchRename {
     items: Arc<[Item]>,
@@ -707,6 +750,9 @@ pub struct BatchRename {
     rules: Rules,
     examples: HashMap<usize, String>,
     synthesized: Option<glint_model::flashfill::SynthesizedRule>,
+    /// By example: the rows (by position) that the examples leave open, because another reading that fits them as
+    /// well would name them differently.
+    doubt: Arc<[bool]>,
     details: Details,
     simulation: Arc<Simulation>,
     source: Source,
@@ -728,6 +774,7 @@ impl BatchRename {
             rules,
             examples: HashMap::new(),
             synthesized: None,
+            doubt: Arc::from([]),
             details: Details::Idle,
             simulation,
             source,
@@ -754,6 +801,11 @@ impl BatchRename {
     /// The active synthesized FlashFill rule when in `ByExample` mode.
     pub fn synthesized(&self) -> Option<&glint_model::flashfill::SynthesizedRule> {
         self.synthesized.as_ref()
+    }
+
+    /// By example: which rows the examples leave open (see `flashfill::synthesize_with_doubt`). Empty without a rule.
+    pub fn doubt(&self) -> &Arc<[bool]> {
+        &self.doubt
     }
 
     /// The preview.
@@ -797,7 +849,8 @@ impl BatchRename {
         if index >= self.items.len() {
             return;
         }
-        if to.is_empty() {
+        // The name as it stands says nothing: the box starts with it, and putting it back takes the example away.
+        if to.is_empty() || self.items.get(index).is_some_and(|item| item.name == to) {
             self.examples.remove(&index);
         } else {
             self.examples.insert(index, to);
@@ -812,6 +865,7 @@ impl BatchRename {
     pub fn reset_examples(&mut self, cx: &mut Context<Self>) {
         self.examples.clear();
         self.synthesized = None;
+        self.doubt = Arc::from([]);
         if self.mode == RenameMode::ByExample {
             self.resimulate();
         }
@@ -847,11 +901,16 @@ impl BatchRename {
         let has_change = active.iter().any(|ex| ex.to != ex.from && !ex.to.is_empty());
 
         let all_inputs: Vec<String> = self.items.iter().map(|i| i.name.clone()).collect();
-        let rule = if has_change {
-            glint_model::flashfill::synthesize(&active, &all_inputs)
+        let found = if has_change {
+            glint_model::flashfill::synthesize_with_doubt(&active, &all_inputs)
         } else {
             None
         };
+        let (rule, doubt) = match found {
+            Some((rule, doubt)) => (Some(rule), doubt),
+            None => (None, Vec::new()),
+        };
+        self.doubt = doubt.into();
         self.synthesized = rule.clone();
 
         let mut drafts = Vec::with_capacity(self.items.len());
@@ -1132,6 +1191,10 @@ pub struct BatchRenameDialog {
     example_0: Entity<InputState>,
     example_1: Entity<InputState>,
     show_second_example: bool,
+    /// The row the second example box is for (the second one, until a row that is left open is chosen).
+    second_row: usize,
+    /// The diffs of the rows By example shows.
+    diffs: Rc<RefCell<DiffCache>>,
     scroll: UniformListScrollHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -1208,7 +1271,8 @@ impl BatchRenameDialog {
                     move |this, input, event: &InputEvent, window, cx| match event {
                         InputEvent::Change => {
                             let text = input.read(cx).value().to_string();
-                            this.model.update(cx, |model, cx| model.set_example(slot, text, cx));
+                            let row = if slot == 0 { 0 } else { this.second_row };
+                            this.model.update(cx, |model, cx| model.set_example(row, text, cx));
                         }
                         InputEvent::PressEnter { .. } => this.apply(window, cx),
                         _ => {}
@@ -1231,6 +1295,8 @@ impl BatchRenameDialog {
             example_0,
             example_1,
             show_second_example: false,
+            second_row: 1,
+            diffs: Rc::default(),
             scroll: UniformListScrollHandle::new(),
             _subscriptions: subscriptions,
         }
@@ -1260,6 +1326,31 @@ impl BatchRenameDialog {
         self.replace.update(cx, |input, cx| {
             input.set_placeholder(replace_placeholder(on), window, cx)
         });
+    }
+
+    /// A row the examples leave open is to be edited: the first row's box takes it as it is, and any other row
+    /// becomes the second example (the box for it shows its name, and what was typed for the row before is
+    /// let go of).
+    fn edit_row(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(name) = self.model.read(cx).items().get(ix).map(|item| item.name.clone()) else {
+            return;
+        };
+        let focus = if ix == 0 {
+            self.example_0.clone()
+        } else {
+            let before = std::mem::replace(&mut self.second_row, ix);
+            if before != ix {
+                self.model
+                    .update(cx, |model, cx| model.set_example(before, String::new(), cx));
+            }
+            self.show_second_example = true;
+            self.example_1.update(cx, |input, cx| input.set_value(name, window, cx));
+            self.example_1.clone()
+        };
+        window.defer(cx, move |window, cx| {
+            focus.update(cx, |input, cx| input.focus(window, cx));
+        });
+        cx.notify();
     }
 
     /// Switches between Pattern mode and By Example (FlashFill) mode, focusing the relevant box.
@@ -1294,6 +1385,7 @@ impl BatchRenameDialog {
                     m.items().get(1).map(|i| i.name.clone()).unwrap_or_default(),
                 )
             };
+            self.second_row = 1;
             self.example_0
                 .update(cx, |input, cx| input.set_value(first_name, window, cx));
             self.example_1
@@ -1561,8 +1653,18 @@ impl BatchRenameDialog {
             .child(div().flex_1().min_w_0().px(space(3.)).child(t!("New name")))
     }
 
-    /// One line of the preview.
-    fn preview_row(ix: usize, row: &Row, t: &theme::Tokens, mono: &SharedString) -> impl IntoElement {
+    /// One line of the preview. `diff` (By example) is what the rename deletes and inserts: deleted characters are
+    /// struck through in the danger color in the old name and inserted ones are in the success color in the new one.
+    /// `open` is a row the examples leave open: its badge asks for an edit.
+    fn preview_row(
+        ix: usize,
+        row: &Row,
+        diff: Option<Arc<CharDiff>>,
+        open: bool,
+        t: &theme::Tokens,
+        mono: &SharedString,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let fill = if row.conflict.is_some() {
             t.destructive.opacity(0.1)
         } else if row.changed {
@@ -1570,8 +1672,11 @@ impl BatchRenameDialog {
         } else {
             t.background.opacity(0.)
         };
+        // With the diff, only what is new is in the success color: the rest of the name stays plain.
         let new_color = if row.conflict.is_some() {
             t.destructive
+        } else if diff.is_some() {
+            t.foreground
         } else if row.changed {
             t.success
         } else {
@@ -1581,6 +1686,33 @@ impl BatchRenameDialog {
         if let Some(conflict) = row.conflict {
             label = format!("{label}: {}", conflict.message());
         }
+        let old_text = match &diff {
+            Some(diff) => edit_text(&diff.old, |edit| match edit {
+                Edit::Deleted => Some(HighlightStyle {
+                    color: Some(t.destructive),
+                    strikethrough: Some(StrikethroughStyle {
+                        thickness: px(1.),
+                        color: Some(t.destructive),
+                    }),
+                    ..Default::default()
+                }),
+                _ => None,
+            })
+            .into_any_element(),
+            None => isolate(row.name.clone()).into_any_element(),
+        };
+        let new_text = match &diff {
+            Some(diff) if row.conflict.is_none() => edit_text(&diff.new, |edit| match edit {
+                Edit::Inserted => Some(HighlightStyle {
+                    color: Some(t.success),
+                    font_weight: Some(FontWeight::SEMIBOLD),
+                    ..Default::default()
+                }),
+                _ => None,
+            })
+            .into_any_element(),
+            _ => isolate(row.new_name.clone()).into_any_element(),
+        };
         row_start()
             .id(("batch-rename-row", ix))
             .role(Role::ListItem)
@@ -1611,7 +1743,7 @@ impl BatchRenameDialog {
                     .truncate()
                     .font_family(mono.clone())
                     .text_color(t.muted_foreground)
-                    .child(isolate(row.name.clone())),
+                    .child(old_text),
             )
             .child(
                 div()
@@ -1638,7 +1770,7 @@ impl BatchRenameDialog {
                                 this.font_weight(FontWeight::SEMIBOLD)
                             })
                             .text_color(new_color)
-                            .child(isolate(row.new_name.clone())),
+                            .child(new_text),
                     )
                     .children(row.conflict.map(|conflict| {
                         align_row(1.)
@@ -1653,6 +1785,27 @@ impl BatchRenameDialog {
                             .text_color(t.destructive)
                             .child(icon(IconName::TriangleAlert).size_3())
                             .child(conflict.message())
+                    }))
+                    .children(open.then(|| {
+                        let label = t!("Edit this row to disambiguate");
+                        align_row(1.)
+                            .id(("batch-rename-doubt", ix))
+                            .role(Role::Button)
+                            .aria_label(label.clone())
+                            .test_support()
+                            .flex_none()
+                            .ms(2.)
+                            .px(space(1.5))
+                            .py(space(0.5))
+                            .rounded(theme::size::RADIUS_SM)
+                            .bg(t.warning.opacity(0.15))
+                            .text_size(theme::size::XXS)
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(t.warning)
+                            .cursor_pointer()
+                            .child(icon(IconName::TriangleAlert).size_3())
+                            .child(label)
+                            .on_click(cx.listener(move |this, _, window, cx| this.edit_row(ix, window, cx)))
                     })),
             )
     }
@@ -1668,7 +1821,7 @@ impl BatchRenameDialog {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let first_from = items.first().map(|i| i.name.as_str()).unwrap_or("");
-        let second_from = items.get(1).map(|i| i.name.as_str()).unwrap_or("");
+        let second_from = items.get(self.second_row).map(|i| i.name.as_str()).unwrap_or("");
         let has_edit = examples
             .iter()
             .any(|(&idx, to)| items.get(idx).is_some_and(|it| !to.is_empty() && *to != it.name));
@@ -1831,6 +1984,41 @@ fn card(t: &theme::Tokens) -> Div {
         .bg(t.card)
 }
 
+/// A name's pieces as the text that is drawn and the runs `style` lays over the pieces it gives one for (byte ranges
+/// into that text). A name that starts right to left is isolated first, which moves the runs past the mark.
+fn edit_runs(
+    pieces: &[chardiff::Piece],
+    style: impl Fn(Edit) -> Option<HighlightStyle>,
+) -> (SharedString, Vec<(Range<usize>, HighlightStyle)>) {
+    let mut text = String::new();
+    let mut runs: Vec<(Range<usize>, HighlightStyle)> = Vec::new();
+    for piece in pieces {
+        let start = text.len();
+        text.push_str(&piece.text);
+        if let Some(style) = style(piece.edit) {
+            runs.push((start..text.len(), style));
+        }
+    }
+    let shown = isolate(text.clone());
+    let shift = if shown.len() == text.len() {
+        0
+    } else {
+        '\u{2067}'.len_utf8()
+    };
+    let runs = runs
+        .into_iter()
+        .map(|(range, style)| (range.start + shift..range.end + shift, style))
+        .collect();
+    (shown, runs)
+}
+
+/// The name as text with `style` laid over its pieces through text runs: the text system places each run, so
+/// right-to-left names (Arabic, Hebrew) read as they should and no x position is ever worked out here.
+fn edit_text(pieces: &[chardiff::Piece], style: impl Fn(Edit) -> Option<HighlightStyle>) -> StyledText {
+    let (shown, runs) = edit_runs(pieces, style);
+    StyledText::new(shown).with_highlights(runs)
+}
+
 fn find_placeholder(regex: bool) -> SharedString {
     if regex {
         t!("Regex (e.g. ^IMG_(\\d+))")
@@ -1869,7 +2057,7 @@ impl Render for BatchRenameDialog {
         let rem = window.rem_size();
         let list_height = (window.viewport_size().height * LIST_OF_WINDOW - rem * OTHER_REMS)
             .clamp(ROW_REMS * 4. * rem, ROW_REMS * 18. * rem);
-        let (mode, rules, examples, synthesized, sim, reading, running, count) = {
+        let (mode, rules, examples, synthesized, sim, reading, running, count, doubt) = {
             let model = self.model.read(cx);
             (
                 model.mode(),
@@ -1880,6 +2068,7 @@ impl Render for BatchRenameDialog {
                 model.reading(),
                 model.running(),
                 model.items().len(),
+                model.doubt().clone(),
             )
         };
         let can_apply = self.model.read(cx).can_apply();
@@ -1987,15 +2176,22 @@ impl Render for BatchRenameDialog {
             let sim = sim.clone();
             let mono = mono.clone();
             let colors = t.clone();
+            let by_example = mode == RenameMode::ByExample;
+            let doubt = doubt.clone();
+            let diffs = self.diffs.clone();
             uniform_list(
                 "batch-rename-list",
                 sim.rows.len(),
-                cx.processor(move |_, range: Range<usize>, _, _| {
+                cx.processor(move |_, range: Range<usize>, _, cx| {
                     range
                         .filter_map(|ix| {
-                            sim.rows
-                                .get(ix)
-                                .map(|row| Self::preview_row(ix, row, &colors, &mono).into_any_element())
+                            let row = sim.rows.get(ix)?;
+                            // By example: what the rename deletes and inserts, and whether the examples leave
+                            // the row open.
+                            let diff = (by_example && row.changed && row.name != row.new_name)
+                                .then(|| diffs.borrow_mut().get(&row.name, &row.new_name));
+                            let open = by_example && doubt.get(ix).copied().unwrap_or(false);
+                            Some(Self::preview_row(ix, row, diff, open, &colors, &mono, cx).into_any_element())
                         })
                         .collect::<Vec<_>>()
                 }),
@@ -3244,5 +3440,137 @@ mod tests {
         });
         settle(&mut visual, "flashfill apply", |_| fake.batches().len() == 1);
         assert_eq!(fake.batches()[0].len(), 3);
+    }
+
+    #[test]
+    fn a_rows_diff_is_worked_out_once_for_as_long_as_its_names_stay() {
+        let mut cache = DiffCache::default();
+        let first = cache.get("IMG_0001.jpg", "Tokyo_0001.jpg");
+        let again = cache.get("IMG_0001.jpg", "Tokyo_0001.jpg");
+        assert!(Arc::ptr_eq(&first, &again));
+        assert_eq!(cache.computed, 1);
+        // Another new name for the same file is another diff; the old pair is still there.
+        let other = cache.get("IMG_0001.jpg", "Kyoto_0001.jpg");
+        assert_eq!(cache.computed, 2);
+        assert_ne!(first, other);
+        assert!(Arc::ptr_eq(&first, &cache.get("IMG_0001.jpg", "Tokyo_0001.jpg")));
+        assert_eq!(cache.computed, 2);
+        // A cache that has filled starts over instead of growing.
+        for i in 0..DiffCache::CAP + 10 {
+            cache.get(&format!("a{i}.txt"), &format!("b{i}.txt"));
+        }
+        assert!(cache.diffs.len() <= DiffCache::CAP);
+    }
+
+    #[gpui_kit::test]
+    fn by_example_marks_what_goes_and_what_comes_and_names_the_rows_left_open(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let mut visual = window(cx);
+        let fake = Fake::default();
+        // Row 2 has three words where the examples have two: the second word counted from the start or the last
+        // counted from the end name it differently.
+        let items = vec![
+            item("C:\\Trips", "a_b.txt"),
+            item("C:\\Trips", "c_d.txt"),
+            item("C:\\Trips", "x_y_z.txt"),
+        ];
+        let view = open_items(&mut visual, &fake, items, &[]);
+        visual.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("batch-rename-mode-example", cx);
+        });
+        visual.run_until_parked();
+        let (example_0, model) = view.read_with(&visual, |v, _| (v.example_0.clone(), v.model.clone()));
+        visual.update(|window, cx| example_0.update(cx, |input, cx| input.set_value("", window, cx)));
+        type_into(&mut visual, &example_0, "b.txt");
+        assert_eq!(new_names(&mut visual, &model), ["b.txt", "d.txt", "y z.txt"]);
+        assert_eq!(
+            model.read_with(&visual, |m, _| m.doubt().to_vec()),
+            [false, false, true]
+        );
+
+        // Only the open row says so, and it can be pressed.
+        visual.update(|window, cx| window.render_frame(cx));
+        assert_eq!(
+            role_of(&mut visual, "Edit this row to disambiguate"),
+            Some(Role::Button)
+        );
+        // Pressing it makes that row the second example: its box shows the name, ready to be edited.
+        visual.update(|window, cx| {
+            window.render_frame(cx);
+            window.click(("batch-rename-doubt", 2usize), cx);
+        });
+        visual.run_until_parked();
+        let (example_1, second_row) = view.read_with(&visual, |v, _| (v.example_1.clone(), v.second_row));
+        assert_eq!(second_row, 2);
+        assert_eq!(value_of(&mut visual, &example_1), "x_y_z.txt");
+        visual.update(|window, cx| example_1.update(cx, |input, cx| input.set_value("", window, cx)));
+        type_into(&mut visual, &example_1, "z.txt");
+        // The rule is now one that reads the last word, and every row is settled.
+        assert_eq!(new_names(&mut visual, &model), ["b.txt", "d.txt", "z.txt"]);
+        assert_eq!(
+            model.read_with(&visual, |m, _| m.doubt().to_vec()),
+            [false, false, false]
+        );
+        visual.update(|window, cx| window.render_frame(cx));
+        assert_eq!(role_of(&mut visual, "Edit this row to disambiguate"), None);
+    }
+
+    #[gpui_kit::test]
+    fn by_example_diffs_arabic_and_hebrew_names_through_text_runs(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let mut visual = window(cx);
+        let fake = Fake::default();
+        let items = vec![item("C:\\Trips", "صورة_1.jpg"), item("C:\\Trips", "שלום_2.jpg")];
+        let view = open_items(&mut visual, &fake, items, &[]);
+        visual.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("batch-rename-mode-example", cx);
+        });
+        visual.run_until_parked();
+        let (example_0, model) = view.read_with(&visual, |v, _| (v.example_0.clone(), v.model.clone()));
+        visual.update(|window, cx| example_0.update(cx, |input, cx| input.set_value("", window, cx)));
+        type_into(&mut visual, &example_0, "صورة_جديدة_1.jpg");
+        // Every row is on screen with its names whole: the diff only styles runs of the text, never moves it.
+        visual.update(|window, cx| window.render_frame(cx));
+        let names = new_names(&mut visual, &model);
+        assert_eq!(names[0], "صورة_جديدة_1.jpg");
+        assert_eq!(
+            role_of(&mut visual, "صورة_1.jpg → صورة_جديدة_1.jpg"),
+            Some(Role::ListItem)
+        );
+        let diff = glint_model::chardiff::diff("صورة_1.jpg", "صورة_جديدة_1.jpg");
+        assert_eq!(diff.new_text(), "صورة_جديدة_1.jpg");
+        assert!(diff
+            .new
+            .iter()
+            .any(|p| p.edit == Edit::Inserted && p.text.contains("جديدة")));
+        // The runs line up with the text that is drawn, isolate mark and all: each one is exactly an inserted piece.
+        let (shown, runs) = edit_runs(&diff.new, |edit| (edit == Edit::Inserted).then(HighlightStyle::default));
+        assert!(shown.starts_with('\u{2067}'), "an Arabic name is isolated");
+        assert!(!runs.is_empty());
+        for (range, _) in &runs {
+            assert!(shown.is_char_boundary(range.start) && shown.is_char_boundary(range.end));
+        }
+        let marked: String = runs.iter().map(|(range, _)| &shown[range.clone()]).collect();
+        let inserted: String = diff
+            .new
+            .iter()
+            .filter(|p| p.edit == Edit::Inserted)
+            .map(|p| p.text.as_str())
+            .collect();
+        assert_eq!(marked, inserted);
+        // A Hebrew name too, and an English one is not isolated at all.
+        let hebrew = glint_model::chardiff::diff("שלום_2.jpg", "שלום_חדש_2.jpg");
+        let (shown, runs) = edit_runs(&hebrew.new, |edit| {
+            (edit == Edit::Inserted).then(HighlightStyle::default)
+        });
+        assert!(shown.starts_with('\u{2067}'));
+        assert_eq!(&shown[runs[0].0.clone()], "חדש_");
+        let latin = glint_model::chardiff::diff("a_2.jpg", "a_new_2.jpg");
+        let (shown, runs) = edit_runs(&latin.new, |edit| {
+            (edit == Edit::Inserted).then(HighlightStyle::default)
+        });
+        assert_eq!(&shown[runs[0].0.clone()], "new_");
     }
 }

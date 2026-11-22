@@ -12,6 +12,8 @@ pub mod archives;
 /// What Glint knows about what a menu or the dock is for, and what it would do next (docs/gpui/aware).
 pub mod aware;
 pub mod cd;
+/// A character-level difference between two file names (what a rename deletes and inserts).
+pub mod chardiff;
 pub mod color;
 pub mod columns;
 pub mod editor;

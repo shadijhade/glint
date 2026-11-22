@@ -848,6 +848,62 @@ fn describe_atoms(atoms: &[Atom]) -> String {
 /// counts and avoid duplicate output names. Returns `None` when `examples` is empty or mutually
 /// inconsistent.
 pub fn synthesize(examples: &[Example], all_inputs: &[String]) -> Option<SynthesizedRule> {
+    let scored = rank(examples, all_inputs)?;
+    let (_, _, _, atoms) = scored.into_iter().next()?;
+    let description = describe_atoms(&atoms);
+    Some(SynthesizedRule { atoms, description })
+}
+
+/// How much worse than the best rule another may score and still count as a reading of the examples that could be
+/// meant: the cost of one token counted from the end instead of the start is 1, a literal letter is 6 to 8.
+const DOUBT_SLACK: u32 = 4;
+
+/// The most rival rules asked about each name.
+const MAX_RIVALS: usize = 6;
+
+/// [`synthesize`], and which names the examples leave in doubt: `doubt[i]` is true for a name that is no example
+/// and that a rival rule, one as plausible as the chosen one and just as true to every example, would name
+/// differently (a token counted from the start or from the end gives the same name for the examples and another
+/// for a name with more words). The chosen rule is the one `synthesize` gives.
+pub fn synthesize_with_doubt(examples: &[Example], all_inputs: &[String]) -> Option<(SynthesizedRule, Vec<bool>)> {
+    let scored = rank(examples, all_inputs)?;
+    let (best_penalty, _, _, best_atoms) = scored.first()?.clone();
+    let best = SynthesizedRule {
+        description: describe_atoms(&best_atoms),
+        atoms: best_atoms,
+    };
+    let rivals: Vec<SynthesizedRule> = scored
+        .iter()
+        .skip(1)
+        .filter(|(penalty, ..)| *penalty <= best_penalty.saturating_add(DOUBT_SLACK))
+        .filter(|(_, _, _, atoms)| *atoms != best.atoms)
+        .take(MAX_RIVALS)
+        .map(|(_, _, _, atoms)| SynthesizedRule {
+            atoms: atoms.clone(),
+            description: String::new(),
+        })
+        .collect();
+    let given: HashSet<usize> = examples.iter().map(|ex| ex.index).collect();
+    let doubt = all_inputs
+        .iter()
+        .enumerate()
+        .map(|(i, input)| {
+            !given.contains(&i) && {
+                let chosen = best.apply(input, i);
+                rivals.iter().any(|rival| rival.apply(input, i) != chosen)
+            }
+        })
+        .collect();
+    Some((best, doubt))
+}
+
+/// A rule's atoms with what they cost: the penalty (its own cost, plus a large one for each name it collapses onto
+/// another's or empties), the names it collapses, and how many atoms it has.
+type Scored = (u32, usize, usize, Vec<Atom>);
+
+/// Every rule that holds for all the examples, best first (the first is the one `synthesize` picks: ties go to the
+/// one found first). `None` when there are no examples to infer from.
+fn rank(examples: &[Example], all_inputs: &[String]) -> Option<Vec<Scored>> {
     let first = examples.first()?;
     if first.from.is_empty() || first.to.is_empty() {
         return None;
@@ -862,7 +918,7 @@ pub fn synthesize(examples: &[Example], all_inputs: &[String]) -> Option<Synthes
     let ext_atom = infer_extension_atom(examples);
     let candidates = parse_stem_candidates(first, max_input_tokens);
 
-    let mut best: Option<(u32, usize, usize, Vec<Atom>)> = None;
+    let mut scored: Vec<Scored> = Vec::new();
     for cand in &candidates {
         let Some((atoms, base_cost)) = instantiate_candidate(cand, examples, &ext_atom) else {
             continue;
@@ -891,20 +947,12 @@ pub fn synthesize(examples: &[Example], all_inputs: &[String]) -> Option<Synthes
         }
         let penalty =
             base_cost + u32::try_from(collisions).unwrap_or(100) * 50 + u32::try_from(empty_count).unwrap_or(100) * 100;
-        let key = (penalty, collisions, atoms.len());
-        let better = match &best {
-            None => true,
-            Some((bp, bc, ba, _)) => key < (*bp, *bc, *ba),
-        };
-        if better {
-            best = Some((penalty, collisions, atoms.len(), atoms));
-        }
+        scored.push((penalty, collisions, atoms.len(), atoms));
     }
 
-    best.map(|(_, _, _, atoms)| {
-        let description = describe_atoms(&atoms);
-        SynthesizedRule { atoms, description }
-    })
+    // A stable sort keeps the first found first among equals, as the single best used to be picked.
+    scored.sort_by_key(|(penalty, collisions, atoms, _)| (*penalty, *collisions, *atoms));
+    (!scored.is_empty()).then_some(scored)
 }
 
 #[cfg(test)]
@@ -1057,5 +1105,37 @@ mod tests {
             &inputs,
         );
         assert!(rule.is_none());
+    }
+
+    #[test]
+    fn rows_a_rival_reading_would_name_differently_are_in_doubt() {
+        let inputs: Vec<String> = ["a_b.txt", "c_d.txt", "x_y_z.txt"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let example = Example {
+            index: 0,
+            from: inputs[0].clone(),
+            to: "b.txt".to_string(),
+        };
+        let (rule, doubt) = synthesize_with_doubt(std::slice::from_ref(&example), &inputs).expect("a rule");
+        // The same rule `synthesize` gives.
+        assert_eq!(Some(rule.clone()), synthesize(std::slice::from_ref(&example), &inputs));
+        // The second token counted from the start or the last counted from the end: the same for names with two
+        // words, different for the one with three.
+        assert_eq!(doubt, vec![false, false, true]);
+    }
+
+    #[test]
+    fn nothing_is_in_doubt_when_every_name_is_an_example_or_one_shape() {
+        let inputs: Vec<String> = ["a_b.txt", "c_d.txt"].iter().map(|s| s.to_string()).collect();
+        let example = Example {
+            index: 0,
+            from: inputs[0].clone(),
+            to: "b.txt".to_string(),
+        };
+        let (_, doubt) = synthesize_with_doubt(&[example], &inputs).expect("a rule");
+        assert_eq!(doubt, vec![false, false]);
+        assert!(synthesize_with_doubt(&[], &inputs).is_none());
     }
 }
