@@ -274,8 +274,9 @@ pub static BINDINGS: &[Binding] = &[
         ToggleTimeMachine,
         "Time Machine: scrub this folder back through shadow copies, Git, and backups"
     ),
+    // Not Ctrl+Alt+F: that is Quick search's shortcut, taken from every app, so it never reached the window.
     bind!(
-        "ctrl-alt-f",
+        "alt-f",
         "Workspace",
         FreezeOrder,
         "Freeze order: keep this folder's list where it is while files change (again: sort once)"
@@ -422,6 +423,16 @@ mod tests {
                 binding.keys,
                 binding.context
             );
+        }
+    }
+
+    #[test]
+    fn no_key_of_the_window_is_one_quick_search_takes_from_every_app() {
+        // Quick search's shortcut is Windows-wide, so the same chord bound in the window never arrives there
+        // (Freeze order was on Ctrl+Alt+F, the default one, and did nothing).
+        for preset in crate::components::settings::QUICK_SHORTCUT_PRESETS {
+            let keys = preset.to_lowercase().replace('+', "-");
+            assert!(BINDINGS.iter().all(|b| b.keys != keys), "{preset} is Quick search's");
         }
     }
 

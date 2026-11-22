@@ -42,6 +42,9 @@ mod overview;
 pub mod pages;
 pub mod pattern;
 mod shortcut;
+/// The shortcuts Settings offers for Quick search, for the test that keeps the window's own keys off them.
+#[cfg(test)]
+pub(crate) use shortcut::PRESETS as QUICK_SHORTCUT_PRESETS;
 pub mod tools;
 pub mod transfer;
 mod widgets;
