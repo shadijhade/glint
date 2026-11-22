@@ -7,6 +7,10 @@
 //!    thumbnail handler decodes the file (20–35 ms for a photo), on lower-priority threads; Windows
 //!    caches the result for next time.
 //!
+//! A third, lowest lane serves prefetches: what the grid asks for one screenful ahead of where it is
+//! scrolling. It is served only when no lookup and no make waits, a prefetch is promoted to a real request
+//! when the same thumbnail is then asked for, and a tab can drop its prefetches (scroll reversed).
+//!
 //! Both run on worker threads of their own (each a COM apartment), never on the UI thread or the async
 //! runtime. Requests wait in their tab's lane and are dropped when that tab scrolls them out of view or
 //! moves on, and every thumbnail goes back as its pixels, kept in memory here too (shared, not copied).
@@ -115,6 +119,8 @@ struct Waiter<R> {
     lane: String,
     /// The UI numbers its requests, so dropping the old ones never drops one made since.
     seq: u32,
+    /// A prefetch: asked for ahead of need, served last (see [`Queue::next`]).
+    ahead: bool,
     reply: R,
 }
 
@@ -126,6 +132,10 @@ struct Job<R> {
     cached_only: bool,
     phase: Phase,
     running: bool,
+    /// Only prefetches wait for it: it is in a lane behind the real ones, until someone really asks.
+    ahead: bool,
+    /// A worker is making it as a prefetch (counted against `Queue::ahead_cap`).
+    making_ahead: bool,
     waiters: Vec<Waiter<R>>,
     /// The smaller one Windows has cached, while a thumbnail at the size asked is made: the answer if
     /// that fails.
@@ -218,6 +228,12 @@ struct Queue<R> {
     jobs: HashMap<Key, Job<R>>,
     lookups: VecDeque<Key>,
     makes: VecDeque<Key>,
+    /// The prefetch lane: lookups, then makes, behind everything above.
+    ahead_lookups: VecDeque<Key>,
+    ahead_makes: VecDeque<Key>,
+    /// How many prefetches are being made at once at the most, so that real requests find a free thread.
+    ahead_cap: usize,
+    ahead_making: usize,
     memory: Memory,
 }
 
@@ -227,20 +243,39 @@ impl<R> Queue<R> {
             jobs: HashMap::new(),
             lookups: VecDeque::new(),
             makes: VecDeque::new(),
+            ahead_lookups: VecDeque::new(),
+            ahead_makes: VecDeque::new(),
+            ahead_cap: 1,
+            ahead_making: 0,
             memory: Memory::new(budget),
         }
     }
 
     /// Adds a waiter for `key`: to the job for it if there's one (several panes can show one
-    /// folder), otherwise as a new lookup.
+    /// folder), otherwise as a new lookup (in the prefetch lane for a prefetch). A real request for a
+    /// job that only prefetches wait for promotes it to the real lanes.
     fn want(&mut self, key: Key, path: String, cached_only: bool, waiter: Waiter<R>) {
         if let Some(job) = self.jobs.get_mut(&key) {
             job.cached_only &= cached_only;
+            if job.ahead && !waiter.ahead {
+                job.ahead = false;
+                if !job.running {
+                    match job.phase {
+                        Phase::Lookup => self.lookups.push_back(key),
+                        Phase::Make => self.makes.push_back(key),
+                    }
+                }
+            }
             job.waiters.push(waiter);
             return;
         }
         let size = key.size;
-        self.lookups.push_back(key.clone());
+        let ahead = waiter.ahead;
+        if ahead {
+            self.ahead_lookups.push_back(key.clone());
+        } else {
+            self.lookups.push_back(key.clone());
+        }
         self.jobs.insert(
             key,
             Job {
@@ -249,6 +284,8 @@ impl<R> Queue<R> {
                 cached_only,
                 phase: Phase::Lookup,
                 running: false,
+                ahead,
+                making_ahead: false,
                 waiters: vec![waiter],
                 smaller: None,
             },
@@ -256,16 +293,38 @@ impl<R> Queue<R> {
     }
 
     /// The oldest lookup, or for a thread that makes thumbnails (`makes`), the oldest one to make
-    /// once no lookup waits. Requests dropped meanwhile are skipped.
+    /// once no lookup waits; prefetches come after all of those (lookups first), and no more than
+    /// `ahead_cap` of them are made at once. Requests dropped meanwhile are skipped.
     fn next(&mut self, makes: bool) -> Option<Task> {
         loop {
-            let (key, phase) = match self.lookups.pop_front() {
-                Some(key) => (key, Phase::Lookup),
-                None if makes => (self.makes.pop_front()?, Phase::Make),
-                None => return None,
-            };
-            if let Some(job) = self.jobs.get_mut(&key).filter(|job| !job.running && job.phase == phase) {
+            let may_make_ahead = makes && self.ahead_making < self.ahead_cap;
+            let (key, phase, ahead) = self
+                .lookups
+                .pop_front()
+                .map(|key| (key, Phase::Lookup, false))
+                .or_else(|| {
+                    makes
+                        .then(|| self.makes.pop_front())
+                        .flatten()
+                        .map(|key| (key, Phase::Make, false))
+                })
+                .or_else(|| self.ahead_lookups.pop_front().map(|key| (key, Phase::Lookup, true)))
+                .or_else(|| {
+                    may_make_ahead
+                        .then(|| self.ahead_makes.pop_front())
+                        .flatten()
+                        .map(|key| (key, Phase::Make, true))
+                })?;
+            if let Some(job) = self
+                .jobs
+                .get_mut(&key)
+                .filter(|job| !job.running && job.phase == phase && job.ahead == ahead)
+            {
                 job.running = true;
+                if ahead && phase == Phase::Make {
+                    job.making_ahead = true;
+                    self.ahead_making += 1;
+                }
                 return Some(Task {
                     path: job.path.clone(),
                     size: job.size,
@@ -281,6 +340,9 @@ impl<R> Queue<R> {
     fn finish(&mut self, key: &Key, outcome: Outcome) -> Option<(Arc<Thumb>, Vec<R>)> {
         let job = self.jobs.get_mut(key)?;
         job.running = false;
+        if std::mem::take(&mut job.making_ahead) {
+            self.ahead_making = self.ahead_making.saturating_sub(1);
+        }
         if matches!(outcome, Outcome::NotCached | Outcome::Smaller { .. })
             && !job.cached_only
             && !job.waiters.is_empty()
@@ -289,7 +351,11 @@ impl<R> Queue<R> {
                 job.smaller = Some(Thumb::found(pixels, ThumbFrom::Cache, ms));
             }
             job.phase = Phase::Make;
-            self.makes.push_back(key.clone());
+            if job.ahead {
+                self.ahead_makes.push_back(key.clone());
+            } else {
+                self.makes.push_back(key.clone());
+            }
             return None;
         }
         let thumb = match outcome {
@@ -351,6 +417,28 @@ impl<R> Queue<R> {
         });
         dropped
     }
+
+    /// Drops the prefetches of `lane`: what it asked for ahead of need and no longer wants (it scrolled
+    /// back, or its folder changed). Real requests, its own or others', stay. Returns the replies dropped.
+    fn cancel_ahead(&mut self, lane: &str) -> Vec<R> {
+        let mut dropped = Vec::new();
+        self.jobs.retain(|_, job| {
+            if !job.waiters.iter().any(|w| w.ahead && w.lane == lane) {
+                return true;
+            }
+            let mut kept = Vec::with_capacity(job.waiters.len());
+            for waiter in job.waiters.drain(..) {
+                if waiter.ahead && waiter.lane == lane {
+                    dropped.push(waiter.reply);
+                } else {
+                    kept.push(waiter);
+                }
+            }
+            job.waiters = kept;
+            job.running || !job.waiters.is_empty()
+        });
+        dropped
+    }
 }
 
 type Reply = Sender<Arc<Thumb>>;
@@ -366,8 +454,11 @@ pub struct Thumbs(Arc<Shared>);
 
 impl Default for Thumbs {
     fn default() -> Self {
+        let mut queue = Queue::new(MEMORY_BUDGET);
+        // Prefetches take half the threads that make thumbnails at the most.
+        queue.ahead_cap = (workers().1 / 2).max(1);
         Thumbs(Arc::new(Shared {
-            queue: Mutex::new(Queue::new(MEMORY_BUDGET)),
+            queue: Mutex::new(queue),
             work: Condvar::new(),
             started: Once::new(),
         }))
@@ -466,6 +557,39 @@ pub async fn thumbnail(
     lane: String,
     seq: u32,
 ) -> Result<Thumbnail, String> {
+    request(state, path, size, modified, bytes, cached_only, lane, seq, false).await
+}
+
+/// The same, as a prefetch: for what the grid will show once it scrolls on. It waits behind every real
+/// request, is made on a few threads only, becomes a real request when the same thumbnail is asked for
+/// with [`thumbnail`], and goes with [`cancel_prefetches`]. A file in an archive or on a remote, which
+/// would cost a copy or a download, is left for when it is really shown (the answer is "none yet").
+#[allow(clippy::too_many_arguments)]
+pub async fn thumbnail_ahead(
+    state: State<'_, Thumbs>,
+    path: String,
+    size: u32,
+    modified: f64,
+    bytes: f64,
+    cached_only: bool,
+    lane: String,
+    seq: u32,
+) -> Result<Thumbnail, String> {
+    request(state, path, size, modified, bytes, cached_only, lane, seq, true).await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn request(
+    state: State<'_, Thumbs>,
+    path: String,
+    size: u32,
+    modified: f64,
+    bytes: f64,
+    cached_only: bool,
+    lane: String,
+    seq: u32,
+    ahead: bool,
+) -> Result<Thumbnail, String> {
     let key = Key {
         path: path.to_lowercase(),
         size: size.clamp(16, 1024),
@@ -479,12 +603,28 @@ pub async fn thumbnail(
     // budget); one that can't be extracted has none.
     // A picture on a remote: made of a download, where its connection allows (until it does, asked
     // again next time); nothing else there has one.
+    if ahead && (crate::remote::is_remote(&path) || crate::archive::maybe_inside(&path)) {
+        return Ok(Thumb::none(false).answer(ThumbFrom::Cache));
+    }
     if crate::remote::is_remote(&path) {
         if !crate::remote::thumbnails_allowed(&path) {
             return Ok(Thumb::none(false).answer(ThumbFrom::Cache));
         }
         return match crate::remote::thumbnail_source(&path, bytes as u64).await {
-            Some(copy) => Box::pin(thumbnail(state, copy, size, modified, bytes, cached_only, lane, seq)).await,
+            Some(copy) => {
+                Box::pin(request(
+                    state,
+                    copy,
+                    size,
+                    modified,
+                    bytes,
+                    cached_only,
+                    lane,
+                    seq,
+                    ahead,
+                ))
+                .await
+            }
             None => Ok(Thumb::none(true).answer(ThumbFrom::Cache)),
         };
     }
@@ -507,7 +647,17 @@ pub async fn thumbnail(
             return Ok(thumb.answer(ThumbFrom::Memory));
         }
         let (reply, answer) = channel(1);
-        queue.want(key, path, cached_only, Waiter { lane, seq, reply });
+        queue.want(
+            key,
+            path,
+            cached_only,
+            Waiter {
+                lane,
+                seq,
+                ahead,
+                reply,
+            },
+        );
         answer
     };
     #[cfg(windows)]
@@ -530,6 +680,13 @@ pub async fn cancel_thumbnails(
     let paths: Option<HashSet<String>> = paths.map(|p| p.iter().map(|p| p.to_lowercase()).collect());
     // Dropping the replies answers their requests with "cancelled".
     let dropped = state.0.lock().cancel(&lane, paths.as_ref(), up_to);
+    drop(dropped);
+    Ok(())
+}
+
+/// Drops the prefetches of `lane` (the grid scrolled the other way, or moved on), and only those.
+pub async fn cancel_prefetches(state: State<'_, Thumbs>, lane: String) -> Result<(), String> {
+    let dropped = state.0.lock().cancel_ahead(&lane);
     drop(dropped);
     Ok(())
 }
@@ -948,7 +1105,15 @@ mod tests {
         Waiter {
             lane: lane.into(),
             seq,
+            ahead: false,
             reply,
+        }
+    }
+
+    fn ahead_waiter(lane: &str, seq: u32, reply: u32) -> Waiter<u32> {
+        Waiter {
+            ahead: true,
+            ..waiter(lane, seq, reply)
         }
     }
 
@@ -996,6 +1161,136 @@ mod tests {
         let (thumb, replies) = q.finish(&b.key, found()).unwrap();
         assert_eq!((thumb.source, replies), (ThumbFrom::Cache, vec![20]));
         assert!(q.jobs.is_empty());
+    }
+
+    #[test]
+    fn prefetches_wait_behind_every_lookup_and_make() {
+        let mut q: Queue<u32> = Queue::new(1 << 20);
+        q.ahead_cap = 4;
+        q.want(key("p1"), "P1".into(), false, ahead_waiter("t", 1, 1));
+        q.want(key("a"), "A".into(), false, waiter("t", 2, 2));
+        q.want(key("p2"), "P2".into(), false, ahead_waiter("t", 3, 3));
+        // The real lookup first, though the prefetch asked earlier; a thread that only looks up takes prefetches too.
+        let a = q.next(false).unwrap();
+        assert_eq!((a.path.as_str(), a.phase), ("A", Phase::Lookup));
+        assert!(q.finish(&a.key, Outcome::NotCached).is_none());
+        // Its make beats the prefetch lookups on a thread that makes; a lookup-only thread skips it.
+        let p1 = q.next(false).unwrap();
+        assert_eq!(p1.path, "P1");
+        let make = q.next(true).unwrap();
+        assert_eq!((make.path.as_str(), make.phase), ("A", Phase::Make));
+        // A real lookup arriving while prefetches wait goes before them.
+        q.want(key("b"), "B".into(), false, waiter("t", 4, 4));
+        assert_eq!(q.next(false).unwrap().path, "B");
+        assert_eq!(q.next(false).unwrap().path, "P2");
+        // A prefetch Windows hasn't cached is made, but behind real makes.
+        assert!(q.finish(&p1.key, Outcome::NotCached).is_none());
+        q.want(key("c"), "C".into(), false, waiter("t", 5, 5));
+        let c = q.next(false).unwrap();
+        q.finish(&c.key, Outcome::NotCached);
+        assert_eq!(q.next(true).unwrap().path, "C");
+        let ahead_make = q.next(true).unwrap();
+        assert_eq!((ahead_make.path.as_str(), ahead_make.phase), ("P1", Phase::Make));
+        assert!(q.next(true).is_none());
+    }
+
+    #[test]
+    fn prefetches_are_made_a_few_at_a_time() {
+        let mut q: Queue<u32> = Queue::new(1 << 20);
+        q.ahead_cap = 1;
+        for (n, name) in ["p1", "p2"].into_iter().enumerate() {
+            q.want(key(name), name.into(), false, ahead_waiter("t", n as u32 + 1, n as u32));
+            let task = q.next(false).unwrap();
+            assert!(q.finish(&task.key, Outcome::NotCached).is_none());
+        }
+        let first = q.next(true).unwrap();
+        assert!(
+            q.next(true).is_none(),
+            "one prefetch make at a time leaves the other threads free"
+        );
+        // Real makes aren't held by it.
+        q.want(key("a"), "A".into(), false, waiter("t", 3, 3));
+        let a = q.next(false).unwrap();
+        q.finish(&a.key, Outcome::NotCached);
+        assert_eq!(q.next(true).unwrap().path, "A");
+        let (_, replies) = q.finish(&first.key, found()).unwrap();
+        assert_eq!(replies.len(), 1);
+        assert_eq!(q.next(true).unwrap().path, "p2");
+    }
+
+    #[test]
+    fn a_real_request_promotes_a_prefetch_and_both_are_answered() {
+        let mut q: Queue<u32> = Queue::new(1 << 20);
+        q.want(key("p"), "P".into(), false, ahead_waiter("t", 1, 1));
+        q.want(key("x"), "X".into(), false, waiter("t", 2, 2));
+        q.want(key("p"), "P".into(), false, waiter("t", 3, 3));
+        // The promoted job is in the real lane now, behind what was already there.
+        assert_eq!(q.next(false).unwrap().path, "X");
+        let p = q.next(false).unwrap();
+        assert_eq!(p.path, "P");
+        // The stale entry in the prefetch lane doesn't run it twice.
+        assert!(q.next(true).is_none());
+        let (_, replies) = q.finish(&p.key, found()).unwrap();
+        assert_eq!(replies, [1, 3]);
+        assert!(!q.jobs.contains_key(&key("p")));
+    }
+
+    #[test]
+    fn a_prefetch_in_its_make_phase_is_promoted_to_the_real_makes() {
+        let mut q: Queue<u32> = Queue::new(1 << 20);
+        q.want(key("p"), "P".into(), false, ahead_waiter("t", 1, 1));
+        let lookup = q.next(false).unwrap();
+        q.finish(&lookup.key, Outcome::NotCached);
+        q.want(key("a"), "A".into(), false, waiter("t", 2, 2));
+        let a = q.next(false).unwrap();
+        q.finish(&a.key, Outcome::NotCached);
+        q.want(key("p"), "P".into(), false, waiter("t", 3, 3));
+        // Both makes are real now: in the order they became real.
+        assert_eq!(q.next(true).unwrap().path, "A");
+        let p = q.next(true).unwrap();
+        assert_eq!((p.path.as_str(), p.phase), ("P", Phase::Make));
+        assert!(q.next(true).is_none());
+        assert_eq!(q.finish(&p.key, found()).unwrap().1, [1, 3]);
+    }
+
+    #[test]
+    fn a_lane_cancels_its_prefetches_and_nothing_else() {
+        let mut q: Queue<u32> = Queue::new(1 << 20);
+        q.want(key("p1"), "P1".into(), false, ahead_waiter("t", 1, 1));
+        q.want(key("p2"), "P2".into(), false, ahead_waiter("other", 2, 2));
+        q.want(key("r"), "R".into(), false, waiter("t", 3, 3));
+        // Shared with a real request of another lane: that request stays, this lane's wait goes.
+        q.want(key("p2"), "P2".into(), false, ahead_waiter("t", 4, 4));
+        q.want(key("p3"), "P3".into(), false, ahead_waiter("t", 5, 5));
+        q.want(key("p3"), "P3".into(), false, waiter("other", 6, 6));
+        let mut dropped = q.cancel_ahead("t");
+        dropped.sort_unstable();
+        assert_eq!(dropped, [1, 4, 5]);
+        assert!(!q.jobs.contains_key(&key("p1")));
+        assert_eq!(q.jobs[&key("p2")].waiters.len(), 1);
+        assert_eq!(q.jobs[&key("p3")].waiters.len(), 1);
+        assert_eq!(q.next(false).unwrap().path, "R");
+        assert_eq!(q.next(false).unwrap().path, "P3");
+        assert_eq!(q.next(false).unwrap().path, "P2");
+        assert!(q.next(true).is_none(), "the cancelled one isn't looked up");
+    }
+
+    #[test]
+    fn a_prefetch_a_worker_has_is_finished_and_kept_after_its_cancel() {
+        let mut q: Queue<u32> = Queue::new(1 << 20);
+        q.ahead_cap = 1;
+        q.want(key("p"), "P".into(), false, ahead_waiter("t", 1, 1));
+        let lookup = q.next(false).unwrap();
+        q.finish(&lookup.key, Outcome::NotCached);
+        let make = q.next(true).unwrap();
+        assert_eq!(q.ahead_making, 1);
+        assert_eq!(q.cancel_ahead("t"), [1]);
+        assert_eq!(q.finish(&make.key, found()).map(|(_, r)| r), Some(vec![]));
+        assert_eq!(q.ahead_making, 0, "the thread is counted free again");
+        assert!(
+            q.memory.get(&key("p")).is_some(),
+            "so the real request finds it in memory"
+        );
     }
 
     #[test]
