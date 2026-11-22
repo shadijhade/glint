@@ -12,6 +12,8 @@
 //! name", "Delete workspace: name"). Both call the functions here.
 
 use super::*;
+use crate::components::menus::{Entry, Node};
+use crate::components::tab_strip::menu as tab_menu;
 use glint_model::store::Workspace;
 use std::rc::Rc;
 
@@ -364,67 +366,65 @@ impl Sidebar {
     /// Opens the Workspaces menu at `at`.
     pub(super) fn open_workspaces_menu(&mut self, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
         let all = listed(cx);
-        let menu = PopupMenu::build(window, cx, move |menu, window, cx| {
-            let mut menu = menu;
-            if all.is_empty() {
-                menu = menu.item(PopupMenuItem::label(t!("No workspaces yet")));
-            }
-            for w in &all {
-                let id = w.id.clone();
-                menu = menu.item(
-                    PopupMenuItem::new(SharedString::from(w.name.clone()))
-                        .checked(w.current)
-                        .on_click(move |_, window, cx| switch_and_say(window, cx, &id)),
-                );
-            }
-            menu = menu.separator().item(
-                PopupMenuItem::new(t!("Save current layout as…"))
-                    .icon(IconName::Plus)
-                    .on_click(|_, window, cx| ask_save_as(window, cx)),
+        let mut nodes: Vec<Option<Node>> = Vec::new();
+        if all.is_empty() {
+            nodes.push(Entry::note(t!("No workspaces yet"), IconName::Layers).node());
+        }
+        for w in &all {
+            let mut row = tab_menu::row(
+                SharedString::from(w.name.clone()),
+                IconName::Layers,
+                "switch",
+                w.id.clone(),
             );
-            if !all.is_empty() {
-                let (renames, deletes) = (all.clone(), all.clone());
-                menu = menu
-                    .submenu_with_icon(
-                        Some(IconName::Pencil.into()),
-                        t!("Rename workspace"),
-                        window,
-                        cx,
-                        move |sub, _, _| {
-                            renames.iter().fold(sub, |sub, w| {
-                                let id = w.id.clone();
-                                sub.item(
-                                    PopupMenuItem::new(SharedString::from(w.name.clone()))
-                                        .on_click(move |_, window, cx| ask_rename(window, cx, id.clone())),
-                                )
-                            })
-                        },
-                    )
-                    .submenu_with_icon(
-                        Some(IconName::Trash.into()),
-                        t!("Delete workspace"),
-                        window,
-                        cx,
-                        move |sub, _, _| {
-                            deletes.iter().fold(sub, |sub, w| {
-                                let id = w.id.clone();
-                                sub.item(
-                                    PopupMenuItem::new(SharedString::from(w.name.clone()))
-                                        .on_click(move |_, window, cx| ask_delete(window, cx, id.clone())),
-                                )
-                            })
-                        },
-                    );
-            }
-            menu
-        });
-        window.focus(&menu.focus_handle(cx), cx);
-        let dismissed = cx.subscribe_in(&menu, window, |this, _, _: &DismissEvent, window, cx| {
-            this.workspace_menu = None;
-            window.focus(&this.focus, cx);
-            cx.notify();
-        });
-        self.workspace_menu = Some(portals::OpenMenu::new(at, menu, dismissed));
+            row.icon = None;
+            nodes.push(row.checked(w.current).node());
+        }
+        nodes.push(Some(Node::Separator));
+        nodes.push(tab_menu::row(t!("Save current layout as…"), IconName::Plus, "save", "").node());
+        if !all.is_empty() {
+            let each = |tag: &str| -> Vec<Option<Node>> {
+                all.iter()
+                    .map(|w| {
+                        let mut row =
+                            tab_menu::row(SharedString::from(w.name.clone()), IconName::Layers, tag, w.id.clone());
+                        row.icon = None;
+                        row.node()
+                    })
+                    .collect()
+            };
+            nodes.push(Some(Node::menu(
+                t!("Rename workspace"),
+                IconName::Pencil,
+                each("rename"),
+            )));
+            nodes.push(Some(Node::menu(
+                t!("Delete workspace"),
+                IconName::Trash,
+                each("delete"),
+            )));
+        }
+        self.portal_menu = None;
+        self.workspace_menu = tab_menu::Popup::open(
+            nodes.into_iter().flatten().collect(),
+            t!("Workspaces"),
+            at,
+            window,
+            cx,
+            |this, chose, window, cx| {
+                this.workspace_menu = None;
+                window.focus(&this.focus, cx);
+                cx.notify();
+                let Some(chose) = chose else { return };
+                match chose.tag.as_str() {
+                    "switch" => switch_and_say(window, cx, &chose.arg),
+                    "save" => ask_save_as(window, cx),
+                    "rename" => ask_rename(window, cx, chose.arg),
+                    "delete" => ask_delete(window, cx, chose.arg),
+                    _ => {}
+                }
+            },
+        );
         cx.notify();
     }
 }

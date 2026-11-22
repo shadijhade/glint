@@ -29,6 +29,7 @@
 //! tabs up to [`MOST_SHOWN`] rows, then scrolls.
 
 use crate::components::command_bar::keyed;
+use crate::components::menus::{Entry, Node};
 use crate::components::peek_card::{self, PeekHost};
 use crate::explorer::{self, Drive, DriveKind, Explorer, Pane, Tab, TabId};
 use crate::kit::prelude::*;
@@ -478,13 +479,6 @@ impl RenderOnce for PaneDropZone {
 
 // ---- The view ---------------------------------------------------------------------------------------
 
-/// The pane menu while it is open.
-struct OpenMenu {
-    at: Point<Pixels>,
-    menu: Entity<PopupMenu>,
-    _dismissed: Subscription,
-}
-
 /// The tabs of the title bar: one strip for each pane on screen (two in dual-pane view), each with its `+`
 /// button and, in dual-pane view, its pane menu button.
 pub struct TabStrip {
@@ -497,7 +491,10 @@ pub struct TabStrip {
     slot: Option<Slot>,
     /// The tab being dragged and the pointer where the drag began, for pulling it out of the window.
     drag_from: Option<(TabId, Point<Pixels>)>,
-    pane_menu: Option<OpenMenu>,
+    /// The tab's menu or the pane's, while one is open (one at a time).
+    popup: Option<menu::Popup>,
+    /// What had the keyboard before the menu took it.
+    popup_focus: Option<FocusHandle>,
     /// The tab files are held over, lit while they are (`springTab`).
     spring: Option<TabId>,
     /// Opens the sprung tab when its delay passes.
@@ -524,7 +521,8 @@ impl TabStrip {
             scrolled_to: Vec::new(),
             slot: None,
             drag_from: None,
-            pane_menu: None,
+            popup: None,
+            popup_focus: None,
             spring: None,
             spring_timer: None,
             focus: HashMap::new(),
@@ -567,21 +565,113 @@ impl TabStrip {
             .collect()
     }
 
+    /// Opens `nodes` as the strip's menu at `at`; what is chosen comes back to [`Self::chose`].
+    fn open_popup(
+        &mut self,
+        nodes: Vec<Node>,
+        label: SharedString,
+        at: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let focus = self.popup_focus.take().or_else(|| window.focused(cx));
+        let popup = menu::Popup::open(nodes, label, at, window, cx, |this, chose, window, cx| {
+            this.close_popup(window, cx);
+            if let Some(chose) = chose {
+                this.chose(chose, cx);
+            }
+        });
+        if popup.is_some() {
+            self.popup_focus = focus;
+        }
+        self.popup = popup;
+        cx.notify();
+    }
+
+    /// Closes the menu and gives the keyboard back to what had it.
+    fn close_popup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.popup = None;
+        if let Some(focus) = self.popup_focus.take() {
+            window.defer(cx, move |window, cx| {
+                // Only when the choice (a new tab, a dialog) didn't take the keyboard itself.
+                if window.focused(cx).is_none() {
+                    focus.focus(window, cx);
+                }
+            });
+        }
+        cx.notify();
+    }
+
+    /// Opens a tab's menu at the pointer.
+    fn open_tab_menu(&mut self, id: TabId, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        let nodes = tab_menu(self.explorer.read(cx), id);
+        self.open_popup(nodes, t!("Tab"), at, window, cx);
+    }
+
     /// Opens the pane menu below the click (the pane button).
     fn open_pane_menu(&mut self, pane: usize, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        let nodes = pane_menu(self.explorer.read(cx), pane, state::settings(cx).dual_split.is_none());
+        self.open_popup(nodes, t!("Pane"), at, window, cx);
+    }
+
+    /// Does what a row of the tab's or the pane's menu says.
+    fn chose(&mut self, chose: menu::Chose, cx: &mut Context<Self>) {
+        let tab = || chose.arg.parse::<u32>().ok().map(TabId);
+        let pane = || chose.arg.parse::<usize>().ok();
         let explorer = self.explorer.clone();
-        let menu = PopupMenu::build(window, cx, move |menu, _, cx| pane_menu(menu, &explorer, pane, cx));
-        window.focus(&menu.focus_handle(cx), cx);
-        let dismissed = cx.subscribe(&menu, |this, _, _: &DismissEvent, cx| {
-            this.pane_menu = None;
-            cx.notify();
-        });
-        self.pane_menu = Some(OpenMenu {
-            at,
-            menu,
-            _dismissed: dismissed,
-        });
-        cx.notify();
+        match chose.tag.as_str() {
+            "duplicate" => {
+                if let Some(id) = tab() {
+                    explorer.update(cx, |e, cx| e.duplicate_tab(id, cx));
+                }
+            }
+            "side" => {
+                if let Some(id) = tab() {
+                    explorer.update(cx, |e, cx| {
+                        let path = e.tab(id).map(|t| t.path.clone());
+                        let from = e.pane_of(id);
+                        if let Some(path) = path {
+                            e.open_in_other_pane(&path, from, cx).detach();
+                        }
+                    });
+                }
+            }
+            "move" => {
+                if let Some(id) = tab() {
+                    explorer.update(cx, |e, cx| e.move_tab_to_other_pane(id, cx));
+                }
+            }
+            "close" => {
+                if let Some(id) = tab() {
+                    explorer.update(cx, |e, cx| e.close_tab(Some(id), cx));
+                }
+            }
+            "others" => {
+                if let Some(id) = tab() {
+                    explorer.update(cx, |e, cx| e.close_other_tabs(id, cx));
+                }
+            }
+            "reopen" => explorer.update(cx, |e, cx| e.reopen_closed_tab(cx)),
+            "swap" => explorer.update(cx, |e, cx| e.swap_panes(cx)),
+            // The arg is the pane whose folder is shown in the other pane.
+            "show" => {
+                if let Some(of) = pane() {
+                    explorer.update(cx, |e, cx| {
+                        let path = e.pane_tab(of).map(|t| t.path.clone()).filter(|p| p != THIS_PC);
+                        if let Some(path) = path {
+                            e.open_in_other_pane(&path, Some(of), cx).detach();
+                        }
+                    });
+                }
+            }
+            "even" => state::update(cx, |settings| settings.dual_split = None),
+            "close-pane" => {
+                if let Some(pane) = pane() {
+                    explorer.update(cx, |e, cx| e.close_pane(pane, cx));
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Files are held over `tab` (or over no tab: `None`): it lights, and one that isn't showing opens after
@@ -800,7 +890,6 @@ impl TabStrip {
         let glint = theme::glint_fill(cx);
         let ring = t.ring;
         let primary = t.primary;
-        let menu_explorer = self.explorer.clone();
         let sprung = self.spring.filter(|_| cx.has_active_drag()) == Some(id);
         let lit = sprung && (!selected || d.drop_into.is_some());
         let loading_bar = sprung && !selected;
@@ -947,9 +1036,7 @@ impl TabStrip {
             .track_focus(&self.focus[&id])
             .tab_stop(true)
             .focus_visible(move |s| s.border_1().border_color(ring))
-            .when(peek_target.is_none(), |tab| {
-                tab.tooltip(move |window, cx| crate::kit::tooltip(tip.clone(), window, cx))
-            })
+            .when(peek_target.is_none(), |tab| tab.tooltip(menu::tip(tip.clone())))
             .when_some(peek_target, |tab, target| {
                 tab.on_hover(cx.listener(move |this, hovered: &bool, window, cx| {
                     let target = target.clone();
@@ -1006,7 +1093,13 @@ impl TabStrip {
             .on_drop(cx.listener(move |this, dragged: &DraggedTab, _, cx| {
                 this.drop_tab(pane, count, dragged.id, cx);
             }))
-            .context_menu(move |menu, _, cx| tab_menu(menu, &menu_explorer, id, cx))
+            .on_mouse_up(
+                MouseButton::Right,
+                cx.listener(move |this, event: &MouseUpEvent, window, cx| {
+                    this.peek.update(cx, |peek, cx| peek.hide(cx));
+                    this.open_tab_menu(id, event.position, window, cx);
+                }),
+            )
     }
 }
 
@@ -1146,6 +1239,7 @@ impl Render for TabStrip {
             } else {
                 t!("Right pane")
             };
+            let header_group = SharedString::from(format!("tab-section-{index}"));
             let header = row_start()
                 .id(SharedString::from(format!("tab-header-{index}")))
                 .w_full()
@@ -1182,26 +1276,26 @@ impl Render for TabStrip {
                 }))
                 .child(div().flex_1().min_w_0().truncate().child(heading))
                 .children(pane_button)
-                .child(new_tab);
+                // The + shows while the section is under the pointer (or a tab is being dragged over it).
+                .child(
+                    div()
+                        .id(SharedString::from(format!("new-tab-wrap-{index}")))
+                        .flex_none()
+                        .opacity(if dragging { 1. } else { 0. })
+                        .group_hover(header_group.clone(), |s| s.opacity(1.))
+                        .child(new_tab),
+                );
             strips.push(
                 col()
                     .id(SharedString::from(format!("tab-strip-{index}")))
+                    .group(header_group)
                     .w_full()
                     .child(header)
                     .child(list),
             );
         }
 
-        let menu = self.pane_menu.as_ref().map(|open| {
-            deferred(
-                anchored()
-                    .position(open.at)
-                    .anchor(Anchor::TopLeft)
-                    .snap_to_window_with_margin(px(8.))
-                    .child(open.menu.clone()),
-            )
-            .with_priority(1)
-        });
+        let menu = self.popup.as_ref().map(menu::Popup::element);
         col()
             .id("tab-strip")
             .w_full()
@@ -1225,129 +1319,106 @@ impl Render for TabStrip {
 
 // ---- The menus --------------------------------------------------------------------------------------
 
+/// The key an action has, as menus word it ("Ctrl+W"), for a row that does the same.
+fn key_of(action: &dyn gpui_kit::Action) -> Option<SharedString> {
+    crate::actions::BINDINGS
+        .iter()
+        .find(|binding| action.partial_eq(&*(binding.action)()))
+        .map(|binding| crate::components::menus::key_text(binding.keys).into())
+}
+
 /// The tab's menu (`tabMenu`): duplicate, show beside, move, close, close the others, reopen. Built when it
-/// opens, so what is disabled is right at that moment.
-fn tab_menu(menu: PopupMenu, explorer: &Entity<Explorer>, id: TabId, cx: &mut Context<PopupMenu>) -> PopupMenu {
-    let (dual, tabs, path, reopen) = {
-        let e = explorer.read(cx);
-        let pane = e.pane_of(id);
-        (
-            e.is_dual(),
-            pane.and_then(|p| e.panes().get(p)).map_or(0, |p| p.tabs.len()),
-            e.tab(id).map(|t| t.path.clone()),
-            e.can_reopen_tab(),
-        )
-    };
-    let pane_of = explorer.read(cx).pane_of(id);
-    let act = |f: fn(&mut Explorer, TabId, &mut Context<Explorer>)| {
-        let explorer = explorer.clone();
-        move |_: &ClickEvent, _: &mut Window, cx: &mut App| explorer.update(cx, |e, cx| f(e, id, cx))
-    };
+/// opens, so what can't apply is left out, and what can't now (the last tab's close) is grey.
+fn tab_menu(e: &Explorer, id: TabId) -> Vec<Node> {
+    let dual = e.is_dual();
+    let pane = e.pane_of(id);
+    let tabs = pane.and_then(|p| e.panes().get(p)).map_or(0, |p| p.tabs.len());
+    let has_path = e.tab(id).is_some();
+    let arg = id.0.to_string();
     let side = if dual {
         t!("Open in the other pane")
     } else {
         t!("Open side by side")
     };
-    let menu = menu
-        .item(
-            PopupMenuItem::new(t!("Duplicate tab"))
-                .icon(IconName::Copy)
-                .on_click(act(|e, id, cx| e.duplicate_tab(id, cx))),
-        )
-        .item(PopupMenuItem::new(side).icon(IconName::Columns2).on_click({
-            let explorer = explorer.clone();
-            move |_, _, cx| {
-                if let Some(path) = path.clone() {
-                    explorer.update(cx, |e, cx| e.open_in_other_pane(&path, pane_of, cx).detach());
-                }
-            }
-        }));
-    let menu = if dual {
-        menu.item(
-            PopupMenuItem::new(t!("Move to the other pane"))
-                .icon(IconName::ArrowRightLeft)
-                .disabled(tabs < 2)
-                .on_click(act(|e, id, cx| e.move_tab_to_other_pane(id, cx))),
-        )
-    } else {
-        menu
-    };
-    menu.separator()
-        .item(
-            PopupMenuItem::new(t!("Close tab"))
-                .icon(IconName::X)
-                .disabled(tabs < 2 && !dual)
-                .on_click(act(|e, id, cx| e.close_tab(Some(id), cx))),
-        )
-        .item(
-            PopupMenuItem::new(t!("Close other tabs"))
-                .icon(IconName::X)
-                .disabled(tabs < 2)
-                .on_click(act(|e, id, cx| e.close_other_tabs(id, cx))),
-        )
-        .item(
-            PopupMenuItem::new(t!("Reopen closed tab"))
-                .icon(IconName::RotateCcw)
-                .disabled(!reopen)
-                .on_click(act(|e, _, cx| e.reopen_closed_tab(cx))),
-        )
+    let mut close = menu::row(t!("Close tab"), IconName::X, "close", arg.clone()).disabled(tabs < 2 && !dual);
+    close.hint = key_of(&crate::actions::CloseTab);
+    let mut reopen =
+        menu::row(t!("Reopen closed tab"), IconName::RotateCcw, "reopen", arg.clone()).disabled(!e.can_reopen_tab());
+    reopen.hint = key_of(&crate::actions::ReopenClosedTab);
+    vec![
+        menu::row(t!("Duplicate tab"), IconName::Copy, "duplicate", arg.clone()).node(),
+        has_path
+            .then(|| menu::row(side, IconName::Columns2, "side", arg.clone()))
+            .and_then(Entry::node),
+        // Moving to the other pane is for two panes (and a pane with another tab to keep).
+        dual.then(|| {
+            menu::row(
+                t!("Move to the other pane"),
+                IconName::ArrowRightLeft,
+                "move",
+                arg.clone(),
+            )
+            .disabled(tabs < 2)
+        })
+        .and_then(Entry::node),
+        Some(Node::Separator),
+        close.node(),
+        // Closing the others needs others.
+        (tabs > 1)
+            .then(|| menu::row(t!("Close other tabs"), IconName::X, "others", arg.clone()))
+            .and_then(Entry::node),
+        reopen.node(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
 }
 
 /// A pane's menu (`paneMenu`): swap, show this folder in the other pane, bring the other pane's folder
 /// here, even out the panes, close the pane.
-fn pane_menu(menu: PopupMenu, explorer: &Entity<Explorer>, pane: usize, cx: &mut Context<PopupMenu>) -> PopupMenu {
-    let folder = |path: Option<&str>| path.filter(|p| *p != THIS_PC).map(str::to_string);
-    let (here, there) = {
-        let e = explorer.read(cx);
-        (
-            folder(e.pane_tab(pane).map(|t| t.path.as_str())),
-            folder(e.pane_tab(1 - pane.min(1)).map(|t| t.path.as_str())),
-        )
+fn pane_menu(e: &Explorer, pane: usize, even: bool) -> Vec<Node> {
+    let other = 1 - pane.min(1);
+    let folder = |of: usize| {
+        e.pane_tab(of)
+            .map(|t| t.path.as_str())
+            .filter(|p| *p != THIS_PC)
+            .is_some()
     };
-    let even = state::settings(cx).dual_split.is_none();
-    let show = |path: Option<String>, from: usize, label: SharedString, glyph: IconName| {
-        let explorer = explorer.clone();
-        PopupMenuItem::new(label)
-            .icon(glyph)
-            .disabled(path.is_none())
-            .on_click(move |_, _, cx| {
-                if let Some(path) = &path {
-                    explorer.update(cx, |e, cx| e.open_in_other_pane(path, Some(from), cx).detach());
-                }
+    vec![
+        menu::row(t!("Swap panes"), IconName::ArrowLeftRight, "swap", "").node(),
+        folder(pane)
+            .then(|| {
+                menu::row(
+                    t!("Show this folder in the other pane"),
+                    IconName::Columns2,
+                    "show",
+                    pane.to_string(),
+                )
             })
-    };
-    menu.item(
-        PopupMenuItem::new(t!("Swap panes"))
-            .icon(IconName::ArrowLeftRight)
-            .on_click({
-                let explorer = explorer.clone();
-                move |_, _, cx| explorer.update(cx, |e, cx| e.swap_panes(cx))
-            }),
-    )
-    .item(show(
-        here,
-        pane,
-        t!("Show this folder in the other pane"),
-        IconName::Columns2,
-    ))
-    .item(show(
-        there,
-        1 - pane.min(1),
-        t!("Open the other pane's folder here"),
-        IconName::FolderInput,
-    ))
-    .separator()
-    .item(
-        PopupMenuItem::new(t!("Even out the panes"))
-            .icon(IconName::Columns2)
-            .disabled(even)
-            .on_click(|_, _, cx| state::update(cx, |settings| settings.dual_split = None)),
-    )
-    .item(PopupMenuItem::new(t!("Close this pane")).icon(IconName::X).on_click({
-        let explorer = explorer.clone();
-        move |_, _, cx| explorer.update(cx, |e, cx| e.close_pane(pane, cx))
-    }))
+            .and_then(Entry::node),
+        folder(other)
+            .then(|| {
+                menu::row(
+                    t!("Open the other pane's folder here"),
+                    IconName::FolderInput,
+                    "show",
+                    other.to_string(),
+                )
+            })
+            .and_then(Entry::node),
+        Some(Node::Separator),
+        // Already even: nothing to do, so no row.
+        (!even)
+            .then(|| menu::row(t!("Even out the panes"), IconName::Columns2, "even", ""))
+            .and_then(Entry::node),
+        menu::row(t!("Close this pane"), IconName::X, "close-pane", pane.to_string()).node(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
 }
+
+pub(crate) mod menu;
 
 #[cfg(test)]
 mod tests;

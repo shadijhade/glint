@@ -234,9 +234,9 @@ pub struct Sidebar {
     last_drives: Option<Arc<[crate::explorer::Drive]>>,
     /// The live portals mounted, as last read, and the menu of one while it is open.
     portals: Vec<PortalItem>,
-    portal_menu: Option<portals::OpenMenu>,
+    portal_menu: Option<crate::components::tab_strip::menu::Popup>,
     /// The Workspaces menu while it is open.
-    workspace_menu: Option<portals::OpenMenu>,
+    workspace_menu: Option<crate::components::tab_strip::menu::Popup>,
     /// What the rows were last built from. The explorer, the saved state and the settings change far more often
     /// than anything the sidebar shows (a selection, a scroll, a sort, a visit): such a change rebuilds nothing.
     seen: Option<Seen>,
@@ -1596,7 +1596,7 @@ fn tooltip_of(title: SharedString, detail: SharedString) -> impl Fn(&mut Window,
         )
         .into()
     };
-    move |window, cx| tooltip(text.clone(), window, cx)
+    crate::components::tab_strip::menu::tip(text)
 }
 
 /// What a place or folder row is called (the drag picture's words, `dropName`).
@@ -1668,8 +1668,8 @@ impl Render for Sidebar {
                 .min_h_0()
                 .w_full(),
             )
-            .children(self.portal_menu.as_ref().map(portals::OpenMenu::element))
-            .children(self.workspace_menu.as_ref().map(portals::OpenMenu::element))
+            .children(self.portal_menu.as_ref().map(crate::components::tab_strip::menu::Popup::element))
+            .children(self.workspace_menu.as_ref().map(crate::components::tab_strip::menu::Popup::element))
     }
 }
 

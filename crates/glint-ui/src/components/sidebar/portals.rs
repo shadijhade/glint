@@ -12,6 +12,8 @@
 
 use super::rows::{PortalItem, PortalKind};
 use super::*;
+use crate::components::menus::Node;
+use crate::components::tab_strip::menu as tab_menu;
 use glint_core::portals::{Portal, PortalSource};
 
 /// The portals mounted now.
@@ -65,40 +67,6 @@ impl Sources {
     }
 }
 
-/// The menu of a portal while it is open.
-pub(super) struct OpenMenu {
-    at: Point<Pixels>,
-    menu: Entity<PopupMenu>,
-    _dismissed: Subscription,
-}
-
-impl OpenMenu {
-    /// A menu built and shown at `at`, which goes when `dismissed` (kept alive here) fires.
-    pub(super) fn new(at: Point<Pixels>, menu: Entity<PopupMenu>, dismissed: Subscription) -> Self {
-        OpenMenu {
-            at,
-            menu,
-            _dismissed: dismissed,
-        }
-    }
-
-    /// The menu, to place under the sidebar's other children.
-    pub(super) fn element(&self) -> impl IntoElement {
-        deferred(
-            anchored()
-                .position(self.at)
-                .anchor(if crate::i18n::is_rtl() {
-                    Anchor::TopRight
-                } else {
-                    Anchor::TopLeft
-                })
-                .snap_to_window_with_margin(px(8.))
-                .child(self.menu.clone()),
-        )
-        .with_priority(1)
-    }
-}
-
 /// What the menu's rows do.
 #[derive(Clone, Copy)]
 enum Do {
@@ -146,50 +114,50 @@ impl Sidebar {
         let Some(Row::Portal(portal)) = self.rows.get(ix) else {
             return false;
         };
-        let (id, name, path) = (portal.id.clone(), portal.name.clone(), portal.path.clone());
-        let sidebar = cx.entity().downgrade();
-        let menu = PopupMenu::build(window, cx, move |menu, _, _| {
-            let act = |what: Do| {
-                let (sidebar, id, name, path) = (sidebar.clone(), id.clone(), name.clone(), path.clone());
-                move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
-                    let (id, name, path) = (id.clone(), name.clone(), path.clone());
-                    sidebar
-                        .update(cx, |this, cx| this.portal_does(what, id, name, path, window, cx))
-                        .ok();
+        let id = portal.id.clone();
+        let nodes = vec![
+            tab_menu::row(t!("Open"), IconName::FolderOpen, "open", id.clone()).node(),
+            tab_menu::row(t!("Copy path"), IconName::Copy, "copy", id.clone()).node(),
+            tab_menu::row(t!("Refresh"), IconName::RefreshCw, "refresh", id.clone()).node(),
+            Some(Node::Separator),
+            tab_menu::row(t!("Unmount"), IconName::Unplug, "unmount", id).node(),
+        ];
+        self.workspace_menu = None;
+        self.portal_menu = tab_menu::Popup::open(
+            nodes.into_iter().flatten().collect(),
+            t!("Portal"),
+            at,
+            window,
+            cx,
+            |this, chose, window, cx| {
+                this.portal_menu = None;
+                // The keyboard comes back to the row it was on.
+                window.focus(&this.focus, cx);
+                if let Some(chose) = chose {
+                    this.portal_chose(&chose, window, cx);
                 }
-            };
-            menu.item(
-                PopupMenuItem::new(t!("Open"))
-                    .icon(IconName::FolderOpen)
-                    .on_click(act(Do::Open)),
-            )
-            .item(
-                PopupMenuItem::new(t!("Copy path"))
-                    .icon(IconName::Copy)
-                    .on_click(act(Do::CopyPath)),
-            )
-            .item(
-                PopupMenuItem::new(t!("Refresh"))
-                    .icon(IconName::RefreshCw)
-                    .on_click(act(Do::Refresh)),
-            )
-            .separator()
-            .item(
-                PopupMenuItem::new(t!("Unmount"))
-                    .icon(IconName::Unplug)
-                    .on_click(act(Do::Unmount)),
-            )
-        });
-        window.focus(&menu.focus_handle(cx), cx);
-        let dismissed = cx.subscribe_in(&menu, window, |this, _, _: &DismissEvent, window, cx| {
-            this.portal_menu = None;
-            // The keyboard comes back to the row it was on.
-            window.focus(&this.focus, cx);
-            cx.notify();
-        });
-        self.portal_menu = Some(OpenMenu::new(at, menu, dismissed));
+                cx.notify();
+            },
+        );
         cx.notify();
         true
+    }
+
+    /// A row of a portal's menu was chosen: finds the portal again by its id (the list may have changed while the
+    /// menu was open) and does it.
+    fn portal_chose(&mut self, chose: &tab_menu::Chose, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(portal) = self.portals.iter().find(|p| p.id == chose.arg) else {
+            return;
+        };
+        let (id, name, path) = (portal.id.clone(), portal.name.clone(), portal.path.clone());
+        let what = match chose.tag.as_str() {
+            "open" => Do::Open,
+            "copy" => Do::CopyPath,
+            "refresh" => Do::Refresh,
+            "unmount" => Do::Unmount,
+            _ => return,
+        };
+        self.portal_does(what, id, name, path, window, cx);
     }
 
     /// A choice from a portal's menu.

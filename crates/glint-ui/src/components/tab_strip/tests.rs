@@ -210,13 +210,12 @@ fn dual_pane_view_has_a_strip_for_each_pane_and_a_pane_menu(cx: &mut TestAppCont
 
     // The pane button opens the pane's menu.
     click(&mut cx, "pane-menu-0");
-    for item in [
-        "Swap panes",
-        "Show this folder in the other pane",
-        "Even out the panes",
-        "Close this pane",
-    ] {
+    for item in ["Swap panes", "Close this pane"] {
         assert!(snapshot(&mut cx, item).is_some(), "{item} is in the pane menu");
+    }
+    // What can't apply is left out, not greyed: the panes are even already, and this one shows This PC.
+    for item in ["Even out the panes", "Show this folder in the other pane"] {
+        assert!(snapshot(&mut cx, item).is_none(), "{item} has nothing to do here");
     }
     testing::set_rtl(false);
 }
@@ -715,6 +714,77 @@ fn an_arabic_folders_card_hangs_toward_the_start_edge_in_arabic(cx: &mut TestApp
     assert!(
         bounds.right() <= pointer.x,
         "{bounds:?} against the pointer at {pointer:?}"
+    );
+    testing::set_rtl(false);
+}
+
+/// Opens a tab's menu by a right-click on `id`'s tab.
+fn right_click_tab(cx: &mut VisualTestContext, id: &'static str) {
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.right_click(id, cx);
+    });
+    cx.run_until_parked();
+}
+
+#[gpui_kit::test]
+fn the_tab_menu_is_a_menu_view_that_keeps_tooltips_away_and_does_its_rows(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let (mut cx, strip) = open(cx, false);
+    act(&mut cx, |e, cx| e.new_tab(Some("C:\\a"), cx));
+    act(&mut cx, |e, cx| e.new_tab(Some("C:\\b"), cx));
+    assert!(!cx.update(|_, cx| menu::is_open(cx)), "no menu yet");
+    right_click_tab(&mut cx, "tab-2");
+    // A MenuView with the tab's rows: what can't apply is not there (no other pane to move to).
+    let labels = strip.read_with(&cx, |s, cx| {
+        s.popup
+            .as_ref()
+            .map(|p| {
+                p.view()
+                    .read(cx)
+                    .nodes()
+                    .iter()
+                    .filter_map(|n| match n {
+                        Node::Item(entry) => Some(entry.label.to_string()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    });
+    assert_eq!(
+        labels,
+        [
+            "Duplicate tab",
+            "Open side by side",
+            "Close tab",
+            "Close other tabs",
+            "Reopen closed tab"
+        ]
+    );
+    // While it is up, the tabs and places under it show no tooltip.
+    assert!(cx.update(|_, cx| menu::is_open(cx)));
+    // Choosing "Close other tabs" runs it on the tab the menu was opened for, and closes the menu.
+    strip.update_in(&mut cx, |s, _, cx| {
+        s.chose(
+            menu::Chose {
+                tag: "others".into(),
+                arg: "2".into(),
+            },
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    assert_eq!(names(&mut cx, 0), ["a"]);
+    // Escape closes a menu without choosing.
+    right_click_tab(&mut cx, "tab-2");
+    assert!(strip.read_with(&cx, |s, _| s.popup.is_some()));
+    cx.update(|window, cx| window.press("escape", cx));
+    cx.run_until_parked();
+    assert!(strip.read_with(&cx, |s, _| s.popup.is_none()));
+    assert!(
+        !cx.update(|_, cx| menu::is_open(cx)),
+        "the menu is gone: tooltips are back"
     );
     testing::set_rtl(false);
 }
