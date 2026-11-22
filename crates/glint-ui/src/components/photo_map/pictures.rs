@@ -120,14 +120,34 @@ impl PhotoMapView {
     ) {
         if self.seen_camera != self.camera {
             self.seen_camera = self.camera;
+            self.moves += 1;
             self.settled = false;
-            self.settle = Some(cx.spawn(async move |this, cx| {
-                cx.background_executor().timer(SETTLE).await;
-                let _ = this.update(cx, |this, cx| {
-                    this.settled = true;
-                    cx.notify();
-                });
-            }));
+            // One timer for a whole pan (not one a frame): it looks again after each wait until the camera has not
+            // moved for a whole one.
+            if self.settle.is_none() {
+                self.settle = Some(cx.spawn(async move |this, cx| {
+                    let Ok(mut at) = this.update(cx, |this, _| this.moves) else {
+                        return;
+                    };
+                    loop {
+                        cx.background_executor().timer(SETTLE).await;
+                        let rested = this.update(cx, |this, cx| {
+                            if this.moves == at {
+                                this.settled = true;
+                                this.settle = None;
+                                cx.notify();
+                                None
+                            } else {
+                                Some(this.moves)
+                            }
+                        });
+                        match rested {
+                            Ok(Some(moves)) => at = moves,
+                            _ => return,
+                        }
+                    }
+                }));
+            }
         }
         if !self.settled {
             return;

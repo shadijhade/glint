@@ -311,6 +311,8 @@ pub struct PhotoMapView {
     leads: Leads,
     /// The camera as the pictures were last asked for, whether it has rested since, and the timer that says so.
     seen_camera: MapCamera,
+    /// How many times the camera has moved: the rest timer asks whether it has since it was set.
+    moves: u64,
     settled: bool,
     settle: Option<Task<()>>,
     /// A fingerprint of what was last asked of the thumbnail service.
@@ -362,6 +364,7 @@ impl PhotoMapView {
             thumbs,
             leads: Leads::default(),
             seen_camera: MapCamera::default(),
+            moves: 0,
             settled: true,
             settle: None,
             asked: 0,
@@ -1205,9 +1208,9 @@ mod tests {
         assert!(asked.borrow().is_empty(), "{:?}", asked.borrow());
 
         // Once it has rested, the lead photo of each pin is asked for, once, at a small size.
-        visual.executor().advance_clock(Duration::from_millis(300));
         let mut leads: Vec<String> = Vec::new();
         for _ in 0..200 {
+            visual.executor().advance_clock(Duration::from_millis(200));
             visual.run_until_parked();
             visual.update(|window, cx| window.render_frame(cx));
             leads = asked.borrow().iter().map(|a| a.path.clone()).collect();
