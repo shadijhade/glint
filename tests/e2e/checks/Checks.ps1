@@ -181,7 +181,7 @@ Add-Check 'rename-enter' 'Enter in the rename box commits the name and does noth
 
 # ------------------------------------------------------------------------------------------------ the aware menu
 
-Add-Check 'smart-menu' "an archive's menu starts with its head and puts Extract here first; typing finds a row and Enter runs it" {
+Add-Check 'smart-menu' "an archive's menu starts with its head, then Open with Extract here right under it; typing finds a row and Enter runs it" {
     # The arena has no archive: one is made here, and the list shows it by itself (the folder is watched). The next
     # check's reset takes it away again.
     $zip = Get-ArenaPath 'pack.zip'
@@ -195,9 +195,11 @@ Add-Check 'smart-menu' "an archive's menu starts with its head and puts Extract 
     $menu = Get-OpenMenu -Name 'Item menu'
     Assert-True (Find-El -Type Group -Name 'pack.zip' -Root $menu) 'the menu starts with a head named after the item'
     $items = @(Get-Names (Find-Els -Type MenuItem -Root $menu))
+    # Since the 0.16 polish wave the menus lead with what is done most: Open, then the archive's own Extract here
+    # (after "Open extracted folder" when it was extracted before), and Suggested never repeats a row above.
     $extract = [array]::IndexOf($items, 'Extract here')
     $open = [array]::IndexOf($items, 'Open')
-    Assert-True ($extract -ge 0 -and $open -ge 0 -and $extract -lt $open) "Extract here is put forward, above Open (items: $($items -join ', '))"
+    Assert-True ($open -ge 0 -and $extract -gt $open -and $extract -le $open + 2) "Extract here comes right under Open (items: $($items -join ', '))"
 
     # Typing in an open menu finds a row anywhere in it; Enter runs the first one found.
     Send-Text 'ren'
