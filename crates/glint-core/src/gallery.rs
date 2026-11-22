@@ -17,6 +17,7 @@ use std::sync::{LazyLock, Mutex, MutexGuard};
 use std::time::Instant;
 
 pub mod meta;
+pub mod probe;
 
 /// Gallery's path in Glint.
 pub const PLACE: &str = "shell:Gallery";

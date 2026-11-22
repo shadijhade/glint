@@ -34,6 +34,7 @@ pub mod host;
 pub mod index;
 pub mod ioring;
 pub mod jq;
+pub mod lens;
 pub mod links;
 pub mod localsend;
 pub mod locks;

@@ -18,9 +18,15 @@ use crate::explorer::{self, Explorer, Tab, TabId};
 use crate::kit::prelude::*;
 use crate::{t, theme};
 use glint_model::format::{format_count, format_size};
+use lenses::{Lens, Looked, Places};
 use std::cell::Cell;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use std::sync::Arc;
+use std::time::Instant;
 
+pub mod lenses;
+pub(crate) mod pill;
 #[cfg(test)]
 mod tests;
 
@@ -34,6 +40,8 @@ const SHORT_WINDOW: Pixels = px(620.);
 #[derive(Clone, Debug, PartialEq)]
 pub struct Head {
     pub tab: TabId,
+    /// The folder's path: a different one is a different place (two folders can share a name).
+    pub path: String,
     glyph: Glyph,
     /// The place's name.
     pub title: SharedString,
@@ -47,6 +55,10 @@ pub struct Head {
     pub is_folder: bool,
     /// True when the tab is displaying the unified Photo & Video Gallery (`shell:Gallery`).
     pub is_gallery: bool,
+    /// How many pictures the folder's make-up counts (the Colors lens wants a dozen).
+    pub images: usize,
+    /// How many pictures and videos it counts (the Map lens looks into them for places, if there are any).
+    pub media: usize,
 }
 
 /// The line under the name: how many folders and files and how much they weigh; while the box narrows the list,
@@ -120,6 +132,9 @@ impl Head {
             .unwrap_or_default();
         Some(Head {
             tab: tab.id,
+            path: tab.path.clone(),
+            images: lenses::images_of(&kinds),
+            media: lenses::media_of(&kinds),
             glyph: glyph_of(explorer, Some(tab)),
             title: name_of(explorer, Some(tab)).into(),
             facts: facts(tab, &kinds),
@@ -131,6 +146,28 @@ impl Head {
     }
 }
 
+/// A picture to look into for a place: its path, size and last-write time.
+pub type Picture = (String, u64, i64);
+
+/// How the head finds out what its smart buttons need to know off the UI thread. A test puts its own answers here.
+#[derive(Clone)]
+pub struct Probes {
+    /// How many of these files (path, size, modified) say where they were taken.
+    pub places: Arc<dyn Fn(Vec<Picture>) -> usize + Send + Sync>,
+    /// Whether Time Machine would have something to scrub in this folder.
+    pub history: Arc<dyn Fn(String) -> bool + Send + Sync>,
+}
+
+impl Probes {
+    /// What `glint-core` answers.
+    pub fn core() -> Self {
+        Probes {
+            places: Arc::new(|files| glint_core::gallery::probe::geo_count(&files)),
+            history: Arc::new(|folder| glint_core::lens::has_history(&folder)),
+        }
+    }
+}
+
 /// The head of one pane.
 pub struct PaneHead {
     explorer: Entity<Explorer>,
@@ -138,10 +175,25 @@ pub struct PaneHead {
     head: Option<Head>,
     /// Counts the places shown, so each arrival is its own animation.
     arrivals: usize,
+    /// The place the head last said (it survives a search hiding the head): only a different one is an arrival.
+    last_place: Option<(TabId, String)>,
     /// The explorer changed since the head was worked out.
     dirty: bool,
-    /// How wide the chips' place was when last drawn, in pixels: as many chips as fit it are drawn.
+    /// How wide the chips' and buttons' place was when last drawn, in pixels (0 until it has been).
     room: Rc<Cell<f32>>,
+    probes: Probes,
+    /// What the pictures of each folder say of where they were taken, by path (the last answer, kept while the
+    /// next listing is read so the button doesn't blink).
+    places: HashMap<String, Places>,
+    /// The listing that was last looked into.
+    looked: Option<Looked>,
+    /// Whether each folder has a history, and when that was learned.
+    history: HashMap<String, (bool, Instant)>,
+    history_asked: HashSet<String>,
+    /// The buttons that came to be known after the place was drawn: they fade in (the others are just there).
+    fresh: Vec<Lens>,
+    /// The panels' models already followed (a bit each: map, time machine, color wheel).
+    followed: u8,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -150,6 +202,8 @@ impl PaneHead {
         let explorer = explorer::explorer(cx);
         let subscriptions = vec![cx.observe(&explorer, |this: &mut Self, _, cx| {
             this.dirty = true;
+            this.refresh(cx);
+            this.ask(cx);
             cx.notify();
         })];
         PaneHead {
@@ -157,8 +211,16 @@ impl PaneHead {
             pane,
             head: None,
             arrivals: 0,
+            last_place: None,
             dirty: true,
             room: Rc::default(),
+            probes: Probes::core(),
+            places: HashMap::new(),
+            looked: None,
+            history: HashMap::new(),
+            history_asked: HashSet::new(),
+            fresh: Vec::new(),
+            followed: 0,
             _subscriptions: subscriptions,
         }
     }
@@ -174,13 +236,186 @@ impl PaneHead {
         let _span = crate::perf::span("head refresh");
         if self.dirty {
             let head = Head::of(self.explorer.read(cx), self.pane);
-            let place = |head: &Option<Head>| head.as_ref().map(|head| (head.tab, head.title.clone()));
-            if place(&head) != place(&self.head) {
-                self.arrivals += 1;
+            // An arrival is a different place, not a refresh, a sort or a selection of this one.
+            if let Some(head) = &head {
+                let place = (head.tab, head.path.clone());
+                if self.last_place.as_ref() != Some(&place) {
+                    self.arrivals += 1;
+                    self.fresh.clear();
+                    self.last_place = Some(place);
+                }
             }
             self.head = head;
             self.dirty = false;
         }
+    }
+
+    /// Asks what the smart buttons need once the folder's listing is in: whether pictures here have places, and
+    /// whether the folder has a history. Each runs on a background thread; the answer is kept and the head
+    /// redrawn, with the button fading in if it is new.
+    fn ask(&mut self, cx: &mut Context<Self>) {
+        let Some(head) = self.head.as_ref() else {
+            return;
+        };
+        if !(head.is_folder || head.is_gallery) {
+            return;
+        }
+        let (tab, path, media, is_folder) = (head.tab, head.path.clone(), head.media, head.is_folder);
+        let Some((entries, loading)) = self
+            .explorer
+            .read(cx)
+            .tab(tab)
+            .map(|tab| (tab.shared_entries(), tab.loading))
+        else {
+            return;
+        };
+        let Some(entries) = entries.filter(|_| !loading) else {
+            return;
+        };
+        // Places: only where there are pictures, and once per listing.
+        if media == 0 {
+            self.places.remove(&path);
+            self.looked = None;
+        } else if !self.looked.as_ref().is_some_and(|looked| looked.is(&path, &entries)) {
+            self.looked = Some(Looked {
+                path: path.clone(),
+                entries: entries.clone(),
+            });
+            let places = self.probes.places.clone();
+            let key = path.clone();
+            cx.spawn(async move |this, cx| {
+                let found = cx
+                    .background_spawn(async move {
+                        let (files, more) = lenses::pictures_of(&entries);
+                        if files.is_empty() {
+                            return Places::default();
+                        }
+                        Places {
+                            count: places(files),
+                            more,
+                        }
+                    })
+                    .await;
+                this.update(cx, |this, cx| {
+                    let before = this.places.get(&key).is_some_and(|p| p.count > 0);
+                    if found.count > 0 && !before {
+                        this.fresh.push(Lens::Map);
+                    }
+                    this.places.insert(key, found);
+                    cx.notify();
+                })
+                .ok();
+            })
+            .detach();
+        }
+        // History: once per folder, kept a minute.
+        let known = self
+            .history
+            .get(&path)
+            .is_some_and(|(_, at)| at.elapsed() < lenses::HISTORY_KEPT);
+        if is_folder && !known && self.history_asked.insert(path.clone()) {
+            let history = self.probes.history.clone();
+            let key = path.clone();
+            cx.spawn(async move |this, cx| {
+                let folder = key.clone();
+                let has = cx.background_spawn(async move { history(folder) }).await;
+                this.update(cx, |this, cx| {
+                    this.history_asked.remove(&key);
+                    let before = this.history.get(&key).is_some_and(|(has, _)| *has);
+                    if has && !before {
+                        this.fresh.push(Lens::History);
+                    }
+                    this.history.insert(key, (has, Instant::now()));
+                    cx.notify();
+                })
+                .ok();
+            })
+            .detach();
+        }
+    }
+
+    /// The panels' models change what is lit: follow each once it exists.
+    fn follow_panels(&mut self, cx: &mut Context<Self>) {
+        if self.followed & 1 == 0 {
+            if let Some(model) = crate::components::photo_map::try_shared(cx) {
+                self._subscriptions.push(cx.observe(&model, |_, _, cx| cx.notify()));
+                self.followed |= 1;
+            }
+        }
+        if self.followed & 2 == 0 {
+            if let Some(model) = crate::components::time_machine::try_shared(cx) {
+                self._subscriptions.push(cx.observe(&model, |_, _, cx| cx.notify()));
+                self.followed |= 2;
+            }
+        }
+        if self.followed & 4 == 0 {
+            let model = crate::components::color_wheel::shared(cx);
+            self._subscriptions.push(cx.observe(&model, |_, _, cx| cx.notify()));
+            self.followed |= 4;
+        }
+    }
+
+    /// The smart buttons to draw now, each with whether its panel is open (it is then lit, and stays).
+    fn lenses_now(&self, head: &Head, cx: &App) -> Vec<(Lens, bool)> {
+        let on_disk = head.is_folder || head.is_gallery;
+        let places = self.places.get(&head.path).copied().unwrap_or_default();
+        let open = |lens: Lens| match lens {
+            Lens::Map => crate::components::photo_map::shows(cx, head.tab),
+            Lens::Colors => crate::components::color_wheel::is_shown(cx, head.tab),
+            Lens::History => crate::components::time_machine::shows(cx, head.tab),
+        };
+        Lens::ALL
+            .into_iter()
+            .filter_map(|lens| {
+                let open = open(lens);
+                let offered = on_disk
+                    && match lens {
+                        Lens::Map => places.count > 0,
+                        Lens::Colors => lenses::colors_fit(head),
+                        Lens::History => head.is_folder && self.history.get(&head.path).is_some_and(|(has, _)| *has),
+                    };
+                (offered || open).then_some((lens, open))
+            })
+            .collect()
+    }
+
+    /// One smart button: a pill with the lens's icon and word, lit while its panel is open, fading in when it has
+    /// just become known.
+    fn lens_pill(&self, lens: Lens, open: bool, head: &Head, places: Places, cx: &mut Context<Self>) -> AnyElement {
+        let tab = head.tab;
+        let (icon, label, tip) = (
+            match lens {
+                Lens::Map => IconName::Globe,
+                Lens::Colors => IconName::Pipette,
+                Lens::History => IconName::RotateCcwClock,
+            },
+            lens.label(places.count, places.more),
+            lens.tip(places.count, places.more),
+        );
+        let button = pill::pill((lens.id(), self.pane), open, cx)
+            .icon(Icon::new(icon))
+            .label(label)
+            .accessibility_label(tip.clone())
+            .tooltip(tip)
+            .on_click(cx.listener(move |_, _, _, cx| {
+                match lens {
+                    Lens::Map => crate::components::photo_map::toggle(cx, tab),
+                    Lens::Colors => crate::components::color_wheel::toggle(cx, tab),
+                    Lens::History => crate::components::time_machine::toggle(cx, tab),
+                }
+                cx.notify();
+            }));
+        let slot = div().flex_none().child(button);
+        if cx.reduce_motion() || !self.fresh.contains(&lens) {
+            return slot.into_any_element();
+        }
+        use gpui_kit::{Animation, AnimationExt as _};
+        slot.with_animation(
+            (lens.id(), self.pane * 4 + lens.index()),
+            Animation::new(theme::motion::FAST).with_easing(theme::motion::enter),
+            |slot, delta| slot.opacity(delta),
+        )
+        .into_any_element()
     }
 
     /// A kind's chip: shows only that kind, or everything again when it already does.
@@ -263,7 +498,12 @@ pub fn shares(kinds: &[Category]) -> Vec<f32> {
 impl Render for PaneHead {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let _span = crate::perf::span("pane head");
+        let first = self.dirty;
         self.refresh(cx);
+        if first {
+            self.ask(cx);
+        }
+        self.follow_panels(cx);
         let Some(head) = self.head.clone() else {
             return div().into_any_element();
         };
@@ -287,6 +527,9 @@ impl Render for PaneHead {
             .test_support()
             .truncate()
             .text_size(theme::size::XS)
+            // A line high even when empty (before the listing is in), so the head doesn't grow when words arrive.
+            .h(rems(1.))
+            .line_height(rems(1.))
             .text_color(t.muted_foreground)
             // Counts, words and a size: in Arabic the line reads from the right, numbers and "MB" in their places.
             .child(crate::kit::rtl_line(head.facts.clone()));
@@ -303,13 +546,26 @@ impl Render for PaneHead {
         .flex_none()
         .max_w(relative(0.62))
         .min_w_0();
-        // The chips at the end edge. Those that don't fit go to a second line, which isn't shown: a pane too narrow
-        // for all of them shows the commonest whole, never half of one.
-        let fit = fitting(&head.kinds, self.room.get(), f32::from(rem));
-        let (room, id) = (self.room.clone(), cx.entity_id());
+        // The smart buttons at the very end, then the chips before them. The room for both is the width of one box
+        // that doesn't depend on what is in it, so a button coming or going changes how many chips fit in the same
+        // frame; the chips that don't fit go to a second line, which isn't shown: a pane too narrow for all of
+        // them shows the commonest whole, never half of one.
+        let lenses = self.lenses_now(&head, cx);
+        let places = self.places.get(&head.path).copied().unwrap_or_default();
+        let gap = f32::from(rem) * 0.375;
+        let pills_room: f32 = lenses
+            .iter()
+            .map(|(lens, _)| (lens.width_rems(places.count, places.more) * f32::from(rem)) + gap)
+            .sum();
+        // Never measured: the whole window is the most there can be (what doesn't fit wraps out of sight).
+        let room = match self.room.get() {
+            measured if measured > 0. => measured,
+            _ => f32::from(window.viewport_size().width),
+        };
+        let fit = fitting(&head.kinds, (room - pills_room).max(0.), f32::from(rem));
+        let (measure, id) = (self.room.clone(), cx.entity_id());
         let chips = row_start()
             .id("pane-head-kinds")
-            .relative()
             .flex_1()
             .min_w_0()
             .h(rems(2.))
@@ -324,15 +580,28 @@ impl Render for PaneHead {
                     .take(fit)
                     .enumerate()
                     .map(|(i, kind)| self.chip(i, &head, kind, &t, cx)),
-            )
-            // The place's width, for the next frame (asked for when it changed: a redraw asked for while drawing
-            // is dropped).
+            );
+        let pills = lenses
+            .iter()
+            .map(|&(lens, open)| self.lens_pill(lens, open, &head, places, cx))
+            .collect::<Vec<_>>();
+        let end = row_start()
+            .id("pane-head-end")
+            .relative()
+            .flex_1()
+            .min_w_0()
+            .items_center()
+            .gap(space(1.5))
+            .child(chips)
+            .children(pills)
+            // The box's width, for the next frame (asked for when it changed: a redraw asked for while drawing is
+            // dropped).
             .child(
                 canvas(
                     move |bounds, window, _| {
                         let width = f32::from(bounds.size.width);
-                        if (room.get() - width).abs() > 0.5 {
-                            room.set(width);
+                        if (measure.get() - width).abs() > 0.5 {
+                            measure.set(width);
                             window.on_next_frame(move |_, cx| cx.notify(id));
                         }
                     },
@@ -355,39 +624,6 @@ impl Render for PaneHead {
                     .rounded_full()
                     .bg(theme::hsl(kind.group.hue as f32, kind.group.sat as f32, 54.).opacity(0.85))
             }));
-        let color_button = (head.is_folder || head.is_gallery).then(|| {
-            let tab = head.tab;
-            Button::new(("pane-head-color-wheel", self.pane))
-                .compact()
-                .ghost()
-                .flex_none()
-                .icon(Icon::new(IconName::Pipette))
-                .accessibility_label(t!("Color Wheel"))
-                .tooltip(t!("Color Wheel: surf photos by color"))
-                .on_click(move |_, _, cx| crate::components::color_wheel::toggle(cx, tab))
-        });
-        let map_button = (head.is_folder || head.is_gallery).then(|| {
-            let tab = head.tab;
-            Button::new(("pane-head-photo-map", self.pane))
-                .compact()
-                .ghost()
-                .flex_none()
-                .icon(Icon::new(IconName::Globe))
-                .accessibility_label(t!("Photo World Map"))
-                .tooltip(t!("Photo World Map (Ctrl+Shift+G)"))
-                .on_click(move |_, _, cx| crate::components::photo_map::toggle(cx, tab))
-        });
-        let tm_button = head.is_folder.then(|| {
-            let tab = head.tab;
-            Button::new(("pane-head-time-machine", self.pane))
-                .compact()
-                .ghost()
-                .flex_none()
-                .icon(Icon::new(IconName::RotateCcwClock))
-                .accessibility_label(t!("Time Machine"))
-                .tooltip(t!("Time Machine scrubber (Ctrl+Shift+H)"))
-                .on_click(move |_, _, cx| crate::components::time_machine::toggle(cx, tab))
-        });
         // Arriving: the name comes in from the start edge as it clears, and the band grows to its width.
         let (name_row, band) = (
             row_start()
@@ -396,10 +632,7 @@ impl Render for PaneHead {
                 .gap(space(3.))
                 .child(head.glyph.picture((rem * if short { 1.5 } else { 2.5 }).round(), cx))
                 .child(name)
-                .child(chips)
-                .when_some(color_button, |row, btn| row.child(btn))
-                .when_some(map_button, |row, btn| row.child(btn))
-                .when_some(tm_button, |row, btn| row.child(btn)),
+                .child(end),
             div().w_full().child(band),
         );
         let (name_row, band) = if cx.reduce_motion() {
