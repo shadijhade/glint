@@ -10,6 +10,7 @@ mod drawer;
 mod frame;
 mod pictures;
 mod pins;
+mod scrubber;
 
 use crate::components::file_grid::thumbnail::{thumbnails, Thumbnails};
 use crate::explorer::{explorer, Explorer, ExplorerEvent, TabId};
@@ -17,9 +18,12 @@ use crate::kit::prelude::*;
 use crate::{t, theme};
 use frame::{ClusterCache, Frame};
 use glint_model::paths::{is_folder_path, is_gallery, same_path};
-use glint_model::world_map::{project, GeoPhoto, GeoSet, MapCamera, PinCluster, LAND_POLYGONS};
+use glint_model::world_map::{
+    project, travel_stops, GeoPhoto, GeoSet, MapCamera, PinCluster, Stop, Timeline, LAND_POLYGONS,
+};
 use pictures::Leads;
 use pins::{Colors, Ink};
+use scrubber::Scope;
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -271,6 +275,17 @@ pub enum PhotoMapEvent {
 
 impl EventEmitter<PhotoMapEvent> for PhotoMapView {}
 
+/// How long the camera takes to fly from one view to another: quiet, and over before it is noticed as a wait.
+const FLY: Duration = theme::motion::MORPH;
+
+/// The camera on its way: from where it was to where it is going, since when.
+#[derive(Clone, Copy)]
+struct Fly {
+    from: MapCamera,
+    to: MapCamera,
+    at: Instant,
+}
+
 #[derive(Clone, Copy)]
 struct DragState {
     start: Point<Pixels>,
@@ -301,6 +316,18 @@ pub struct PhotoMapView {
     asked: u64,
     /// One focus handle for each tile of the drawer.
     tile_focus: Vec<FocusHandle>,
+    /// The camera flying to where it is going (a double-click on a pin, a new time chosen), if it is.
+    fly: Option<Fly>,
+    /// The time shown (the date scrubber), and the one the camera was last flown to.
+    scope: Scope,
+    fitted_scope: Scope,
+    /// Dashed arcs between the places, in the order they were visited.
+    arcs: bool,
+    /// What each choice of the above makes of the photos, worked out once: the photos of the time shown, the
+    /// years the photos span, and the stops of the trip.
+    shown: Option<(usize, Scope, GeoSet)>,
+    timeline: Option<(usize, Arc<Timeline>)>,
+    stops: Option<(usize, Arc<[Stop]>)>,
     drag: Option<DragState>,
     selected_cluster: Option<usize>,
     map_bounds: Rc<Cell<Bounds<Pixels>>>,
@@ -338,6 +365,13 @@ impl PhotoMapView {
             settle: None,
             asked: 0,
             tile_focus: Vec::new(),
+            fly: None,
+            scope: Scope::All,
+            fitted_scope: Scope::All,
+            arcs: false,
+            shown: None,
+            timeline: None,
+            stops: None,
             drag: None,
             selected_cluster: None,
             map_bounds: Rc::new(Cell::new(Bounds::default())),
@@ -375,10 +409,110 @@ impl PhotoMapView {
     }
 
     fn fit_all(&mut self, cx: &mut Context<Self>) {
-        let (set, _, _) = self.current(cx);
-        self.camera = self.fit_camera(&set);
+        let (all, _, _) = self.current(cx);
+        let shown = self.shown_of(&all);
+        let to = self.fit_camera(&shown);
         self.touched = false;
+        self.fly_to(to, cx);
+    }
+
+    /// The photos of the time chosen: all of them for all time, else a set of their own, kept while the photos and
+    /// the time stay as they are.
+    fn shown_of(&mut self, all: &GeoSet) -> GeoSet {
+        let Some((from, to)) = self.scope.range() else {
+            return all.clone();
+        };
+        match &self.shown {
+            Some((id, scope, set)) if *id == all.id() && *scope == self.scope => set.clone(),
+            _ => {
+                let set = all.taken_between(from, to);
+                self.shown = Some((all.id(), self.scope, set.clone()));
+                set
+            }
+        }
+    }
+
+    /// The years and months the photos were taken in, counted once for each set of photos.
+    fn timeline_of(&mut self, all: &GeoSet) -> Arc<Timeline> {
+        match &self.timeline {
+            Some((id, timeline)) if *id == all.id() => timeline.clone(),
+            _ => {
+                let timeline = Arc::new(Timeline::of(all));
+                self.timeline = Some((all.id(), timeline.clone()));
+                timeline
+            }
+        }
+    }
+
+    /// The stops of the trip (the places in the order they were visited), worked out once for each set.
+    fn stops_of(&mut self, set: &GeoSet) -> Arc<[Stop]> {
+        match &self.stops {
+            Some((id, stops)) if *id == set.id() => stops.clone(),
+            _ => {
+                let stops: Arc<[Stop]> = travel_stops(set).into();
+                self.stops = Some((set.id(), stops.clone()));
+                stops
+            }
+        }
+    }
+
+    /// Sends the camera toward `to`: at once when Windows' animation effects are off, or when it is there already.
+    fn begin_flight(&mut self, to: MapCamera, cx: &App) {
         self.selected_cluster = None;
+        if cx.reduce_motion() || to == self.camera {
+            self.camera = to;
+            self.fly = None;
+        } else {
+            self.fly = Some(Fly {
+                from: self.camera,
+                to,
+                at: Instant::now(),
+            });
+        }
+    }
+
+    fn fly_to(&mut self, to: MapCamera, cx: &mut Context<Self>) {
+        self.begin_flight(to, cx);
+        cx.notify();
+    }
+
+    /// The camera flies to the photos of the pin that is chosen, framing them; a pin whose photos are already as
+    /// close as the view shows them (one photo, or a few on the same spot) is come in on instead.
+    fn fly_into_selected(&mut self, cx: &mut Context<Self>) {
+        let Some(chosen) = self.selected_cluster else {
+            return;
+        };
+        let (all, _, _) = self.current(cx);
+        let set = self.shown_of(&all);
+        let frame = self.clusters_now(&set);
+        let Some(pin) = frame.clusters.pins.get(chosen).copied() else {
+            return;
+        };
+        let bounds = self.map_bounds.get();
+        let aspect =
+            f64::from(f32::from(bounds.size.width).max(800.0)) / f64::from(f32::from(bounds.size.height).max(480.0));
+        let mut to = MapCamera::fit_members(&set, frame.clusters.members_of(&pin), aspect);
+        if to.zoom < self.camera.zoom * 1.5 {
+            to = MapCamera::centered_on(pin.lat, pin.lon, self.camera.zoom * 4.0);
+        }
+        self.touched = true;
+        self.fly_to(to, cx);
+    }
+
+    /// The next (or previous) pin of the view is chosen, row by row, round the end.
+    fn step_selection(&mut self, forward: bool, cx: &mut Context<Self>) {
+        let (all, _, _) = self.current(cx);
+        let set = self.shown_of(&all);
+        let count = self.clusters_now(&set).clusters.pins.len();
+        if count == 0 {
+            return;
+        }
+        self.selected_cluster = Some(match (self.selected_cluster, forward) {
+            (None, true) => 0,
+            (None, false) => count - 1,
+            (Some(at), true) => (at + 1) % count,
+            (Some(at), false) => (at + count - 1) % count,
+        });
         cx.notify();
     }
 
@@ -399,6 +533,7 @@ impl PhotoMapView {
         let h = f32::from(bounds.size.height).max(480.0);
         self.camera.zoom_at(factor, w * 0.5, h * 0.5, w, h);
         self.touched = true;
+        self.fly = None;
         self.selected_cluster = None;
         cx.notify();
     }
@@ -410,7 +545,8 @@ impl PhotoMapView {
         if w <= 1.0 || h <= 1.0 {
             return;
         }
-        let (set, _, _) = self.current(cx);
+        let (all, _, _) = self.current(cx);
+        let set = self.shown_of(&all);
         let frame = self.clusters_now(&set);
         let px_x = f32::from(pos.x - bounds.origin.x);
         let px_y = f32::from(pos.y - bounds.origin.y);
@@ -428,7 +564,7 @@ impl PhotoMapView {
         cx.notify();
     }
 
-    fn on_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let m = event.keystroke.modifiers;
         if m.control || m.alt || m.platform {
             return;
@@ -455,8 +591,18 @@ impl PhotoMapView {
                 cx.stop_propagation();
                 self.camera = MapCamera::default();
                 self.touched = true;
+                self.fly = None;
                 self.selected_cluster = None;
                 cx.notify();
+            }
+            // On the map itself (not on one of its buttons): Enter flies into the chosen pin, the arrows choose.
+            "enter" if self.selected_cluster.is_some() && self.focus.is_focused(window) => {
+                cx.stop_propagation();
+                self.fly_into_selected(cx);
+            }
+            key @ ("right" | "down" | "left" | "up") if self.focus.is_focused(window) => {
+                cx.stop_propagation();
+                self.step_selection(matches!(key, "right" | "down"), cx);
             }
             _ => {}
         }
@@ -477,18 +623,42 @@ fn drawer_title(cl: &PinCluster) -> (SharedString, Option<SharedString>) {
 impl Render for PhotoMapView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tab = self.tab_id(cx);
-        let (photos, loading, serial) = self.current(cx);
+        let (all, loading, serial) = self.current(cx);
         // The camera frames the photos when the first come in and once more when the scan is done (so pins are
         // there to see while it runs), unless the person has moved it meanwhile.
         let stage = if loading { 1 } else { 2 };
         let new_load = self.fitted_for.is_none_or(|(was, _)| was != serial);
         if new_load {
             self.touched = false;
+            self.scope = Scope::All;
+            self.fitted_scope = Scope::All;
+            self.fly = None;
         }
         let later = self.fitted_for.is_some_and(|(_, at)| at < stage) && !self.touched;
-        if !photos.is_empty() && (new_load || later) {
+        if !all.is_empty() && (new_load || later) {
             self.fitted_for = Some((serial, stage));
-            self.camera = self.fit_camera(&photos);
+            self.camera = self.fit_camera(&all);
+        }
+        // The photos of the time chosen: a new time sends the camera to what is left of them.
+        let photos = self.shown_of(&all);
+        if self.fitted_scope != self.scope {
+            self.fitted_scope = self.scope;
+            if !photos.is_empty() {
+                let to = self.fit_camera(&photos);
+                self.begin_flight(to, cx);
+            }
+        }
+        let timeline = self.timeline_of(&all);
+        // A flight in the air: the camera one step on (the curve the app's things move on), and a frame to come.
+        if let Some(fly) = self.fly {
+            let t = (fly.at.elapsed().as_secs_f32() / FLY.as_secs_f32()).min(1.0);
+            if t >= 1.0 {
+                self.camera = fly.to;
+                self.fly = None;
+            } else {
+                self.camera = fly.from.blend(&fly.to, f64::from(theme::motion::glide(t)));
+                window.request_animation_frame();
+            }
         }
 
         let frame = self.clusters_now(&photos);
@@ -501,10 +671,12 @@ impl Render for PhotoMapView {
         let pictures = self.pin_pictures(&frame, &photos, scale, cx);
 
         let t = theme::tokens(cx).clone();
-        let count_text = if loading && photos.is_empty() {
+        let count_text = if loading && all.is_empty() {
             t!("Scanning EXIF GPS…")
         } else if loading {
-            t!("Scanning… {n} geotagged photos so far", n = photos.len())
+            t!("Scanning… {n} geotagged photos so far", n = all.len())
+        } else if self.scope != Scope::All {
+            t!("{n} of {total} geotagged photos", n = photos.len(), total = all.len())
         } else {
             t!("{n} geotagged photos", n = photos.len())
         };
@@ -569,6 +741,7 @@ impl Render for PhotoMapView {
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.camera = MapCamera::default();
                                 this.touched = true;
+                                this.fly = None;
                                 this.selected_cluster = None;
                                 cx.notify();
                             })),
@@ -596,7 +769,9 @@ impl Render for PhotoMapView {
             selected: t.destructive,
             text: t.primary_foreground,
             halo: t.background,
+            arc: t.primary.opacity(0.7),
         };
+        let stops = self.arcs.then(|| self.stops_of(&photos));
         let base_font = window.text_style().font();
 
         let map_canvas = canvas(
@@ -667,6 +842,11 @@ impl Render for PhotoMapView {
                     }
                 }
 
+                // The trip, as dashed arcs under the pins.
+                if let Some(stops) = &stops {
+                    pins::paint_arcs(window, bounds, &cam, stops, colors.arc);
+                }
+
                 // Clustered pins, with the lead photo's picture in the ones that have it.
                 let ink = Ink {
                     origin: bounds.origin,
@@ -707,6 +887,7 @@ impl Render for PhotoMapView {
                 let sy = f32::from(ev.position.y - bounds.origin.y);
                 this.camera.zoom_at(factor, sx, sy, w, h);
                 this.touched = true;
+                this.fly = None;
                 this.selected_cluster = None;
                 cx.notify();
             }))
@@ -738,6 +919,7 @@ impl Render for PhotoMapView {
                 if w > 1.0 && (dx.abs() > 0.0 || dy.abs() > 0.0) {
                     this.camera.pan_by(dx, dy, w);
                     this.touched = true;
+                    this.fly = None;
                     cx.notify();
                 }
             }))
@@ -748,6 +930,10 @@ impl Render for PhotoMapView {
                     this.drag = None;
                     if was_click {
                         this.pick_cluster_at(ev.position, cx);
+                        // Twice: the camera flies to the pin's photos.
+                        if ev.click_count >= 2 {
+                            this.fly_into_selected(cx);
+                        }
                     }
                 }),
             )
@@ -758,7 +944,7 @@ impl Render for PhotoMapView {
                 }),
             )
             .child(map_canvas)
-            .when(!loading && photos.is_empty(), |box_el| {
+            .when(!loading && all.is_empty(), |box_el| {
                 box_el.child(
                     div().absolute().inset_0().flex().items_center().justify_center().child(
                         col()
@@ -800,6 +986,7 @@ impl Render for PhotoMapView {
             .w_full()
             .child(map_body)
             .when_some(drawer, |area, drawer| area.child(drawer));
+        let scrubber = self.scrubber(&timeline, cx);
 
         col()
             .id(("photo-map-view", self.pane))
@@ -812,6 +999,7 @@ impl Render for PhotoMapView {
             .bg(t.background)
             .child(header)
             .child(map_area)
+            .when_some(scrubber, |root, scrubber| root.child(scrubber))
             .into_any_element()
     }
 }
@@ -823,7 +1011,8 @@ mod tests {
     use crate::explorer::fake::{file, FakeDisk};
     use crate::explorer::NavOptions;
     use crate::testing;
-    use gpui_kit::test::TestWindowExt as _;
+    use gpui_kit::test::{ClickOptions, TestWindowExt as _};
+    use gpui_kit::VisualTestContext;
     use std::cell::RefCell;
 
     #[gpui_kit::test]
@@ -1092,5 +1281,187 @@ mod tests {
                 path: "C:\\Trip\\صورة.jpg".into()
             })
         );
+    }
+
+    /// Two photos in Tokyo in January 2019 and one in Paris in 2021.
+    fn two_years() -> Vec<GeoPhoto> {
+        use glint_model::world_map::year_range;
+        let day = 86_400_000;
+        let (y19, y21) = (year_range(2019).0, year_range(2021).0);
+        vec![
+            photo("p1.jpg", 48.858, 2.295, y21 + 100 * day),
+            photo("t2.jpg", 35.661, 139.701, y19 + 12 * day),
+            photo("t1.jpg", 35.660, 139.700, y19 + 10 * day),
+        ]
+    }
+
+    #[gpui_kit::test]
+    fn the_scrubber_shows_one_year_or_month_and_the_camera_goes_to_what_is_left(cx: &mut gpui_kit::TestAppContext) {
+        let _guard = testing::lock();
+        let disk = FakeDisk::new();
+        disk.folder("C:\\Trip", vec![file("C:\\Trip", "a.jpg", 420, 0)]);
+        let sample = two_years();
+        cx.update(|cx| {
+            testing::init(cx);
+            // Windows' animation effects off, as `testing::open_window` has them: a flight lands at once.
+            cx.set_reduce_motion(true);
+            crate::explorer::init_with(cx, disk.source());
+            init_with(cx, loader_of(move |_| sample.clone()));
+        });
+        let (view, visual) = cx.add_window_view(|window, cx| PhotoMapView::new(0, window, cx));
+        visual.update(|_, cx| {
+            explorer(cx).update(cx, |e, cx| e.navigate("C:\\Trip", NavOptions::default(), cx));
+        });
+        visual.run_until_parked();
+        let tab = visual.update(|_, cx| explorer(cx).read(cx).active_tab_id());
+        visual.update(|_, cx| toggle(cx, tab));
+        visual.run_until_parked();
+        for _ in 0..2 {
+            visual.update(|window, cx| window.render_frame(cx));
+            visual.run_until_parked();
+        }
+        let state = |visual: &mut VisualTestContext| {
+            visual.update(|_, cx| {
+                let v = view.read(cx);
+                (v.scope, v.camera.zoom, v.shown.as_ref().map(|(_, _, set)| set.len()))
+            })
+        };
+        let (scope, world_zoom, _) = state(visual);
+        assert_eq!(scope, Scope::All);
+
+        // 2019: Tokyo's two photos are all that is left, and the camera is on them.
+        visual.update(|window, cx| window.click(("pm-year", 2019usize), cx));
+        visual.update(|window, cx| window.render_frame(cx));
+        let (scope, zoom, shown) = state(visual);
+        assert_eq!((scope, shown), (Scope::Year(2019), Some(2)));
+        assert!(zoom > world_zoom * 20.0, "{zoom} against {world_zoom}");
+        // Its months: January has the photos, December none (and is not pressable).
+        visual.update(|window, cx| window.click(("pm-month", 1usize), cx));
+        visual.update(|window, cx| window.render_frame(cx));
+        assert_eq!(state(visual).0, Scope::Month(2019, 1));
+        assert_eq!(state(visual).2, Some(2));
+        let december = visual.update(|window, _| window.find(("pm-month", 12usize)).disabled());
+        assert_eq!(december, Some(true));
+        // Pressing January again goes back up to the year, the year again back out, to every photo.
+        visual.update(|window, cx| window.click(("pm-month", 1usize), cx));
+        assert_eq!(state(visual).0, Scope::Year(2019));
+        visual.update(|window, cx| window.click(("pm-year", 2019usize), cx));
+        visual.update(|window, cx| window.render_frame(cx));
+        let (scope, zoom, _) = state(visual);
+        assert_eq!(scope, Scope::All);
+        assert!(
+            (zoom - world_zoom).abs() < world_zoom * 0.01,
+            "{zoom} against {world_zoom}"
+        );
+        // 2021 alone is the one photo in Paris; All time (the button) leaves it.
+        visual.update(|window, cx| window.click(("pm-year", 2021usize), cx));
+        visual.update(|window, cx| window.render_frame(cx));
+        assert_eq!(state(visual).2, Some(1));
+        visual.update(|window, cx| window.click(("pm-all-time", 0usize), cx));
+        assert_eq!(state(visual).0, Scope::All);
+
+        // The arcs switch: on, the trip's two stops are worked out; off again.
+        visual.update(|window, cx| window.click(("pm-arcs", 0usize), cx));
+        visual.update(|window, cx| window.render_frame(cx));
+        let stops = visual.update(|_, cx| (view.read(cx).arcs, view.read(cx).stops.as_ref().map(|(_, s)| s.len())));
+        assert_eq!(stops, (true, Some(2)));
+        visual.update(|window, cx| window.click(("pm-arcs", 0usize), cx));
+        assert!(!visual.update(|_, cx| view.read(cx).arcs));
+    }
+
+    #[gpui_kit::test]
+    fn double_clicking_a_pin_flies_the_camera_to_its_photos(cx: &mut gpui_kit::TestAppContext) {
+        use glint_model::world_map::project;
+        let _guard = testing::lock();
+        let disk = FakeDisk::new();
+        disk.folder("C:\\Trip", vec![file("C:\\Trip", "a.jpg", 420, 0)]);
+        let sample = two_years();
+        cx.update(|cx| {
+            testing::init(cx);
+            // Windows' animation effects off, as `testing::open_window` has them: a flight lands at once.
+            cx.set_reduce_motion(true);
+            crate::explorer::init_with(cx, disk.source());
+            init_with(cx, loader_of(move |_| sample.clone()));
+        });
+        let (view, visual) = cx.add_window_view(|window, cx| PhotoMapView::new(0, window, cx));
+        visual.update(|_, cx| {
+            explorer(cx).update(cx, |e, cx| e.navigate("C:\\Trip", NavOptions::default(), cx));
+        });
+        visual.run_until_parked();
+        let tab = visual.update(|_, cx| explorer(cx).read(cx).active_tab_id());
+        visual.update(|_, cx| toggle(cx, tab));
+        visual.run_until_parked();
+        for _ in 0..2 {
+            visual.update(|window, cx| window.render_frame(cx));
+            visual.run_until_parked();
+        }
+        let tokyo = project(35.6605, 139.7005);
+        let pin_of_tokyo = |visual: &mut VisualTestContext| {
+            visual.update(|_, cx| {
+                view.update(cx, |v, cx| {
+                    let (all, _, _) = v.current(cx);
+                    let set = v.shown_of(&all);
+                    let frame = v.clusters_now(&set);
+                    frame.clusters.pins.iter().find(|p| p.count == 2).map(|p| (p.sx, p.sy))
+                })
+            })
+        };
+        let double_click = |visual: &mut VisualTestContext, (sx, sy): (f32, f32)| {
+            visual.update(|window, cx| {
+                window.click_with_options(
+                    ("photo-map-canvas", 0usize),
+                    ClickOptions::new().with_offset(point(px(sx), px(sy))).with_count(2),
+                    cx,
+                )
+            })
+        };
+        let camera =
+            |visual: &mut VisualTestContext| visual.update(|_, cx| (view.read(cx).camera, view.read(cx).fly.is_some()));
+        let (start, _) = camera(visual);
+
+        // With Windows' animation effects off, the camera is there at once, framing both photos.
+        let at = pin_of_tokyo(visual).expect("Tokyo's pin");
+        double_click(visual, at);
+        let (there, flying) = camera(visual);
+        assert!(
+            !flying && there.zoom > start.zoom * 20.0,
+            "{} against {}",
+            there.zoom,
+            start.zoom
+        );
+        assert!((there.cx - tokyo.0).abs() < 1e-3 && (there.cy - tokyo.1).abs() < 1e-3);
+
+        // With them on, it flies: on its way after the double-click, there once the flight's time is up.
+        visual.update(|window, cx| {
+            view.update(cx, |v, _| v.camera = start);
+            cx.set_reduce_motion(false);
+            window.render_frame(cx);
+        });
+        let at = pin_of_tokyo(visual).expect("Tokyo's pin");
+        double_click(visual, at);
+        let (now, flying) = camera(visual);
+        assert!(flying && now.zoom < there.zoom, "{} while flying", now.zoom);
+        std::thread::sleep(FLY + Duration::from_millis(60));
+        visual.update(|window, cx| window.render_frame(cx));
+        let (end, flying) = camera(visual);
+        assert!(!flying);
+        assert!(
+            (end.zoom - there.zoom).abs() < there.zoom * 0.01,
+            "{} against {}",
+            end.zoom,
+            there.zoom
+        );
+
+        // Without the pointer: the arrows choose a pin, Enter flies into it.
+        visual.update(|window, cx| {
+            view.update(cx, |v, _| v.camera = start);
+            let focus = view.read(cx).focus_handle();
+            window.focus(&focus, cx);
+            window.press("right", cx);
+        });
+        assert!(visual.update(|_, cx| view.read(cx).selected_cluster.is_some()));
+        visual.update(|window, cx| window.press("enter", cx));
+        let (now, flying) = camera(visual);
+        assert!(flying || now.zoom > start.zoom * 2.0);
     }
 }

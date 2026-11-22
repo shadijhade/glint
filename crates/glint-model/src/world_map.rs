@@ -648,6 +648,38 @@ impl MapCamera {
         Self::fit_bounds(&bounds, aspect_wh)
     }
 
+    /// A camera framed around the photos of one cluster (`members` are indices into the set).
+    pub fn fit_members(set: &GeoSet, members: &[u32], aspect_wh: f64) -> Self {
+        let mut bounds = WorldBounds::default();
+        for &i in members {
+            if let Some((wx, wy)) = set.world_of(i as usize) {
+                bounds.add(wx, wy);
+            }
+        }
+        Self::fit_bounds(&bounds, aspect_wh)
+    }
+
+    /// A camera at `zoom` with `(lat, lon)` in the middle.
+    pub fn centered_on(lat: f64, lon: f64, zoom: f64) -> Self {
+        let (cx, cy) = project(lat, lon);
+        let mut cam = Self { cx, cy, zoom };
+        cam.clamp();
+        cam
+    }
+
+    /// The camera `t` of the way (0 to 1) from `self` to `to`: the center moves in a straight line and the zoom
+    /// by ratio, so a flight neither lingers close to the ground nor jumps at its end.
+    pub fn blend(&self, to: &MapCamera, t: f64) -> MapCamera {
+        let t = t.clamp(0.0, 1.0);
+        let mut cam = MapCamera {
+            cx: self.cx + (to.cx - self.cx) * t,
+            cy: self.cy + (to.cy - self.cy) * t,
+            zoom: self.zoom * (to.zoom / self.zoom).powf(t),
+        };
+        cam.clamp();
+        cam
+    }
+
     /// A camera framed neatly around `bounds`; the default one when nothing was added to them.
     pub fn fit_bounds(bounds: &WorldBounds, aspect_wh: f64) -> Self {
         if bounds.is_empty() {
@@ -801,6 +833,146 @@ pub fn cluster_set(set: &GeoSet, cam: &MapCamera, width: f32, height: f32, cell_
     })
 }
 
+// ---- Time: a scrubber's years and months, and the stops of a trip --------------------------------------
+
+const DAY_MS: i64 = 86_400_000;
+
+/// The calendar date (UTC) of a time in ms since 1970: `(year, month 1 to 12)`.
+pub fn year_month(ms: i64) -> (i32, u32) {
+    // Howard Hinnant's civil-from-days.
+    let z = ms.div_euclid(DAY_MS) + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    (year as i32, month as u32)
+}
+
+/// The first millisecond of a month (UTC); `month` 1 to 12, and 13 is January of the next year.
+fn month_start(year: i32, month: u32) -> i64 {
+    let (y, m) = (i64::from(year) - i64::from(month <= 2), i64::from(month));
+    let era = y.div_euclid(400);
+    let yoe = y.rem_euclid(400);
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    (era * 146_097 + doe - 719_468) * DAY_MS
+}
+
+/// All of a year, as `(first, last)` ms, both included.
+pub fn year_range(year: i32) -> (i64, i64) {
+    (month_start(year, 1), month_start(year + 1, 1) - 1)
+}
+
+/// All of a month (1 to 12) of a year, as `(first, last)` ms, both included.
+pub fn month_range(year: i32, month: u32) -> (i64, i64) {
+    let month = month.clamp(1, 12);
+    let next = if month == 12 {
+        month_start(year + 1, 1)
+    } else {
+        month_start(year, month + 1)
+    };
+    (month_start(year, month), next - 1)
+}
+
+/// How many photos were taken in one year, and in each of its months.
+#[derive(Clone, Debug, PartialEq)]
+pub struct YearBucket {
+    pub year: i32,
+    pub count: u32,
+    pub months: [u32; 12],
+}
+
+/// The years the photos of a set were taken in, oldest first: what the date scrubber shows.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Timeline {
+    pub years: Vec<YearBucket>,
+}
+
+impl Timeline {
+    /// Counts the photos of `set` by year and month.
+    pub fn of(set: &GeoSet) -> Self {
+        let mut years: Vec<YearBucket> = Vec::new();
+        for p in set.iter() {
+            let (year, month) = year_month(p.taken);
+            let at = match years.binary_search_by_key(&year, |b| b.year) {
+                Ok(at) => at,
+                Err(at) => {
+                    years.insert(
+                        at,
+                        YearBucket {
+                            year,
+                            count: 0,
+                            months: [0; 12],
+                        },
+                    );
+                    at
+                }
+            };
+            let bucket = &mut years[at];
+            bucket.count += 1;
+            bucket.months[(month as usize).clamp(1, 12) - 1] += 1;
+        }
+        Self { years }
+    }
+
+    /// The bucket of a year.
+    pub fn year(&self, year: i32) -> Option<&YearBucket> {
+        self.years
+            .binary_search_by_key(&year, |b| b.year)
+            .ok()
+            .map(|at| &self.years[at])
+    }
+
+    /// The most photos any one year holds (for the height of the bars).
+    pub fn most(&self) -> u32 {
+        self.years.iter().map(|y| y.count).max().unwrap_or(0)
+    }
+}
+
+/// Where the photos of a time were taken, in the order the places were visited: photos near each other in time
+/// and place are one stop.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Stop {
+    pub wx: f64,
+    pub wy: f64,
+    /// When the first photo of the stop was taken, and how many there are.
+    pub first: i64,
+    pub count: u32,
+}
+
+/// How far apart (on the world map, 1 is the whole of it) two photos in a row are before they are different stops:
+/// about 80 km.
+const STOP_APART: f64 = 0.002;
+
+/// The stops of `set`'s photos in the order they were taken: a new stop starts when the next photo is farther than
+/// [`STOP_APART`] from where the stop began.
+pub fn travel_stops(set: &GeoSet) -> Vec<Stop> {
+    let mut order: Vec<u32> = (0..set.len() as u32).collect();
+    order.sort_by_key(|&i| (set.photos[i as usize].taken, i));
+    let mut stops: Vec<Stop> = Vec::new();
+    let mut anchor = (0.0, 0.0);
+    for i in order {
+        let (wx, wy) = set.world[i as usize];
+        let taken = set.photos[i as usize].taken;
+        match stops.last_mut() {
+            Some(stop) if (wx - anchor.0).hypot(wy - anchor.1) <= STOP_APART => stop.count += 1,
+            _ => {
+                anchor = (wx, wy);
+                stops.push(Stop {
+                    wx,
+                    wy,
+                    first: taken,
+                    count: 1,
+                });
+            }
+        }
+    }
+    stops
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -947,5 +1119,99 @@ mod tests {
         }
         assert_eq!(MapCamera::fit_set(&GeoSet::default(), 1.6), MapCamera::default());
         assert_eq!(MapCamera::fit_points(&[(48.8, 2.3), (35.7, 139.6)], 1.6), cam);
+    }
+
+    #[test]
+    fn dates_become_years_and_months_and_back() {
+        assert_eq!(year_month(0), (1970, 1));
+        // 2023-11-14 22:13:20 UTC.
+        assert_eq!(year_month(1_700_000_000_000), (2023, 11));
+        assert_eq!(year_month(-1), (1969, 12));
+        // Leap day and the day after it.
+        let (from, to) = month_range(2024, 2);
+        assert_eq!(year_month(from), (2024, 2));
+        assert_eq!(year_month(to), (2024, 2));
+        assert_eq!(year_month(to + 1), (2024, 3));
+        assert_eq!((to + 1 - from) / 86_400_000, 29);
+        let (y_from, y_to) = year_range(2023);
+        assert_eq!((year_month(y_from), year_month(y_to)), ((2023, 1), (2023, 12)));
+        assert_eq!(month_range(2023, 12).1, y_to);
+        assert_eq!(year_month(y_to + 1), (2024, 1));
+    }
+
+    #[test]
+    fn the_timeline_counts_each_year_and_month() {
+        let day = 86_400_000i64;
+        let t2019 = year_range(2019).0;
+        let t2021 = year_range(2021).0;
+        let set = GeoSet::new(vec![
+            photo("a", 1.0, 1.0, t2019 + 40 * day),
+            photo("b", 1.0, 1.0, t2019 + 45 * day),
+            photo("c", 1.0, 1.0, t2021 + 200 * day),
+            photo("d", 1.0, 1.0, t2019),
+        ]);
+        let timeline = Timeline::of(&set);
+        assert_eq!(
+            timeline.years.iter().map(|y| (y.year, y.count)).collect::<Vec<_>>(),
+            [(2019, 3), (2021, 1)]
+        );
+        assert_eq!(timeline.year(2019).map(|y| y.months[0]), Some(1));
+        assert_eq!(timeline.year(2019).map(|y| y.months[1]), Some(2));
+        assert_eq!(timeline.most(), 3);
+        assert!(timeline.year(2020).is_none());
+        assert!(Timeline::of(&GeoSet::default()).years.is_empty());
+        // A year's range picks exactly its photos.
+        let (from, to) = year_range(2019);
+        assert_eq!(set.taken_between(from, to).len(), 3);
+        let (from, to) = month_range(2019, 2);
+        assert_eq!(set.taken_between(from, to).len(), 2);
+    }
+
+    #[test]
+    fn a_trip_is_the_places_in_the_order_they_were_visited() {
+        // Paris twice (a day apart), then Rome, then back in Paris, then Tokyo: three legs into four stops.
+        let set = GeoSet::new(vec![
+            photo("tokyo", 35.68, 139.69, 50),
+            photo("rome", 41.90, 12.50, 30),
+            photo("paris2", 48.86, 2.36, 20),
+            photo("paris1", 48.8566, 2.3522, 10),
+            photo("paris3", 48.857, 2.353, 40),
+        ]);
+        let stops = travel_stops(&set);
+        assert_eq!(stops.len(), 4, "{stops:?}");
+        assert_eq!(stops.iter().map(|s| s.count).collect::<Vec<_>>(), [2, 1, 1, 1]);
+        assert_eq!(stops.iter().map(|s| s.first).collect::<Vec<_>>(), [10, 30, 40, 50]);
+        // Each stop is where its first photo was.
+        assert_eq!(set.world_of(3), Some((stops[0].wx, stops[0].wy)));
+        assert!(travel_stops(&GeoSet::default()).is_empty());
+    }
+
+    #[test]
+    fn a_flight_runs_from_one_camera_to_the_other_and_never_overshoots() {
+        let from = MapCamera::default();
+        let to = MapCamera::centered_on(35.68, 139.69, 64.0);
+        assert_eq!(from.blend(&to, 0.0), from);
+        let end = from.blend(&to, 1.0);
+        assert!((end.cx - to.cx).abs() < 1e-12 && (end.cy - to.cy).abs() < 1e-12 && (end.zoom - to.zoom).abs() < 1e-9);
+        let mut last = from.zoom;
+        for step in 1..=20 {
+            let cam = from.blend(&to, f64::from(step) / 20.0);
+            assert!(cam.zoom >= last, "the zoom only grows");
+            assert!(cam.cx >= from.cx.min(to.cx) && cam.cx <= from.cx.max(to.cx));
+            last = cam.zoom;
+        }
+        // Half way the zoom is the geometric middle, not the average.
+        let half = from.blend(&to, 0.5);
+        assert!((half.zoom - 8.0).abs() < 1e-9, "{}", half.zoom);
+        // Fitting a cluster's photos frames them.
+        let set = GeoSet::new(vec![
+            photo("a", 48.85, 2.35, 1),
+            photo("b", 48.87, 2.37, 2),
+            photo("c", 35.0, 139.0, 3),
+        ]);
+        let cam = MapCamera::fit_members(&set, &[0, 1], 1.6);
+        let (sx, sy) = cam.to_screen(set.world_of(0).unwrap().0, set.world_of(0).unwrap().1, 800.0, 500.0);
+        assert!((0.0..=800.0).contains(&sx) && (0.0..=500.0).contains(&sy));
+        assert!(cam.zoom > 20.0, "{}", cam.zoom);
     }
 }

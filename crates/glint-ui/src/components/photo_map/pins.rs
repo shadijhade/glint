@@ -2,7 +2,7 @@
 //! calls these once per frame; they allocate nothing but what the text system shapes.
 
 use crate::kit::prelude::*;
-use glint_model::world_map::PinCluster;
+use glint_model::world_map::{MapCamera, PinCluster, Stop};
 use std::sync::Arc;
 
 /// The colors a frame's painting uses, taken from the theme once.
@@ -12,6 +12,7 @@ pub(super) struct Colors {
     pub selected: Hsla,
     pub text: Hsla,
     pub halo: Hsla,
+    pub arc: Hsla,
 }
 
 /// What painting a pin or a name needs besides the pin: the map's corner on the window, the colors, the font.
@@ -142,6 +143,54 @@ impl Colors {
             self.selected
         } else {
             self.pin
+        }
+    }
+}
+
+/// The most arcs painted in a frame: a view with more shows the trip's stops, not every leg.
+const MOST_ARCS: usize = 400;
+/// How many straight pieces an arc is drawn in.
+const ARC_PIECES: usize = 14;
+
+/// Dashed arcs from stop to stop, in the order the stops were visited, as one path. A leg with both ends
+/// off the map's box is left out.
+pub(super) fn paint_arcs(window: &mut Window, bounds: Bounds<Pixels>, cam: &MapCamera, stops: &[Stop], color: Hsla) {
+    let (w, h) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
+    let mut pb = PathBuilder::stroke(px(1.6)).dash_array(&[px(6.0), px(5.0)]);
+    let mut drawn = 0usize;
+    let mut any = false;
+    for pair in stops.windows(2) {
+        let (a, b) = (
+            cam.to_screen(pair[0].wx, pair[0].wy, w, h),
+            cam.to_screen(pair[1].wx, pair[1].wy, w, h),
+        );
+        let off = |p: (f32, f32)| p.0 < -40.0 || p.1 < -40.0 || p.0 > w + 40.0 || p.1 > h + 40.0;
+        if (off(a) && off(b)) || (a.0 - b.0).abs() + (a.1 - b.1).abs() < 3.0 {
+            continue;
+        }
+        // The arc bows to one side by a fifth of its length, the same side whichever way it runs.
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let control = ((a.0 + b.0) * 0.5 - dy * 0.2, (a.1 + b.1) * 0.5 + dx * 0.2);
+        let at = |p: (f32, f32)| point(bounds.origin.x + px(p.0), bounds.origin.y + px(p.1));
+        pb.move_to(at(a));
+        for k in 1..=ARC_PIECES {
+            let t = k as f32 / ARC_PIECES as f32;
+            let u = 1.0 - t;
+            let p = (
+                u * u * a.0 + 2.0 * u * t * control.0 + t * t * b.0,
+                u * u * a.1 + 2.0 * u * t * control.1 + t * t * b.1,
+            );
+            pb.line_to(at(p));
+        }
+        any = true;
+        drawn += 1;
+        if drawn >= MOST_ARCS {
+            break;
+        }
+    }
+    if any {
+        if let Ok(path) = pb.build() {
+            window.paint_path(path, color);
         }
     }
 }
