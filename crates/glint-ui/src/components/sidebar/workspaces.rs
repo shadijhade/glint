@@ -244,9 +244,13 @@ impl NameDialog {
             when_taken,
             ..
         } = ask;
+        let has_initial = !initial.is_empty();
         let input = cx.new(|cx| {
             let mut state = InputState::new(window, cx).placeholder(t!("Work, Photos, Release"));
             state.set_value(initial, window, cx);
+            if has_initial {
+                state.select_all(window, cx);
+            }
             state
         });
         let subscription = cx.subscribe_in(&input, window, |this, _, event: &InputEvent, window, cx| match event {
@@ -347,20 +351,105 @@ impl Render for NameDialog {
 // ---- The button and its menu ----------------------------------------------------------------------------
 
 impl Sidebar {
-    /// The Workspaces button at the top of the sidebar.
+    /// The Workspaces selector row at the top of the sidebar, below a subtle hairline.
     pub(super) fn draw_workspaces(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        row_start().w_full().pb(space(1.)).child(
-            Button::new("workspaces")
-                .ghost()
-                .compact()
-                .icon(IconName::Layers)
-                .label(t!("Workspaces"))
-                .accessibility_label(t!("Workspaces"))
-                .tooltip(t!("Save the tabs and panes as a workspace, or switch to one"))
-                .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
-                    this.open_workspaces_menu(event.position(), window, cx)
-                })),
-        )
+        let t = theme::tokens(cx).clone();
+        let rtl = crate::i18n::is_rtl();
+        let active = listed(cx).into_iter().find(|w| w.current);
+        let shown: SharedString = active
+            .as_ref()
+            .map(|w| SharedString::from(w.name.clone()))
+            .unwrap_or_else(|| t!("Workspaces"));
+        let open = self.workspace_menu.is_some();
+        let bounds = self.workspace_bounds.clone();
+        let click_bounds = bounds.clone();
+        let measure = canvas(move |b, _, _| bounds.set(b), |_, _, _, _| {})
+            .absolute()
+            .inset_0();
+        let button = row_start()
+            .id("workspaces")
+            .role(Role::Button)
+            .aria_label(t!("Workspaces"))
+            .aria_description(shown.clone())
+            .aria_expanded(open)
+            .test_support()
+            .tab_index(0)
+            .relative()
+            .w_full()
+            .h(space(7.5))
+            .px(space(2.))
+            .gap(space(2.))
+            .rounded(theme::size::RADIUS_ROW)
+            .border_1()
+            .border_color(if open { t.stroke } else { gpui_kit::transparent_black() })
+            .when(open, |b| b.bg(t.accent))
+            .cursor_pointer()
+            .text_size(theme::size::SM)
+            .text_color(if active.is_some() {
+                t.foreground
+            } else {
+                t.muted_foreground
+            })
+            .when(active.is_some(), |b| b.font_weight(FontWeight::MEDIUM))
+            .hover(|s| s.bg(t.accent).text_color(t.foreground))
+            .active(|s| s.bg(t.pressed))
+            .focus_visible(|s| s.border_color(t.ring))
+            .tooltip(tab_menu::tip(t!(
+                "Save the tabs and panes as a workspace, or switch to one"
+            )))
+            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                let b = click_bounds.get();
+                let at = if b.size.width > px(0.) && b.size.height > px(0.) {
+                    point(if rtl { b.right() } else { b.left() }, b.bottom() + px(2.))
+                } else {
+                    event.position()
+                };
+                this.open_workspaces_menu(at, window, cx);
+            }))
+            .child(measure)
+            .child(
+                icon(IconName::Layers)
+                    .size_4()
+                    .flex_none()
+                    .text_color(if active.is_some() {
+                        t.primary
+                    } else {
+                        t.muted_foreground
+                    }),
+            )
+            .child(div().flex_1().min_w_0().truncate().child(isolate(shown)))
+            .child(
+                icon(IconName::ChevronsUpDown)
+                    .size_3p5()
+                    .flex_none()
+                    .text_color(t.muted_foreground),
+            );
+        let button = crate::components::hop::mark(button, || {
+            let view = cx.entity();
+            let bounds = self.workspace_bounds.clone();
+            crate::components::hop::Mark::new(
+                crate::components::hop::Kind::Place,
+                cx.entity_id().as_u64(),
+                t!("Workspaces"),
+                move |window, cx| {
+                    let b = bounds.get();
+                    let at = if b.size.width > px(0.) && b.size.height > px(0.) {
+                        point(if rtl { b.right() } else { b.left() }, b.bottom() + px(2.))
+                    } else {
+                        point(px(12.), px(64.))
+                    };
+                    view.update(cx, |this, cx| this.open_workspaces_menu(at, window, cx));
+                },
+            )
+        });
+        div()
+            .w_full()
+            .pt(space(1.5))
+            .mt(space(0.5))
+            .border_t_1()
+            .border_color(t.stroke)
+            .pb(space(1.))
+            .child(button)
     }
 
     /// Opens the Workspaces menu at `at`.
@@ -378,6 +467,19 @@ impl Sidebar {
                 w.id.clone(),
             );
             row.icon = None;
+            row.hint = persistence::app(cx).and_then(|app| app.workspace(&w.id)).map(|ws| {
+                let panes = if ws.session.dual {
+                    2usize.min(ws.session.panes.len().max(1))
+                } else {
+                    1
+                };
+                let tabs: usize = ws.session.panes.iter().take(panes).map(|p| p.paths.len()).sum();
+                SharedString::from(format!(
+                    "{} · {}",
+                    glint_model::format::plural(tabs, "tab"),
+                    glint_model::format::plural(panes, "pane")
+                ))
+            });
             nodes.push(row.checked(w.current).node());
         }
         nodes.push(Some(Node::Separator));
@@ -395,7 +497,7 @@ impl Sidebar {
             };
             nodes.push(Some(Node::menu(
                 t!("Rename workspace"),
-                IconName::Pencil,
+                IconName::PenLine,
                 each("rename"),
             )));
             nodes.push(Some(Node::menu(

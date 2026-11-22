@@ -55,9 +55,11 @@ use portals::{PortalChanges, PortalWork, PortalsSource};
 use rows::{
     build_rows, count_key, reads_files, shown_tags, tag_search, Glyph, Inputs, Label, Place, PortalItem, Row, Space,
 };
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use theme::{KindTone, Tokens};
@@ -239,6 +241,8 @@ pub struct Sidebar {
     fade_below: bool,
     /// The Workspaces menu while it is open.
     workspace_menu: Option<crate::components::tab_strip::menu::Popup>,
+    /// Where the Workspaces trigger sits so mouse and keyboard open the menu flush beneath it.
+    workspace_bounds: Rc<Cell<Bounds<Pixels>>>,
     /// What the rows were last built from. The explorer, the saved state and the settings change far more often
     /// than anything the sidebar shows (a selection, a scroll, a sort, a visit): such a change rebuilds nothing.
     seen: Option<Seen>,
@@ -313,6 +317,7 @@ impl Sidebar {
             portals: Vec::new(),
             portal_menu: None,
             workspace_menu: None,
+            workspace_bounds: Rc::default(),
             fade_below: false,
             seen: None,
             #[cfg(test)]
@@ -1019,7 +1024,7 @@ impl Sidebar {
                 self.draw_place(ix, p, &t, Look { focused, dropping }, eject, cx)
             }
             Row::Folder(f) => self.draw_folder(ix, f, &t, Look { focused, dropping }, cx),
-            Row::Note { depth, reason } => self.draw_note(*depth, reason, &t),
+            Row::Note { depth, reason } => self.draw_note(ix, *depth, reason, &t),
             Row::Search(s) => self.draw_search(ix, s, &t, focused, cx),
             Row::Tag(tag) => self.draw_tag(ix, tag, &t, focused, cx),
             Row::Portal(portal) => self.draw_portal(ix, portal, &t, focused, cx),
@@ -1106,19 +1111,29 @@ impl Sidebar {
         }
     }
 
-    /// The arrow by a place or a folder that opens it: seen on hover, and while open (`TreeArrow`). Mouse only:
-    /// the keyboard opens folders with the arrow keys, and the row says whether it is expanded.
-    fn arrow(&self, ix: usize, opens: rows::Opens, offset: Rems, t: &Tokens, cx: &mut Context<Self>) -> Div {
-        let name = if opens.loading {
-            IconName::LoaderCircle
-        } else if opens.open {
+    /// The arrow by a place or a folder that opens it: softened while collapsed, clear on hover, open, or focus.
+    fn arrow(
+        &self,
+        ix: usize,
+        opens: rows::Opens,
+        offset: Rems,
+        focused: bool,
+        t: &Tokens,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let name = if opens.open {
             IconName::ChevronDown
         } else if crate::i18n::is_rtl() {
             IconName::ChevronLeft
         } else {
             IconName::ChevronRight
         };
-        let hover = t.background;
+        let (hover, pressed) = (t.accent, t.pressed);
+        let arrow_el = if opens.loading {
+            Spinner::new().xsmall().into_any_element()
+        } else {
+            icon(name).size_3p5().into_any_element()
+        };
         Self::at_start(offset).child(
             div()
                 .id(("arrow", ix))
@@ -1130,15 +1145,20 @@ impl Sidebar {
                 .rounded(theme::size::RADIUS_SM)
                 .cursor_pointer()
                 .text_color(t.muted_foreground)
-                .opacity(if opens.open { 1. } else { 0. })
+                .opacity(if opens.open || opens.loading || focused {
+                    1.
+                } else {
+                    0.38
+                })
                 .group_hover("row", |s| s.opacity(1.))
                 .hover(move |s| s.bg(hover))
+                .active(move |s| s.bg(pressed))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     if let Some(path) = this.rows.get(ix).and_then(Row::tree_path).map(str::to_string) {
                         this.toggle_folder(&path, None, cx);
                     }
                 }))
-                .child(icon(name).size_3p5()),
+                .child(arrow_el),
         )
     }
 
@@ -1217,8 +1237,7 @@ impl Sidebar {
             .child(div().truncate().child(isolate(label.clone())))
             .children(bar.map(|b| div().mt(space(1.)).child(b)));
         let tip = tooltip_of(label.clone(), p.detail.clone());
-        let (active, accent, foreground) = (p.active, t.accent, t.foreground);
-        let (glass, edge) = (t.glass, t.stroke);
+        let (active, accent) = (p.active, t.accent);
         let (lit, lit_ring) = (t.primary.opacity(0.2), t.primary);
         let mut button = row_start()
             .id(("place", ix))
@@ -1229,6 +1248,7 @@ impl Sidebar {
         if let Some(opens) = p.tree {
             button = button.aria_expanded(opens.open);
         }
+        let (glass, pressed, foreground) = (t.glass, t.pressed, t.foreground);
         let button = button
             .test_support()
             .relative()
@@ -1237,13 +1257,14 @@ impl Sidebar {
             .px(space(2.))
             .py(space(1.5))
             .when(p.gutter, |d| d.ps(6.))
-            .rounded(theme::size::RADIUS)
+            .rounded(theme::size::RADIUS_ROW)
             .border_1()
-            .border_color(ring(t, focused))
+            .border_color(row_border(t, focused, active))
             .cursor_pointer()
             .text_color(t.foreground.opacity(0.9))
             .hover(move |s| s.bg(accent))
-            .when(active, move |d| d.bg(glass).border_color(edge).text_color(foreground))
+            .active(move |s| s.bg(pressed))
+            .when(active, move |d| d.bg(glass).text_color(foreground))
             .when(dropping, move |d| {
                 d.drag_over::<ExternalPaths>(move |s, _, _, _| s.bg(lit).border_color(lit_ring))
             })
@@ -1272,11 +1293,11 @@ impl Sidebar {
 
         let mut cell = div().group("row").relative().w_full().pb(space(0.25)).child(button);
         if let Some(opens) = p.tree {
-            cell = cell.child(self.arrow(ix, opens, space(1.), t, cx));
+            cell = cell.child(self.arrow(ix, opens, space(1.), focused, t, cx));
         }
         if let (Some(name), Some((handle, on))) = (&p.eject, eject) {
             let (path, label) = (p.path.clone(), name.clone());
-            let hover = t.background;
+            let (hover, eject_pressed) = (t.accent, t.pressed);
             cell = cell.child(
                 div()
                     .absolute()
@@ -1299,6 +1320,7 @@ impl Sidebar {
                             .opacity(if on { 1. } else { 0. })
                             .group_hover("row", |s| s.opacity(1.))
                             .hover(move |s| s.bg(hover))
+                            .active(move |s| s.bg(eject_pressed))
                             .tooltip(tooltip_of(
                                 t!("Safely eject {name}", name = name),
                                 SharedString::default(),
@@ -1325,8 +1347,8 @@ impl Sidebar {
         let indent = TREE_INDENT + f.depth as f32 * TREE_STEP;
         let (lit, lit_ring) = (t.primary.opacity(0.2), t.primary);
         let tip = tooltip_of(f.name.clone(), SharedString::from(f.path.clone()));
-        let (active, accent, foreground) = (f.active, t.accent, t.foreground);
-        let (glass, edge) = (t.glass, t.stroke);
+        let (active, accent, pressed, foreground) = (f.active, t.accent, t.pressed, t.foreground);
+        let glass = t.glass;
         let button = row_start()
             .id(("folder", ix))
             .role(Role::TreeItem)
@@ -1342,14 +1364,15 @@ impl Sidebar {
             .py(space(1.))
             .pe(2.)
             .ps(indent)
-            .rounded(theme::size::RADIUS)
+            .rounded(theme::size::RADIUS_ROW)
             .border_1()
-            .border_color(ring(t, focused))
+            .border_color(row_border(t, focused, active))
             .cursor_pointer()
             .text_size(TREE_TEXT)
             .text_color(t.foreground.opacity(0.85))
             .hover(move |s| s.bg(accent))
-            .when(active, move |d| d.bg(glass).border_color(edge).text_color(foreground))
+            .active(move |s| s.bg(pressed))
+            .when(active, move |d| d.bg(glass).text_color(foreground))
             .when(dropping, move |d| {
                 d.drag_over::<ExternalPaths>(move |s, _, _, _| s.bg(lit).border_color(lit_ring))
             })
@@ -1382,16 +1405,16 @@ impl Sidebar {
                 open: f.open,
                 loading: f.loading,
             };
-            cell = cell.child(self.arrow(ix, opens, space(indent - 4.5), t, cx));
+            cell = cell.child(self.arrow(ix, opens, space(indent - 4.5), focused, t, cx));
         }
         cell.into_any_element()
     }
 
     /// "Can't look inside": a folder that couldn't be read, with the reason in its tooltip.
-    fn draw_note(&self, depth: usize, reason: &str, t: &Tokens) -> AnyElement {
+    fn draw_note(&self, ix: usize, depth: usize, reason: &str, t: &Tokens) -> AnyElement {
         let reason = SharedString::from(reason.to_string());
         div()
-            .id(("note", depth))
+            .id(("note", ix))
             .w_full()
             .py(space(1.))
             .ps(TREE_INDENT + depth as f32 * TREE_STEP)
@@ -1426,7 +1449,7 @@ impl Sidebar {
             t!("Search for “{query}” in {place}", query = s.query, place = in_),
             SharedString::default(),
         );
-        let accent = t.accent;
+        let (accent, pressed) = (t.accent, t.pressed);
         let button = row_start()
             .id(("search", ix))
             .role(Role::Button)
@@ -1438,12 +1461,13 @@ impl Sidebar {
             .ps(2.)
             .pe(7.)
             .py(space(1.5))
-            .rounded(theme::size::RADIUS)
+            .rounded(theme::size::RADIUS_ROW)
             .border_1()
             .border_color(ring(t, focused))
             .cursor_pointer()
             .text_color(t.foreground.opacity(0.9))
             .hover(move |s| s.bg(accent))
+            .active(move |s| s.bg(pressed))
             .on_click(cx.listener(move |this, _, window, cx| this.click(ix, window, cx)))
             .tooltip(tip)
             .child(
@@ -1476,7 +1500,7 @@ impl Sidebar {
                     .child(SharedString::from(count))
             }));
 
-        let hover = t.background;
+        let hover = t.accent;
         let remove = div()
             .absolute()
             .top_0()
@@ -1498,6 +1522,7 @@ impl Sidebar {
                     .opacity(0.)
                     .group_hover("row", |s| s.opacity(1.))
                     .hover(move |s| s.bg(hover))
+                    .active(move |s| s.bg(pressed))
                     .tooltip(tooltip_of(t!("Remove from the sidebar"), SharedString::default()))
                     .on_click(cx.listener(move |this, _, _, cx| this.remove_search(ix, cx)))
                     .child(icon(IconName::X).size_3p5()),
@@ -1522,7 +1547,7 @@ impl Sidebar {
             Some(count) => format!("{tagged} ({count})").into(),
             None => tagged,
         };
-        let accent = t.accent;
+        let (accent, pressed) = (t.accent, t.pressed);
         let button = row_start()
             .id(("tag", ix))
             .role(Role::Button)
@@ -1533,12 +1558,13 @@ impl Sidebar {
             .gap(space(2.5))
             .px(space(2.))
             .py(space(1.5))
-            .rounded(theme::size::RADIUS)
+            .rounded(theme::size::RADIUS_ROW)
             .border_1()
             .border_color(ring(t, focused))
             .cursor_pointer()
             .text_color(t.foreground.opacity(0.9))
             .hover(move |s| s.bg(accent))
+            .active(move |s| s.bg(pressed))
             .on_click(cx.listener(move |this, _, window, cx| this.click(ix, window, cx)))
             .tooltip(tooltip_of(title, SharedString::default()))
             .child(
@@ -1563,7 +1589,7 @@ impl Sidebar {
     }
 
     fn draw_add(&self, ix: usize, t: &Tokens, focused: bool, cx: &mut Context<Self>) -> AnyElement {
-        let accent = t.accent;
+        let (accent, pressed) = (t.accent, t.pressed);
         div()
             .w_full()
             .pb(space(0.25))
@@ -1577,12 +1603,13 @@ impl Sidebar {
                     .gap(space(2.5))
                     .px(space(2.))
                     .py(space(1.5))
-                    .rounded(theme::size::RADIUS)
+                    .rounded(theme::size::RADIUS_ROW)
                     .border_1()
                     .border_color(ring(t, focused))
                     .cursor_pointer()
                     .text_color(t.muted_foreground)
                     .hover(move |s| s.bg(accent))
+                    .active(move |s| s.bg(pressed))
                     .on_click(cx.listener(move |this, _, window, cx| this.click(ix, window, cx)))
                     .tooltip(tooltip_of(
                         t!("Add a remote connection: a cloud (Google Drive, OneDrive, Dropbox and 60 more), an S3 bucket, a WebDAV server or an SFTP server"),
@@ -1606,6 +1633,17 @@ struct Look {
 fn ring(t: &Tokens, focused: bool) -> Hsla {
     if focused {
         t.ring
+    } else {
+        transparent_black()
+    }
+}
+
+/// Border color for rows that can be both active and focused without the active stroke erasing the focus ring.
+pub(super) fn row_border(t: &Tokens, focused: bool, active: bool) -> Hsla {
+    if focused {
+        t.ring
+    } else if active {
+        t.stroke
     } else {
         transparent_black()
     }
@@ -1671,29 +1709,42 @@ impl Render for Sidebar {
             });
             Some(theme::kind_tone(kind_of(entry), cx))
         };
-        // More rows below the last in view: the edge fades into the rail, so a cut-off row reads as scrolling.
+        // More rows below the last in view: a delicate hairline over translucent Mica/aurora, or a soft gradient
+        // fade on opaque chrome.
         self.fade_below = self.more_below();
         let fade = self.fade_below.then(|| {
-            let layer = div()
-                .id("places-fade")
-                .absolute()
-                .left_0()
-                .right_0()
-                .bottom_0()
-                .h(space(8.))
-                .bg(gpui_kit::linear_gradient(
-                    180.,
-                    gpui_kit::linear_color_stop(t.chrome.opacity(0.), 0.),
-                    gpui_kit::linear_color_stop(t.chrome, 1.),
-                ));
-            if cx.reduce_motion() {
-                layer.into_any_element()
-            } else {
-                layer
-                    .with_animation("places-fade-in", Animation::new(theme::motion::FAST), |layer, delta| {
-                        layer.opacity(delta)
-                    })
+            if theme::backdrop_on(cx) {
+                div()
+                    .id("places-fade")
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .bottom_0()
+                    .h(px(1.))
+                    .bg(t.stroke)
                     .into_any_element()
+            } else {
+                let layer = div()
+                    .id("places-fade")
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .bottom_0()
+                    .h(space(8.))
+                    .bg(gpui_kit::linear_gradient(
+                        180.,
+                        gpui_kit::linear_color_stop(t.chrome.opacity(0.), 0.),
+                        gpui_kit::linear_color_stop(t.chrome, 1.),
+                    ));
+                if cx.reduce_motion() {
+                    layer.into_any_element()
+                } else {
+                    layer
+                        .with_animation("places-fade-in", Animation::new(theme::motion::FAST), |layer, delta| {
+                            layer.opacity(delta)
+                        })
+                        .into_any_element()
+                }
             }
         });
         div()

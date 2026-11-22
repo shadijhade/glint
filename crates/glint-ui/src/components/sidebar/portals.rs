@@ -235,30 +235,38 @@ impl Sidebar {
             PortalKind::Backup => (IconName::DatabaseBackup, t!("Backup")),
         };
         let name = SharedString::from(p.name.clone());
-        let about: SharedString = format!("{kind}: {}", p.what).into();
-        let tip = tooltip_of(name.clone(), format!("{about}\n{}", p.path).into());
-        let (accent, active) = (t.accent, p.active);
-        let (glass, edge, foreground) = (t.glass, t.stroke, t.foreground);
+        let subtitle: SharedString = if p.what.is_empty() {
+            kind.clone()
+        } else {
+            format!("{kind} · {}", p.what).into()
+        };
+        let tip = tooltip_of(name.clone(), format!("{subtitle}\n{}", p.path).into());
+        let (accent, pressed, active) = (t.accent, t.pressed, p.active);
+        let (glass, foreground, ring_color) = (t.glass, t.foreground, t.ring);
+        let unmount_id = p.id.clone();
+        let unmount_name = p.name.clone();
+        let unmount_path = p.path.clone();
         let button = row_start()
             .id(("portal", ix))
             .role(Role::Button)
             .aria_label(name.clone())
-            .aria_description(about)
+            .aria_description(subtitle.clone())
             .aria_selected(active)
             .test_support()
             .relative()
             .w_full()
             .gap(space(2.5))
             .ps(2.)
-            .pe(2.)
+            .pe(7.)
             .py(space(1.5))
-            .rounded(theme::size::RADIUS)
+            .rounded(theme::size::RADIUS_ROW)
             .border_1()
-            .border_color(ring(t, focused))
+            .border_color(super::row_border(t, focused, active))
             .cursor_pointer()
             .text_color(t.foreground.opacity(0.9))
             .hover(move |s| s.bg(accent))
-            .when(active, move |d| d.bg(glass).border_color(edge).text_color(foreground))
+            .active(move |s| s.bg(pressed))
+            .when(active, move |d| d.bg(glass).text_color(foreground))
             .on_click(cx.listener(move |this, _, window, cx| this.click(ix, window, cx)))
             .on_mouse_down(
                 MouseButton::Middle,
@@ -272,7 +280,12 @@ impl Sidebar {
             )
             .tooltip(tip)
             .when(active, |d| d.child(Self::pill(t, space(4.))))
-            .child(icon(icon_name).size_4().flex_none().text_color(t.muted_foreground))
+            .child(crate::art::chip(
+                theme::rem_size(cx) * 1.2,
+                theme::place_tone(theme::Place::Remote, cx),
+                icon_name,
+                cx,
+            ))
             .child(
                 col()
                     .flex_1()
@@ -283,9 +296,61 @@ impl Sidebar {
                             .truncate()
                             .text_size(theme::size::XS)
                             .text_color(t.muted_foreground)
-                            .child(isolate(kind)),
+                            .child(isolate(subtitle)),
                     ),
             );
-        div().w_full().pb(space(0.25)).child(button).into_any_element()
+        let button = self.hop(button, ix, p.name.clone(), cx);
+        let unmount = div()
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .flex()
+            .items_center()
+            .when(crate::i18n::is_rtl(), |d| d.left(space(1.)))
+            .when(!crate::i18n::is_rtl(), |d| d.right(space(1.)))
+            .child(
+                div()
+                    .id(("portal-unmount", ix))
+                    .role(Role::Button)
+                    .aria_label(t!("Unmount {name}", name = p.name))
+                    .test_support()
+                    .tab_index(0)
+                    .p(space(1.))
+                    .rounded(theme::size::RADIUS_SM)
+                    .border_1()
+                    .border_color(gpui_kit::transparent_black())
+                    .cursor_pointer()
+                    .text_color(t.muted_foreground)
+                    .opacity(0.)
+                    .group_hover("row", |s| s.opacity(1.))
+                    .focus_visible(move |s| s.opacity(1.).border_color(ring_color))
+                    .hover(move |s| s.bg(accent).text_color(foreground))
+                    .active(move |s| s.bg(pressed))
+                    .tooltip(tooltip_of(t!("Unmount"), SharedString::default()))
+                    .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                        window.prevent_default();
+                        cx.stop_propagation();
+                    })
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        cx.stop_propagation();
+                        this.portal_does(
+                            Do::Unmount,
+                            unmount_id.clone(),
+                            unmount_name.clone(),
+                            unmount_path.clone(),
+                            window,
+                            cx,
+                        );
+                    }))
+                    .child(icon(IconName::Unplug).size_3p5()),
+            );
+        div()
+            .group("row")
+            .relative()
+            .w_full()
+            .pb(space(0.25))
+            .child(button)
+            .child(unmount)
+            .into_any_element()
     }
 }

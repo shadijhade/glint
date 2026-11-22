@@ -30,7 +30,8 @@ use gpui_kit::component::{h_flex, v_flex};
 pub mod prelude {
     pub use super::{
         align_row, back_icon, capacity_bar, col, drive_icon, forward_icon, free_of, icon, isolate, kind_icon,
-        known_icon, loading_sweep, menu_max_height, row, row_start, space, tooltip, tooltip_under, Logical, Placeholder,
+        known_icon, loading_sweep, menu_max_height, row, row_start, space, tooltip, tooltip_under, Logical,
+        Placeholder, Z_FLYOUT, Z_HINTS, Z_HOP, Z_PEEK, Z_POPUP,
     };
     pub use super::{h_resizable, resizable_panel};
     pub use super::{
@@ -58,11 +59,18 @@ pub fn tooltip(text: SharedString, window: &mut Window, cx: &mut App) -> gpui_ki
     gpui_kit::component::tooltip::Tooltip::new(text).build(window, cx)
 }
 
+/// Overlay stacking order (`deferred(..).with_priority(..)`), below tooltips (`200`).
+pub const Z_HINTS: usize = 10;
+pub const Z_PEEK: usize = 15;
+pub const Z_FLYOUT: usize = 20;
+pub const Z_POPUP: usize = gpui_kit::base::POPUP_PRIORITY;
+pub const Z_HOP: usize = Z_POPUP + 20;
+
 /// The tooltip of something a menu opens over (a row of the list, a tile): [`tooltip`], and nothing while a menu
 /// is on screen or about to be. GPUI asks for a tooltip half a second after the pointer came to rest, and the
 /// pointer rests where the right-click was: without this the row's name opens over the menu's rows.
 pub fn tooltip_under(text: SharedString, window: &mut Window, cx: &mut App) -> gpui_kit::AnyView {
-    if crate::components::menus::showing(cx) {
+    if crate::components::menus::showing(cx) || crate::components::tab_strip::menu::is_open(cx) {
         return cx.new(|_| NoTooltip).into();
     }
     tooltip(text, window, cx)
@@ -128,8 +136,8 @@ pub fn capacity_bar(total: u64, free: u64, height: Rems, cx: &App) -> Option<Div
     }
     let t = theme::tokens(cx);
     let used = (total.saturating_sub(free) as f64 / total as f64).clamp(0., 1.);
-    // The glint for a drive with room, plain red for one nearly full (Explorer's warning).
-    let fill = if used > 0.9 {
+    // The glint for a drive with room, plain red for one nearly full (matching `this_pc::model::nearly_full`).
+    let fill = if (used * 100. + 0.5).floor() >= 90. {
         gpui_kit::Background::from(t.destructive)
     } else {
         theme::glint_fill(cx)

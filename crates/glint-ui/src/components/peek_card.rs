@@ -16,9 +16,10 @@
 
 use crate::components::pane_head::{holds, shares};
 use crate::components::status_bar::summary::spectrum_sized;
-use crate::explorer::{Explorer, Listed};
+use crate::explorer::{Explorer, KnownId, Listed};
 use crate::kit::prelude::*;
-use crate::{i18n, theme};
+use crate::{i18n, state, theme};
+use glint_model::entries::{is_hidden, FileEntry};
 use glint_model::paths::same_path;
 use std::time::Duration;
 
@@ -56,12 +57,21 @@ struct Facts {
     band: Vec<(Hsla, f32)>,
     /// Where the listing's entries are, to tell a listing from another.
     at: usize,
+    /// Whether hidden entries were included when computing these facts.
+    show_hidden: bool,
 }
 
 impl Facts {
     /// What `listed` holds, in the head's words and colors (as a folder's row says it: `file_list::Peek`).
-    fn of(listed: &Listed) -> Facts {
-        let kinds = spectrum_sized(&listed.entries, None);
+    fn of(listed: &Listed, show_hidden: bool) -> Facts {
+        let visible: Vec<FileEntry>;
+        let entries: &[FileEntry] = if show_hidden {
+            &listed.entries
+        } else {
+            visible = listed.entries.iter().filter(|e| !is_hidden(e)).cloned().collect();
+            &visible
+        };
+        let kinds = spectrum_sized(entries, None);
         let band = kinds
             .iter()
             .zip(shares(&kinds))
@@ -71,15 +81,21 @@ impl Facts {
             })
             .collect();
         Facts {
-            words: holds(listed.entries.len(), &kinds),
+            words: holds(entries.len(), &kinds),
             band,
             at: listed.entries.as_ptr() as usize,
+            show_hidden,
         }
     }
 }
 
-/// What is known of the folder at `path`: a tab that shows it, else what was read ahead.
-fn known(explorer: &Explorer, path: &str) -> Option<Facts> {
+/// What is known of the folder at `path`: a tab that shows it, else what was read ahead, and its known folder id.
+fn known(explorer: &Explorer, path: &str, show_hidden: bool) -> (Option<Facts>, Option<KnownId>) {
+    let known_id = explorer
+        .known_folders()
+        .iter()
+        .find(|k| same_path(&k.path, path))
+        .map(|k| k.id);
     let shown = explorer
         .panes()
         .iter()
@@ -94,18 +110,42 @@ fn known(explorer: &Explorer, path: &str) -> Option<Facts> {
             .into_iter()
             .find(|(peeked, _)| same_path(peeked, path))
             .map(|(_, listed)| listed)
-    })?;
-    Some(Facts::of(listed))
+    });
+    (listed.map(|l| Facts::of(l, show_hidden)), known_id)
+}
+
+/// Keeps deep paths legible inside the compact card by eliding middle segments.
+fn elide_middle(path: &str, max_chars: usize) -> String {
+    let total = path.chars().count();
+    if total <= max_chars || max_chars < 12 {
+        return path.to_string();
+    }
+    let head = 16usize.min(max_chars / 2);
+    let tail = max_chars.saturating_sub(head + 1);
+    let start: String = path.chars().take(head).collect();
+    let end: String = path.chars().skip(total - tail).collect();
+    format!("{start}…{end}")
+}
+
+/// Cards must stay suppressed during drags, open menus, or Hop mode.
+fn suppressed(cx: &App) -> bool {
+    cx.has_active_drag()
+        || crate::components::menus::showing(cx)
+        || crate::components::tab_strip::menu::is_open(cx)
+        || crate::components::hop::active()
 }
 
 /// A card on screen.
 struct Shown {
     target: Target,
+    known: Option<KnownId>,
     /// Where the pointer was when it opened: the card hangs by it.
     at: Point<Pixels>,
     facts: Option<Facts>,
     /// How many cards have opened, so that each one's arrival plays once.
     arrival: u64,
+    /// Incremented when async prefetch facts arrive so lines fade in cleanly.
+    facts_arrival: u64,
 }
 
 /// The card, and the wait before it. One for a view; it draws nothing while no card is open.
@@ -128,6 +168,7 @@ impl PeekHost {
         let subscriptions = vec![
             // What was read ahead arrives: an open card fills in. (Nothing is worked out while no card is open.)
             cx.observe(&explorer, |this, _, cx| this.refresh(cx)),
+            cx.observe_global::<state::UiState>(|this, cx| this.refresh(cx)),
             // Escape closes it, wherever the keyboard is.
             cx.observe_keystrokes(|this, event, _, cx| {
                 if this.shown.is_some() && event.keystroke.key == "escape" {
@@ -149,8 +190,9 @@ impl PeekHost {
     /// The pointer came onto an element that has a card: it opens after [`DWELL`] (at once when the card for this
     /// key is already open).
     pub fn enter(&mut self, target: Target, window: &mut Window, cx: &mut Context<Self>) {
-        // A drag in progress is not a rest.
-        if cx.has_active_drag() {
+        // A drag, open menu, or Hop mode suppresses peek cards.
+        if suppressed(cx) {
+            self.hide(cx);
             return;
         }
         let same_card = self
@@ -226,7 +268,11 @@ impl PeekHost {
     fn open(&mut self, target: Target, at: Point<Pixels>, cx: &mut Context<Self>) {
         self.wait = None;
         self.pending = None;
-        let facts = known(self.explorer.read(cx), &target.path);
+        if suppressed(cx) {
+            return;
+        }
+        let show_hidden = state::settings(cx).show_hidden;
+        let (facts, known_id) = known(self.explorer.read(cx), &target.path, show_hidden);
         // Nothing known of it: have it read ahead, and the card fills in when it arrives.
         if facts.is_none() && target.read_ahead {
             let path = target.path.clone();
@@ -234,11 +280,14 @@ impl PeekHost {
                 .update(cx, |explorer, cx| explorer.prefetch_folder(&path, cx));
         }
         self.arrivals += 1;
+        let facts_arrival = u64::from(facts.is_some());
         self.shown = Some(Shown {
             target,
+            known: known_id,
             at,
             facts,
             arrival: self.arrivals,
+            facts_arrival,
         });
         cx.notify();
     }
@@ -248,10 +297,15 @@ impl PeekHost {
         let Some(shown) = self.shown.as_ref() else {
             return;
         };
-        let facts = known(self.explorer.read(cx), &shown.target.path);
-        if facts != shown.facts {
+        let show_hidden = state::settings(cx).show_hidden;
+        let (facts, known_id) = known(self.explorer.read(cx), &shown.target.path, show_hidden);
+        if facts != shown.facts || known_id != shown.known {
             if let Some(shown) = self.shown.as_mut() {
+                if facts.is_some() && shown.facts != facts {
+                    shown.facts_arrival = shown.facts_arrival.saturating_add(1);
+                }
                 shown.facts = facts;
+                shown.known = known_id;
             }
             cx.notify();
         }
@@ -268,19 +322,42 @@ impl PeekHost {
 
 impl Render for PeekHost {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if suppressed(cx) {
+            return div().hidden().into_any_element();
+        }
         let Some(shown) = self.shown.as_ref() else {
             return div().hidden().into_any_element();
         };
         let t = theme::tokens(cx).clone();
         let rtl = i18n::is_rtl();
-        let (anchor, dx) = if rtl {
-            (Anchor::TopRight, -16.)
-        } else {
-            (Anchor::TopLeft, 16.)
+        let is_tab = shown.target.element.starts_with("tab-");
+        let (anchor, dx, dy) = match (rtl, is_tab) {
+            (false, true) => (Anchor::TopLeft, 24., 6.),
+            (true, true) => (Anchor::TopRight, -24., 6.),
+            (false, false) => (Anchor::TopLeft, 12., 22.),
+            (true, false) => (Anchor::TopRight, -12., 22.),
         };
         let label = Self::describe(shown);
-        let band = shown.facts.as_ref().map(|facts| {
-            row_start()
+        let reduce = cx.reduce_motion();
+        let facts_arrival = shown.facts_arrival;
+        let folder_art = match shown.known {
+            Some(id) => crate::art::known_folder(id, px(20.), cx),
+            None => {
+                use glint_model::entries::{with_details, RawEntry};
+                use glint_model::file_types::kind_of;
+                let entry = with_details(
+                    RawEntry {
+                        dir: true,
+                        ..Default::default()
+                    },
+                    "",
+                );
+                let color = theme::kind_tone(kind_of(&entry), cx).color;
+                crate::art::folder(px(20.), color, None, cx)
+            }
+        };
+        let facts_block = shown.facts.as_ref().map(|facts| {
+            let band = row_start()
                 .id("peek-card-band")
                 .w_full()
                 .h(px(4.))
@@ -292,18 +369,29 @@ impl Render for PeekHost {
                         .w(relative(*share))
                         .rounded_full()
                         .bg(*color)
-                }))
-        });
-        let words = shown.facts.as_ref().map(|facts| {
-            div()
+                }));
+            let words = div()
                 .id("peek-card-words")
                 .max_w_full()
                 .truncate()
                 .text_size(theme::size::XS)
                 .text_color(t.muted_foreground)
-                .child(crate::kit::rtl_line(facts.words.clone()))
+                .child(crate::kit::rtl_line(facts.words.clone()));
+            let inner = col().w_full().gap(space(1.)).child(band).child(words);
+            if reduce || facts_arrival <= 1 {
+                inner.into_any_element()
+            } else {
+                inner
+                    .with_animation(
+                        ("peek-card-facts-in", facts_arrival),
+                        Animation::new(theme::motion::FAST).with_easing(theme::motion::enter),
+                        |el, delta| el.opacity(0.35 + 0.65 * delta),
+                    )
+                    .into_any_element()
+            }
         });
         let arrival = shown.arrival;
+        let display_path = elide_middle(&shown.target.path, 48);
         let card = col()
             .id("peek-card")
             .role(Role::Tooltip)
@@ -322,13 +410,21 @@ impl Render for PeekHost {
             .text_color(t.popover_foreground)
             .shadow(theme::elevation::floating(cx))
             .child(
-                div()
-                    .id("peek-card-name")
-                    .max_w_full()
-                    .truncate()
-                    .text_size(theme::size::SM)
-                    .font_weight(FontWeight::MEDIUM)
-                    .child(crate::kit::isolate(shown.target.name.clone())),
+                row_start()
+                    .w_full()
+                    .items_center()
+                    .gap(space(1.5))
+                    .child(folder_art.flex_none())
+                    .child(
+                        div()
+                            .id("peek-card-name")
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(theme::size::SM)
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(crate::kit::isolate(shown.target.name.clone())),
+                    ),
             )
             .child(
                 div()
@@ -337,34 +433,55 @@ impl Render for PeekHost {
                     .truncate()
                     .text_size(theme::size::XS)
                     .text_color(t.muted_foreground)
-                    .child(crate::kit::isolate(shown.target.path.clone())),
+                    .child(crate::kit::isolate(display_path)),
             )
-            .children(band)
-            .children(words)
+            .children(facts_block)
             .children(shown.target.hint.clone().map(|hint| {
-                div()
+                row_start()
                     .id("peek-card-hint")
-                    .max_w_full()
-                    .truncate()
+                    .w_full()
+                    .pt(space(1.))
+                    .mt(space(0.5))
+                    .border_t_1()
+                    .border_color(t.stroke)
+                    .items_center()
+                    .gap(space(1.))
                     .text_size(theme::size::XS)
                     .text_color(t.muted_foreground)
-                    .child(hint)
-            }))
-            // It arrives readable from its first frame: a third of its opacity at least, a few pixels to move.
-            .with_animation(
+                    .child(
+                        icon(if rtl {
+                            IconName::ChevronLeft
+                        } else {
+                            IconName::ChevronRight
+                        })
+                        .size_3()
+                        .flex_none(),
+                    )
+                    .child(div().flex_1().min_w_0().truncate().child(hint))
+            }));
+        let card = if reduce {
+            card.into_any_element()
+        } else {
+            // It arrives readable from its first frame via GPU offset rather than layout shift.
+            card.with_animation(
                 ("peek-card-in", arrival),
                 Animation::new(theme::motion::FAST).with_easing(theme::motion::enter),
-                |card, delta| card.opacity(0.35 + 0.65 * delta).mt(px(4. * (1. - delta))),
-            );
+                |card, delta| {
+                    card.opacity(0.35 + 0.65 * delta)
+                        .paint_offset(px(0.), px(4. * (1. - delta)))
+                },
+            )
+            .into_any_element()
+        };
         deferred(
             anchored()
                 .position(shown.at)
                 .anchor(anchor)
-                .offset(point(px(dx), px(18.)))
+                .offset(point(px(dx), px(dy)))
                 .snap_to_window_with_margin(px(8.))
                 .child(card),
         )
-        .with_priority(30)
+        .with_priority(Z_PEEK)
         .into_any_element()
     }
 }

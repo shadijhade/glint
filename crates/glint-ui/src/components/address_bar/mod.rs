@@ -293,6 +293,9 @@ pub struct AddressBar {
     // The search box
     search: Entity<InputState>,
     find_focused: bool,
+    find_was_open: Option<(bool, Pixels)>,
+    find_prev_width: Pixels,
+    find_width_turn: usize,
     /// The hint the arrow keys have stepped to in the empty search box's popup (recent searches first, then the
     /// filters), as its place in that list. Enter takes it.
     hint_at: Option<usize>,
@@ -379,6 +382,9 @@ impl AddressBar {
             flyout_seq: 0,
             search,
             find_focused: false,
+            find_was_open: None,
+            find_prev_width: px(0.),
+            find_width_turn: 0,
             hint_at: None,
             plain: None,
             find_timer: None,
@@ -897,24 +903,61 @@ fn sample_archive() -> &'static FileEntry {
     &SAMPLE_ARCHIVE
 }
 
-/// The icon and colors of a [`Look`].
-fn look_icon(look: Look, cx: &App) -> Icon {
+/// The icon and art badge of a [`Look`].
+fn look_icon(look: Look, across: Pixels, cx: &App) -> AnyElement {
     let t = theme::tokens(cx);
-    let kind_color = |entry: &FileEntry| theme::kind_tone(glint_model::file_types::kind_of(entry), cx).color;
-    let (name, color) = match look {
-        Look::Drive(kind) => (drive_icon(kind), t.muted_foreground),
-        Look::Known(id) => (known_icon(id), t.muted_foreground),
-        Look::Folder => (IconName::Folder, kind_color(sample_folder())),
-        Look::Archive => (IconName::FileArchive, kind_color(sample_archive())),
-        Look::File => (IconName::File, t.muted_foreground),
-        Look::Recent => (IconName::Clock, t.muted_foreground),
-        Look::Gallery => (IconName::Images, t.muted_foreground),
-        Look::RecycleBin => (IconName::Trash, t.muted_foreground),
-        Look::Remote => (IconName::Cloud, t.muted_foreground),
-        Look::ThisPc => (IconName::Monitor, t.muted_foreground),
-        Look::Search => (IconName::Search, t.primary),
-    };
-    icon(name).size_4().flex_none().text_color(color)
+    match look {
+        Look::Known(id) => crate::art::known_folder(id, across, cx).flex_none().into_any_element(),
+        Look::Folder => {
+            let color = theme::kind_tone(glint_model::file_types::kind_of(sample_folder()), cx).color;
+            crate::art::folder(across, color, None, cx)
+                .flex_none()
+                .into_any_element()
+        }
+        Look::Archive => crate::art::kind(glint_model::file_types::kind_of(sample_archive()), across, cx)
+            .flex_none()
+            .into_any_element(),
+        Look::Drive(kind) => crate::art::chip(across, theme::place_tone(theme::Place::Drive, cx), drive_icon(kind), cx)
+            .flex_none()
+            .into_any_element(),
+        Look::Recent => crate::art::chip(across, theme::place_tone(theme::Place::Recent, cx), IconName::Clock, cx)
+            .flex_none()
+            .into_any_element(),
+        Look::Gallery => crate::art::chip(
+            across,
+            theme::place_tone(theme::Place::Gallery, cx),
+            IconName::Images,
+            cx,
+        )
+        .flex_none()
+        .into_any_element(),
+        Look::RecycleBin => crate::art::chip(
+            across,
+            theme::place_tone(theme::Place::RecycleBin, cx),
+            IconName::Trash,
+            cx,
+        )
+        .flex_none()
+        .into_any_element(),
+        Look::Remote => crate::art::chip(across, theme::place_tone(theme::Place::Remote, cx), IconName::Cloud, cx)
+            .flex_none()
+            .into_any_element(),
+        Look::File => icon(IconName::File)
+            .size(across)
+            .flex_none()
+            .text_color(t.muted_foreground)
+            .into_any_element(),
+        Look::ThisPc => icon(IconName::Monitor)
+            .size(across)
+            .flex_none()
+            .text_color(t.muted_foreground)
+            .into_any_element(),
+        Look::Search => icon(IconName::Search)
+            .size(across)
+            .flex_none()
+            .text_color(t.primary)
+            .into_any_element(),
+    }
 }
 
 /// A name for the screen and for a person: a known folder in the interface's language.
@@ -977,16 +1020,13 @@ impl Render for AddressBar {
             .on_click(cx.listener(|this, _, _, cx| this.go_up(cx)));
         // The spinner stands in for the arrow while the folder loads (a loading button would stop answering).
         let refresh = md.then(|| {
-            button(
-                "address-refresh",
-                if seen.loading {
-                    IconName::LoaderCircle
-                } else {
-                    IconName::RotateCw
-                },
-                t!("Refresh (F5)"),
-            )
-            .on_click(cx.listener(|this, _, _, cx| this.refresh(cx)))
+            Button::new("address-refresh")
+                .ghost()
+                .when(!seen.loading, |b| b.icon(IconName::RotateCw))
+                .when(seen.loading, |b| b.child(Spinner::new().xsmall()))
+                .accessibility_label(t!("Refresh (F5)"))
+                .tooltip(t!("Refresh (F5)"))
+                .on_click(cx.listener(|this, _, _, cx| this.refresh(cx)))
         });
 
         let field = self.address_field(&t, window, cx);
@@ -1010,6 +1050,7 @@ impl Render for AddressBar {
             .rounded(theme::size::RADIUS_LG)
             .border_1()
             .border_color(t.stroke)
+            .when(!lit, |omni| omni.hover(|s| s.border_color(t.input)))
             .bg(t.glass)
             // Lit while either half is typed in: its look is a layer over the plain one that fades in, so the
             // change is eased and moves nothing.
@@ -1046,6 +1087,17 @@ impl Render for AddressBar {
                         )
                         .into_any_element()
                 })
+            })
+            .when(seen.loading, |omni| {
+                omni.child(
+                    div()
+                        .id("address-load-bar")
+                        .absolute()
+                        .bottom_0()
+                        .left(space(3.))
+                        .right(space(3.))
+                        .child(loading_sweep("address-load", cx)),
+                )
             })
             .child(field)
             .child(div().flex_none().w(px(1.)).h(space(4.)).bg(t.stroke))
@@ -1187,7 +1239,7 @@ impl AddressBar {
                         }
                     }))
                     .on_click(cx.listener(move |this, _, window, cx| this.go(path.clone(), window, cx)))
-                    .child(look_icon(item.look, cx))
+                    .child(look_icon(item.look, theme::rem_size(cx), cx))
                     .child(div().truncate().font_weight(FontWeight::MEDIUM).child(isolate(name)))
                     .children(item.detail.as_ref().map(|detail| {
                         div()
@@ -1204,35 +1256,60 @@ impl AddressBar {
                     }))
             })
             .collect();
-        deferred(
-            div().absolute().top_full().mt(space(1.)).left_0().right_0().child(
+        let panel = col()
+            .id("address-suggestions")
+            .role(Role::ListBox)
+            .aria_label(t!("Path suggestions"))
+            .test_support()
+            .occlude()
+            .p(space(1.))
+            .rounded(theme::size::RADIUS_SHEET)
+            .border_1()
+            .border_color(t.stroke)
+            .bg(t.popover)
+            .text_color(t.popover_foreground)
+            .shadow(theme::elevation::floating(cx))
+            .child(
+                row_start()
+                    .justify_between()
+                    .px(space(2.))
+                    .py(space(1.))
+                    .text_size(theme::size::XXS)
+                    .text_color(t.muted_foreground)
+                    .child(t!("Path suggestions"))
+                    .child(t!("Tab to complete · Enter to open")),
+            )
+            .child(
                 col()
-                    .id("address-suggestions")
-                    .role(Role::ListBox)
-                    .aria_label(t!("Path suggestions"))
-                    .test_support()
-                    .occlude()
-                    .p(space(1.))
-                    .rounded(theme::size::RADIUS)
-                    .border_1()
-                    .border_color(t.border)
-                    .bg(t.popover)
-                    .text_color(t.popover_foreground)
-                    .shadow_lg()
-                    .child(
-                        row()
-                            .justify_between()
-                            .px(space(2.))
-                            .py(space(1.))
-                            .text_size(theme::size::XXS)
-                            .text_color(t.muted_foreground)
-                            .child(t!("Path suggestions"))
-                            .child(t!("Tab to complete · Enter to open")),
-                    )
+                    .id("address-suggestions-list")
+                    .max_h(self.menu_cap)
+                    .overflow_y_scroll()
                     .children(rows),
-            ),
+            );
+        let panel = if cx.reduce_motion() {
+            panel.into_any_element()
+        } else {
+            panel
+                .with_animation(
+                    "address-suggestions-in",
+                    Animation::new(theme::motion::FAST).with_easing(theme::motion::enter),
+                    |el, delta| {
+                        el.opacity(0.35 + 0.65 * delta)
+                            .paint_scale(theme::motion::POP + (1. - theme::motion::POP) * delta)
+                    },
+                )
+                .into_any_element()
+        };
+        deferred(
+            div()
+                .absolute()
+                .top_full()
+                .mt(space(1.))
+                .left_0()
+                .right_0()
+                .child(panel),
         )
-        .with_priority(10)
+        .with_priority(Z_HINTS)
     }
 
     /// The crumbs: "This PC", its chevron, the folded "…", each folder and its chevron, the copy button.
@@ -1261,10 +1338,13 @@ impl AddressBar {
                 .h(space(6.))
                 .px(space(1.5))
                 .rounded(theme::size::RADIUS_SM)
+                .border_1()
+                .border_color(hsla(0., 0., 0., 0.))
+                .text_color(if on_this_pc { t.foreground } else { t.muted_foreground })
                 .cursor_pointer()
-                .hover(|s| s.bg(t.accent))
+                .hover(|s| s.bg(t.accent).text_color(t.foreground))
                 .active(|s| s.bg(t.pressed))
-                .focus_visible(|s| s.bg(t.accent))
+                .focus_visible(|s| s.border_color(t.ring))
                 .tooltip(tip(label.clone()))
                 .on_click(cx.listener(|this, _, window, cx| this.open(THIS_PC.to_string(), window, cx)))
                 .on_mouse_down(
@@ -1307,11 +1387,13 @@ impl AddressBar {
                 .h(space(6.))
                 .px(space(1.5))
                 .rounded(theme::size::RADIUS_SM)
+                .border_1()
+                .border_color(hsla(0., 0., 0., 0.))
                 .text_color(t.muted_foreground)
                 .cursor_pointer()
                 .hover(|s| s.bg(t.accent).text_color(t.foreground))
                 .active(|s| s.bg(t.pressed))
-                .focus_visible(|s| s.bg(t.accent))
+                .focus_visible(|s| s.border_color(t.ring))
                 .tooltip(tip(label))
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.open_flyout(flyout::At::Folded, String::new(), None, Some(given.clone()), window, cx)
@@ -1486,6 +1568,10 @@ impl AddressBar {
             .h_full()
             .min_w(space(4.))
             .flex_1()
+            .rounded(theme::size::RADIUS_SM)
+            .border_1()
+            .border_color(hsla(0., 0., 0., 0.))
+            .focus_visible(|s| s.border_color(t.ring))
             .cursor_text()
             .tooltip(tip(type_label))
             .on_click(cx.listener(|this, _, window, cx| this.start_typing(window, cx)));
@@ -1506,12 +1592,21 @@ impl AddressBar {
                 .flex_none()
                 .size(space(6.))
                 .rounded(theme::size::RADIUS_SM)
+                .border_1()
+                .border_color(hsla(0., 0., 0., 0.))
                 .cursor_pointer()
                 .text_color(if copied { t.success } else { t.muted_foreground })
                 .opacity(if copied { 1. } else { 0. })
                 .group_hover("address-bar-row", |s| s.opacity(1.))
-                .focus_visible(|s| s.opacity(1.).bg(t.accent))
-                .hover(|s| s.bg(t.accent).text_color(t.foreground))
+                .focus_visible(|s| s.opacity(1.).border_color(t.ring))
+                .hover(|s| {
+                    let s = s.bg(t.accent);
+                    if copied {
+                        s
+                    } else {
+                        s.text_color(t.foreground)
+                    }
+                })
                 .active(|s| s.bg(t.pressed))
                 .tooltip(tip(t!("Copy folder path (Ctrl+Shift+C)")))
                 .on_click(cx.listener(|this, _, _, cx| this.copy_path(cx)))
@@ -1603,12 +1698,14 @@ impl AddressBar {
             .min_w_0()
             .px(space(1.5))
             .rounded(theme::size::RADIUS_SM)
+            .border_1()
+            .border_color(hsla(0., 0., 0., 0.))
             .cursor_pointer()
+            .text_color(if last { t.foreground } else { t.muted_foreground })
             .when(last, |b| b.font_weight(FontWeight::MEDIUM))
-            .hover(|s| s.bg(t.accent))
+            .hover(|s| s.bg(t.accent).text_color(t.foreground))
             .active(|s| s.bg(t.pressed))
-            .focus_visible(|s| s.bg(t.accent))
-            .active(|s| s.bg(t.accent))
+            .focus_visible(|s| s.border_color(t.ring))
             .when(peek.is_none(), |b| b.tooltip(tip(title)))
             .when_some(peek, |b, target| {
                 b.on_hover(cx.listener(move |this, hovered: &bool, window, cx| {
@@ -1673,7 +1770,9 @@ impl AddressBar {
                     this.open_in_new_tab(&middle, cx);
                 }),
             )
-            .when(crumb.archive, |b| b.child(look_icon(Look::Archive, cx).size_3p5()))
+            .when(crumb.archive, |b| {
+                b.child(look_icon(Look::Archive, theme::rem_size(cx) * 0.875, cx))
+            })
             .when(crumb.remote_top, |b| {
                 b.child(icon(IconName::Cloud).size_3p5().flex_none().text_color(t.primary))
             })

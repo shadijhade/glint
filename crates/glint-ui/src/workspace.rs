@@ -23,7 +23,7 @@
 use crate::components::address_bar::{AddressBar, AddressBarEvent};
 use crate::components::color_wheel::{self, ColorWheelBar, ColorWheelEvent};
 use crate::components::columns_view::ColumnsView;
-use crate::components::command_bar::{CommandBar, CommandBarEvent};
+use crate::components::command_bar::{keys_of, CommandBar, CommandBarEvent};
 use crate::components::compare_bar::CompareBar;
 use crate::components::copy_queue::{CopyQueue, CopyQueueEvent};
 use crate::components::disk_usage::{self, DiskUsage, DiskUsageEvent};
@@ -32,9 +32,9 @@ use crate::components::file_list::DragFromArchive;
 use crate::components::file_list::{FileList, FileListEvent};
 use crate::components::frequent_folders::{self, FrequentFolders, FrequentFoldersEvent};
 use crate::components::gallery_months::GalleryMonths;
-use crate::components::hop::{self, HopOverlay};
 use crate::components::git::{self, GitEvent, ReadmeCard};
-use crate::components::menus::{self, MenuEvent, MenuHost};
+use crate::components::hop::{self, HopOverlay};
+use crate::components::menus::{self, MenuEvent, MenuHost, Node};
 use crate::components::pane_bars::PaneBars;
 use crate::components::pane_head::PaneHead;
 use crate::components::photo_map::{self, PhotoMapEvent, PhotoMapView};
@@ -42,7 +42,7 @@ use crate::components::preview::{self, PreviewPane};
 use crate::components::settings::SettingsEvent;
 use crate::components::sidebar::{Sidebar, SidebarEvent, SidebarRequest};
 use crate::components::status_bar::{Insight, StatusBar, StatusBarEvent};
-use crate::components::tab_strip::{PaneDropZone, TabStrip};
+use crate::components::tab_strip::{menu as tab_menu, PaneDropZone, TabStrip};
 use crate::components::terminal::{TerminalPane, TerminalPaneEvent};
 use crate::components::this_pc::{ThisPc, ThisPcEvent};
 use crate::components::time_machine::{self, TimeMachineEvent, TimeMachineView};
@@ -57,9 +57,10 @@ use glint_model::entries::FileEntry;
 use glint_model::format::plural;
 use glint_model::paths::{base_name, same_path};
 use glint_model::store::ViewMode;
-use gpui_kit::component::menu::DropdownMenu as _;
+use std::cell::Cell;
 use std::ops::Range;
 use std::rc::Rc;
+use std::time::Instant;
 
 /// The label glint-core knows the main window by.
 pub const MAIN: &str = "main";
@@ -87,6 +88,9 @@ struct Light {
     from: Option<f32>,
     /// Counts the turns, so each one's fade is its own animation.
     turn: usize,
+    turned_at: Option<Instant>,
+    was_active: Option<bool>,
+    active_turn: usize,
 }
 
 /// What a pane showed at the last frame: when it changes, the pane's stage flies from the one to the other.
@@ -203,6 +207,16 @@ pub struct Workspace {
     stages: [Staged; 2],
     /// Where the zoom asked each pane's next view to be (the item it was over), until the frame that brings it.
     anchors: [Option<stage::Anchor>; 2],
+    /// The app's own menu opened from Glint's logo mark.
+    mark_menu: Option<tab_menu::Popup>,
+    /// When the mark menu last dismissed, so clicking its trigger closes it cleanly instead of reopening.
+    mark_dismissed: Option<Instant>,
+    /// Where the mark sits, for anchoring its menu under it.
+    mark_bounds: Rc<Cell<Bounds<Pixels>>>,
+    /// Last seen `dual_split` setting so external clears/changes reset the resizable state cleanly.
+    dual_split_seen: Rc<Cell<Option<f64>>>,
+    /// Generation counter for `h_resizable("panes", ...)` when `dual_split` changes externally.
+    dual_split_gen: u64,
     /// Files dragged over the window from File Explorer and other apps arrive here, as long as it lives
     /// (dropping it takes the window's drop target away). None in tests, which have no Windows window.
     _drop_target: Option<dragdrop::DropTarget>,
@@ -292,9 +306,11 @@ impl Workspace {
         // The explorer decides what each pane shows; the keyboard follows the active pane when it moves.
         let explorer = explorer::explorer(cx);
         subscriptions.push(cx.observe_in(&explorer, window, |this, _, window, cx| this.follow_panes(window, cx)));
-        // The preview pane comes and goes with its setting (Alt+P) and the folder shown.
-        subscriptions
-            .push(cx.observe_global_in::<state::UiState>(window, |this, window, cx| this.sync_preview(window, cx)));
+        // The preview pane comes and goes with its setting (Alt+P) and the folder shown; dual split follows settings.
+        subscriptions.push(cx.observe_global_in::<state::UiState>(window, |this, window, cx| {
+            this.sync_preview(window, cx);
+            this.sync_dual_split(cx);
+        }));
         subscriptions.push(
             cx.subscribe_in(&explorer, window, |this, _, event, window, cx| match event {
                 ExplorerEvent::PaneFocused => this.focus_files(window, cx),
@@ -360,6 +376,11 @@ impl Workspace {
             shown: [None, None],
             stages: Default::default(),
             anchors: [None, None],
+            mark_menu: None,
+            mark_dismissed: None,
+            mark_bounds: Rc::default(),
+            dual_split_seen: Rc::new(Cell::new(state::settings(cx).dual_split)),
+            dual_split_gen: 0,
             _drop_target: Self::take_drops(window, cx),
             _subscriptions: subscriptions,
         };
@@ -612,6 +633,22 @@ impl Workspace {
                 cx.notify();
             }
             _ => {}
+        }
+    }
+
+    /// Re-keys the dual-pane split group whenever `settings.dual_split` is cleared or changed externally.
+    fn sync_dual_split(&mut self, cx: &mut Context<Self>) {
+        let now = state::settings(cx).dual_split;
+        let seen = self.dual_split_seen.get();
+        let changed = match (now, seen) {
+            (Some(a), Some(b)) => (a - b).abs() > 1e-4,
+            (None, None) => false,
+            _ => true,
+        };
+        if changed {
+            self.dual_split_seen.set(now);
+            self.dual_split_gen = self.dual_split_gen.wrapping_add(1);
+            cx.notify();
         }
     }
 
@@ -2039,17 +2076,33 @@ impl Workspace {
         let (dark, rtl) = (theme::tokens(cx).dark, crate::i18n::is_rtl());
         let hue = Self::place_tone(cx).h;
         match self.light.hue {
-            // A few degrees is the same light (pictures are shared within 3°).
-            Some(now) if (now - hue).abs() < 0.008 => {}
+            // A few degrees is the same light (pictures are shared within 3°), wrapping cleanly across red (0 / 1).
             Some(now) => {
-                self.light = Light {
-                    hue: Some(hue),
-                    from: Some(now),
-                    turn: self.light.turn + 1,
-                };
+                let d = (now - hue).rem_euclid(1.);
+                if d.min(1. - d) >= 0.008 {
+                    self.light = Light {
+                        hue: Some(hue),
+                        from: Some(now),
+                        turn: self.light.turn + 1,
+                        turned_at: Some(Instant::now()),
+                        was_active: self.light.was_active,
+                        active_turn: self.light.active_turn,
+                    };
+                }
             }
             None => self.light.hue = Some(hue),
         }
+        // Drop the leaving layer once the transition completes so at rest only a single aurora image is drawn.
+        if self.light.from.is_some() && self.light.turned_at.is_some_and(|at| at.elapsed() >= LIGHT_TURNS_IN) {
+            self.light.from = None;
+            self.light.turned_at = None;
+        }
+        let active = window.is_window_active();
+        if matches!(self.light.was_active, Some(prev) if prev != active) {
+            self.light.active_turn += 1;
+        }
+        self.light.was_active = Some(active);
+
         let picture = |hue: f32| {
             img(crate::art::aurora(hue, dark, rtl))
                 .size_full()
@@ -2072,7 +2125,96 @@ impl Workspace {
                 )),
             None => layer().child(picture(hue)),
         };
-        lights.opacity(if window.is_window_active() { 1. } else { 0.5 })
+        let target = if active { 1. } else { 0.5 };
+        if self.light.active_turn > 0 && !cx.reduce_motion() {
+            let from = if active { 0.5 } else { 1. };
+            lights
+                .with_animation(
+                    ("light-active", self.light.active_turn),
+                    Animation::new(theme::motion::BASE).with_easing(gpui_kit::ease_in_out),
+                    move |el, delta| el.opacity(from + (target - from) * delta),
+                )
+                .into_any_element()
+        } else {
+            lights.opacity(target).into_any_element()
+        }
+    }
+
+    fn mark_nodes() -> Vec<Node> {
+        let item = |label: SharedString, icon: IconName, tag: &str, action: &dyn gpui_kit::Action| {
+            let mut entry = tab_menu::row(label, icon, tag, "");
+            entry.hint = keys_of(action).map(SharedString::from);
+            Node::Item(entry)
+        };
+        vec![
+            item(t!("Settings"), IconName::Settings, "settings", &actions::OpenSettings),
+            item(
+                t!("Command palette"),
+                IconName::Command,
+                "palette",
+                &actions::CommandPalette,
+            ),
+            item(
+                t!("Keyboard shortcuts"),
+                IconName::Keyboard,
+                "shortcuts",
+                &actions::ShowShortcuts,
+            ),
+            Node::Separator,
+            item(
+                t!("Drive health"),
+                IconName::HeartPulse,
+                "drive-health",
+                &actions::ShowDriveHealth,
+            ),
+            item(t!("New window"), IconName::AppWindow, "new-window", &actions::NewWindow),
+        ]
+    }
+
+    /// Opens or closes the app's own menu under Glint's logo mark using [`MenuView`].
+    fn toggle_mark_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.mark_menu.take().is_some() {
+            cx.notify();
+            return;
+        }
+        if self
+            .mark_dismissed
+            .is_some_and(|at| at.elapsed() < std::time::Duration::from_millis(300))
+        {
+            return;
+        }
+        self.menus.update(cx, |menus, cx| menus.close(cx));
+        let b = self.mark_bounds.get();
+        let rtl = crate::i18n::is_rtl();
+        let at = if b.size.width > px(0.) && b.size.height > px(0.) {
+            point(if rtl { b.right() } else { b.left() }, b.bottom() + px(4.))
+        } else {
+            point(px(12.), TITLE_BAR_HEIGHT)
+        };
+        self.mark_menu = tab_menu::Popup::open(
+            Self::mark_nodes(),
+            t!("Glint: settings and more"),
+            at,
+            window,
+            cx,
+            |this, chose, window, cx| {
+                this.mark_menu = None;
+                this.mark_dismissed = Some(Instant::now());
+                cx.notify();
+                let Some(chose) = chose else {
+                    return;
+                };
+                match chose.tag.as_str() {
+                    "settings" => this.open_settings(window, cx),
+                    "palette" => palette::toggle(window, cx),
+                    "shortcuts" => dialogs::shortcuts::open(window, cx),
+                    "drive-health" => dialogs::drive_health::open(window, cx, None),
+                    "new-window" => Self::explorer(cx, |e, cx| e.open_in_new_window(None, cx)),
+                    _ => {}
+                }
+            },
+        );
+        cx.notify();
     }
 
     /// Glint's mark (the folder with the glint on its corner) at the start of the bar: the installer's logo, drawn
@@ -2087,48 +2229,29 @@ impl Workspace {
                 std::sync::Arc::new(Image::from_bytes(ImageFormat::Svg, svg.into_bytes()))
             };
         }
-        let this = cx.weak_entity();
+        let open = self.mark_menu.is_some();
         let name = t!("Glint: settings and more");
-        let button =
-            Button::new("glint-mark")
-                .ghost()
-                .small()
-                .accessibility_label(name.clone())
-                .tooltip(name)
-                .child(img(MARK.with(Clone::clone)).size(px(20.)).flex_none())
-                .dropdown_menu(move |menu, _, _| {
-                    let settings = this.clone();
-                    menu.item(PopupMenuItem::new(t!("Settings")).icon(IconName::Settings).on_click(
-                        move |_, window, cx| {
-                            settings
-                                .update(cx, |workspace, cx| workspace.open_settings(window, cx))
-                                .ok();
-                        },
-                    ))
-                    .item(
-                        PopupMenuItem::new(t!("Command palette"))
-                            .icon(IconName::Command)
-                            .on_click(|_, window, cx| palette::toggle(window, cx)),
-                    )
-                    .item(
-                        PopupMenuItem::new(t!("Keyboard shortcuts"))
-                            .icon(IconName::Keyboard)
-                            .on_click(|_, window, cx| dialogs::shortcuts::open(window, cx)),
-                    )
-                    .separator()
-                    .item(
-                        PopupMenuItem::new(t!("Drive health"))
-                            .icon(IconName::HeartPulse)
-                            .on_click(|_, window, cx| dialogs::drive_health::open(window, cx, None)),
-                    )
-                    .item(
-                        PopupMenuItem::new(t!("New window"))
-                            .icon(IconName::AppWindow)
-                            .on_click(|_, _, cx| Self::explorer(cx, |e, cx| e.open_in_new_window(None, cx))),
-                    )
-                });
+        let button = Button::new("glint-mark")
+            .ghost()
+            .small()
+            .selected(open)
+            .accessibility_label(name.clone())
+            .when(!open, |b| b.tooltip(name))
+            .child(img(MARK.with(Clone::clone)).size(px(20.)).flex_none())
+            .on_click(cx.listener(|this, _, window, cx| this.toggle_mark_menu(window, cx)));
+        let bounds = self.mark_bounds.clone();
+        let measure = canvas(move |box_bounds, _, _| bounds.set(box_bounds), |_, _, _, _| {})
+            .absolute()
+            .inset_0();
         // Pressing it never drags the window.
-        div().id("glint-mark-place").occlude().flex_none().me(1.).child(button)
+        div()
+            .id("glint-mark-place")
+            .occlude()
+            .relative()
+            .flex_none()
+            .me(1.)
+            .child(measure)
+            .child(button)
     }
 
     /// The end of the bar, before the window's own buttons: what is being shared, and Update while a newer Glint
@@ -2380,8 +2503,11 @@ impl Workspace {
             .child(div().flex_1().min_h_0().child(view));
         // On its stage: going into a folder, out of one, or anywhere else flies there.
         let view = stage::stage(&self.stages[pane].hand, self.stages[pane].cue.clone(), view);
+        let explorer = explorer::explorer(cx).read(cx);
+        let active_rail = explorer.is_dual() && explorer.active_pane() == pane;
         div()
             .id(("pane", pane))
+            .test_support()
             .relative()
             .size_full()
             .min_w_0()
@@ -2394,18 +2520,71 @@ impl Workspace {
                 Self::side_button(Some(pane), false, cx);
             })
             .child(view)
+            .when(active_rail, |pane_el| {
+                pane_el.child(
+                    div()
+                        .id(("pane-active-rail", pane))
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .right_0()
+                        .mx(space(4.))
+                        .h(px(2.))
+                        .rounded_full()
+                        .bg(theme::glint_fill(cx)),
+                )
+            })
             .child(PaneDropZone::new(pane))
             .into_any_element()
     }
 
-    fn body(&self, t: &theme::Tokens, cx: &mut Context<Self>) -> impl IntoElement {
+    fn body(&self, t: &theme::Tokens, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let rtl = crate::i18n::is_rtl();
+        let rem = f32::from(theme::rem_size(cx));
+        let preview_w = if self.preview.is_some() {
+            let preview_container = (f32::from(window.viewport_size().width) - f32::from(self.sidebar_width)).max(0.);
+            preview::pane_width(state::settings(cx).preview_width, preview_container, rem, false)
+        } else {
+            0.
+        };
         let dual = explorer::explorer(cx).read(cx).is_dual();
         let files = if dual {
             // The first pane at the start edge, the second beside it, the divider between them draggable.
-            let first = resizable_panel().child(self.pane(0, cx));
-            let second = resizable_panel().child(self.pane(1, cx));
-            let group = h_resizable("panes");
+            let container = (f32::from(window.viewport_size().width)
+                - f32::from(self.sidebar_width)
+                - f32::from(SHEET_GAP)
+                - preview_w)
+                .max(0.);
+            let share = state::settings(cx).dual_split.map(|s| s.clamp(0.2, 0.8));
+            let (first, second) = match share.filter(|_| container > 0.) {
+                Some(share) => (
+                    resizable_panel()
+                        .size(px(container * share as f32))
+                        .child(self.pane(0, cx)),
+                    resizable_panel()
+                        .size(px(container * (1. - share) as f32))
+                        .child(self.pane(1, cx)),
+                ),
+                None => (
+                    resizable_panel().child(self.pane(0, cx)),
+                    resizable_panel().child(self.pane(1, cx)),
+                ),
+            };
+            let first_idx = if rtl { 1 } else { 0 };
+            let second_idx = 1 - first_idx;
+            let seen = self.dual_split_seen.clone();
+            let group = h_resizable(("panes", self.dual_split_gen)).on_resize(move |sizes, _, cx| {
+                let sizes = sizes.read(cx).sizes();
+                if let (Some(w_first), Some(w_second)) = (sizes.get(first_idx), sizes.get(second_idx)) {
+                    let first = f64::from(f32::from(*w_first));
+                    let total = first + f64::from(f32::from(*w_second));
+                    if total > 0. {
+                        let share = (first / total).clamp(0.2, 0.8);
+                        seen.set(Some(share));
+                        state::update(cx, |s| s.dual_split = Some(share));
+                    }
+                }
+            });
             let group = if rtl {
                 group.child(second).child(first)
             } else {
@@ -2482,17 +2661,40 @@ impl Workspace {
             .child(div().absolute().inset_0().child(self.command_bar.clone()));
         // The sheet: the files and the dock on their own surface, a step forward of the chrome: a card with a
         // hairline, rounded all round, clear of the window's end and bottom edges.
+        let rim = hsla(0., 0., 1., if t.dark { 0.14 } else { 0.72 });
+        let rim_edge = rim.opacity(0.);
+        let top_sheen = div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .right_0()
+            .h(px(1.))
+            .flex()
+            .flex_row()
+            .child(div().flex_1().h_full().bg(linear_gradient(
+                90.,
+                linear_color_stop(rim_edge, 0.),
+                linear_color_stop(rim, 1.),
+            )))
+            .child(div().flex_1().h_full().bg(linear_gradient(
+                90.,
+                linear_color_stop(rim, 0.),
+                linear_color_stop(rim_edge, 1.),
+            )));
         let sheet = div()
             .id("content")
             .role(Role::Main)
             .test_support()
+            .relative()
             .size_full()
             // Glass: the window's light shows through it, faintly; a lit edge at its top.
             .bg(t.sheet)
             .border_1()
             .border_color(t.stroke)
             .rounded(theme::size::RADIUS_SHEET)
+            .shadow(theme::elevation::raised(cx))
             .overflow_hidden()
+            .child(top_sheen)
             .child(
                 col()
                     .size_full()
@@ -2515,12 +2717,29 @@ impl Workspace {
         // The sidebar's edge: a strip over the seam that drags its width (a double-click puts it back).
         let grip = px(8.);
         let at = self.sidebar_width - grip / 2.;
+        let dragging_sidebar = self.sidebar_drag.is_some();
+        let pill = div()
+            .w(px(2.))
+            .h(px(40.))
+            .rounded_full()
+            .when(dragging_sidebar, |p| p.bg(t.primary))
+            .when(!dragging_sidebar, |p| {
+                p.bg(t.muted_foreground.opacity(0.))
+                    .group_hover("sidebar-grip", |p| p.bg(t.muted_foreground.opacity(0.35)))
+            });
         let handle = div()
             .id("sidebar-resize")
+            .group("sidebar-grip")
+            .role(Role::Splitter)
+            .aria_label(t!("Resize sidebar"))
+            .tooltip(|w, cx| tooltip_under(t!("Drag to resize · Double-click to reset"), w, cx))
             .absolute()
-            .top_0()
-            .bottom_0()
+            .top(theme::size::RADIUS_SHEET)
+            .bottom(SHEET_GAP + theme::size::RADIUS_SHEET)
             .w(grip)
+            .flex()
+            .items_center()
+            .justify_center()
             .map(|handle| if rtl { handle.right(at) } else { handle.left(at) })
             .cursor_col_resize()
             .on_mouse_down(
@@ -2535,7 +2754,8 @@ impl Workspace {
                     }
                     cx.notify();
                 }),
-            );
+            )
+            .child(pill);
         row_start()
             .relative()
             .size_full()
@@ -2717,9 +2937,9 @@ impl Render for Workspace {
             .on_action(cx.listener(|_, _: &actions::DiskUsage, _, cx| Self::toggle_disk_usage(cx)))
             .on_action(cx.listener(|_, _: &actions::ToggleTimeMachine, _, cx| Self::toggle_time_machine(cx)))
             .on_action(cx.listener(|_, _: &actions::TogglePhotoMap, _, cx| Self::toggle_photo_map(cx)))
-            .on_action(cx.listener(|_, _: &actions::FreezeOrder, _, cx| {
-                Self::explorer(cx, |e, cx| e.toggle_frozen(None, cx))
-            }))
+            .on_action(
+                cx.listener(|_, _: &actions::FreezeOrder, _, cx| Self::explorer(cx, |e, cx| e.toggle_frozen(None, cx))),
+            )
             // File operations, on the active tab's selection.
             .on_action(cx.listener(|_, _: &actions::Copy, _, cx| {
                 let paths = Self::selection(cx);
@@ -2733,8 +2953,7 @@ impl Render for Workspace {
                 cx.listener(|_, _: &actions::Paste, _, cx| Self::explorer(cx, |e, cx| e.paste(None, cx).detach())),
             )
             .on_action(cx.listener(|this, _: &actions::ToggleBasket, window, cx| {
-                this.command_bar
-                    .update(cx, |bar, cx| bar.toggle_basket(window, cx))
+                this.command_bar.update(cx, |bar, cx| bar.toggle_basket(window, cx))
             }))
             .on_action(cx.listener(|_, _: &actions::AddToBasket, _, cx| {
                 let paths = Self::selection(cx);
@@ -2812,7 +3031,7 @@ impl Render for Workspace {
             // The window's content stands back while a dialog, the palette or Quick Look is over it.
             .child({
                 let behind = window.has_active_dialog(cx);
-                div().flex_1().min_h_0().child(self.body(&t, cx)).with_spring(
+                div().flex_1().min_h_0().child(self.body(&t, window, cx)).with_spring(
                     "workspace-depth",
                     gpui_kit::SpringAnimation::new(theme::motion::DEPTH_SPRING)
                         .to(if behind { theme::motion::RECEDE } else { 1. })
@@ -2824,6 +3043,7 @@ impl Render for Workspace {
             .child(self.queue.clone())
             .child(self.strip.clone())
             .child(self.menus.clone())
+            .when_some(self.mark_menu.as_ref(), |root, menu| root.child(menu.element()))
             // Above all of it: hop mode's badges, while the mode is on.
             .child(self.hop.clone())
     }
@@ -3813,9 +4033,18 @@ mod tests {
                 .map(|(hint, _, _)| hint.clone())
                 .unwrap_or_else(|| panic!("{name} is offered: {offered:?}"))
         };
-        assert!(offered.iter().any(|(_, kind, _)| *kind == hop::Kind::Tab), "the tab is offered: {offered:?}");
-        assert!(offered.iter().any(|(_, kind, _)| *kind == hop::Kind::Crumb), "the breadcrumbs are offered");
-        assert!(offered.iter().any(|(_, kind, _)| *kind == hop::Kind::Place), "the places are offered");
+        assert!(
+            offered.iter().any(|(_, kind, _)| *kind == hop::Kind::Tab),
+            "the tab is offered: {offered:?}"
+        );
+        assert!(
+            offered.iter().any(|(_, kind, _)| *kind == hop::Kind::Crumb),
+            "the breadcrumbs are offered"
+        );
+        assert!(
+            offered.iter().any(|(_, kind, _)| *kind == hop::Kind::Place),
+            "the places are offered"
+        );
         let main = hint_of(hop::Kind::Row, "main.rs");
         // The hint's letters, then the keyboard is in the second pane with the file selected.
         for key in main.chars() {
@@ -3824,9 +4053,82 @@ mod tests {
         visual.run_until_parked();
         let (active, second, first) = shown(&mut visual);
         assert_eq!(active, 1, "the second pane has the keyboard");
-        assert_eq!(second, vec!["C:\\Work\\src\\main.rs".to_string()], "the file is selected there");
+        assert_eq!(
+            second,
+            vec!["C:\\Work\\src\\main.rs".to_string()],
+            "the file is selected there"
+        );
         assert!(first.is_empty(), "the first pane's selection is as it was");
         assert!(!hop::active(), "the mode ended");
     }
-}
 
+    #[gpui_kit::test]
+    fn dual_split_setting_wires_pane_proportions_and_mark_menu_lists_shortcuts(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let (mut visual, workspace) = open_workspace(cx, false);
+        visual.update(|_, cx| {
+            explorer::explorer(cx).update(cx, |e, cx| e.toggle_dual(cx));
+        });
+        settle(&mut visual);
+        let gen0 = workspace.read_with(&visual, |w, _| w.dual_split_gen);
+        visual.update(|_, cx| state::update(cx, |s| s.dual_split = Some(0.3)));
+        settle(&mut visual);
+        let gen1 = workspace.read_with(&visual, |w, _| w.dual_split_gen);
+        assert!(gen1 > gen0, "changing dual_split externally re-keys split layout");
+        let (left, right) = visual.update(|window, cx| {
+            window.render_frame(cx);
+            (
+                window.find(("pane", 0usize)).bounds(),
+                window.find(("pane", 1usize)).bounds(),
+            )
+        });
+        assert!(
+            left.size.width + px(40.) < right.size.width,
+            "left pane respects 0.3 split: left={:?}, right={:?}",
+            left.size.width,
+            right.size.width
+        );
+        visual.update(|_, cx| state::update(cx, |s| s.dual_split = None));
+        settle(&mut visual);
+        let gen2 = workspace.read_with(&visual, |w, _| w.dual_split_gen);
+        assert!(gen2 > gen1, "clearing dual_split externally re-keys split layout");
+        let (left_eq, right_eq) = visual.update(|window, cx| {
+            window.render_frame(cx);
+            (
+                window.find(("pane", 0usize)).bounds(),
+                window.find(("pane", 1usize)).bounds(),
+            )
+        });
+        assert!(
+            (f32::from(left_eq.size.width) - f32::from(right_eq.size.width)).abs() < 24.,
+            "clearing dual_split restores even panes: left={:?}, right={:?}",
+            left_eq.size.width,
+            right_eq.size.width
+        );
+
+        let nodes = Workspace::mark_nodes();
+        let hints: Vec<(&str, Option<String>)> = nodes
+            .iter()
+            .filter_map(|node| match node {
+                Node::Item(entry) => Some((entry.label.as_ref(), entry.hint.as_ref().map(|h| h.to_string()))),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            hints.iter().any(|(label, hint)| *label == "Settings" && hint.is_some()),
+            "Settings row carries shortcut hint: {hints:?}"
+        );
+        assert!(
+            hints
+                .iter()
+                .any(|(label, hint)| *label == "Command palette" && hint.is_some()),
+            "Command palette row carries shortcut hint: {hints:?}"
+        );
+        assert!(
+            hints
+                .iter()
+                .any(|(label, hint)| *label == "New window" && hint.is_some()),
+            "New window row carries shortcut hint: {hints:?}"
+        );
+    }
+}

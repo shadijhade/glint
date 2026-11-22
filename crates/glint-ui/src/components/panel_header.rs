@@ -66,7 +66,6 @@ pub fn panel_header(
         .py(space(2.))
         .border_b_1()
         .border_color(t.stroke)
-        .bg(t.chrome)
 }
 
 /// The header's row alone, with no bar around it: for a panel that is a card or a strip with its own padding

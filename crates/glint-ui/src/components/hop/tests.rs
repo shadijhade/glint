@@ -285,3 +285,36 @@ fn a_target_mostly_cut_off_by_its_list_is_not_offered(cx: &mut TestAppContext) {
         assert_eq!(names, ["most of it"]);
     });
 }
+
+#[gpui_kit::test]
+fn tab_marks_clip_to_their_recorded_tablist_viewport(cx: &mut TestAppContext) {
+    cx.update(|cx| cx.set_global(Hop::new()));
+    let window = cx.add_empty_window();
+    window.update(|window, cx| {
+        cx.update_global::<Hop, _>(|hop, _| {
+            hop.phase = Phase::Collecting;
+            hop.window = Some(window.window_handle().window_id());
+        });
+        let tablist_viewport = Bounds::new(point(px(0.), px(40.)), size(px(220.), px(160.)));
+        clip_tabs(0, tablist_viewport, window, cx);
+        let whole = Bounds::new(point(px(0.), px(0.)), size(px(1200.), px(900.)));
+        let id = window.window_handle().window_id();
+        let visible = Bounds::new(point(px(8.), px(60.)), size(px(200.), px(30.)));
+        let scrolled_off = Bounds::new(point(px(8.), px(240.)), size(px(200.), px(30.)));
+        note(Mark::new(Kind::Tab, 0, "visible", |_, _| {}), visible, whole, id, cx);
+        note(
+            Mark::new(Kind::Tab, 0, "scrolled off", |_, _| {}),
+            scrolled_off,
+            whole,
+            id,
+            cx,
+        );
+        let names: Vec<_> = cx
+            .global::<Hop>()
+            .spots
+            .iter()
+            .map(|s| s.mark.name.to_string())
+            .collect();
+        assert_eq!(names, ["visible"]);
+    });
+}

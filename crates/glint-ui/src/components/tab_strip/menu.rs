@@ -53,6 +53,7 @@ impl Chose {
 /// A chrome menu on screen: the view, and where it hangs.
 pub(crate) struct Popup {
     at: Point<Pixels>,
+    upward: bool,
     view: Entity<MenuView>,
     _subscription: Subscription,
 }
@@ -84,8 +85,13 @@ impl Popup {
         if nodes.is_empty() {
             return None;
         }
+        window.dismiss_tooltips();
+        let upward = at.y > window.viewport_size().height * 0.6;
         let view = cx.new(|cx| MenuView::new(nodes, label, cx));
-        view.update(cx, |view, cx| view.focus(window, cx));
+        view.update(cx, |view, cx| {
+            view.anchored_at(at);
+            view.focus(window, cx);
+        });
         let subscription = cx.subscribe_in(&view, window, move |this, _, event: &MenuViewEvent, window, cx| {
             let chose = match event {
                 MenuViewEvent::Chose(run) => Chose::of(run),
@@ -101,6 +107,7 @@ impl Popup {
         });
         Some(Popup {
             at,
+            upward,
             view,
             _subscription: subscription,
         })
@@ -109,14 +116,20 @@ impl Popup {
     /// The menu, to put among the owner's children (outside anything that clips).
     pub(crate) fn element(&self) -> impl IntoElement {
         let rtl = crate::i18n::is_rtl();
+        let anchor = match (self.upward, rtl) {
+            (false, false) => Anchor::TopLeft,
+            (false, true) => Anchor::TopRight,
+            (true, false) => Anchor::BottomLeft,
+            (true, true) => Anchor::BottomRight,
+        };
         deferred(
             anchored()
                 .position(self.at)
-                .anchor(if rtl { Anchor::TopRight } else { Anchor::TopLeft })
+                .anchor(anchor)
                 .snap_to_window_with_margin(px(8.))
                 .child(self.view.clone()),
         )
-        .with_priority(gpui_kit::base::POPUP_PRIORITY)
+        .with_priority(crate::kit::Z_POPUP)
     }
 
     /// The view, for tests.

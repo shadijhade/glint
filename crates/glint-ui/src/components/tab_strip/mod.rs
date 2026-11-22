@@ -42,6 +42,7 @@ use glint_model::paths::{
 };
 use std::cell::Cell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::time::Duration;
 
 /// How long files held over a tab that isn't showing wait before it opens (`springTimer`, 450 ms).
@@ -342,7 +343,7 @@ impl Render for DragChip {
             .rounded(theme::size::RADIUS_LG)
             .border_1()
             .border_color(t.stroke)
-            .bg(t.card)
+            .bg(t.popover)
             .text_color(t.foreground)
             .text_size(theme::size::SM)
             .shadow(theme::elevation::floating(cx))
@@ -410,7 +411,8 @@ impl RenderOnce for PaneDropZone {
             } else {
                 t!("Move the tab here")
             };
-            div()
+            let reduce = cx.reduce_motion();
+            let card = div()
                 .id(SharedString::from(format!("pane-drop-{pane}")))
                 .role(Role::Group)
                 .aria_label(label.clone())
@@ -430,23 +432,27 @@ impl RenderOnce for PaneDropZone {
                         d.left_0().right_0()
                     }
                 })
+                .m(space(2.))
                 .flex()
                 .items_center()
                 .justify_center()
-                .rounded(theme::size::RADIUS)
-                .border_2()
-                .border_dashed()
-                .border_color(t.primary.opacity(0.7))
-                .bg(t.primary.opacity(0.1))
+                .rounded(theme::size::RADIUS_SHEET)
+                .border_1()
+                .border_color(t.stroke)
+                .bg(t.primary.opacity(0.08))
+                .shadow(theme::elevation::raised(cx))
                 .child(
                     row_start()
                         .gap(space(1.5))
-                        .px(space(2.5))
-                        .py(space(1.))
-                        .rounded(theme::size::RADIUS)
-                        .bg(t.background.opacity(0.95))
+                        .px(space(3.))
+                        .py(space(1.5))
+                        .rounded(theme::size::RADIUS_LG)
+                        .border_1()
+                        .border_color(t.stroke)
+                        .bg(t.popover.opacity(0.95))
                         .text_size(theme::size::SM)
                         .text_color(t.primary)
+                        .shadow(theme::elevation::floating(cx))
                         .child(icon(IconName::Columns2).size_4())
                         .child(label),
                 )
@@ -463,16 +469,26 @@ impl RenderOnce for PaneDropZone {
                             }
                         });
                     }
-                })
+                });
+            if reduce {
+                card.into_any_element()
+            } else {
+                card.with_animation(
+                    ("pane-drop-in", pane),
+                    Animation::new(theme::motion::FAST).with_easing(theme::motion::enter),
+                    |el, delta| el.opacity(0.35 + 0.65 * delta),
+                )
+                .into_any_element()
+            }
         };
         if dual {
             if from_len_ok {
-                zone(false).into_any_element()
+                zone(false)
             } else {
                 div().into_any_element()
             }
         } else {
-            zone(true).into_any_element()
+            zone(true)
         }
     }
 }
@@ -487,6 +503,8 @@ pub struct TabStrip {
     scrolls: Vec<ScrollHandle>,
     /// Around each pane's + button, to show it while the keyboard is on it (it is hidden otherwise).
     plus_focus: Vec<FocusHandle>,
+    /// Where each pane's menu button sits, so keyboard invocation opens its menu below it.
+    pane_menu_bounds: Vec<Rc<Cell<Bounds<Pixels>>>>,
     /// The tab last scrolled into view in each pane, to scroll again only when another becomes active.
     scrolled_to: Vec<Option<TabId>>,
     /// Where a dragged tab would drop.
@@ -503,6 +521,8 @@ pub struct TabStrip {
     spring_timer: Option<Task<()>>,
     /// The keyboard focus of each tab, for Tab, Enter and the arrows.
     focus: HashMap<TabId, FocusHandle>,
+    /// Around each tab's × button, so Tab focus keeps it visible.
+    close_focus: HashMap<TabId, FocusHandle>,
     /// The card a background tab shows when the pointer rests on it: what its folder holds.
     peek: Entity<PeekHost>,
     _subscriptions: Vec<Subscription>,
@@ -521,6 +541,7 @@ impl TabStrip {
             explorer,
             scrolls: Vec::new(),
             plus_focus: Vec::new(),
+            pane_menu_bounds: Vec::new(),
             scrolled_to: Vec::new(),
             slot: None,
             drag_from: None,
@@ -529,6 +550,7 @@ impl TabStrip {
             spring: None,
             spring_timer: None,
             focus: HashMap::new(),
+            close_focus: HashMap::new(),
             peek,
             _subscriptions: subscriptions,
         }
@@ -550,11 +572,14 @@ impl TabStrip {
         while self.scrolls.len() < panes.len() {
             self.scrolls.push(ScrollHandle::new());
             self.plus_focus.push(cx.focus_handle());
+            self.pane_menu_bounds.push(Rc::default());
             self.scrolled_to.push(None);
         }
         self.focus.retain(|id, _| data.contains_key(id));
+        self.close_focus.retain(|id, _| data.contains_key(id));
         for id in data.keys() {
             self.focus.entry(*id).or_insert_with(|| cx.focus_handle());
+            self.close_focus.entry(*id).or_insert_with(|| cx.focus_handle());
         }
         let mut data = data;
         panes
@@ -869,8 +894,10 @@ impl TabStrip {
             div()
                 .id(SharedString::from(format!("tab-close-wrap-{}", id.0)))
                 .flex_shrink_0()
+                .track_focus(&self.close_focus[&id])
                 .opacity(if selected { 1. } else { 0. })
                 .group_hover(close_group, |s| s.opacity(1.))
+                .in_focus(|s| s.opacity(1.))
                 // Pressing × must not activate (and so re-read) the tab that is about to go.
                 .on_mouse_down(MouseButton::Left, |_, window, cx| {
                     window.prevent_default();
@@ -890,10 +917,12 @@ impl TabStrip {
         });
         let glass = t.glass;
         let accent = t.accent;
+        let pressed = t.pressed;
         let stroke = t.stroke;
         let glint = theme::glint_fill(cx);
         let ring = t.ring;
         let primary = t.primary;
+        let passive_selected = selected && !current;
         let sprung = self.spring.filter(|_| cx.has_active_drag()) == Some(id);
         let lit = sprung && (!selected || d.drop_into.is_some());
         let loading_bar = sprung && !selected;
@@ -932,27 +961,28 @@ impl TabStrip {
             .flex_none()
             .h(TAB_HEIGHT)
             .py(px(1.))
-            .child(
-                row_start()
+            .child({
+                let fill = row_start()
                     .id(SharedString::from(format!("tab-fill-{}", id.0)))
+                    .relative()
                     .size_full()
                     .gap(space(1.5))
                     .ps(2.5)
                     .pe(1.)
-                    .rounded(theme::size::RADIUS_LG)
+                    .rounded(theme::size::RADIUS_ROW)
                     .border_1()
-                    .border_color(if selected {
-                        stroke
-                    } else {
-                        gpui_kit::transparent_black()
-                    })
+                    .border_color(if current { stroke } else { gpui_kit::transparent_black() })
                     .text_size(theme::size::SM)
                     .text_color(if selected { t.foreground } else { t.muted_foreground })
-                    // The tab shown: a pane of glass on the rail.
-                    .when(selected, move |d| d.bg(glass))
+                    // Active pane's selected tab is glass + stroke; passive pane's selected tab sits quietly in accent.
+                    .when(current, move |d| d.bg(glass))
+                    .when(passive_selected, move |d| d.bg(accent))
                     .when(!selected, {
                         let foreground = t.foreground;
-                        move |d| d.hover(move |s| s.bg(accent).text_color(foreground))
+                        move |d| {
+                            d.hover(move |s| s.bg(accent).text_color(foreground))
+                                .active(move |s| s.bg(pressed))
+                        }
                     })
                     // Files held over it: lit, and shown soon when it isn't.
                     .when(lit, move |d| {
@@ -964,7 +994,13 @@ impl TabStrip {
                                 .id(SharedString::from(format!("tab-spring-{}", id.0)))
                                 .absolute()
                                 .bottom(space(0.5))
-                                .left(space(1.5))
+                                .map(|bar| {
+                                    if rtl {
+                                        bar.right(space(1.5))
+                                    } else {
+                                        bar.left(space(1.5))
+                                    }
+                                })
                                 .h(space(0.5))
                                 .rounded_full()
                                 .bg(primary)
@@ -1009,22 +1045,23 @@ impl TabStrip {
                     })
                     .child(glyph)
                     .child(div().flex_1().min_w_0().truncate().child(d.shown.clone()))
-                    .children(close)
+                    .children(close);
+                if cx.reduce_motion() {
+                    fill.into_any_element()
+                } else {
                     // A tab that has just been made slides into its place from the start edge.
-                    .with_animation(
+                    fill.with_animation(
                         SharedString::from(format!("tab-enter-{}", id.0)),
                         Animation::new(theme::motion::BASE).with_easing(theme::motion::enter),
                         move |fill, delta| {
                             let away = px(10. * (1. - delta));
-                            let fill = fill.opacity(delta);
-                            if rtl {
-                                fill.right(away)
-                            } else {
-                                fill.left(away)
-                            }
+                            let dx = if rtl { away } else { -away };
+                            fill.opacity(0.35 + 0.65 * delta).paint_offset(dx, px(0.))
                         },
-                    ),
-            )
+                    )
+                    .into_any_element()
+                }
+            })
             // Hop mode (Alt+J): a tab is a target, and a hint on it shows it, as a press does.
             .map(|tab| {
                 crate::components::hop::mark(tab, || {
@@ -1039,7 +1076,7 @@ impl TabStrip {
             })
             .track_focus(&self.focus[&id])
             .tab_stop(true)
-            .focus_visible(move |s| s.border_1().border_color(ring))
+            .focus_visible(move |s| s.rounded(theme::size::RADIUS_ROW).border_1().border_color(ring))
             .when(peek_target.is_none(), |tab| tab.tooltip(menu::tip(tip.clone())))
             .when_some(peek_target, |tab, target| {
                 tab.on_hover(cx.listener(move |this, hovered: &bool, window, cx| {
@@ -1167,7 +1204,7 @@ impl Render for TabStrip {
                 .collect();
             let list_label = if !dual {
                 t!("Tabs")
-            } else if index == 0 {
+            } else if (index == 0) != rtl {
                 t!("Left pane tabs")
             } else {
                 t!("Right pane tabs")
@@ -1209,6 +1246,25 @@ impl Render for TabStrip {
                     this.drop_tab(index, count, dragged.id, cx);
                 }))
                 .children(tabs);
+            let list = div()
+                .relative()
+                .w_full()
+                .when(crate::components::hop::active(), |wrap| {
+                    wrap.child(
+                        canvas(
+                            move |bounds, window, cx| {
+                                crate::components::hop::clip_tabs(index as u64, bounds, window, cx);
+                            },
+                            |_, _, _, _| (),
+                        )
+                        .absolute()
+                        .inset_0(),
+                    )
+                })
+                .child(list)
+                .when(count as f32 > MOST_SHOWN, |wrap| {
+                    wrap.child(Scrollbar::vertical(&scroll).viewport_from_layout())
+                });
 
             let new_tab = Button::new(SharedString::from(format!("new-tab-{index}")))
                 .ghost()
@@ -1224,15 +1280,32 @@ impl Render for TabStrip {
                     });
                 }));
             let pane_button = dual.then(|| {
-                Button::new(SharedString::from(format!("pane-menu-{index}")))
+                let menu_bounds = self.pane_menu_bounds[index].clone();
+                let click_bounds = menu_bounds.clone();
+                let measure = canvas(move |b, _, _| menu_bounds.set(b), |_, _, _, _| {})
+                    .absolute()
+                    .inset_0();
+                let btn = Button::new(SharedString::from(format!("pane-menu-{index}")))
                     .ghost()
                     .xsmall()
                     .icon(IconName::Columns2)
                     .accessibility_label(t!("Pane menu"))
                     .tooltip(t!("This pane: swap, show a folder in the other pane, even out, close"))
                     .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
-                        this.open_pane_menu(index, event.position(), window, cx);
-                    }))
+                        let pos = event.position();
+                        let at = if pos.x == px(0.) && pos.y == px(0.) {
+                            let b = click_bounds.get();
+                            if b.size.width > px(0.) && b.size.height > px(0.) {
+                                point(if rtl { b.right() } else { b.left() }, b.bottom() + px(2.))
+                            } else {
+                                pos
+                            }
+                        } else {
+                            pos
+                        };
+                        this.open_pane_menu(index, at, window, cx);
+                    }));
+                div().relative().flex_none().child(measure).child(btn)
             });
             // What the list is, over it: "Tabs" (or which pane's), then its buttons at the end edge. A tab dropped
             // on the header goes to the end of the list, and a double-click on it makes a tab.
@@ -1258,10 +1331,13 @@ impl Render for TabStrip {
                 } else {
                     t.muted_foreground
                 })
-                .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
-                    if event.click_count() == 2 {
-                        this.explorer.update(cx, |e, cx| e.new_tab(None, cx));
-                    }
+                .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
+                    this.explorer.update(cx, |e, cx| {
+                        e.focus_pane(index, cx);
+                        if event.click_count() == 2 {
+                            e.new_tab(None, cx);
+                        }
+                    });
                 }))
                 .on_drag_move(cx.listener(move |this, event: &DragMoveEvent<DraggedTab>, _, cx| {
                     if event.bounds.contains(&event.event.position) {

@@ -1365,7 +1365,7 @@ fn the_pointer_resting_on_a_parent_crumb_shows_what_that_folder_holds_and_fills_
         rig.visual.run_until_parked();
         let (_, label) = rig.card().expect("still there");
         if label.contains("folders") {
-            assert!(label.contains("3 files"), "{label}");
+            assert!(label.contains("2 files"), "{label}");
             break;
         }
         std::thread::sleep(Duration::from_millis(5));

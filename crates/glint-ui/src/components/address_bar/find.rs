@@ -343,6 +343,13 @@ impl AddressBar {
         } else {
             rem * 2. + px(2.)
         };
+        if let Some((was_open, prev_w)) = self.find_was_open {
+            if was_open != open {
+                self.find_prev_width = prev_w;
+                self.find_width_turn += 1;
+            }
+        }
+        self.find_was_open = Some((open, width));
         let rtl = i18n::is_rtl();
         let name = SharedString::from(seen.folder_name.clone());
         let options = Self::options(cx);
@@ -412,14 +419,16 @@ impl AddressBar {
                 .occlude()
                 .gap(space(1.5))
                 .p(space(1.5))
-                .rounded(theme::size::RADIUS)
+                .rounded(theme::size::RADIUS_XL)
                 .border_1()
-                .border_color(t.border)
+                .border_color(t.stroke)
                 .bg(t.popover)
                 .text_color(t.popover_foreground)
                 .text_size(theme::size::XS)
-                .shadow_lg()
+                .shadow(theme::elevation::floating(cx))
                 .cursor_pointer()
+                .hover(|s| s.bg(t.accent))
+                .active(|s| s.bg(t.pressed))
                 // Mouse down keeps the focus in the box; a click takes the filters, as Tab does.
                 .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
                 .on_click(cx.listener(move |this, _, window, cx| this.set_search_text(query.clone(), window, cx)))
@@ -572,8 +581,10 @@ impl AddressBar {
                         let (forget_query, forget_folder) = (query.clone(), folder.clone());
                         let forget_label = t!("Remove {query} from the recent searches", query = query);
                         let current = current_hint == Some(i);
+                        let recent_group = SharedString::from(format!("address-recent-group-{i}"));
                         row_start()
                             .id(("address-recent", i))
+                            .group(recent_group.clone())
                             .role(Role::Button)
                             .aria_label(t!("{query} in {folder}", query = query, folder = place))
                             .aria_selected(current)
@@ -585,31 +596,40 @@ impl AddressBar {
                             .cursor_pointer()
                             .when(current, |s| s.bg(t.accent))
                             .hover(|s| s.bg(t.accent))
+                            .active(|s| s.bg(t.pressed))
                             .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.run_recent(run_query.clone(), run_folder.clone(), cx)
                             }))
                             .child(icon(IconName::Clock).size_3p5().text_color(t.muted_foreground))
-                            .child(div().min_w_0().truncate().child(isolate(query)))
+                            .child(div().min_w_0().flex_1().truncate().child(isolate(query)))
                             .child(
                                 div()
                                     .flex_none()
+                                    .max_w(space(32.))
+                                    .truncate()
                                     .text_color(t.muted_foreground)
                                     .child(isolate(place)),
                             )
                             .child(
-                                Button::new(("address-recent-forget", i))
-                                    .ghost()
-                                    .xsmall()
-                                    .icon(IconName::X)
-                                    .accessibility_label(forget_label)
-                                    .tooltip(t!("Remove from the recent searches (Del)"))
-                                    .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        // The row under the button would run the search.
-                                        cx.stop_propagation();
-                                        this.forget_recent(&forget_query, &forget_folder, cx)
-                                    })),
+                                div()
+                                    .flex_none()
+                                    .opacity(if current { 1. } else { 0. })
+                                    .group_hover(recent_group, |s| s.opacity(1.))
+                                    .child(
+                                        Button::new(("address-recent-forget", i))
+                                            .ghost()
+                                            .xsmall()
+                                            .icon(IconName::X)
+                                            .accessibility_label(forget_label)
+                                            .tooltip(t!("Remove from the recent searches (Del)"))
+                                            .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                // The row under the button would run the search.
+                                                cx.stop_propagation();
+                                                this.forget_recent(&forget_query, &forget_folder, cx)
+                                            })),
+                                    ),
                             )
                     }))
             });
@@ -622,13 +642,13 @@ impl AddressBar {
                 .max_h(height)
                 .overflow_y_scroll()
                 .p(space(2.5))
-                .rounded(theme::size::RADIUS)
+                .rounded(theme::size::RADIUS_SHEET)
                 .border_1()
-                .border_color(t.border)
+                .border_color(t.stroke)
                 .bg(t.popover)
                 .text_color(t.popover_foreground)
                 .text_size(theme::size::XS)
-                .shadow_lg()
+                .shadow(theme::elevation::floating(cx))
                 .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
                 .child(div().text_color(t.muted_foreground).child(t!(
                     "Typing filters this folder. Enter searches its subfolders too: names, and inside the files. Names are found as you type where instant search covers them."
@@ -645,7 +665,23 @@ impl AddressBar {
                 ))
         });
 
-        let overlay = |content: AnyElement| {
+        let reduce_motion = cx.reduce_motion();
+        let overlay = |id: &'static str, content: AnyElement| {
+            let content = if reduce_motion {
+                content
+            } else {
+                div()
+                    .with_animation(
+                        id,
+                        Animation::new(theme::motion::FAST).with_easing(theme::motion::enter),
+                        |el, delta| {
+                            el.opacity(0.35 + 0.65 * delta)
+                                .paint_scale(theme::motion::POP + (1. - theme::motion::POP) * delta)
+                        },
+                    )
+                    .child(content)
+                    .into_any_element()
+            };
             deferred(
                 div()
                     .absolute()
@@ -657,36 +693,50 @@ impl AddressBar {
                     .min_w(rems(19.))
                     .child(content),
             )
-            .with_priority(10)
+            .with_priority(Z_HINTS)
         };
 
-        div()
-            .id("address-search")
-            .test_support()
-            .key_context(keys::FIND)
-            .relative()
-            .flex_none()
-            .h_full()
-            .w(width)
-            .on_action(cx.listener(|this, _: &crate::actions::TextMatchCase, _, cx| {
-                this.toggle_option(SearchOptionKey::CaseSensitive, cx)
-            }))
-            .on_action(cx.listener(|this, _: &crate::actions::TextWholeWord, _, cx| {
-                this.toggle_option(SearchOptionKey::WholeWord, cx)
-            }))
-            .on_action(cx.listener(|this, _: &crate::actions::TextRegex, _, cx| {
-                this.toggle_option(SearchOptionKey::Regex, cx)
-            }))
-            .on_action(cx.listener(|this, _: &ListComplete, window, cx| this.take_plain(window, cx)))
-            .on_action(cx.listener(|this, _: &ListDown, _, cx| this.hint_down(cx)))
-            .on_action(cx.listener(|this, _: &ListUp, _, cx| this.hint_up(cx)))
-            .on_action(cx.listener(|this, _: &ListRemove, _, cx| this.forget_current(cx)))
-            .on_action(cx.listener(|this, _: &ListCancel, window, cx| this.leave_search(window, cx)))
-            .tooltip(tip(t!(
-                "Typing filters this folder · Enter searches its subfolders too: names (the instant search index or fd; * and ? work, words all must match) and inside the files (ripgrep). Filters: ext:pdf, path:src\\lib, size:>10mb, dm:7d (changed in the last 7 days), dm:>1y, file:, folder:, and for photos, videos and songs width:>1920, height:, taken:2024, camera:, duration:>5m, artist:, album:"
-            )))
-            .child(input)
-            .children(plain.map(|p| overlay(p.into_any_element())))
-            .children(hints.map(|h| overlay(h.into_any_element())))
+        let search_div =
+            div()
+                .id("address-search")
+                .test_support()
+                .key_context(keys::FIND)
+                .relative()
+                .flex_none()
+                .h_full()
+                .on_action(cx.listener(|this, _: &crate::actions::TextMatchCase, _, cx| {
+                    this.toggle_option(SearchOptionKey::CaseSensitive, cx)
+                }))
+                .on_action(cx.listener(|this, _: &crate::actions::TextWholeWord, _, cx| {
+                    this.toggle_option(SearchOptionKey::WholeWord, cx)
+                }))
+                .on_action(cx.listener(|this, _: &crate::actions::TextRegex, _, cx| {
+                    this.toggle_option(SearchOptionKey::Regex, cx)
+                }))
+                .on_action(cx.listener(|this, _: &ListComplete, window, cx| this.take_plain(window, cx)))
+                .on_action(cx.listener(|this, _: &ListDown, _, cx| this.hint_down(cx)))
+                .on_action(cx.listener(|this, _: &ListUp, _, cx| this.hint_up(cx)))
+                .on_action(cx.listener(|this, _: &ListRemove, _, cx| this.forget_current(cx)))
+                .on_action(cx.listener(|this, _: &ListCancel, window, cx| this.leave_search(window, cx)))
+                .when(!self.find_focused, |d| {
+                    d.tooltip(tip(t!(
+                        "Filter this folder, or press Enter to search subfolders (Ctrl+F)"
+                    )))
+                })
+                .child(input)
+                .children(plain.map(|p| overlay("address-plain-in", p.into_any_element())))
+                .children(hints.map(|h| overlay("address-hints-in", h.into_any_element())));
+        if self.find_width_turn > 0 && !reduce_motion {
+            let from = self.find_prev_width;
+            search_div
+                .with_animation(
+                    ("address-search-w", self.find_width_turn),
+                    Animation::new(theme::motion::FAST).with_easing(gpui_kit::ease_in_out),
+                    move |el, delta| el.w(from + (width - from) * delta),
+                )
+                .into_any_element()
+        } else {
+            search_div.w(width).into_any_element()
+        }
     }
 }

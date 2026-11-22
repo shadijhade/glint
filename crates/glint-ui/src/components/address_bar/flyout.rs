@@ -446,11 +446,18 @@ impl AddressBar {
                     .justify_center()
                     .size(space(5.))
                     .rounded(theme::size::RADIUS_SM)
-                    .text_color(t.muted_foreground.opacity(0.7))
+                    .border_1()
+                    .border_color(hsla(0., 0., 0., 0.))
+                    .text_color(if open {
+                        t.foreground
+                    } else {
+                        t.muted_foreground.opacity(0.7)
+                    })
+                    .when(open, |b| b.bg(t.accent))
                     .cursor_pointer()
                     .hover(|s| s.bg(t.accent).text_color(t.foreground))
                     .active(|s| s.bg(t.pressed))
-                    .focus_visible(|s| s.bg(t.accent))
+                    .focus_visible(|s| s.border_color(t.ring))
                     .when(peek.is_none(), |b| b.tooltip(tip(label)))
                     .when_some(peek, |b, target| {
                         b.on_hover(cx.listener(move |this, hovered: &bool, window, cx| {
@@ -566,12 +573,12 @@ impl AddressBar {
             .occlude()
             .w(space(64.))
             .p(space(1.))
-            .rounded(theme::size::RADIUS)
+            .rounded(theme::size::RADIUS_XL)
             .border_1()
-            .border_color(t.border)
+            .border_color(t.stroke)
             .bg(t.popover)
             .text_color(t.popover_foreground)
-            .shadow_lg()
+            .shadow(theme::elevation::floating(cx))
             .text_start()
             .on_mouse_down_out(cx.listener(|this, _, window, cx| this.close_flyout(false, window, cx)))
             .on_action(cx.listener(|this, _: &ListDown, _, cx| this.flyout_move(FlyoutMove::Down, cx)))
@@ -586,11 +593,24 @@ impl AddressBar {
                         .mb(space(1.))
                         .pb(space(1.))
                         .border_b_1()
-                        .border_color(t.border)
+                        .border_color(t.stroke)
                         .child(Input::new(&flyout.filter).aria_label(t!("Filter folders…"))),
                 )
             })
             .child(body);
+        let menu = if cx.reduce_motion() {
+            menu.into_any_element()
+        } else {
+            menu.with_animation(
+                ("address-flyout-in", self.flyout_seq),
+                Animation::new(theme::motion::FAST).with_easing(theme::motion::enter),
+                |el, delta| {
+                    el.opacity(0.35 + 0.65 * delta)
+                        .paint_scale(theme::motion::POP + (1. - theme::motion::POP) * delta)
+                },
+            )
+            .into_any_element()
+        };
 
         Some(
             deferred(
@@ -607,7 +627,7 @@ impl AddressBar {
                             .child(menu),
                     ),
             )
-            .with_priority(20),
+            .with_priority(Z_FLYOUT),
         )
     }
 
@@ -646,11 +666,13 @@ impl AddressBar {
                     .cursor_pointer()
                     .hover(|s| s.bg(t.accent))
                     .active(|s| s.bg(t.pressed))
-                    .when(on_it, |row| row.bg(t.accent))
                     .when(active, |row| {
                         row.bg(t.primary.opacity(0.1))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(t.primary)
+                    })
+                    .when(on_it, |row| {
+                        row.bg(if active { t.primary.opacity(0.18) } else { t.accent })
                     })
                     // The keyboard stays in the menu when a row is pressed.
                     .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
@@ -662,7 +684,7 @@ impl AddressBar {
                         }),
                     )
                     .on_click(cx.listener(move |this, _, window, cx| this.flyout_choose(index, window, cx)))
-                    .child(look_icon(item.look, cx))
+                    .child(look_icon(item.look, theme::rem_size(cx), cx))
                     .child(div().flex_1().min_w_0().truncate().child(isolate(name)))
                     .children(item.detail.as_ref().map(|detail| {
                         div()

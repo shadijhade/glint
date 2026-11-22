@@ -233,3 +233,38 @@ fn an_arabic_folder_has_a_card_too_and_the_card_never_takes_the_keyboard(cx: &mu
     let path = rig.explorer.read_with(&rig.visual, |e, _| e.current_path().to_string());
     assert_eq!(path, "C:\\b");
 }
+
+#[test]
+fn hidden_items_are_excluded_when_show_hidden_is_false() {
+    use glint_model::entries::{attr, with_details, RawEntry};
+    let shown = with_details(
+        RawEntry {
+            name: "visible.txt".into(),
+            size: 100,
+            ..Default::default()
+        },
+        "C:\\b\\visible.txt",
+    );
+    let hidden = with_details(
+        RawEntry {
+            name: ".secret".into(),
+            size: 200,
+            attrs: attr::HIDDEN,
+            ..Default::default()
+        },
+        "C:\\b\\.secret",
+    );
+    let listed = Listed {
+        path: "C:\\b".into(),
+        entries: vec![shown, hidden].into(),
+        archive: None,
+        remote: false,
+        elapsed: 0.,
+        from_index: false,
+    };
+    let filtered = Facts::of(&listed, false);
+    assert!(filtered.words.contains("1 file"), "{}", filtered.words);
+    assert!(!filtered.words.contains("2 files"), "{}", filtered.words);
+    let all = Facts::of(&listed, true);
+    assert!(all.words.contains("2 files"), "{}", all.words);
+}

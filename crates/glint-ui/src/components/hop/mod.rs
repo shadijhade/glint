@@ -150,6 +150,7 @@ struct Hop {
     phase: Phase,
     window: Option<WindowId>,
     spots: Vec<Spot>,
+    tab_clips: HashMap<u64, Bounds<Pixels>>,
     hinted: Vec<Hinted>,
     typed: String,
 }
@@ -162,10 +163,24 @@ impl Hop {
             phase: Phase::Off,
             window: None,
             spots: Vec::new(),
+            tab_clips: HashMap::new(),
             hinted: Vec::new(),
             typed: String::new(),
         }
     }
+}
+
+/// Records the viewport clip of tab list `group` so scrolled-off tabs are never given hints over the sidebar.
+pub fn clip_tabs(group: u64, bounds: Bounds<Pixels>, window: &Window, cx: &mut App) {
+    if !cx.has_global::<Hop>() {
+        return;
+    }
+    let id = window.window_handle().window_id();
+    cx.update_global::<Hop, _>(|hop, _| {
+        if matches!(hop.phase, Phase::Collecting) && hop.window == Some(id) {
+            hop.tab_clips.insert(group, bounds);
+        }
+    });
 }
 
 /// The marks of a view, one per target, drawn only while hop mode is on: `el` gets a child that notes where it was
@@ -200,10 +215,12 @@ fn record(mark: Mark, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App)
 
 /// [`record`], given the clip and the window.
 fn note(mark: Mark, bounds: Bounds<Pixels>, mask: Bounds<Pixels>, id: WindowId, cx: &mut App) {
-    // The rail's tab list scrolls by itself, and its clip is not where its tabs are drawn; the window is the clip
-    // that counts for a tab.
+    // The rail's tab list scrolls by itself; clip tabs to the tablist viewport recorded during prepaint
+    // (falling back to the window mask if none was recorded).
     let clip = if mark.kind == Kind::Tab {
-        Bounds::new(point(px(0.), px(0.)), size(px(1e6), px(1e6)))
+        cx.try_global::<Hop>()
+            .and_then(|hop| hop.tab_clips.get(&mark.group).copied())
+            .unwrap_or(mask)
     } else {
         mask
     };
@@ -319,6 +336,7 @@ impl HopOverlay {
             hop.window = Some(id);
         });
         ON.store(true, Ordering::Relaxed);
+        window.dismiss_tooltips();
         self.before = window.focused(cx).filter(|handle| handle != &self.focus);
         self.size = window.viewport_size();
         self.focus.focus(window, cx);
@@ -463,17 +481,32 @@ impl HopOverlay {
             .border_1()
             .border_color(t.primary_foreground.opacity(0.35))
             .shadow(theme::elevation::raised(cx))
+            .font_family(theme::mono_font(cx))
             .text_color(t.primary_foreground)
             .text_size(theme::size::XS)
             .font_weight(FontWeight::BOLD)
             .when(!matching, |badge| badge.opacity(0.16))
-            .children((!gone.is_empty()).then(|| div().opacity(0.5).child(gone)))
+            .children((!gone.is_empty()).then(|| div().opacity(0.42).child(gone)))
             .child(div().child(rest));
+        let badge = if cx.reduce_motion() {
+            badge.into_any_element()
+        } else {
+            badge
+                .with_animation(
+                    ("hop-badge-in", index),
+                    Animation::new(theme::motion::FAST).with_easing(theme::motion::enter),
+                    |el, delta| el.paint_scale(theme::motion::POP + (1. - theme::motion::POP) * delta),
+                )
+                .into_any_element()
+        };
         place
             .flex()
             .flex_row()
             .items_center()
             .when(tall, |place| place.items_start())
+            .when(matches!(hinted.mark.kind, Kind::Crumb), |place| {
+                place.items_end().mb(px(-3.))
+            })
             .child(badge)
             .into_any_element()
     }
@@ -519,13 +552,20 @@ impl Render for HopOverlay {
             (typed, badges)
         };
         let usage = t!("Type the letters on a badge to go there. Backspace takes one back. Escape cancels.");
+        let keys_row = || {
+            row_start()
+                .gap(space(1.))
+                .items_center()
+                .children(gpui_kit::Keystroke::parse("backspace").ok().map(Kbd::new))
+                .children(gpui_kit::Keystroke::parse("escape").ok().map(Kbd::new))
+        };
         let banner = row_start()
             .id("hop-usage")
             .test_support()
             .role(Role::Status)
             .aria_label(usage.clone())
             .absolute()
-            .bottom(px(12.))
+            .bottom(crate::components::status_bar::HEIGHT + px(20.))
             .left_0()
             .right_0()
             .justify_center()
@@ -542,38 +582,60 @@ impl Render for HopOverlay {
                     .text_color(t.popover_foreground)
                     .text_size(theme::size::SM)
                     .child(div().font_weight(FontWeight::SEMIBOLD).child(t!("Hop")))
-                    .child(div().text_color(t.muted_foreground).child(if typed.is_empty() {
-                        usage
-                    } else {
-                        SharedString::from(typed.to_uppercase())
-                    })),
+                    .when(typed.is_empty(), |row| {
+                        row.child(div().text_color(t.muted_foreground).child(usage))
+                            .child(keys_row())
+                    })
+                    .when(!typed.is_empty(), |row| {
+                        row.child(row_start().gap(space(1.)).children(typed.chars().map(|ch| {
+                            div()
+                                .px(px(6.))
+                                .h(rems(1.25))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded(theme::size::RADIUS_SM)
+                                .bg(t.primary)
+                                .text_color(t.primary_foreground)
+                                .font_family(theme::mono_font(cx))
+                                .text_size(theme::size::XS)
+                                .font_weight(FontWeight::BOLD)
+                                .child(SharedString::from(ch.to_ascii_uppercase().to_string()))
+                        })))
+                        .child(keys_row())
+                    }),
             );
-        base.size_full()
-            .occlude()
-            .role(Role::Group)
-            .aria_label(t!("Hop mode"))
-            .aria_description(usage_description())
-            // A click (any button) or the wheel gives up; nothing under the layer is reached.
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _, window, cx| this.end(true, window, cx)),
-            )
-            .on_mouse_down(
-                MouseButton::Right,
-                cx.listener(|this, _, window, cx| this.end(true, window, cx)),
-            )
-            .on_mouse_down(
-                MouseButton::Middle,
-                cx.listener(|this, _, window, cx| this.end(true, window, cx)),
-            )
-            .on_scroll(cx.listener(|this, _, window, cx| this.end(true, window, cx)))
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                this.key(event, window, cx);
-                cx.stop_propagation();
-            }))
-            .children(badges)
-            .child(banner)
-            .into_any_element()
+        let scrim = hsla(240. / 360., 0.2, 0.02, if t.dark { 0.16 } else { 0.06 });
+        deferred(
+            base.size_full()
+                .bg(scrim)
+                .occlude()
+                .role(Role::Group)
+                .aria_label(t!("Hop mode"))
+                .aria_description(usage_description())
+                // A click (any button) or the wheel gives up; nothing under the layer is reached.
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, window, cx| this.end(true, window, cx)),
+                )
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(|this, _, window, cx| this.end(true, window, cx)),
+                )
+                .on_mouse_down(
+                    MouseButton::Middle,
+                    cx.listener(|this, _, window, cx| this.end(true, window, cx)),
+                )
+                .on_scroll(cx.listener(|this, _, window, cx| this.end(true, window, cx)))
+                .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                    this.key(event, window, cx);
+                    cx.stop_propagation();
+                }))
+                .children(badges)
+                .child(banner),
+        )
+        .with_priority(crate::kit::Z_HOP)
+        .into_any_element()
     }
 }
 
