@@ -449,6 +449,7 @@ impl AddressBar {
                     .text_color(t.muted_foreground.opacity(0.7))
                     .cursor_pointer()
                     .hover(|s| s.bg(t.accent).text_color(t.foreground))
+                    .active(|s| s.bg(t.pressed))
                     .focus_visible(|s| s.bg(t.accent))
                     .when(peek.is_none(), |b| b.tooltip(tip(label)))
                     .when_some(peek, |b, target| {
@@ -505,6 +506,13 @@ impl AddressBar {
         let rtl = i18n::is_rtl();
         let rows = flyout.shown.len();
         let filtering = flyout.items.len() > FILTER_FROM;
+        // As many rows as the menu rule leaves room for (the filter line and the frame take theirs): the rest
+        // scrolls inside.
+        let rem = theme::rem_size(cx);
+        let row = (space(7.) * 1.).to_pixels(rem);
+        let frame = (space(2.) + if filtering { space(11.) } else { space(0.) }).to_pixels(rem) + px(2.);
+        let room = (self.menu_cap - frame).max(row * 2.);
+        let fit = rows.min(MOST_ROWS).min((room / row).floor().max(2.) as usize);
 
         let body = if flyout.loading {
             align_row(2.)
@@ -544,7 +552,7 @@ impl AddressBar {
                 cx.processor(|this, range: Range<usize>, _, cx| this.flyout_rows(range, cx)),
             )
             .track_scroll(&flyout.scroll)
-            .h(space(7.) * rows.min(MOST_ROWS) as f32)
+            .h(space(7.) * fit as f32)
             .into_any_element()
         };
 
@@ -637,6 +645,7 @@ impl AddressBar {
                     .text_size(theme::size::SM)
                     .cursor_pointer()
                     .hover(|s| s.bg(t.accent))
+                    .active(|s| s.bg(t.pressed))
                     .when(on_it, |row| row.bg(t.accent))
                     .when(active, |row| {
                         row.bg(t.primary.opacity(0.1))

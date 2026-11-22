@@ -264,6 +264,10 @@ pub struct AddressBar {
     source: Rc<dyn Source>,
     seen: Rc<Seen>,
 
+    /// The tallest a menu may be in this window (`kit::menu_max_height`), as of the last frame: the flyouts are
+    /// drawn from places that have no window at hand.
+    menu_cap: Pixels,
+
     // Typing a path
     edit: Entity<InputState>,
     editing: bool,
@@ -370,6 +374,7 @@ impl AddressBar {
             measure: Rc::new(RefCell::new(Measure::default())),
             copied: false,
             copied_task: None,
+            menu_cap: px(600.),
             flyout: None,
             flyout_seq: 0,
             search,
@@ -863,8 +868,22 @@ impl AddressBar {
 // ---- Drawing --------------------------------------------------------------------------------------------
 
 /// The tooltip builder for `.tooltip(..)` (the kit's tooltip).
+/// A navigation button that comes to life when it becomes enabled: it fades up from the dimmed look instead of
+/// snapping to it. Disabled buttons are dimmed by the button itself.
+fn eased(id: &'static str, enabled: bool, button: impl IntoElement, cx: &App) -> AnyElement {
+    let wrap = div().id((id, usize::from(enabled))).flex_none().child(button);
+    if !enabled || cx.reduce_motion() {
+        return wrap.into_any_element();
+    }
+    wrap.with_animation((id, 2usize), Animation::new(theme::motion::FAST), |wrap, delta| {
+        wrap.opacity(0.45 + 0.55 * delta)
+    })
+    .into_any_element()
+}
+
+/// Nothing is shown while a menu is up: a breadcrumb's name would open over the menu it opened.
 fn tip(text: SharedString) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
-    move |window, cx| crate::kit::tooltip(text.clone(), window, cx)
+    crate::components::tab_strip::menu::tip(text)
 }
 
 static SAMPLE_FOLDER: std::sync::LazyLock<FileEntry> = std::sync::LazyLock::new(|| sample("folder", true));
@@ -912,6 +931,7 @@ impl Render for AddressBar {
         let t = theme::tokens(cx).clone();
         let seen = self.seen.clone();
         let rem = window.rem_size();
+        self.menu_cap = crate::kit::menu_max_height(window);
         let viewport = window.viewport_size().width;
         let sm = viewport >= rem * 40.;
         let md = viewport >= rem * 48.;
@@ -989,23 +1009,47 @@ impl Render for AddressBar {
             .items_center()
             .rounded(theme::size::RADIUS_LG)
             .border_1()
-            .border_color(if lit { t.primary.opacity(0.55) } else { t.stroke })
-            .bg(if lit { t.field_focus } else { t.glass })
+            .border_color(t.stroke)
+            .bg(t.glass)
+            // Lit while either half is typed in: its look is a layer over the plain one that fades in, so the
+            // change is eased and moves nothing.
+            .when(lit, |omni| {
+                let layer = div()
+                    .id("address-omni-lit")
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left_0()
+                    .right_0()
+                    .rounded(theme::size::RADIUS_LG)
+                    .border_1()
+                    .border_color(t.primary.opacity(0.55))
+                    .bg(t.field_focus)
+                    .child(
+                        div()
+                            .absolute()
+                            .bottom(px(-1.))
+                            .left(space(3.))
+                            .right(space(3.))
+                            .h(px(2.))
+                            .rounded_full()
+                            .bg(theme::glint_fill(cx)),
+                    );
+                omni.child(if cx.reduce_motion() {
+                    layer.into_any_element()
+                } else {
+                    layer
+                        .with_animation(
+                            "address-omni-lit-in",
+                            Animation::new(theme::motion::FAST),
+                            |layer, delta| layer.opacity(delta),
+                        )
+                        .into_any_element()
+                })
+            })
             .child(field)
             .child(div().flex_none().w(px(1.)).h(space(4.)).bg(t.stroke))
-            .child(search)
-            .when(lit, |omni| {
-                omni.child(
-                    div()
-                        .absolute()
-                        .bottom(px(-1.))
-                        .left(space(3.))
-                        .right(space(3.))
-                        .h(px(2.))
-                        .rounded_full()
-                        .bg(theme::glint_fill(cx)),
-                )
-            });
+            .child(search);
 
         row_start()
             .id("address-bar")
@@ -1025,9 +1069,9 @@ impl Render for AddressBar {
                 row_start()
                     .occlude()
                     .flex_none()
-                    .child(back)
-                    .children(forward)
-                    .child(up)
+                    .child(eased("address-back-fade", seen.back.is_some(), back, cx))
+                    .children(forward.map(|forward| eased("address-forward-fade", seen.forward.is_some(), forward, cx)))
+                    .child(eased("address-up-fade", seen.path != THIS_PC, up, cx))
                     .children(refresh),
             )
             .child(omni)
@@ -1219,6 +1263,7 @@ impl AddressBar {
                 .rounded(theme::size::RADIUS_SM)
                 .cursor_pointer()
                 .hover(|s| s.bg(t.accent))
+                .active(|s| s.bg(t.pressed))
                 .focus_visible(|s| s.bg(t.accent))
                 .tooltip(tip(label.clone()))
                 .on_click(cx.listener(|this, _, window, cx| this.open(THIS_PC.to_string(), window, cx)))
@@ -1265,6 +1310,7 @@ impl AddressBar {
                 .text_color(t.muted_foreground)
                 .cursor_pointer()
                 .hover(|s| s.bg(t.accent).text_color(t.foreground))
+                .active(|s| s.bg(t.pressed))
                 .focus_visible(|s| s.bg(t.accent))
                 .tooltip(tip(label))
                 .on_click(cx.listener(move |this, _, window, cx| {
@@ -1466,6 +1512,7 @@ impl AddressBar {
                 .group_hover("address-bar-row", |s| s.opacity(1.))
                 .focus_visible(|s| s.opacity(1.).bg(t.accent))
                 .hover(|s| s.bg(t.accent).text_color(t.foreground))
+                .active(|s| s.bg(t.pressed))
                 .tooltip(tip(t!("Copy folder path (Ctrl+Shift+C)")))
                 .on_click(cx.listener(|this, _, _, cx| this.copy_path(cx)))
                 .child(icon(if copied { IconName::Check } else { IconName::Copy }).size_3p5())
@@ -1559,6 +1606,7 @@ impl AddressBar {
             .cursor_pointer()
             .when(last, |b| b.font_weight(FontWeight::MEDIUM))
             .hover(|s| s.bg(t.accent))
+            .active(|s| s.bg(t.pressed))
             .focus_visible(|s| s.bg(t.accent))
             .active(|s| s.bg(t.accent))
             .when(peek.is_none(), |b| b.tooltip(tip(title)))

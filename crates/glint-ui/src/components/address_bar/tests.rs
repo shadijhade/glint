@@ -1409,3 +1409,27 @@ fn the_arrow_shows_the_same_card_and_the_folder_you_are_in_has_none(cx: &mut Tes
     assert_eq!(rig.path(), "C:\\Users\\me");
     assert!(rig.card().is_none());
 }
+
+#[gpui_kit::test]
+fn a_flyout_in_a_short_window_stays_within_the_menu_cap_and_scrolls(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut rig = rig(cx, false, 900., "C:\\Users\\me");
+    let many: Vec<_> = (0..30).map(|i| folder("C:\\Users", &format!("dir{i:02}"))).collect();
+    rig.disk.folder("C:\\Users", many);
+    rig.visual.simulate_resize(size(px(900.), px(300.)));
+    rig.settle();
+    rig.click(("address-chevron", 1_usize));
+    let menu = rig.visual.update(|window, cx| {
+        window.render_frame(cx);
+        window.find("address-flyout").bounds()
+    });
+    let cap = rig.visual.update(|window, _| crate::kit::menu_max_height(window));
+    assert!(
+        menu.size.height <= cap,
+        "the flyout is {:?} tall in a window whose cap is {cap:?}",
+        menu.size.height
+    );
+    // More rows than fit are there to scroll to, and the filter is still on top.
+    assert!(rig.has("Filter folders…"));
+    assert!(rig.has("dir00"));
+}
