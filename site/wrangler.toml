@@ -1,7 +1,10 @@
-# Cloudflare Worker "glint-site": glint.rafd.tech, static assets only (no script).
+# Cloudflare Worker "glint-site": glint.rafd.tech. Static assets, and a few lines of script (worker.js) that only
+# the clips under /media run: they answer a request for a range of bytes, which Safari needs to play a video
+# and the assets alone do not do.
 # Published from this machine: `npm run deploy` in site/. Local Workers runtime: `npm run preview`.
 name = "glint-site"
 compatibility_date = "2026-10-01"
+main = "worker.js"
 
 # The domain is part of the deploy: `wrangler deploy` attaches it as a Custom Domain
 # (DNS record + certificate) on the rafd.tech zone. Keep this above the first [table].
@@ -11,6 +14,9 @@ routes = [
 
 [assets]
 directory = "./dist"
+binding = "ASSETS"
+# Every other path is served without running the script (and without counting as a Worker request).
+run_worker_first = ["/media/*.mp4"]
 # Serve dist/404.html, with a 404 status, for anything that does not exist.
 not_found_handling = "404-page"
 
