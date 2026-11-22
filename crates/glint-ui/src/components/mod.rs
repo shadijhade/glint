@@ -58,5 +58,7 @@ pub mod terminal;
 pub mod this_pc;
 /// Live Folder Time-Machine Scrubber: shadow copies, Git commits, backups, and USN activity on a timeline.
 pub mod time_machine;
+/// What a drag of pictures or videos out of a pane delivers, chosen mid-drag (Tab, or the pointer over a chip).
+pub mod transform_strip;
 /// Small things drawn for the dock: a rolling number, a spark line, the glint's ring (docs/gpui/aware).
 pub mod viz;

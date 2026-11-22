@@ -163,6 +163,8 @@ pub struct Workspace {
     status: Entity<StatusBar>,
     /// The copy queue's panel (or its pill), over the bottom end of the window.
     queue: Entity<CopyQueue>,
+    /// What a drag of pictures or videos out of a pane delivers, while one is under way (docked at the end edge).
+    strip: Entity<crate::components::transform_strip::TransformStrip>,
     /// The item, background and folder menus, drawn over everything when one is open.
     menus: Entity<MenuHost>,
     /// The open Settings view's events, while it is open.
@@ -225,6 +227,7 @@ impl Workspace {
         let sidebar = cx.new(|cx| Sidebar::new(window, cx));
         let status = cx.new(|cx| StatusBar::new(window, cx));
         let queue = cx.new(|cx| CopyQueue::new(window, cx));
+        let strip = cx.new(crate::components::transform_strip::TransformStrip::new);
         let menus = cx.new(MenuHost::new);
         let (first, first_subscriptions) = Self::build_pane(0, window, cx);
         subscriptions.extend(first_subscriptions);
@@ -335,6 +338,7 @@ impl Workspace {
             sidebar,
             status,
             queue,
+            strip,
             menus,
             settings_events: None,
             preview: None,
@@ -2805,6 +2809,7 @@ impl Render for Workspace {
             })
             // Over everything: the copy queue, then any open menu above it.
             .child(self.queue.clone())
+            .child(self.strip.clone())
             .child(self.menus.clone())
     }
 }

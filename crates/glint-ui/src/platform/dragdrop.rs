@@ -563,9 +563,24 @@ pub fn drag_out(
     let window = cx
         .try_global::<core_bridge::Core>()
         .and_then(|core| core.app.window(label));
+    // Pictures only or videos only: the strip offers what the drop can deliver besides the files themselves
+    // (components/transform_strip.rs), and the drag runs with a drop source that reads Tab for it.
+    let offer = crate::components::transform_strip::offer(cx, &paths);
     async move {
         let window = window.ok_or_else(|| "this window isn't registered with core".to_string())?;
-        core_bridge::run(glint_core::shell::start_drag(window, paths, Some(copy_only))).await?
+        match offer {
+            None => core_bridge::run(glint_core::shell::start_drag(window, paths, Some(copy_only))).await?,
+            // The offer is dropped with the drag, which takes the strip down on every way out.
+            Some(offer) => {
+                core_bridge::run(glint_core::virtual_drag::start_switchable_drag(
+                    window,
+                    paths,
+                    copy_only,
+                    offer.switch.clone(),
+                ))
+                .await?
+            }
+        }
     }
 }
 

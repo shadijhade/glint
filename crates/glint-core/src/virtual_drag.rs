@@ -49,6 +49,118 @@ pub fn transformed_filename(path: &str, transform: &DragTransform) -> String {
     }
 }
 
+/// The pictures a transform can read: Clean EXIF works on JPEG and PNG bytes, the rest goes through FFmpeg.
+fn is_clean_picture(ext: &str) -> bool {
+    matches!(ext, "jpg" | "jpeg" | "png")
+}
+
+fn is_picture(ext: &str) -> bool {
+    matches!(ext, "jpg" | "jpeg" | "png" | "bmp" | "gif" | "tif" | "tiff")
+}
+
+fn is_video(ext: &str) -> bool {
+    matches!(ext, "mp4" | "mov" | "mkv" | "webm" | "avi" | "m4v")
+}
+
+/// Most files a drag-out offers a transform for: each is made when the drop reads it, one after another.
+pub const MAX_TRANSFORMED: usize = 10;
+
+/// The transforms a drag of `paths` can deliver, in the order the strip shows them. Pictures offer Clean EXIF
+/// (JPEG and PNG only) and WebP; videos offer under 10 MB and the audio as MP3. Empty when the drag is not all
+/// pictures or all videos (or is too long), and then the drag is the plain one.
+pub fn transforms_for(paths: &[String]) -> Vec<DragTransform> {
+    if paths.is_empty() || paths.len() > MAX_TRANSFORMED {
+        return Vec::new();
+    }
+    let exts: Vec<String> = paths
+        .iter()
+        .map(|p| {
+            Path::new(p)
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.to_ascii_lowercase())
+                .unwrap_or_default()
+        })
+        .collect();
+    if exts.iter().all(|e| is_picture(e)) {
+        let mut out = Vec::new();
+        if exts.iter().all(|e| is_clean_picture(e)) {
+            out.push(DragTransform::StripMetadata);
+        }
+        out.push(DragTransform::ConvertWebp);
+        out
+    } else if exts.iter().all(|e| is_video(e)) {
+        vec![DragTransform::ShrinkUnderMb(10), DragTransform::ExtractAudioMp3]
+    } else {
+        Vec::new()
+    }
+}
+
+/// Who is told when the choice changes.
+type Listener = std::sync::Arc<dyn Fn(usize) + Send + Sync>;
+
+/// What a drag-out delivers, chosen while the drag is under way. Option 0 is the files as they are; the
+/// others are the transforms [`transforms_for`] offered. The drag's data object reads [`DragSwitch::selected`]
+/// every time a target asks for data, so a change takes effect for the very next drop. Tab in the drag cycles
+/// it ([`DragSwitch::cycle`]); the window's strip shows it and sets it by hovering ([`DragSwitch::select`]).
+pub struct DragSwitch {
+    options: Vec<Option<DragTransform>>,
+    selected: std::sync::atomic::AtomicUsize,
+    on_change: std::sync::Mutex<Option<Listener>>,
+}
+
+impl DragSwitch {
+    /// A switch over `transforms`, on the plain files to begin with.
+    pub fn new(transforms: Vec<DragTransform>) -> std::sync::Arc<Self> {
+        let mut options = vec![None];
+        options.extend(transforms.into_iter().map(Some));
+        std::sync::Arc::new(Self {
+            options,
+            selected: std::sync::atomic::AtomicUsize::new(0),
+            on_change: std::sync::Mutex::new(None),
+        })
+    }
+
+    /// Every choice: the plain files (`None`), then the transforms.
+    pub fn options(&self) -> &[Option<DragTransform>] {
+        &self.options
+    }
+
+    /// The index of what a drop delivers now.
+    pub fn selected(&self) -> usize {
+        self.selected.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The transform a drop applies now; `None` for the files as they are.
+    pub fn current(&self) -> Option<&DragTransform> {
+        self.options.get(self.selected()).and_then(Option::as_ref)
+    }
+
+    /// Delivers option `index`. False (nothing changed) when there is no such option or it is the one chosen.
+    pub fn select(&self, index: usize) -> bool {
+        if index >= self.options.len() || self.selected.swap(index, std::sync::atomic::Ordering::Relaxed) == index {
+            return false;
+        }
+        let listener = self.on_change.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if let Some(listener) = listener {
+            listener(index);
+        }
+        true
+    }
+
+    /// The next choice (the previous one when `back`), round to the plain files again.
+    pub fn cycle(&self, back: bool) {
+        let n = self.options.len();
+        let now = self.selected();
+        self.select(if back { (now + n - 1) % n } else { (now + 1) % n });
+    }
+
+    /// Tells `listener` (from any thread) the index chosen whenever it changes.
+    pub fn on_change(&self, listener: impl Fn(usize) + Send + Sync + 'static) {
+        *self.on_change.lock().unwrap_or_else(|e| e.into_inner()) = Some(std::sync::Arc::new(listener));
+    }
+}
+
 /// Losslessly strips metadata segments from JPEG (`jpg`/`jpeg`) or PNG (`png`) byte streams in memory.
 pub fn strip_metadata_bytes(ext: &str, input: &[u8]) -> Result<Vec<u8>, String> {
     match ext.to_ascii_lowercase().as_str() {
@@ -269,15 +381,48 @@ pub async fn start_virtual_drag(
     }
 }
 
+/// Starts the drag-out of `paths` as the shell does it (the files themselves, with its drag card) and lets
+/// `switch` change what a drop delivers while it runs: Tab cycles it (QueryContinueDrag reads the key, since
+/// OLE's modal loop takes keyboard messages away from every window). Resolves like `shell::start_drag`:
+/// "copy", "move", "link", "none", or "released" when the button was already up.
+pub async fn start_switchable_drag(
+    window: crate::host::Window,
+    paths: Vec<String>,
+    copy_only: bool,
+    switch: std::sync::Arc<DragSwitch>,
+) -> Result<String, String> {
+    if paths.is_empty() {
+        return Err("Nothing selected to drag".to_string());
+    }
+    let owner = crate::shell::owner(&window);
+    #[cfg(windows)]
+    {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        window
+            .run_on_main_thread(move || {
+                let _ = tx.send(imp::drag_switchable(owner, paths, copy_only, switch));
+            })
+            .map_err(|e| format!("Couldn't schedule drag on UI thread: {e}"))?;
+        rx.await.map_err(|_| "Drag cancelled before starting".to_string())?
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (owner, paths, copy_only, switch);
+        Err("Dragging is only available on Windows".to_string())
+    }
+}
+
 #[cfg(windows)]
 mod imp {
-    use super::{materialize_bytes, transformed_filename, DragTransform};
+    use super::{materialize_bytes, transformed_filename, DragSwitch, DragTransform};
+    use std::cell::Cell;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, OnceLock};
     use windows::core::{implement, ComObject, Ref, BOOL, HRESULT, PCWSTR};
     use windows::Win32::Foundation::{
-        GlobalFree, DV_E_FORMATETC, DV_E_LINDEX, DV_E_TYMED, E_NOTIMPL, E_POINTER, HGLOBAL, HWND,
-        OLE_E_ADVISENOTSUPPORTED, S_FALSE, S_OK,
+        GlobalFree, DATA_S_SAMEFORMATETC, DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, DRAGDROP_S_USEDEFAULTCURSORS,
+        DV_E_FORMATETC, DV_E_LINDEX, DV_E_TYMED, E_NOTIMPL, E_POINTER, HGLOBAL, HWND, OLE_E_ADVISENOTSUPPORTED,
+        S_FALSE, S_OK,
     };
     use windows::Win32::System::Com::StructuredStorage::CreateStreamOnHGlobal;
     use windows::Win32::System::Com::{
@@ -286,9 +431,14 @@ mod imp {
     };
     use windows::Win32::System::DataExchange::RegisterClipboardFormatW;
     use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE, GMEM_ZEROINIT};
-    use windows::Win32::System::Ole::{IDropSource, DROPEFFECT_COPY};
+    use windows::Win32::System::Ole::{
+        IDropSource, IDropSource_Impl, CF_HDROP, DROPEFFECT, DROPEFFECT_COPY, DROPEFFECT_LINK, DROPEFFECT_MOVE,
+    };
+    use windows::Win32::System::SystemServices::MODIFIERKEYS_FLAGS;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_RBUTTON, VK_TAB};
     use windows::Win32::UI::Shell::{
-        SHDoDragDrop, CFSTR_FILECONTENTS, CFSTR_FILEDESCRIPTORW, FD_UNICODE, FILEDESCRIPTORW, FILEGROUPDESCRIPTORW,
+        SHDoDragDrop, CFSTR_FILECONTENTS, CFSTR_FILEDESCRIPTORW, CFSTR_FILENAMEA, CFSTR_FILENAMEW, CFSTR_SHELLIDLIST,
+        FD_UNICODE, FILEDESCRIPTORW, FILEGROUPDESCRIPTORW,
     };
 
     #[derive(Clone)]
@@ -582,6 +732,286 @@ mod imp {
         }
     }
 
+    // ---- The drag whose delivery changes while it runs -------------------------------------------------
+
+    /// The formats that name the dragged files themselves. While a transform is chosen they are hidden, so a
+    /// target takes the transformed bytes (the file descriptor and contents) and not the originals.
+    fn file_formats() -> [u16; 4] {
+        // SAFETY: registering the shell's standard clipboard format names.
+        unsafe {
+            [
+                CF_HDROP.0,
+                RegisterClipboardFormatW(CFSTR_SHELLIDLIST) as u16,
+                RegisterClipboardFormatW(CFSTR_FILENAMEW) as u16,
+                RegisterClipboardFormatW(CFSTR_FILENAMEA) as u16,
+            ]
+        }
+    }
+
+    /// Every format `en` lists.
+    fn collect_formats(en: &IEnumFORMATETC) -> Vec<FORMATETC> {
+        let mut out = Vec::new();
+        loop {
+            let mut one = [FORMATETC::default()];
+            let mut got = 0u32;
+            // SAFETY: a one-element buffer and a fetched-count out-pointer, both valid for the call.
+            let hr = unsafe { en.Next(&mut one, Some(&mut got as *mut u32)) };
+            if hr != S_OK || got != 1 {
+                break;
+            }
+            out.push(one[0]);
+        }
+        out
+    }
+
+    /// The shell's data object for the files (`inner`) and one virtual data object per transform. Every call
+    /// goes to what `switch` has chosen now; the drag-image and drop-description formats the shell's helpers
+    /// keep on the data go to `inner` whichever is chosen.
+    #[implement(IDataObject)]
+    struct SwitchData {
+        inner: IDataObject,
+        virtuals: Vec<IDataObject>,
+        switch: Arc<DragSwitch>,
+        blocked: [u16; 4],
+    }
+
+    impl SwitchData {
+        fn virtual_now(&self) -> Option<&IDataObject> {
+            self.switch.selected().checked_sub(1).and_then(|i| self.virtuals.get(i))
+        }
+
+        fn is_file_format(&self, cf: u16) -> bool {
+            self.blocked.contains(&cf)
+        }
+    }
+
+    impl IDataObject_Impl for SwitchData_Impl {
+        fn GetData(&self, pformatetcin: *const FORMATETC) -> windows::core::Result<STGMEDIUM> {
+            if pformatetcin.is_null() {
+                return Err(E_POINTER.into());
+            }
+            // SAFETY: non-null caller pointer.
+            let req = unsafe { *pformatetcin };
+            let Some(chosen) = self.virtual_now() else {
+                // SAFETY: the shell's own data object, asked as OLE asked us.
+                return unsafe { self.inner.GetData(&req) };
+            };
+            // SAFETY: as above.
+            match unsafe { chosen.GetData(&req) } {
+                Err(e) if e.code() == DV_E_FORMATETC && !self.is_file_format(req.cfFormat) => {
+                    // SAFETY: as above.
+                    unsafe { self.inner.GetData(&req) }
+                }
+                other => other,
+            }
+        }
+
+        fn GetDataHere(&self, pformatetc: *const FORMATETC, pmedium: *mut STGMEDIUM) -> windows::core::Result<()> {
+            if pformatetc.is_null() || pmedium.is_null() {
+                return Err(E_POINTER.into());
+            }
+            // SAFETY: non-null caller pointer.
+            let req = unsafe { *pformatetc };
+            if self.virtual_now().is_some() && self.is_file_format(req.cfFormat) {
+                return Err(E_NOTIMPL.into());
+            }
+            // SAFETY: the pointers are the caller's own, passed straight on.
+            unsafe { self.inner.GetDataHere(pformatetc, pmedium) }
+        }
+
+        fn QueryGetData(&self, pformatetcin: *const FORMATETC) -> HRESULT {
+            if pformatetcin.is_null() {
+                return E_POINTER;
+            }
+            // SAFETY: non-null caller pointer.
+            let req = unsafe { *pformatetcin };
+            let Some(chosen) = self.virtual_now() else {
+                // SAFETY: the shell's own data object.
+                return unsafe { self.inner.QueryGetData(&req) };
+            };
+            // SAFETY: as above.
+            let hr = unsafe { chosen.QueryGetData(&req) };
+            if hr == S_OK {
+                S_OK
+            } else if self.is_file_format(req.cfFormat) {
+                DV_E_FORMATETC
+            } else {
+                // SAFETY: as above.
+                unsafe { self.inner.QueryGetData(&req) }
+            }
+        }
+
+        fn GetCanonicalFormatEtc(&self, _: *const FORMATETC, pformatetcout: *mut FORMATETC) -> HRESULT {
+            if !pformatetcout.is_null() {
+                // SAFETY: caller out-pointer.
+                unsafe { (*pformatetcout).ptd = std::ptr::null_mut() };
+            }
+            DATA_S_SAMEFORMATETC
+        }
+
+        fn SetData(
+            &self,
+            pformatetc: *const FORMATETC,
+            pmedium: *const STGMEDIUM,
+            frelease: BOOL,
+        ) -> windows::core::Result<()> {
+            if pformatetc.is_null() || pmedium.is_null() {
+                return Err(E_POINTER.into());
+            }
+            // The drag image and the drop description the shell's helpers keep on the data live on its own object.
+            // SAFETY: the caller's pointers, passed straight on.
+            unsafe { self.inner.SetData(pformatetc, pmedium, frelease.as_bool()) }
+        }
+
+        fn EnumFormatEtc(&self, dwdirection: u32) -> windows::core::Result<IEnumFORMATETC> {
+            // SAFETY: the shell's own data object.
+            let plain = unsafe { self.inner.EnumFormatEtc(dwdirection) };
+            let (Some(chosen), true) = (self.virtual_now(), dwdirection == DATADIR_GET.0 as u32) else {
+                return plain;
+            };
+            // What the virtual files offer, then whatever else the shell's data carries but the file formats.
+            let mut formats = Vec::new();
+            // SAFETY: the virtual data object made here.
+            if let Ok(en) = unsafe { chosen.EnumFormatEtc(dwdirection) } {
+                formats.extend(collect_formats(&en));
+            }
+            if let Ok(en) = &plain {
+                formats.extend(
+                    collect_formats(en)
+                        .into_iter()
+                        .filter(|f| !self.is_file_format(f.cfFormat)),
+                );
+            }
+            let enumerator: IEnumFORMATETC = ComObject::new(FormatEnum {
+                formats,
+                pos: AtomicUsize::new(0),
+            })
+            .into_interface();
+            Ok(enumerator)
+        }
+
+        fn DAdvise(&self, _: *const FORMATETC, _: u32, _: Ref<IAdviseSink>) -> windows::core::Result<u32> {
+            Err(OLE_E_ADVISENOTSUPPORTED.into())
+        }
+
+        fn DUnadvise(&self, _: u32) -> windows::core::Result<()> {
+            Err(OLE_E_ADVISENOTSUPPORTED.into())
+        }
+
+        fn EnumDAdvise(&self) -> windows::core::Result<windows::Win32::System::Com::IEnumSTATDATA> {
+            Err(OLE_E_ADVISENOTSUPPORTED.into())
+        }
+    }
+
+    /// The drag's drop source: it ends the drag as the default source does (Escape cancels, the button's release
+    /// drops) and reads Tab for the switch. OLE's modal loop takes the keyboard messages away from every window and
+    /// calls `QueryContinueDrag` on each key event and mouse move, so that call is where Tab can be read; the key
+    /// state OLE passes holds only modifiers and buttons, so the key itself is asked of the system.
+    #[implement(IDropSource)]
+    struct Source {
+        switch: Arc<DragSwitch>,
+        tab_was_down: Cell<bool>,
+    }
+
+    /// MK_LBUTTON and MK_RBUTTON in the key state OLE passes.
+    const MK_BUTTONS: u32 = 0x01 | 0x02;
+    const MK_SHIFT: u32 = 0x04;
+
+    impl IDropSource_Impl for Source_Impl {
+        fn QueryContinueDrag(&self, fescapepressed: BOOL, grfkeystate: MODIFIERKEYS_FLAGS) -> HRESULT {
+            if fescapepressed.as_bool() {
+                return DRAGDROP_S_CANCEL;
+            }
+            if grfkeystate.0 & MK_BUTTONS == 0 {
+                return DRAGDROP_S_DROP;
+            }
+            // SAFETY: reads a key's state; the low bit says it went down since the last call, which catches a tap
+            // that was over before this call came.
+            let state = unsafe { GetAsyncKeyState(VK_TAB.0 as i32) };
+            let down = state < 0 || state & 1 != 0;
+            if down && !self.tab_was_down.get() {
+                self.switch.cycle(grfkeystate.0 & MK_SHIFT != 0);
+            }
+            self.tab_was_down.set(state < 0);
+            S_OK
+        }
+
+        fn GiveFeedback(&self, _: DROPEFFECT) -> HRESULT {
+            DRAGDROP_S_USEDEFAULTCURSORS
+        }
+    }
+
+    /// Runs on the UI thread, like `shell::start_drag`: the shell's drag of `paths` that `switch` can turn into
+    /// a transformed one.
+    pub(super) fn drag_switchable(
+        owner: isize,
+        paths: Vec<String>,
+        copy_only: bool,
+        switch: Arc<DragSwitch>,
+    ) -> Result<String, String> {
+        // SAFETY: reading the mouse buttons' state.
+        let held = unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) < 0 || GetAsyncKeyState(VK_RBUTTON.0 as i32) < 0 };
+        if !held {
+            // Released while this request was on its way: dragging now would drop at once, under the pointer.
+            return Ok("released".into());
+        }
+        let inner = crate::shell::drag_data(&paths)?;
+        let virtuals = switch
+            .options()
+            .iter()
+            .flatten()
+            .map(|transform| make_data_object(paths.clone(), transform.clone()))
+            .collect();
+        let data: IDataObject = ComObject::new(SwitchData {
+            inner,
+            virtuals,
+            switch: switch.clone(),
+            blocked: file_formats(),
+        })
+        .into_interface();
+        let source: IDropSource = ComObject::new(Source {
+            switch,
+            tab_was_down: Cell::new(false),
+        })
+        .into_interface();
+        let allowed = if copy_only {
+            DROPEFFECT_COPY
+        } else {
+            DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK
+        };
+        let hwnd = (owner != 0).then_some(HWND(owner as *mut std::ffi::c_void));
+        // SAFETY: modal SHDoDragDrop on the UI thread's message loop, started through `run_on_main_thread`.
+        let effect = unsafe { SHDoDragDrop(hwnd, &data, Some(&source), allowed) }.map_err(|e| e.message())?;
+        Ok(if effect.0 & DROPEFFECT_MOVE.0 != 0 {
+            "move"
+        } else if effect.0 & DROPEFFECT_COPY.0 != 0 {
+            "copy"
+        } else if effect.0 & DROPEFFECT_LINK.0 != 0 {
+            "link"
+        } else {
+            "none"
+        }
+        .to_string())
+    }
+
+    /// Tests only: the switching data object over `inner`, as a drag would hold it.
+    #[cfg(test)]
+    pub(super) fn make_switch_object(inner: IDataObject, paths: Vec<String>, switch: Arc<DragSwitch>) -> IDataObject {
+        let virtuals = switch
+            .options()
+            .iter()
+            .flatten()
+            .map(|t| make_data_object(paths.clone(), t.clone()))
+            .collect();
+        ComObject::new(SwitchData {
+            inner,
+            virtuals,
+            switch,
+            blocked: file_formats(),
+        })
+        .into_interface()
+    }
+
     pub(super) fn make_data_object(paths: Vec<String>, transform: DragTransform) -> IDataObject {
         ComObject::new(VirtualDataObject::new(paths, transform)).into_interface()
     }
@@ -747,5 +1177,119 @@ mod tests {
             ReleaseStgMedium(&mut cont_med);
         }
         let _ = std::fs::remove_file(&path);
+    }
+
+    fn paths(list: &[&str]) -> Vec<String> {
+        list.iter().map(|p| p.to_string()).collect()
+    }
+
+    #[test]
+    fn pictures_and_videos_offer_their_own_transforms() {
+        assert_eq!(
+            transforms_for(&paths(&["C:\\p\\a.JPG", "C:\\p\\b.png"])),
+            vec![DragTransform::StripMetadata, DragTransform::ConvertWebp]
+        );
+        // A GIF can't be cleaned losslessly, but it can be a WebP.
+        assert_eq!(
+            transforms_for(&paths(&["C:\\p\\a.jpg", "C:\\p\\b.gif"])),
+            vec![DragTransform::ConvertWebp]
+        );
+        assert_eq!(
+            transforms_for(&paths(&["C:\\v\\clip.MP4"])),
+            vec![DragTransform::ShrinkUnderMb(10), DragTransform::ExtractAudioMp3]
+        );
+        // Mixed, other kinds, nothing and too many offer none: the drag stays the plain one.
+        assert!(transforms_for(&paths(&["C:\\p\\a.jpg", "C:\\v\\clip.mp4"])).is_empty());
+        assert!(transforms_for(&paths(&["C:\\d\\notes.txt"])).is_empty());
+        assert!(transforms_for(&[]).is_empty());
+        let many: Vec<String> = (0..=MAX_TRANSFORMED).map(|i| format!("C:\\p\\{i}.jpg")).collect();
+        assert!(transforms_for(&many).is_empty());
+        // An Arabic name is no different.
+        assert_eq!(transforms_for(&paths(&["C:\\p\\صورة.jpg"])).len(), 2);
+    }
+
+    #[test]
+    fn the_switch_starts_plain_cycles_both_ways_and_tells_its_listener() {
+        let switch = DragSwitch::new(vec![DragTransform::StripMetadata, DragTransform::ConvertWebp]);
+        assert_eq!(
+            (switch.selected(), switch.options().len(), switch.current()),
+            (0, 3, None)
+        );
+        let heard = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = heard.clone();
+        switch.on_change(move |i| sink.lock().unwrap().push(i));
+        switch.cycle(false);
+        assert_eq!(switch.current(), Some(&DragTransform::StripMetadata));
+        switch.cycle(false);
+        switch.cycle(false);
+        assert_eq!(switch.selected(), 0, "round to the plain files again");
+        switch.cycle(true);
+        assert_eq!(
+            switch.current(),
+            Some(&DragTransform::ConvertWebp),
+            "Shift+Tab goes back"
+        );
+        // Choosing what is already chosen, or what isn't there, changes and tells nothing.
+        assert!(!switch.select(2));
+        assert!(!switch.select(9));
+        assert!(switch.select(1));
+        assert_eq!(*heard.lock().unwrap(), vec![1, 2, 0, 2, 1]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_data_object_follows_the_switch_between_the_files_and_the_transformed_copy() {
+        use windows::Win32::System::Com::{DVASPECT_CONTENT, FORMATETC, TYMED_HGLOBAL, TYMED_ISTREAM};
+        use windows::Win32::System::DataExchange::RegisterClipboardFormatW;
+        use windows::Win32::System::Ole::{OleInitialize, CF_HDROP};
+        use windows::Win32::UI::Shell::{CFSTR_FILECONTENTS, CFSTR_FILEDESCRIPTORW};
+
+        // SAFETY: OLE on this test's thread, as the shell's data objects need.
+        unsafe {
+            let _ = OleInitialize(None);
+        }
+        let file = std::env::temp_dir().join(format!("glint-switch-test-{}.png", std::process::id()));
+        std::fs::write(&file, b"png").unwrap();
+        let path = file.to_string_lossy().into_owned();
+        let inner = crate::shell::drag_data(std::slice::from_ref(&path)).expect("the shell's data object");
+        let switch = DragSwitch::new(vec![DragTransform::StripMetadata]);
+        let data = imp::make_switch_object(inner, vec![path], switch.clone());
+        let format = |cf: u16, lindex: i32, tymed: i32| FORMATETC {
+            cfFormat: cf,
+            ptd: std::ptr::null_mut(),
+            dwAspect: DVASPECT_CONTENT.0,
+            lindex,
+            tymed: tymed as u32,
+        };
+        // SAFETY: querying our own in-process data object with valid formats.
+        unsafe {
+            let descriptor = RegisterClipboardFormatW(CFSTR_FILEDESCRIPTORW) as u16;
+            let contents = RegisterClipboardFormatW(CFSTR_FILECONTENTS) as u16;
+            let has = |cf: u16, lindex: i32, tymed: i32| data.QueryGetData(&format(cf, lindex, tymed)).is_ok();
+            let listed = || {
+                let en = data.EnumFormatEtc(1).unwrap();
+                let mut seen = Vec::new();
+                let mut one = [FORMATETC::default()];
+                let mut got = 0u32;
+                while en.Next(&mut one, Some(&mut got as *mut u32)).0 == 0 && got == 1 {
+                    seen.push(one[0].cfFormat);
+                }
+                seen
+            };
+            // Plain: the files, no virtual copy.
+            assert!(has(CF_HDROP.0, -1, TYMED_HGLOBAL.0));
+            assert!(listed().contains(&CF_HDROP.0));
+            // Transformed: the copy, and the files hidden so a target can't take them instead.
+            assert!(switch.select(1));
+            assert!(!has(CF_HDROP.0, -1, TYMED_HGLOBAL.0));
+            assert!(has(descriptor, -1, TYMED_HGLOBAL.0) && has(contents, 0, TYMED_ISTREAM.0));
+            assert!(data.GetData(&format(CF_HDROP.0, -1, TYMED_HGLOBAL.0)).is_err());
+            let seen = listed();
+            assert!(seen.contains(&descriptor) && seen.contains(&contents) && !seen.contains(&CF_HDROP.0));
+            // And back.
+            assert!(switch.select(0));
+            assert!(has(CF_HDROP.0, -1, TYMED_HGLOBAL.0));
+        }
+        let _ = std::fs::remove_file(&file);
     }
 }

@@ -5,24 +5,45 @@
 
 use crate::archive;
 use crate::fsx::blocking;
-use serde::Serialize;
 use crate::host::Window;
+use serde::Serialize;
 
 pub enum FileOp {
-    Copy { sources: Vec<String>, dest: String },
-    Move { sources: Vec<String>, dest: String },
-    Delete { paths: Vec<String>, permanent: bool, confirm: bool },
-    Rename { path: String, name: String },
+    Copy {
+        sources: Vec<String>,
+        dest: String,
+    },
+    Move {
+        sources: Vec<String>,
+        dest: String,
+    },
+    Delete {
+        paths: Vec<String>,
+        permanent: bool,
+        confirm: bool,
+    },
+    Rename {
+        path: String,
+        name: String,
+    },
     /// Undoing a move: each item back into `folder` as `name`.
-    MoveBack { items: Vec<Back> },
+    MoveBack {
+        items: Vec<Back>,
+    },
     /// Undoing a delete, or Restore in the Recycle Bin: its items (as [`Done::to`] names them) back
     /// where they came from, into their folder made again if it's gone.
-    Restore { items: Vec<Back> },
+    Restore {
+        items: Vec<Back>,
+    },
     /// Delete for good in the Recycle Bin: its items, by their `$R` paths, with their `$I` records
     /// (the app has asked first, naming them as they were).
-    Purge { paths: Vec<String> },
+    Purge {
+        paths: Vec<String>,
+    },
     /// Sync in compare panes: each item copied into `folder` as `name`, each to a folder of its own.
-    CopyInto { items: Vec<Back> },
+    CopyInto {
+        items: Vec<Back>,
+    },
 }
 
 pub struct Back {
@@ -71,10 +92,11 @@ where
     F: FnOnce() -> Result<T, String> + Send + 'static,
 {
     let (tx, rx) = std::sync::mpsc::channel();
-    window.run_on_main_thread(move || {
-        let _ = tx.send(f());
-    })
-    .map_err(|e| e.to_string())?;
+    window
+        .run_on_main_thread(move || {
+            let _ = tx.send(f());
+        })
+        .map_err(|e| e.to_string())?;
     blocking(move || rx.recv().map_err(|e| e.to_string())?).await
 }
 
@@ -93,7 +115,9 @@ fn clipboard_pause(waited: std::time::Duration, last: Option<std::time::Duration
     if waited >= CLIPBOARD_PATIENCE {
         return None;
     }
-    let pause = last.map_or(Duration::from_millis(25), |last| (last * 2).min(Duration::from_millis(200)));
+    let pause = last.map_or(Duration::from_millis(25), |last| {
+        (last * 2).min(Duration::from_millis(200))
+    });
     Some(pause.min(CLIPBOARD_PATIENCE - waited))
 }
 
@@ -149,10 +173,14 @@ pub async fn file_op(window: Window, op: FileOp) -> Result<Performed, String> {
     let owner = owner(&window);
     blocking(move || {
         let touches_archive = match &op {
-            FileOp::Copy { sources, dest } | FileOp::Move { sources, dest } => archive::is_read_only(dest) || sources.iter().any(|s| archive::is_inside(s)),
+            FileOp::Copy { sources, dest } | FileOp::Move { sources, dest } => {
+                archive::is_read_only(dest) || sources.iter().any(|s| archive::is_inside(s))
+            }
             FileOp::Delete { paths, .. } | FileOp::Purge { paths } => paths.iter().any(|p| archive::is_inside(p)),
             FileOp::Rename { path, .. } => archive::is_inside(path),
-            FileOp::MoveBack { items } | FileOp::Restore { items } | FileOp::CopyInto { items } => items.iter().any(|b| archive::is_inside(&b.path) || archive::is_read_only(&b.folder)),
+            FileOp::MoveBack { items } | FileOp::Restore { items } | FileOp::CopyInto { items } => items
+                .iter()
+                .any(|b| archive::is_inside(&b.path) || archive::is_read_only(&b.folder)),
         };
         if touches_archive {
             return Err(crate::fsx::READ_ONLY.into());
@@ -165,7 +193,9 @@ pub async fn file_op(window: Window, op: FileOp) -> Result<Performed, String> {
             FileOp::Move { sources, dest } => shadow(dest) || sources.iter().any(|s| shadow(s)),
             FileOp::Delete { paths, .. } | FileOp::Purge { paths } => paths.iter().any(|p| shadow(p)),
             FileOp::Rename { path, .. } => shadow(path),
-            FileOp::MoveBack { items } | FileOp::Restore { items } | FileOp::CopyInto { items } => items.iter().any(|b| shadow(&b.folder) || (!matches!(op, FileOp::CopyInto { .. }) && shadow(&b.path))),
+            FileOp::MoveBack { items } | FileOp::Restore { items } | FileOp::CopyInto { items } => items
+                .iter()
+                .any(|b| shadow(&b.folder) || (!matches!(op, FileOp::CopyInto { .. }) && shadow(&b.path))),
         };
         if changes_shadow {
             return Err("Previous versions are read-only: copy what you need out of them".into());
@@ -198,7 +228,14 @@ pub async fn file_op(window: Window, op: FileOp) -> Result<Performed, String> {
 
 /// Moves `paths` to the Recycle Bin without asking first (pictures Convert replaced): where each went.
 pub(crate) fn recycle(owner: isize, paths: Vec<String>) -> Result<Performed, String> {
-    imp::file_op(owner, FileOp::Delete { paths, permanent: false, confirm: false })
+    imp::file_op(
+        owner,
+        FileOp::Delete {
+            paths,
+            permanent: false,
+            confirm: false,
+        },
+    )
 }
 
 /// A move, rename or Undo an AI agent asked for (and you allowed: agents.rs), through Windows' file engine.
@@ -213,7 +250,11 @@ pub(crate) fn restore(items: Vec<Back>) -> Result<Performed, String> {
 
 /// The files on the clipboard (copied or cut), if any; what extracted copies may not be deleted for.
 pub fn clipboard_paths() -> Vec<String> {
-    imp::clipboard_files(0).ok().flatten().map(|files| files.paths).unwrap_or_default()
+    imp::clipboard_files(0)
+        .ok()
+        .flatten()
+        .map(|files| files.paths)
+        .unwrap_or_default()
 }
 
 /// Puts files on the clipboard the way Explorer does, so they can be pasted there too.
@@ -227,7 +268,6 @@ pub async fn clipboard_get_files(window: Window) -> Result<Option<ClipboardFiles
     let owner = owner(&window);
     on_main_clipboard(&window, move || imp::clipboard_files(owner)).await
 }
-
 
 /// What can be pasted as a file when the clipboard holds no files.
 pub enum Clip {
@@ -291,8 +331,18 @@ fn dib_pixels_at(dib: &[u8]) -> Option<usize> {
     let (bits, compression, used) = (u16_at(14)?, u32_at(16)?, u32_at(32)? as usize);
     let image = (width.unsigned_abs() as usize * bits as usize).div_ceil(32) * 4 * height.unsigned_abs() as usize;
     let repeated = header >= 108 && dib.get(header..header + 12) == dib.get(40..52) && dib.len() >= header + 12 + image;
-    let masks = if compression == 3 && (header == 40 || repeated) { 12 } else { 0 };
-    let palette = if used > 0 { used } else if bits <= 8 { 1 << bits } else { 0 };
+    let masks = if compression == 3 && (header == 40 || repeated) {
+        12
+    } else {
+        0
+    };
+    let palette = if used > 0 {
+        used
+    } else if bits <= 8 {
+        1 << bits
+    } else {
+        0
+    };
     Some(header + masks + 4 * palette)
 }
 
@@ -384,6 +434,12 @@ pub async fn start_drag(window: Window, paths: Vec<String>, copy_only: Option<bo
     on_main(&window, move || imp::start_drag(owner, &paths, copy_only)).await
 }
 
+/// The shell's data object for `paths`, with the drag card (windows only; UI thread).
+#[cfg(windows)]
+pub(crate) fn drag_data(paths: &[String]) -> Result<windows::Win32::System::Com::IDataObject, String> {
+    imp::drag_data(paths)
+}
+
 /// Opens Windows Terminal in `path`, or a Command Prompt where Terminal isn't installed.
 pub async fn open_terminal(path: String) -> Result<(), String> {
     blocking(move || imp::open_terminal(&path)).await
@@ -444,16 +500,16 @@ mod imp {
     use std::time::Duration;
     use windows::core::{implement, w, ComObject, Interface, Ref, BOOL, GUID, HRESULT, HSTRING, PCWSTR};
     use windows::Win32::Foundation::{
-        GlobalFree, COLORREF, ERROR_ACCESS_DENIED, ERROR_CANCELLED, ERROR_FILE_NOT_FOUND, ERROR_NO_ASSOCIATION, ERROR_PATH_NOT_FOUND, HANDLE, HGLOBAL,
-        HWND, LPARAM, POINT, SIZE,
+        GlobalFree, COLORREF, ERROR_ACCESS_DENIED, ERROR_CANCELLED, ERROR_FILE_NOT_FOUND, ERROR_NO_ASSOCIATION,
+        ERROR_PATH_NOT_FOUND, HANDLE, HGLOBAL, HWND, LPARAM, POINT, SIZE,
     };
     use windows::Win32::Graphics::Gdi::{
-        CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDIBits, GetObjectW, BITMAP, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
-        DIB_RGB_COLORS, HBITMAP, HGDIOBJ,
+        CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDIBits, GetObjectW, BITMAP, BITMAPINFO,
+        BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP, HGDIOBJ,
     };
     use windows::Win32::System::Com::{
-        CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, IBindCtx, IDataObject, IPersistFile, CLSCTX_ALL, CLSCTX_INPROC_SERVER,
-        COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, STGM_READ,
+        CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, IBindCtx, IDataObject, IPersistFile,
+        CLSCTX_ALL, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, STGM_READ,
     };
     use windows::Win32::System::DataExchange::{
         CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
@@ -461,19 +517,22 @@ mod imp {
     };
     use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE};
     use windows::Win32::System::Ole::{IDropSource, CF_HDROP, DROPEFFECT_COPY, DROPEFFECT_LINK, DROPEFFECT_MOVE};
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_RBUTTON};
     use windows::Win32::UI::Shell::Common::ITEMIDLIST;
     use windows::Win32::UI::Shell::{
-        DragQueryFileW, FileOperation, IDragSourceHelper2, IFileOperation, IFileOperationProgressSink, IFileOperationProgressSink_Impl,
-        ILCreateFromPathW, ILFree, IShellItem, IShellItemImageFactory, IShellLinkW, SIGDN, SIGDN_DESKTOPABSOLUTEPARSING, SIGDN_FILESYSPATH,
-        SHCreateItemFromParsingName, SHCreateShellItemArrayFromIDLists, SHDRAGIMAGE, SHDoDragDrop, SHObjectProperties,
-        SHAddToRecentDocs, SHOpenWithDialog, ShellExecuteExW, ShellLink, BHID_DataObject, SHARD_PATHW, DROPFILES, DSH_ALLOWDROPDESCRIPTIONTEXT, FILEOPERATION_FLAGS,
-        FOFX_RECYCLEONDELETE, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOCONFIRMMKDIR, FOF_RENAMEONCOLLISION,
-        FOF_WANTNUKEWARNING, HDROP, OAIF_ALLOW_REGISTRATION, OAIF_EXEC, OAIF_REGISTER_EXT, OPENASINFO, SEE_MASK_FLAG_NO_UI, SEE_MASK_INVOKEIDLIST,
-        SEE_MASK_NOASYNC, SHELLEXECUTEINFOW, SHOP_FILEPATH, SIIGBF_ICONONLY, SIIGBF_INCACHEONLY,
+        BHID_DataObject, DragQueryFileW, FileOperation, IDragSourceHelper2, IFileOperation, IFileOperationProgressSink,
+        IFileOperationProgressSink_Impl, ILCreateFromPathW, ILFree, IShellItem, IShellItemImageFactory, IShellLinkW,
+        SHAddToRecentDocs, SHCreateItemFromParsingName, SHCreateShellItemArrayFromIDLists, SHDoDragDrop,
+        SHObjectProperties, SHOpenWithDialog, ShellExecuteExW, ShellLink, DROPFILES, DSH_ALLOWDROPDESCRIPTIONTEXT,
+        FILEOPERATION_FLAGS, FOFX_RECYCLEONDELETE, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOCONFIRMMKDIR,
+        FOF_RENAMEONCOLLISION, FOF_WANTNUKEWARNING, HDROP, OAIF_ALLOW_REGISTRATION, OAIF_EXEC, OAIF_REGISTER_EXT,
+        OPENASINFO, SEE_MASK_FLAG_NO_UI, SEE_MASK_INVOKEIDLIST, SEE_MASK_NOASYNC, SHARD_PATHW, SHDRAGIMAGE,
+        SHELLEXECUTEINFOW, SHOP_FILEPATH, SIGDN, SIGDN_DESKTOPABSOLUTEPARSING, SIGDN_FILESYSPATH, SIIGBF_ICONONLY,
+        SIIGBF_INCACHEONLY,
     };
-    use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_RBUTTON};
     use windows::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GetSystemMetrics, GetWindowThreadProcessId, IsWindowVisible, SetForegroundWindow, SM_SWAPBUTTON, SW_SHOWNORMAL,
+        EnumWindows, GetSystemMetrics, GetWindowThreadProcessId, IsWindowVisible, SetForegroundWindow, SM_SWAPBUTTON,
+        SW_SHOWNORMAL,
     };
 
     /// HRESULT for "cancelled" from the copy engine's progress dialog.
@@ -529,7 +588,9 @@ mod imp {
     /// Runs `f` on a fresh single-threaded COM apartment, which the shell's dialogs need.
     pub fn in_sta<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
         std::thread::spawn(move || unsafe {
-            CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE).ok().map_err(message)?;
+            CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE)
+                .ok()
+                .map_err(message)?;
             let result = f();
             CoUninitialize();
             result
@@ -539,13 +600,16 @@ mod imp {
     }
 
     unsafe fn item(path: &str) -> Result<IShellItem, String> {
-        SHCreateItemFromParsingName(&HSTRING::from(path), None::<&IBindCtx>).map_err(|e| format!("{path}: {}", e.message()))
+        SHCreateItemFromParsingName(&HSTRING::from(path), None::<&IBindCtx>)
+            .map_err(|e| format!("{path}: {}", e.message()))
     }
 
     fn parent_is(path: &str, dir: &str) -> bool {
-        Path::new(path)
-            .parent()
-            .is_some_and(|p| p.to_string_lossy().trim_end_matches('\\').eq_ignore_ascii_case(dir.trim_end_matches('\\')))
+        Path::new(path).parent().is_some_and(|p| {
+            p.to_string_lossy()
+                .trim_end_matches('\\')
+                .eq_ignore_ascii_case(dir.trim_end_matches('\\'))
+        })
     }
 
     pub fn file_op(owner: isize, op: FileOp) -> Result<Performed, String> {
@@ -566,7 +630,10 @@ mod imp {
                 return;
             }
             if let Some(from) = item.as_ref().and_then(|i| display(i, SIGDN_FILESYSPATH)) {
-                self.done.borrow_mut().push(Done { from, to: created.as_ref().and_then(|i| display(i, name)) });
+                self.done.borrow_mut().push(Done {
+                    from,
+                    to: created.as_ref().and_then(|i| display(i, name)),
+                });
             }
         }
     }
@@ -582,28 +649,57 @@ mod imp {
         fn PreRenameItem(&self, _: u32, _: Ref<IShellItem>, _: &PCWSTR) -> windows::core::Result<()> {
             Ok(())
         }
-        fn PostRenameItem(&self, _: u32, item: Ref<IShellItem>, _: &PCWSTR, hr: HRESULT, created: Ref<IShellItem>) -> windows::core::Result<()> {
+        fn PostRenameItem(
+            &self,
+            _: u32,
+            item: Ref<IShellItem>,
+            _: &PCWSTR,
+            hr: HRESULT,
+            created: Ref<IShellItem>,
+        ) -> windows::core::Result<()> {
             self.note(item, hr, created, SIGDN_FILESYSPATH);
             Ok(())
         }
         fn PreMoveItem(&self, _: u32, _: Ref<IShellItem>, _: Ref<IShellItem>, _: &PCWSTR) -> windows::core::Result<()> {
             Ok(())
         }
-        fn PostMoveItem(&self, _: u32, item: Ref<IShellItem>, _: Ref<IShellItem>, _: &PCWSTR, hr: HRESULT, created: Ref<IShellItem>) -> windows::core::Result<()> {
+        fn PostMoveItem(
+            &self,
+            _: u32,
+            item: Ref<IShellItem>,
+            _: Ref<IShellItem>,
+            _: &PCWSTR,
+            hr: HRESULT,
+            created: Ref<IShellItem>,
+        ) -> windows::core::Result<()> {
             self.note(item, hr, created, SIGDN_FILESYSPATH);
             Ok(())
         }
         fn PreCopyItem(&self, _: u32, _: Ref<IShellItem>, _: Ref<IShellItem>, _: &PCWSTR) -> windows::core::Result<()> {
             Ok(())
         }
-        fn PostCopyItem(&self, _: u32, item: Ref<IShellItem>, _: Ref<IShellItem>, _: &PCWSTR, hr: HRESULT, created: Ref<IShellItem>) -> windows::core::Result<()> {
+        fn PostCopyItem(
+            &self,
+            _: u32,
+            item: Ref<IShellItem>,
+            _: Ref<IShellItem>,
+            _: &PCWSTR,
+            hr: HRESULT,
+            created: Ref<IShellItem>,
+        ) -> windows::core::Result<()> {
             self.note(item, hr, created, SIGDN_FILESYSPATH);
             Ok(())
         }
         fn PreDeleteItem(&self, _: u32, _: Ref<IShellItem>) -> windows::core::Result<()> {
             Ok(())
         }
-        fn PostDeleteItem(&self, _: u32, item: Ref<IShellItem>, hr: HRESULT, created: Ref<IShellItem>) -> windows::core::Result<()> {
+        fn PostDeleteItem(
+            &self,
+            _: u32,
+            item: Ref<IShellItem>,
+            hr: HRESULT,
+            created: Ref<IShellItem>,
+        ) -> windows::core::Result<()> {
             // A recycled item lives on in the Recycle Bin, which only its shell name reaches.
             self.note(item, hr, created, SIGDN_DESKTOPABSOLUTEPARSING);
             Ok(())
@@ -611,7 +707,16 @@ mod imp {
         fn PreNewItem(&self, _: u32, _: Ref<IShellItem>, _: &PCWSTR) -> windows::core::Result<()> {
             Ok(())
         }
-        fn PostNewItem(&self, _: u32, _: Ref<IShellItem>, _: &PCWSTR, _: &PCWSTR, _: u32, _: HRESULT, _: Ref<IShellItem>) -> windows::core::Result<()> {
+        fn PostNewItem(
+            &self,
+            _: u32,
+            _: Ref<IShellItem>,
+            _: &PCWSTR,
+            _: &PCWSTR,
+            _: u32,
+            _: HRESULT,
+            _: Ref<IShellItem>,
+        ) -> windows::core::Result<()> {
             Ok(())
         }
         fn UpdateProgress(&self, _: u32, _: u32) -> windows::core::Result<()> {
@@ -642,7 +747,12 @@ mod imp {
     fn forget_recycled(recycled: &str) {
         let path = Path::new(recycled);
         let in_bin = recycled.to_ascii_lowercase().contains("\\$recycle.bin\\");
-        if let (true, Some(name)) = (in_bin, path.file_name().and_then(|n| n.to_str()).and_then(|n| n.strip_prefix("$R"))) {
+        if let (true, Some(name)) = (
+            in_bin,
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .and_then(|n| n.strip_prefix("$R")),
+        ) {
             let _ = std::fs::remove_file(path.with_file_name(format!("$I{name}")));
         }
     }
@@ -656,7 +766,9 @@ mod imp {
             fo.SetOwnerWindow(hwnd(owner)).map_err(message)?;
         }
         let track = ComObject::new(Track::default());
-        let cookie = fo.Advise(&track.to_interface::<IFileOperationProgressSink>()).map_err(message)?;
+        let cookie = fo
+            .Advise(&track.to_interface::<IFileOperationProgressSink>())
+            .map_err(message)?;
         let sink = None::<&IFileOperationProgressSink>;
         let none = FILEOPERATION_FLAGS(0);
         // The items asked for: the engine reports what's inside folders too.
@@ -664,17 +776,26 @@ mod imp {
             FileOp::Copy { sources, .. } | FileOp::Move { sources, .. } => sources.clone(),
             FileOp::Delete { paths, .. } | FileOp::Purge { paths } => paths.clone(),
             FileOp::Rename { path, .. } => vec![path.clone()],
-            FileOp::MoveBack { items } | FileOp::Restore { items } | FileOp::CopyInto { items } => items.iter().map(|b| b.path.clone()).collect(),
+            FileOp::MoveBack { items } | FileOp::Restore { items } | FileOp::CopyInto { items } => {
+                items.iter().map(|b| b.path.clone()).collect()
+            }
         };
         match op {
             FileOp::MoveBack { items } | FileOp::Restore { items } => {
-                fo.SetOperationFlags(FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR).map_err(message)?;
+                fo.SetOperationFlags(FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR)
+                    .map_err(message)?;
                 for back in &items {
                     // As File Explorer restores: into the folder it was deleted from, made again if it's gone.
                     if restoring && !Path::new(&back.folder).exists() {
                         std::fs::create_dir_all(&back.folder).map_err(|e| format!("{}: {e}", back.folder))?;
                     }
-                    fo.MoveItem(&item(&back.path)?, &item(&back.folder)?, &HSTRING::from(back.name.as_str()), sink).map_err(message)?;
+                    fo.MoveItem(
+                        &item(&back.path)?,
+                        &item(&back.folder)?,
+                        &HSTRING::from(back.name.as_str()),
+                        sink,
+                    )
+                    .map_err(message)?;
                 }
             }
             FileOp::Purge { paths } => {
@@ -684,34 +805,52 @@ mod imp {
                 }
             }
             FileOp::CopyInto { items } => {
-                fo.SetOperationFlags(FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR).map_err(message)?;
+                fo.SetOperationFlags(FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR)
+                    .map_err(message)?;
                 for each in &items {
-                    fo.CopyItem(&item(&each.path)?, &item(&each.folder)?, &HSTRING::from(each.name.as_str()), sink).map_err(message)?;
+                    fo.CopyItem(
+                        &item(&each.path)?,
+                        &item(&each.folder)?,
+                        &HSTRING::from(each.name.as_str()),
+                        sink,
+                    )
+                    .map_err(message)?;
                 }
             }
             FileOp::Copy { sources, dest } => {
                 // Pasting into the folder the files came from makes "name - Copy" duplicates, like Explorer.
                 let duplicate = sources.iter().all(|s| parent_is(s, &dest));
                 let rename = if duplicate { FOF_RENAMEONCOLLISION } else { none };
-                fo.SetOperationFlags(FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR | rename).map_err(message)?;
+                fo.SetOperationFlags(FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR | rename)
+                    .map_err(message)?;
                 let folder = item(&dest)?;
                 for source in &sources {
-                    fo.CopyItem(&item(source)?, &folder, PCWSTR::null(), sink).map_err(message)?;
+                    fo.CopyItem(&item(source)?, &folder, PCWSTR::null(), sink)
+                        .map_err(message)?;
                 }
             }
             FileOp::Move { sources, dest } => {
                 let sources: Vec<String> = sources.into_iter().filter(|s| !parent_is(s, &dest)).collect();
                 if sources.is_empty() {
                     let _ = fo.Unadvise(cookie);
-                    return Ok(Performed { completed: true, items: Vec::new() });
+                    return Ok(Performed {
+                        completed: true,
+                        items: Vec::new(),
+                    });
                 }
-                fo.SetOperationFlags(FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR).map_err(message)?;
+                fo.SetOperationFlags(FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR)
+                    .map_err(message)?;
                 let folder = item(&dest)?;
                 for source in &sources {
-                    fo.MoveItem(&item(source)?, &folder, PCWSTR::null(), sink).map_err(message)?;
+                    fo.MoveItem(&item(source)?, &folder, PCWSTR::null(), sink)
+                        .map_err(message)?;
                 }
             }
-            FileOp::Delete { paths, permanent, confirm } => {
+            FileOp::Delete {
+                paths,
+                permanent,
+                confirm,
+            } => {
                 // Like Explorer: recycle without asking, but warn if something can't be recycled.
                 let flags = match (permanent, confirm) {
                     (true, _) => none,
@@ -725,7 +864,8 @@ mod imp {
             }
             FileOp::Rename { path, name } => {
                 fo.SetOperationFlags(FOF_ALLOWUNDO).map_err(message)?;
-                fo.RenameItem(&item(&path)?, &HSTRING::from(name), sink).map_err(message)?;
+                fo.RenameItem(&item(&path)?, &HSTRING::from(name), sink)
+                    .map_err(message)?;
             }
         }
         let busy = Arc::new(AtomicBool::new(true));
@@ -740,9 +880,17 @@ mod imp {
             Err(e) => return Err(message(e)),
         };
         let same = |a: &str, b: &str| a.trim_end_matches('\\').eq_ignore_ascii_case(b.trim_end_matches('\\'));
-        let items: Vec<Done> = track.done.take().into_iter().filter(|d| asked.iter().any(|a| same(a, &d.from))).collect();
+        let items: Vec<Done> = track
+            .done
+            .take()
+            .into_iter()
+            .filter(|d| asked.iter().any(|a| same(a, &d.from)))
+            .collect();
         if restoring {
-            items.iter().filter(|d| d.to.is_some()).for_each(|d| forget_recycled(&d.from));
+            items
+                .iter()
+                .filter(|d| d.to.is_some())
+                .for_each(|d| forget_recycled(&d.from));
         } else if purging {
             items.iter().for_each(|d| forget_recycled(&d.from));
         }
@@ -780,8 +928,15 @@ mod imp {
 
     pub fn set_clipboard_files(owner: isize, paths: &[String], cut: bool) -> Result<(), String> {
         // CF_HDROP is a DROPFILES header followed by double-NUL-terminated UTF-16 paths.
-        let header = DROPFILES { pFiles: size_of::<DROPFILES>() as u32, pt: POINT::default(), fNC: false.into(), fWide: true.into() };
-        let mut data = unsafe { std::slice::from_raw_parts(&header as *const DROPFILES as *const u8, size_of::<DROPFILES>()) }.to_vec();
+        let header = DROPFILES {
+            pFiles: size_of::<DROPFILES>() as u32,
+            pt: POINT::default(),
+            fNC: false.into(),
+            fWide: true.into(),
+        };
+        let mut data =
+            unsafe { std::slice::from_raw_parts(&header as *const DROPFILES as *const u8, size_of::<DROPFILES>()) }
+                .to_vec();
         for path in paths {
             for unit in OsStr::new(path).encode_wide().chain(Some(0)) {
                 data.extend(unit.to_le_bytes());
@@ -789,7 +944,11 @@ mod imp {
         }
         data.extend([0, 0]);
         // Explorer reads "Preferred DropEffect" to tell cut (move) from copy.
-        let effect = if cut { DROPEFFECT_MOVE.0 } else { DROPEFFECT_COPY.0 | DROPEFFECT_LINK.0 };
+        let effect = if cut {
+            DROPEFFECT_MOVE.0
+        } else {
+            DROPEFFECT_COPY.0 | DROPEFFECT_LINK.0
+        };
         unsafe {
             let drop_effect = RegisterClipboardFormatW(w!("Preferred DropEffect"));
             open_clipboard(owner)?;
@@ -818,13 +977,16 @@ mod imp {
     const CF_DIB: u32 = 8;
     const CF_DIBV5: u32 = 17;
 
-
     /// The clipboard's text (it's open), up to its NUL and never past its memory block, whatever it holds.
     unsafe fn unicode_text() -> Option<String> {
         let handle = GetClipboardData(CF_UNICODETEXT).ok().filter(|h| !h.is_invalid())?;
         let global = HGLOBAL(handle.0);
         let ptr = GlobalLock(global) as *const u16;
-        let units = if ptr.is_null() { &[][..] } else { std::slice::from_raw_parts(ptr, GlobalSize(global) / 2) };
+        let units = if ptr.is_null() {
+            &[][..]
+        } else {
+            std::slice::from_raw_parts(ptr, GlobalSize(global) / 2)
+        };
         let text = String::from_utf16_lossy(&units[..units.iter().position(|&u| u == 0).unwrap_or(units.len())]);
         let _ = GlobalUnlock(global);
         Some(text)
@@ -876,7 +1038,11 @@ mod imp {
                 return Some(Clip::Text(text));
             }
         }
-        [CF_DIBV5, CF_DIB].into_iter().filter(|&f| has(f)).find_map(|f| global_bytes(f)).map(Clip::Bitmap)
+        [CF_DIBV5, CF_DIB]
+            .into_iter()
+            .filter(|&f| has(f))
+            .find_map(|f| global_bytes(f))
+            .map(Clip::Bitmap)
     }
 
     unsafe fn read_clipboard_files() -> Result<ClipboardFiles, String> {
@@ -898,7 +1064,10 @@ mod imp {
             }
             _ => DROPEFFECT_COPY.0,
         };
-        Ok(ClipboardFiles { paths, cut: effect & DROPEFFECT_MOVE.0 != 0 && effect & DROPEFFECT_COPY.0 == 0 })
+        Ok(ClipboardFiles {
+            paths,
+            cut: effect & DROPEFFECT_MOVE.0 != 0 && effect & DROPEFFECT_COPY.0 == 0,
+        })
     }
 
     pub fn clear_clipboard(owner: isize) -> Result<(), String> {
@@ -911,7 +1080,8 @@ mod imp {
     }
 
     pub fn show_properties(owner: isize, path: &str) -> Result<(), String> {
-        let shown = unsafe { SHObjectProperties(Some(hwnd(owner)), SHOP_FILEPATH, &HSTRING::from(path), PCWSTR::null()) };
+        let shown =
+            unsafe { SHObjectProperties(Some(hwnd(owner)), SHOP_FILEPATH, &HSTRING::from(path), PCWSTR::null()) };
         if shown.as_bool() {
             Ok(())
         } else {
@@ -966,8 +1136,15 @@ mod imp {
                 // Declined, such as an administrator approval.
                 Err(e) if e.code() == ERROR_CANCELLED.to_hresult() => Ok(None),
                 Err(e) if e.code() == ERROR_NO_ASSOCIATION.to_hresult() => pick_app(owner, &path).map(|()| None),
-                Err(e) if e.code() == ERROR_ACCESS_DENIED.to_hresult() => Err("Windows doesn't let your account open it.".into()),
-                Err(e) if e.code() == ERROR_FILE_NOT_FOUND.to_hresult() || e.code() == ERROR_PATH_NOT_FOUND.to_hresult() => Err("It isn't there anymore.".into()),
+                Err(e) if e.code() == ERROR_ACCESS_DENIED.to_hresult() => {
+                    Err("Windows doesn't let your account open it.".into())
+                }
+                Err(e)
+                    if e.code() == ERROR_FILE_NOT_FOUND.to_hresult()
+                        || e.code() == ERROR_PATH_NOT_FOUND.to_hresult() =>
+                {
+                    Err("It isn't there anymore.".into())
+                }
                 Err(e) => Err(message(e)),
             }
         })
@@ -998,7 +1175,10 @@ mod imp {
     /// Where a shortcut points, when that's a folder (not a file, nor a place such as This PC).
     unsafe fn shortcut_folder(path: &str) -> Option<String> {
         let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).ok()?;
-        link.cast::<IPersistFile>().ok()?.Load(&HSTRING::from(path), STGM_READ).ok()?;
+        link.cast::<IPersistFile>()
+            .ok()?
+            .Load(&HSTRING::from(path), STGM_READ)
+            .ok()?;
         let mut target = vec![0u16; 32_768];
         link.GetPath(&mut target, std::ptr::null_mut(), 0).ok()?;
         let target = String::from_utf16_lossy(&target[..target.iter().position(|&c| c == 0)?]);
@@ -1010,11 +1190,18 @@ mod imp {
         unsafe {
             // The drag drops wherever the pointer is once the button is up, so if it was released while
             // this request was on its way, don't start: that would drop at once, under the pointer.
-            let primary = if GetSystemMetrics(SM_SWAPBUTTON) != 0 { VK_RBUTTON } else { VK_LBUTTON };
+            let primary = if GetSystemMetrics(SM_SWAPBUTTON) != 0 {
+                VK_RBUTTON
+            } else {
+                VK_LBUTTON
+            };
             if GetAsyncKeyState(primary.0 as i32) >= 0 {
                 return Ok("released".into());
             }
-            let pidls: Vec<*mut ITEMIDLIST> = paths.iter().map(|p| ILCreateFromPathW(&HSTRING::from(p.as_str()))).collect();
+            let pidls: Vec<*mut ITEMIDLIST> = paths
+                .iter()
+                .map(|p| ILCreateFromPathW(&HSTRING::from(p.as_str())))
+                .collect();
             let dragged = (|| {
                 if pidls.iter().any(|p| p.is_null()) {
                     return Err("Some of these items no longer exist".to_string());
@@ -1025,7 +1212,11 @@ mod imp {
                     .and_then(|items| items.BindToHandler(None::<&IBindCtx>, &BHID_DataObject))
                     .map_err(message)?;
                 attach_drag_image(&data, paths);
-                let allowed = if copy_only { DROPEFFECT_COPY } else { DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK };
+                let allowed = if copy_only {
+                    DROPEFFECT_COPY
+                } else {
+                    DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK
+                };
                 let effect = SHDoDragDrop(Some(hwnd(owner)), &data, None::<&IDropSource>, allowed).map_err(message)?;
                 Ok(if effect.0 & DROPEFFECT_MOVE.0 != 0 {
                     "move"
@@ -1045,13 +1236,40 @@ mod imp {
         }
     }
 
+    /// The shell's own data object for `paths` with the drag card on it, for a drag that brings its own drop
+    /// source (`virtual_drag`'s transform strip). UI thread, like `start_drag`.
+    pub fn drag_data(paths: &[String]) -> Result<IDataObject, String> {
+        unsafe {
+            let pidls: Vec<*mut ITEMIDLIST> = paths
+                .iter()
+                .map(|p| ILCreateFromPathW(&HSTRING::from(p.as_str())))
+                .collect();
+            let made = (|| {
+                if pidls.iter().any(|p| p.is_null()) {
+                    return Err("Some of these items no longer exist".to_string());
+                }
+                let list: Vec<*const ITEMIDLIST> = pidls.iter().map(|&p| p as *const _).collect();
+                let data: IDataObject = SHCreateShellItemArrayFromIDLists(&list)
+                    .and_then(|items| items.BindToHandler(None::<&IBindCtx>, &BHID_DataObject))
+                    .map_err(message)?;
+                attach_drag_image(&data, paths);
+                Ok(data)
+            })();
+            for pidl in pidls.into_iter().filter(|p| !p.is_null()) {
+                ILFree(Some(pidl as *const _));
+            }
+            made
+        }
+    }
+
     /// Attaches a Windows 11-style translucent drag preview card (the first item's cached thumbnail
     /// or icon, a stacked card behind it when dragging several items, and a count badge) plus
     /// `DSH_ALLOWDROPDESCRIPTIONTEXT` so targets show "Move to Desktop", "Copy to Documents", etc.
     unsafe fn attach_drag_image(data: &IDataObject, paths: &[String]) {
         const CLSID_DRAG_DROP_HELPER: GUID = GUID::from_u128(0x4657278a_411b_11d2_839a_00c04fd918d0);
         let Some(first) = paths.first() else { return };
-        let Ok(helper) = CoCreateInstance::<_, IDragSourceHelper2>(&CLSID_DRAG_DROP_HELPER, None, CLSCTX_INPROC_SERVER) else {
+        let Ok(helper) = CoCreateInstance::<_, IDragSourceHelper2>(&CLSID_DRAG_DROP_HELPER, None, CLSCTX_INPROC_SERVER)
+        else {
             return;
         };
         let _ = helper.SetFlags(DSH_ALLOWDROPDESCRIPTIONTEXT.0 as u32);
@@ -1065,7 +1283,12 @@ mod imp {
     /// Reads an HBITMAP's top-down 32-bit BGRA pixels (up to 64×64) for the drag card.
     unsafe fn bitmap_bgra(bitmap: HBITMAP) -> Option<(usize, usize, Vec<u8>)> {
         let mut bm = BITMAP::default();
-        if GetObjectW(HGDIOBJ(bitmap.0), size_of::<BITMAP>() as i32, Some(&mut bm as *mut _ as *mut _)) == 0 {
+        if GetObjectW(
+            HGDIOBJ(bitmap.0),
+            size_of::<BITMAP>() as i32,
+            Some(&mut bm as *mut _ as *mut _),
+        ) == 0
+        {
             return None;
         }
         let (w, h) = (bm.bmWidth.unsigned_abs() as usize, bm.bmHeight.unsigned_abs() as usize);
@@ -1086,7 +1309,15 @@ mod imp {
         };
         let mut bgra = vec![0u8; w * h * 4];
         let dc = CreateCompatibleDC(None);
-        let got = GetDIBits(dc, bitmap, 0, h as u32, Some(bgra.as_mut_ptr() as *mut _), &mut info, DIB_RGB_COLORS);
+        let got = GetDIBits(
+            dc,
+            bitmap,
+            0,
+            h as u32,
+            Some(bgra.as_mut_ptr() as *mut _),
+            &mut info,
+            DIB_RGB_COLORS,
+        );
         let _ = DeleteDC(dc);
         if got == 0 {
             return None;
@@ -1096,7 +1327,12 @@ mod imp {
             for p in bgra.as_chunks_mut::<4>().0 {
                 p[3] = 255;
             }
-        } else if bgra.as_chunks::<4>().0.iter().any(|p| p[0] > p[3] || p[1] > p[3] || p[2] > p[3]) {
+        } else if bgra
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|p| p[0] > p[3] || p[1] > p[3] || p[2] > p[3])
+        {
             for p in bgra.as_chunks_mut::<4>().0 {
                 let a = p[3] as u32;
                 p[0] = ((p[0] as u32 * a + 127) / 255) as u8;
@@ -1110,7 +1346,8 @@ mod imp {
     /// Builds a 96×96 premultiplied ARGB DIB section for `SHDRAGIMAGE`. Uses `SIIGBF_INCACHEONLY`
     /// first and falls back to `SIIGBF_ICONONLY` so it never blocks the UI thread.
     unsafe fn make_drag_bitmap(first: &str, count: usize) -> Option<SHDRAGIMAGE> {
-        let factory: IShellItemImageFactory = SHCreateItemFromParsingName(&HSTRING::from(first), None::<&IBindCtx>).ok()?;
+        let factory: IShellItemImageFactory =
+            SHCreateItemFromParsingName(&HSTRING::from(first), None::<&IBindCtx>).ok()?;
         let ask = SIZE { cx: 56, cy: 56 };
         let hbmp = factory
             .GetImage(ask, SIIGBF_INCACHEONLY)
@@ -1146,7 +1383,10 @@ mod imp {
         draw_drag_card(canvas, SIDE, &icon, iw, ih, count);
 
         Some(SHDRAGIMAGE {
-            sizeDragImage: SIZE { cx: SIDE as i32, cy: SIDE as i32 },
+            sizeDragImage: SIZE {
+                cx: SIDE as i32,
+                cy: SIDE as i32,
+            },
             ptOffset: POINT { x: 44, y: 52 },
             hbmpDragImage: dib,
             crColorKey: COLORREF(0xFF00_FF00),
@@ -1172,7 +1412,14 @@ mod imp {
             canvas[idx + 3] = (a as u32 + (canvas[idx + 3] as u32 * inv + 127) / 255).min(255) as u8;
         };
 
-        let rounded_rect = |canvas: &mut [u8], x0: usize, y0: usize, w: usize, h: usize, rad: f32, fill: (u8, u8, u8, u8), border: (u8, u8, u8, u8)| {
+        let rounded_rect = |canvas: &mut [u8],
+                            x0: usize,
+                            y0: usize,
+                            w: usize,
+                            h: usize,
+                            rad: f32,
+                            fill: (u8, u8, u8, u8),
+                            border: (u8, u8, u8, u8)| {
             for y in y0..y0 + h {
                 for x in x0..x0 + w {
                     let lx = (x - x0) as f32 + 0.5;
@@ -1231,7 +1478,11 @@ mod imp {
 
         // Count pill badge in the bottom-right corner when dragging multiple items.
         if count > 1 {
-            let label = if count > 99 { "99+".to_string() } else { count.to_string() };
+            let label = if count > 99 {
+                "99+".to_string()
+            } else {
+                count.to_string()
+            };
             let chars: Vec<char> = label.chars().collect();
             let text_w = chars.len() * 6 - 1;
             let pill_w = (text_w + 10).max(20);
@@ -1239,7 +1490,16 @@ mod imp {
             let px = (78 + 8usize).saturating_sub(pill_w);
             let py = 82 - pill_h + 6;
             // Glint pink accent (#db2777 -> BGR: 119, 39, 219).
-            rounded_rect(canvas, px, py, pill_w, pill_h, 8.5, (119, 39, 219, 248), (255, 255, 255, 220));
+            rounded_rect(
+                canvas,
+                px,
+                py,
+                pill_w,
+                pill_h,
+                8.5,
+                (119, 39, 219, 248),
+                (255, 255, 255, 220),
+            );
             let tx = px + (pill_w - text_w) / 2;
             let ty = py + (pill_h - 7) / 2;
             for (i, ch) in chars.into_iter().enumerate() {
@@ -1276,12 +1536,19 @@ mod imp {
         const CREATE_NEW_CONSOLE: u32 = 0x10;
         // WSL2 path (`\\wsl.localhost\Ubuntu\...`): launch the Linux distribution directly at that folder.
         let lower = path.to_ascii_lowercase();
-        if let Some(rest) = lower.strip_prefix(r"\\wsl.localhost\").or_else(|| lower.strip_prefix(r"\\wsl$\")) {
+        if let Some(rest) = lower
+            .strip_prefix(r"\\wsl.localhost\")
+            .or_else(|| lower.strip_prefix(r"\\wsl$\"))
+        {
             let distro_len = rest.find('\\').unwrap_or(rest.len());
             let prefix_len = path.len() - rest.len();
             let distro = &path[prefix_len..prefix_len + distro_len];
             if !distro.is_empty() {
-                if Command::new("wt.exe").args(["-d", path, "wsl.exe", "-d", distro]).spawn().is_ok() {
+                if Command::new("wt.exe")
+                    .args(["-d", path, "wsl.exe", "-d", distro])
+                    .spawn()
+                    .is_ok()
+                {
                     return Ok(());
                 }
                 if Command::new("wsl.exe")
@@ -1310,10 +1577,13 @@ mod imp {
     /// once the verb has done its work.
     unsafe fn context_verb(owner: isize, paths: &[String], verb: &std::ffi::CStr, wait: bool) -> Result<(), String> {
         use windows::core::PCSTR;
-        use windows::Win32::UI::Shell::{IContextMenu, BHID_SFUIObject, CMF_NORMAL, CMINVOKECOMMANDINFO};
+        use windows::Win32::UI::Shell::{BHID_SFUIObject, IContextMenu, CMF_NORMAL, CMINVOKECOMMANDINFO};
         use windows::Win32::UI::WindowsAndMessaging::{CreatePopupMenu, DestroyMenu, SW_SHOWNORMAL};
 
-        let pidls: Vec<*mut ITEMIDLIST> = paths.iter().map(|p| ILCreateFromPathW(&HSTRING::from(p.as_str()))).collect();
+        let pidls: Vec<*mut ITEMIDLIST> = paths
+            .iter()
+            .map(|p| ILCreateFromPathW(&HSTRING::from(p.as_str())))
+            .collect();
         let result = (|| -> Result<(), String> {
             if pidls.is_empty() || pidls.iter().any(|p| p.is_null()) {
                 return Err("Some of these items no longer exist".into());
@@ -1355,15 +1625,22 @@ mod imp {
     pub fn eject_drive(owner: isize, path: &str) -> Result<(), String> {
         use windows::Win32::Storage::FileSystem::{GetLogicalDrives, GetVolumeInformationW};
 
-        let letter = path.as_bytes().first().copied().filter(|l| l.is_ascii_alphabetic() && path.as_bytes().get(1) == Some(&b':'));
-        let letter = letter.ok_or("Only a drive with a letter can be ejected")?.to_ascii_uppercase();
+        let letter = path
+            .as_bytes()
+            .first()
+            .copied()
+            .filter(|l| l.is_ascii_alphabetic() && path.as_bytes().get(1) == Some(&b':'));
+        let letter = letter
+            .ok_or("Only a drive with a letter can be ejected")?
+            .to_ascii_uppercase();
         let root = format!("{}:\\", letter as char);
         let item = root.clone();
         in_sta(move || unsafe { context_verb(owner, &[item], c"eject", true) })?;
         let bit = 1u32 << (letter - b'A');
         let wide = HSTRING::from(root.as_str());
         for _ in 0..50 {
-            let there = unsafe { GetLogicalDrives() } & bit != 0 && unsafe { GetVolumeInformationW(&wide, None, None, None, None, None) }.is_ok();
+            let there = unsafe { GetLogicalDrives() } & bit != 0
+                && unsafe { GetVolumeInformationW(&wide, None, None, None, None, None) }.is_ok();
             if !there {
                 return Ok(());
             }
@@ -1378,15 +1655,30 @@ mod imp {
         use windows::core::PWSTR;
         use windows::Win32::UI::Shell::{AssocQueryStringW, ASSOCF_NONE, ASSOCSTR_PROGID};
 
-        let Some(ext) = Path::new(path).extension() else { return false };
+        let Some(ext) = Path::new(path).extension() else {
+            return false;
+        };
         let ext = HSTRING::from(format!(".{}", ext.to_string_lossy()));
         let mut buf = [0u16; 128];
         let mut len = buf.len() as u32;
-        if unsafe { AssocQueryStringW(ASSOCF_NONE, ASSOCSTR_PROGID, &ext, PCWSTR::null(), Some(PWSTR(buf.as_mut_ptr())), &mut len) }.is_err() {
+        if unsafe {
+            AssocQueryStringW(
+                ASSOCF_NONE,
+                ASSOCSTR_PROGID,
+                &ext,
+                PCWSTR::null(),
+                Some(PWSTR(buf.as_mut_ptr())),
+                &mut len,
+            )
+        }
+        .is_err()
+        {
             return false;
         }
         let progid = String::from_utf16_lossy(&buf[..(len as usize).saturating_sub(1).min(buf.len())]);
-        ["Windows.IsoFile", "Windows.VhdFile"].iter().any(|own| progid.eq_ignore_ascii_case(own))
+        ["Windows.IsoFile", "Windows.VhdFile"]
+            .iter()
+            .any(|own| progid.eq_ignore_ascii_case(own))
     }
 
     /// Mounts a disc or disk image and returns its drive (`"F:\"`), if one shows up. A disc image is
@@ -1396,7 +1688,10 @@ mod imp {
         use windows::Win32::Storage::FileSystem::GetLogicalDrives;
 
         let before = unsafe { GetLogicalDrives() };
-        let ext = Path::new(path).extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+        let ext = Path::new(path)
+            .extension()
+            .map(|e| e.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default();
         if ext == "iso" || ext == "img" {
             attach_disc_image(path)?;
         } else {
@@ -1417,25 +1712,45 @@ mod imp {
     fn attach_disc_image(path: &str) -> Result<(), String> {
         use windows::Win32::Foundation::CloseHandle;
         use windows::Win32::Storage::Vhd::{
-            AttachVirtualDisk, OpenVirtualDisk, ATTACH_VIRTUAL_DISK_FLAG_PERMANENT_LIFETIME, ATTACH_VIRTUAL_DISK_FLAG_READ_ONLY, ATTACH_VIRTUAL_DISK_PARAMETERS,
-            ATTACH_VIRTUAL_DISK_VERSION_1, OPEN_VIRTUAL_DISK_FLAG_NONE, VIRTUAL_DISK_ACCESS_READ, VIRTUAL_STORAGE_TYPE, VIRTUAL_STORAGE_TYPE_DEVICE_ISO,
-            VIRTUAL_STORAGE_TYPE_VENDOR_MICROSOFT,
+            AttachVirtualDisk, OpenVirtualDisk, ATTACH_VIRTUAL_DISK_FLAG_PERMANENT_LIFETIME,
+            ATTACH_VIRTUAL_DISK_FLAG_READ_ONLY, ATTACH_VIRTUAL_DISK_PARAMETERS, ATTACH_VIRTUAL_DISK_VERSION_1,
+            OPEN_VIRTUAL_DISK_FLAG_NONE, VIRTUAL_DISK_ACCESS_READ, VIRTUAL_STORAGE_TYPE,
+            VIRTUAL_STORAGE_TYPE_DEVICE_ISO, VIRTUAL_STORAGE_TYPE_VENDOR_MICROSOFT,
         };
 
-        let storage = VIRTUAL_STORAGE_TYPE { DeviceId: VIRTUAL_STORAGE_TYPE_DEVICE_ISO, VendorId: VIRTUAL_STORAGE_TYPE_VENDOR_MICROSOFT };
+        let storage = VIRTUAL_STORAGE_TYPE {
+            DeviceId: VIRTUAL_STORAGE_TYPE_DEVICE_ISO,
+            VendorId: VIRTUAL_STORAGE_TYPE_VENDOR_MICROSOFT,
+        };
         let mut disk = HANDLE::default();
-        unsafe { OpenVirtualDisk(&storage, &HSTRING::from(path), VIRTUAL_DISK_ACCESS_READ, OPEN_VIRTUAL_DISK_FLAG_NONE, None, &mut disk) }
-            .ok()
-            .map_err(message)?;
-        let parameters = ATTACH_VIRTUAL_DISK_PARAMETERS { Version: ATTACH_VIRTUAL_DISK_VERSION_1, ..Default::default() };
+        unsafe {
+            OpenVirtualDisk(
+                &storage,
+                &HSTRING::from(path),
+                VIRTUAL_DISK_ACCESS_READ,
+                OPEN_VIRTUAL_DISK_FLAG_NONE,
+                None,
+                &mut disk,
+            )
+        }
+        .ok()
+        .map_err(message)?;
+        let parameters = ATTACH_VIRTUAL_DISK_PARAMETERS {
+            Version: ATTACH_VIRTUAL_DISK_VERSION_1,
+            ..Default::default()
+        };
         let flags = ATTACH_VIRTUAL_DISK_FLAG_READ_ONLY | ATTACH_VIRTUAL_DISK_FLAG_PERMANENT_LIFETIME;
-        let attached = unsafe { AttachVirtualDisk(disk, None, flags, 0, Some(&parameters), None) }.ok().map_err(message);
+        let attached = unsafe { AttachVirtualDisk(disk, None, flags, 0, Some(&parameters), None) }
+            .ok()
+            .map_err(message);
         let _ = unsafe { CloseHandle(disk) };
         attached
     }
 
     pub fn set_cloud_pin(paths: &[String], state: &str) -> Result<(), String> {
-        use windows::Win32::Storage::FileSystem::{GetFileAttributesW, SetFileAttributesW, FILE_FLAGS_AND_ATTRIBUTES, INVALID_FILE_ATTRIBUTES};
+        use windows::Win32::Storage::FileSystem::{
+            GetFileAttributesW, SetFileAttributesW, FILE_FLAGS_AND_ATTRIBUTES, INVALID_FILE_ATTRIBUTES,
+        };
 
         const FILE_ATTRIBUTE_PINNED: u32 = 0x0008_0000;
         const FILE_ATTRIBUTE_UNPINNED: u32 = 0x0010_0000;
@@ -1451,7 +1766,8 @@ mod imp {
                 if cur == INVALID_FILE_ATTRIBUTES {
                     return Err(format!("Can't find “{path}”"));
                 }
-                SetFileAttributesW(PCWSTR(wide.as_ptr()), FILE_FLAGS_AND_ATTRIBUTES((cur | set) & !clear)).map_err(|e| format!("“{path}”: {}", e.message()))?;
+                SetFileAttributesW(PCWSTR(wide.as_ptr()), FILE_FLAGS_AND_ATTRIBUTES((cur | set) & !clear))
+                    .map_err(|e| format!("“{path}”: {}", e.message()))?;
             }
         }
         Ok(())
@@ -1478,7 +1794,9 @@ mod imp {
     /// the others (PNG, BMP, TIFF) are lossless, and their pixels turn.
     pub fn rotate_image(path: &str, clockwise: bool) -> Result<(), String> {
         use windows::Foundation::{PropertyType, PropertyValue};
-        use windows::Graphics::Imaging::{BitmapDecoder, BitmapEncoder, BitmapPropertySet, BitmapRotation, BitmapTypedValue};
+        use windows::Graphics::Imaging::{
+            BitmapDecoder, BitmapEncoder, BitmapPropertySet, BitmapRotation, BitmapTypedValue,
+        };
         use windows::Storage::Streams::{DataReader, InMemoryRandomAccessStream};
         use windows::Storage::{FileAccessMode, StorageFile};
         use windows::Win32::System::Com::COINIT_MULTITHREADED;
@@ -1498,10 +1816,17 @@ mod imp {
                     if decoder.DecoderInformation()?.CodecId()? == BitmapDecoder::JpegDecoderId()? {
                         let next = turn(orientation(&path_str), clockwise);
                         let turned = BitmapPropertySet::new()?;
-                        turned.Insert(&HSTRING::from("System.Photo.Orientation"), &BitmapTypedValue::Create(&PropertyValue::CreateUInt16(next)?, PropertyType::UInt16)?)?;
+                        turned.Insert(
+                            &HSTRING::from("System.Photo.Orientation"),
+                            &BitmapTypedValue::Create(&PropertyValue::CreateUInt16(next)?, PropertyType::UInt16)?,
+                        )?;
                         encoder.BitmapProperties()?.SetPropertiesAsync(&turned)?.join()?;
                     } else {
-                        encoder.BitmapTransform()?.SetRotation(if clockwise { BitmapRotation::Clockwise90Degrees } else { BitmapRotation::Clockwise270Degrees })?;
+                        encoder.BitmapTransform()?.SetRotation(if clockwise {
+                            BitmapRotation::Clockwise90Degrees
+                        } else {
+                            BitmapRotation::Clockwise270Degrees
+                        })?;
                     }
                     encoder.FlushAsync()?.join()?;
                     drop(in_stream);
@@ -1523,12 +1848,23 @@ mod imp {
     /// A photo's EXIF orientation, as Windows' property system reads it: 1 (as taken) when it has none.
     fn orientation(path: &str) -> u16 {
         use windows::Win32::Foundation::PROPERTYKEY;
-        use windows::Win32::UI::Shell::PropertiesSystem::{IPropertyStore, SHGetPropertyStoreFromParsingName, GPS_DEFAULT};
-        const PKEY_PHOTO_ORIENTATION: PROPERTYKEY = PROPERTYKEY { fmtid: GUID::from_u128(0x14b81da1_0135_4d31_96d9_6cbfc9671a99), pid: 274 };
-        unsafe { SHGetPropertyStoreFromParsingName::<_, _, IPropertyStore>(&HSTRING::from(path), None::<&IBindCtx>, GPS_DEFAULT) }
-            .and_then(|store| unsafe { store.GetValue(&PKEY_PHOTO_ORIENTATION) })
-            .and_then(|value| u16::try_from(&value))
-            .unwrap_or(1)
+        use windows::Win32::UI::Shell::PropertiesSystem::{
+            IPropertyStore, SHGetPropertyStoreFromParsingName, GPS_DEFAULT,
+        };
+        const PKEY_PHOTO_ORIENTATION: PROPERTYKEY = PROPERTYKEY {
+            fmtid: GUID::from_u128(0x14b81da1_0135_4d31_96d9_6cbfc9671a99),
+            pid: 274,
+        };
+        unsafe {
+            SHGetPropertyStoreFromParsingName::<_, _, IPropertyStore>(
+                &HSTRING::from(path),
+                None::<&IBindCtx>,
+                GPS_DEFAULT,
+            )
+        }
+        .and_then(|store| unsafe { store.GetValue(&PKEY_PHOTO_ORIENTATION) })
+        .and_then(|value| u16::try_from(&value))
+        .unwrap_or(1)
     }
 
     /// An EXIF orientation (1–4 turned, 5–8 mirrored and turned) after another quarter turn.
@@ -1538,7 +1874,6 @@ mod imp {
         let from = if (1..=8).contains(&orientation) { orientation } else { 1 };
         (if clockwise { CLOCKWISE } else { BACK })[from as usize - 1]
     }
-
 }
 
 #[cfg(not(windows))]
@@ -1556,13 +1891,24 @@ mod imp {
                 }
                 std::fs::rename(&path, to)
             }
-            FileOp::Delete { paths, permanent: true, .. } => paths.iter().try_for_each(|p| {
+            FileOp::Delete {
+                paths, permanent: true, ..
+            } => paths.iter().try_for_each(|p| {
                 let path = std::path::Path::new(p);
-                if path.is_dir() { std::fs::remove_dir_all(path) } else { std::fs::remove_file(path) }
+                if path.is_dir() {
+                    std::fs::remove_dir_all(path)
+                } else {
+                    std::fs::remove_file(path)
+                }
             }),
             _ => return Err(WINDOWS_ONLY.into()),
         };
-        result.map(|_| Performed { completed: true, items: Vec::new() }).map_err(|e| e.to_string())
+        result
+            .map(|_| Performed {
+                completed: true,
+                items: Vec::new(),
+            })
+            .map_err(|e| e.to_string())
     }
 
     pub fn set_clipboard_files(_: isize, _: &[String], _: bool) -> Result<(), String> {
@@ -1572,7 +1918,6 @@ mod imp {
     pub fn clipboard_files(_: isize) -> Result<Option<ClipboardFiles>, String> {
         Ok(None)
     }
-
 
     pub fn clipboard_content(_: isize) -> Result<Option<Clip>, String> {
         Ok(None)
@@ -1699,7 +2044,10 @@ mod tests {
         // A plain 32-bit DIB leaves alpha 0: it's opaque, not invisible.
         assert_eq!(pixels(&dib_to_png(&dib(32, false, false, 0)).unwrap()), opaque(255));
         // Windows' own CF_DIBV5 of a bitmap: its masks again after the header, then the pixels.
-        assert_eq!(pixels(&dib_to_png(&dib_with(32, true, false, 0, true)).unwrap()), opaque(255));
+        assert_eq!(
+            pixels(&dib_to_png(&dib_with(32, true, false, 0, true)).unwrap()),
+            opaque(255)
+        );
         // Paletted, or cut short: no PNG, so a .bmp of it as it is.
         let paletted = dib(8, false, false, 0);
         assert!(dib_to_png(&paletted).is_none());
@@ -1707,7 +2055,10 @@ mod tests {
         assert!(dib_to_png(&full[..full.len() - 3]).is_none());
         let bmp = dib_to_bmp(&full);
         assert_eq!(&bmp[..2], b"BM");
-        assert_eq!(u32::from_le_bytes(bmp[2..6].try_into().unwrap()) as usize, 14 + full.len());
+        assert_eq!(
+            u32::from_le_bytes(bmp[2..6].try_into().unwrap()) as usize,
+            14 + full.len()
+        );
         assert_eq!(u32::from_le_bytes(bmp[10..14].try_into().unwrap()), 14 + 40);
         assert_eq!(dib_pixels_at(&paletted), Some(40 + 4 * 256));
     }
@@ -1721,7 +2072,11 @@ mod tests {
                 at = imp::turn(at, true);
             }
             assert_eq!(at, start, "four turns of {start}");
-            assert_eq!(imp::turn(imp::turn(start, true), false), start, "a turn and back from {start}");
+            assert_eq!(
+                imp::turn(imp::turn(start, true), false),
+                start,
+                "a turn and back from {start}"
+            );
         }
         // As taken, then turned right: the viewer turns it a quarter clockwise (EXIF 6).
         assert_eq!(imp::turn(1, true), 6);
@@ -1767,7 +2122,11 @@ mod tests {
             let answer = crate::host::async_runtime::block_on(patiently(
                 || {
                     tries.set(tries.get() + 1);
-                    let answer = if tries.get() <= busy_for { Err(CLIPBOARD_BUSY.to_string()) } else { then.clone() };
+                    let answer = if tries.get() <= busy_for {
+                        Err(CLIPBOARD_BUSY.to_string())
+                    } else {
+                        then.clone()
+                    };
                     async move { answer }
                 },
                 |wait| {
@@ -1780,7 +2139,10 @@ mod tests {
         // Held by another app for three tries, then free: the fourth try reads it.
         assert_eq!(run(3, Ok(7)), (Ok(7), 4, Duration::from_millis(25 + 50 + 100)));
         // Another error is said at once.
-        assert_eq!(run(0, Err("Out of memory".into())), (Err("Out of memory".into()), 1, Duration::ZERO));
+        assert_eq!(
+            run(0, Err("Out of memory".into())),
+            (Err("Out of memory".into()), 1, Duration::ZERO)
+        );
         // Held for good: tried for the whole patience, then said.
         let (answer, tries, waited) = run(usize::MAX, Ok(0));
         assert_eq!(answer, Err(CLIPBOARD_BUSY.to_string()));
