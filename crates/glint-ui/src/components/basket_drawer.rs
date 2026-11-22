@@ -20,6 +20,7 @@
 
 use crate::components::file_grid::thumbnail::{self, Look, Thumbnails, Want};
 use crate::components::menus::MenuEvent;
+use crate::components::panel_header::tool_button;
 use crate::explorer::{self, Explorer};
 use crate::kit::prelude::*;
 use crate::{t, theme};
@@ -636,15 +637,14 @@ impl Render for BasketDrawer {
                     .tooltip(t!("Empty the basket: the files stay where they are"))
                     .on_click(cx.listener(|this, _, _, cx| this.clear(cx))),
             )
-            .child(
-                Button::new("basket-close")
-                    .ghost()
-                    .small()
-                    .icon(IconName::X)
-                    .accessibility_label(t!("Close the basket"))
-                    .tooltip(t!("Close the basket"))
-                    .on_click(cx.listener(|this, _, window, cx| this.close(window, cx))),
-            );
+            .child(tool_button(
+                "basket-close",
+                IconName::X,
+                t!("Close the basket"),
+                t!("Close the basket (Esc)"),
+                cx.listener(|this, _, window, cx| this.close(window, cx)),
+            ))
+            .pe(1.);
 
         let jobs = row_start()
             .flex_wrap()

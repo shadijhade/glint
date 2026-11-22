@@ -21,6 +21,7 @@ mod rail;
 #[cfg(test)]
 mod tests;
 
+use crate::components::panel_header::{panel_header, tool_button, Header};
 use crate::core_bridge;
 use crate::explorer::{explorer, ExplorerEvent, TabId};
 use crate::kit::prelude::*;
@@ -1061,71 +1062,38 @@ impl Render for TimeMachineView {
         let (deleted_n, modified_n, unchanged_n) = summarize_entries(&state.entries);
         let filtered_idx = state.filtered_entries();
 
-        let header = row_start()
-            .w_full()
-            .px(space(4.))
-            .py(space(2.5))
-            .gap(space(2.5))
-            .items_center()
-            .justify_between()
-            .border_b_1()
-            .border_color(t.stroke)
-            .bg(t.chrome)
-            .child(
-                row_start()
-                    .items_center()
-                    .gap(space(2.))
-                    .child(icon(IconName::RotateCcwClock).size_4().text_color(t.primary))
-                    .child(
-                        col()
-                            .child(
-                                div()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_size(theme::size::SM)
-                                    .child(t!("Time Machine")),
-                            )
-                            .child(
-                                div()
-                                    .text_size(theme::size::XS)
-                                    .text_color(t.muted_foreground)
-                                    .child(state.folder.clone()),
-                            ),
-                    ),
-            )
-            .child(
-                row_start()
-                    .items_center()
-                    .gap(space(1.5))
-                    .child(
-                        Button::new("tm-prev")
-                            .compact()
-                            .ghost()
-                            .icon(Icon::new(IconName::ArrowLeft))
-                            .disabled(state.moments.is_empty())
-                            .accessibility_label(t!("Older snapshot"))
-                            .tooltip(t!("Older snapshot (Left arrow)"))
-                            .on_click(cx.listener(|this, _, _, cx| this.step(-1, cx))),
+        let none = state.moments.is_empty();
+        let header = panel_header(
+            Header {
+                close_id: "tm-close".into(),
+                glyph: IconName::RotateCcwClock,
+                title: t!("Time Machine"),
+                subtitle: Some(state.folder.clone().into()),
+                tools: vec![
+                    tool_button(
+                        "tm-prev",
+                        IconName::ArrowLeft,
+                        t!("Older snapshot"),
+                        t!("Older snapshot (Left arrow)"),
+                        cx.listener(|this, _, _, cx| this.step(-1, cx)),
                     )
-                    .child(
-                        Button::new("tm-next")
-                            .compact()
-                            .ghost()
-                            .icon(Icon::new(IconName::ArrowRight))
-                            .disabled(state.moments.is_empty())
-                            .accessibility_label(t!("Newer snapshot"))
-                            .tooltip(t!("Newer snapshot (Right arrow)"))
-                            .on_click(cx.listener(|this, _, _, cx| this.step(1, cx))),
+                    .disabled(none)
+                    .into_any_element(),
+                    tool_button(
+                        "tm-next",
+                        IconName::ArrowRight,
+                        t!("Newer snapshot"),
+                        t!("Newer snapshot (Right arrow)"),
+                        cx.listener(|this, _, _, cx| this.step(1, cx)),
                     )
-                    .child(
-                        Button::new("tm-close")
-                            .compact()
-                            .ghost()
-                            .label(t!("Back to files"))
-                            .accessibility_label(t!("Close Time Machine"))
-                            .tooltip(t!("Back to files (Esc)"))
-                            .on_click(cx.listener(|this, _, _, cx| this.close(cx))),
-                    ),
-            );
+                    .disabled(none)
+                    .into_any_element(),
+                ],
+                close_name: None,
+            },
+            cx.listener(|this, _, _, cx| this.close(cx)),
+            &t,
+        );
 
         // The timeline: source chips, the sparkline, the rail with its playhead, and the stop's line.
         let scrubber = if state.moments.is_empty() && state.moments_loading {
@@ -1145,19 +1113,8 @@ impl Render for TimeMachineView {
                 )
                 .into_any_element()
         } else if state.moments.is_empty() {
-            row_start()
-                .w_full()
-                .px(space(4.))
-                .py(space(3.))
-                .items_center()
-                .border_b_1()
-                .border_color(t.stroke)
-                .text_size(theme::size::XS)
-                .text_color(t.muted_foreground)
-                .child(t!(
-                    "No shadow copies, Git history, journal buckets, or backups were found for this folder yet."
-                ))
-                .into_any_element()
+            // Nothing found: the body says so once, in its own words.
+            div().into_any_element()
         } else {
             let visible_ix = state.visible();
             let times: Vec<i64> = visible_ix.iter().map(|&i| state.moments[i].timestamp_ms).collect();
@@ -1378,6 +1335,7 @@ impl Render for TimeMachineView {
                 .child(
                     row_start()
                         .w_full()
+                        .min_h(space(6.))
                         .items_center()
                         .justify_between()
                         .gap(space(2.))
@@ -1524,6 +1482,9 @@ impl Render for TimeMachineView {
                 .child(icon(IconName::TriangleAlert).size_6().text_color(t.warning))
                 .child(div().text_size(theme::size::SM).child(err))
                 .into_any_element()
+        } else if state.moments.is_empty() && state.moments_loading {
+            // Still asking the sources: the strip above has the spinner, and "nothing" is not known yet.
+            div().flex_1().into_any_element()
         } else if state.moments.is_empty() {
             col()
                 .flex_1()
@@ -1533,12 +1494,19 @@ impl Render for TimeMachineView {
                 .gap(space(2.))
                 .px(space(6.))
                 .child(icon(IconName::RotateCcwClock).size_8().text_color(t.muted_foreground))
-                .child(div().text_size(theme::size::SM).font_weight(FontWeight::MEDIUM).child(t!("Nothing to scrub yet")))
+                .child(
+                    div()
+                        .text_size(theme::size::SM)
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(t!("No past versions yet")),
+                )
                 .child(
                     div()
                         .text_size(theme::size::XS)
                         .text_color(t.muted_foreground)
-                        .child(t!("Enable Windows File History / Shadow Copies, initialize Git, or configure backups to browse historical states.")),
+                        .child(t!(
+                            "Turn on File History, use Git or set up backups to browse how this folder looked."
+                        )),
                 )
                 .into_any_element()
         } else if filtered_idx.is_empty() {

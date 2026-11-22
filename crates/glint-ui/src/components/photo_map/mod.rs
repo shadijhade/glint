@@ -13,6 +13,7 @@ mod pins;
 mod scrubber;
 
 use crate::components::file_grid::thumbnail::{thumbnails, Thumbnails};
+use crate::components::panel_header::{panel_header, tool_button, Header};
 use crate::explorer::{explorer, Explorer, ExplorerEvent, TabId};
 use crate::kit::prelude::*;
 use crate::{t, theme};
@@ -685,89 +686,71 @@ impl Render for PhotoMapView {
 
         let t = theme::tokens(cx).clone();
         let count_text = if loading && all.is_empty() {
-            t!("Scanning EXIF GPS…")
+            t!("Looking for photos with a place…")
         } else if loading {
-            t!("Scanning… {n} geotagged photos so far", n = all.len())
+            t!("Looking… {n} photos with a place so far", n = all.len())
         } else if self.scope != Scope::All {
-            t!("{n} of {total} geotagged photos", n = photos.len(), total = all.len())
+            t!(
+                "{n} of {total} photos with a place",
+                n = photos.len(),
+                total = all.len()
+            )
         } else {
-            t!("{n} geotagged photos", n = photos.len())
+            t!("{n} photos with a place", n = photos.len())
         };
 
-        let header = row_start()
-            .w_full()
-            .items_center()
-            .justify_between()
-            .gap(space(2.))
-            .px(space(3.))
-            .py(space(2.))
-            .bg(t.background)
-            .border_b_1()
-            .border_color(t.border)
-            .child(
-                row_start()
-                    .items_center()
-                    .gap(space(2.))
-                    .child(icon(IconName::Globe).size_4().text_color(t.primary))
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(t.foreground)
-                            .child(t!("Photo World Map")),
+        let pane = self.pane;
+        let header = panel_header(
+            Header {
+                close_id: ("pm-close", pane).into(),
+                glyph: IconName::Globe,
+                title: t!("Photo World Map"),
+                subtitle: Some(count_text),
+                tools: vec![
+                    tool_button(
+                        ("pm-fit", pane),
+                        IconName::Maximize,
+                        t!("Fit all photos"),
+                        t!("Fit all photos"),
+                        cx.listener(|this, _, _, cx| this.fit_all(cx)),
                     )
-                    .child(div().text_xs().text_color(t.muted_foreground).child(count_text)),
-            )
-            .child(
-                row_start()
-                    .items_center()
-                    .gap(space(1.))
-                    .child(
-                        Button::new(("pm-fit", self.pane))
-                            .compact()
-                            .ghost()
-                            .label(t!("Fit"))
-                            .tooltip(t!("Fit all photos"))
-                            .on_click(cx.listener(|this, _, _, cx| this.fit_all(cx))),
+                    .into_any_element(),
+                    tool_button(
+                        ("pm-zoom-in", pane),
+                        IconName::ZoomIn,
+                        t!("Zoom in"),
+                        t!("Zoom in (+)"),
+                        cx.listener(|this, _, _, cx| this.zoom_center(1.6, cx)),
                     )
-                    .child(
-                        Button::new(("pm-zoom-in", self.pane))
-                            .compact()
-                            .ghost()
-                            .label(t!("+"))
-                            .accessibility_label(t!("Zoom in"))
-                            .on_click(cx.listener(|this, _, _, cx| this.zoom_center(1.6, cx))),
+                    .into_any_element(),
+                    tool_button(
+                        ("pm-zoom-out", pane),
+                        IconName::ZoomOut,
+                        t!("Zoom out"),
+                        t!("Zoom out (-)"),
+                        cx.listener(|this, _, _, cx| this.zoom_center(1.0 / 1.6, cx)),
                     )
-                    .child(
-                        Button::new(("pm-zoom-out", self.pane))
-                            .compact()
-                            .ghost()
-                            .label(t!("-"))
-                            .accessibility_label(t!("Zoom out"))
-                            .on_click(cx.listener(|this, _, _, cx| this.zoom_center(1.0 / 1.6, cx))),
+                    .into_any_element(),
+                    tool_button(
+                        ("pm-reset", pane),
+                        IconName::RotateCcw,
+                        t!("Show the whole world"),
+                        t!("Show the whole world (0)"),
+                        cx.listener(|this, _, _, cx| {
+                            this.camera = MapCamera::default();
+                            this.touched = true;
+                            this.fly = None;
+                            this.selected_cluster = None;
+                            cx.notify();
+                        }),
                     )
-                    .child(
-                        Button::new(("pm-reset", self.pane))
-                            .compact()
-                            .ghost()
-                            .label(t!("Reset"))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.camera = MapCamera::default();
-                                this.touched = true;
-                                this.fly = None;
-                                this.selected_cluster = None;
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        Button::new(("pm-close", self.pane))
-                            .compact()
-                            .ghost()
-                            .icon(Icon::new(IconName::X))
-                            .label(t!("Back to files"))
-                            .on_click(move |_, _, cx| set(cx, tab, false)),
-                    ),
-            );
+                    .into_any_element(),
+                ],
+                close_name: None,
+            },
+            move |_, _, cx| set(cx, tab, false),
+            &t,
+        );
 
         let cam = self.camera;
         let selected_idx = self.selected_cluster;
@@ -978,13 +961,13 @@ impl Render for PhotoMapView {
                                     .text_sm()
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(t.foreground)
-                                    .child(t!("No geotagged photos in this folder")),
+                                    .child(t!("No photos with a place here")),
                             )
                             .child(
                                 div()
                                     .text_xs()
                                     .text_color(t.muted_foreground)
-                                    .child(t!("Photos with EXIF GPS location coordinates appear as pins here.")),
+                                    .child(t!("Pictures that know where they were taken show up as pins.")),
                             ),
                     ),
                 )

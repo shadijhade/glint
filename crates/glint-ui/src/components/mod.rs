@@ -38,6 +38,8 @@ pub mod palette;
 pub mod pane_bars;
 /// The head of a pane: the folder's name and picture, what is in it, and a chip for each kind.
 pub mod pane_head;
+/// The header the 0.16 panels share: title, a line of what it holds, its tools, and a close button.
+pub mod panel_header;
 /// The card a tab or a breadcrumb the pointer rests on shows: what its folder holds.
 pub mod peek_card;
 /// Offline 120 FPS interactive vector Photo World Map.
