@@ -5,8 +5,13 @@
 //! A single item is shown once the selection has rested for 70 ms (`useSettled`), so arrowing quickly through a
 //! list doesn't load every file on the way; the other states show at once. What a selection is made of is worked
 //! out on a background thread, so a folder of a million files with everything selected doesn't stop the UI.
+//!
+//! Between two items the old preview stays up until the new one is ready (its picture decoded, its text read,
+//! its details in), at most [`HOLD`]: the pane never shows the empty frame of a preview still being read. The
+//! new one is built at once, kept behind the old one, and put in its place the moment it is ready.
 
 use super::cards::items;
+use super::choose::Body;
 use super::frame::{EntryView, Place};
 use super::picture::release_retired;
 use super::states::centered;
@@ -25,6 +30,8 @@ use std::time::Duration;
 
 /// How long a selection rests before one item is previewed (`useSettled(…, 70)`).
 const SETTLE: Duration = Duration::from_millis(70);
+/// The longest the old preview stays up for the next one to be ready; after it the new one shows as it is.
+const HOLD: Duration = Duration::from_millis(150);
 /// The deck shows this many items.
 const DECK: usize = 3;
 /// A card in the deck, and its thumbnail (`size-18`, `size-14`), in pixels at the usual text size.
@@ -203,11 +210,16 @@ pub struct PreviewPane {
     summary: Summary,
     shown: Shown,
     view: Option<Entity<EntryView>>,
+    /// The next item's preview while it is being made ready: the old one is still on screen.
+    incoming: Option<Entity<EntryView>>,
     seen: Option<Fingerprint>,
     /// The scan of the listing shown, with the listing's address and the path it is for.
     scanned: Option<(usize, String, Scan)>,
     generation: u64,
     _settling: Option<Task<()>>,
+    /// The wait for [`PreviewPane::incoming`]: it ends when the new preview is ready or [`HOLD`] is up.
+    _hold: Option<Task<()>>,
+    _arrival: Option<Subscription>,
     deck_watch: Option<Subscription>,
     _subscriptions: Vec<Subscription>,
 }
@@ -238,10 +250,13 @@ impl PreviewPane {
             summary: Summary::default(),
             shown: Shown::Nothing,
             view: None,
+            incoming: None,
             seen: None,
             scanned: None,
             generation: 0,
             _settling: None,
+            _hold: None,
+            _arrival: None,
             deck_watch: None,
             _subscriptions: subscriptions,
         };
@@ -259,6 +274,12 @@ impl PreviewPane {
     #[cfg(test)]
     pub fn entry_view(&self) -> Option<&Entity<EntryView>> {
         self.view.as_ref()
+    }
+
+    /// The preview being made ready behind the one on screen.
+    #[cfg(test)]
+    pub fn incoming(&self) -> Option<&Entity<EntryView>> {
+        self.incoming.as_ref()
     }
 
     /// Looks at the active tab again.
@@ -353,21 +374,71 @@ impl PreviewPane {
         }
         match &shown {
             Shown::One(entry) => {
-                let same = self.view.as_ref().is_some_and(|view| {
+                let is = |view: &Entity<EntryView>, cx: &App| {
                     let shown = view.read(cx).entry();
                     shown.path == entry.path && shown.modified == entry.modified
-                });
-                if !same {
+                };
+                if self.incoming.as_ref().is_some_and(|view| is(view, cx)) {
+                    // Already on its way.
+                } else if self.view.as_ref().is_some_and(|view| is(view, cx)) {
+                    // Back to what is on screen (or the same again): whatever was coming is not wanted.
+                    self.drop_incoming();
+                } else {
                     let entry = entry.clone();
-                    self.view = Some(cx.new(|cx| EntryView::new(entry, Place::Pane, window, cx)));
+                    let fresh = cx.new(|cx| EntryView::new(entry, Place::Pane, window, cx));
+                    // A preview that is all there at once, or one Windows draws in a window of its own (it can't
+                    // wait behind another), takes its place now; so does the first, with nothing to hold.
+                    let native = matches!(fresh.read(cx).body(), Some(Body::Shell(_)));
+                    if self.view.is_none() || native || fresh.read(cx).ready(cx) {
+                        self.drop_incoming();
+                        self.view = Some(fresh);
+                    } else {
+                        self.hold(fresh, window, cx);
+                    }
                 }
             }
-            _ => self.view = None,
+            _ => {
+                self.drop_incoming();
+                self.view = None;
+            }
         }
         if self.shown != shown {
             self.shown = shown;
         }
         cx.notify();
+    }
+}
+
+impl PreviewPane {
+    /// Keeps the old preview up while `fresh` gets ready.
+    fn hold(&mut self, fresh: Entity<EntryView>, window: &mut Window, cx: &mut Context<Self>) {
+        self._arrival = Some(cx.observe_in(&fresh, window, |this, fresh, window, cx| {
+            if fresh.read(cx).ready(cx) {
+                this.arrive(window, cx);
+            }
+        }));
+        self._hold = Some(cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(HOLD).await;
+            this.update_in(cx, |this, window, cx| this.arrive(window, cx)).ok();
+        }));
+        self.incoming = Some(fresh);
+    }
+
+    /// The new preview takes the old one's place; the old one, and what it held, is let go.
+    fn arrive(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(fresh) = self.incoming.take() {
+            self.view = Some(fresh);
+        }
+        self._arrival = None;
+        self._hold = None;
+        cx.notify();
+    }
+
+    /// Lets go of a preview that was coming.
+    fn drop_incoming(&mut self) {
+        self.incoming = None;
+        self._arrival = None;
+        self._hold = None;
     }
 }
 
@@ -384,14 +455,23 @@ impl Render for PreviewPane {
             (Shown::Many(many), _) => self.many(many.clone(), &t, window, cx),
             _ => self.folder(&t, cx),
         };
+        // A picture on its way is drawn unseen, under the old preview, so its place is measured and the picture is
+        // there on the frame it takes over. Others wait unseen and unbuilt: Windows' previewers must not draw yet.
+        let unseen = self
+            .incoming
+            .as_ref()
+            .filter(|view| matches!(view.read(cx).body(), Some(Body::Picture)))
+            .map(|view| div().absolute().size_full().opacity(0.).child(view.clone()));
         col()
             .id("preview-pane")
             .role(Role::Complementary)
             .aria_label(t!("Preview pane"))
             .test_support()
+            .relative()
             .size_full()
             .min_w_0()
             .text_start()
+            .children(unseen)
             .child(body)
     }
 }
@@ -566,11 +646,18 @@ impl PreviewPane {
                 .test_support()
                 .child(text)
         };
-        let hint = |text: SharedString| div().text_size(theme::size::XS).child(text);
-        let card = |name: &'static str| centered(cx).id(name).role(Role::Group).test_support();
+        let hint = |text: SharedString| {
+            div()
+                .text_size(theme::size::XXS)
+                .text_color(t.muted_foreground.opacity(0.7))
+                .child(text)
+        };
+        // A quiet card: a small picture, the name, the facts and one hint, close together.
+        let card = |name: &'static str| centered(cx).id(name).role(Role::Group).test_support().gap(space(1.5));
         let muted_icon = |glyph: IconName| {
             icon(glyph)
-                .size(px(56.))
+                .size(px(40.))
+                .mb(space(1.))
                 .flex_none()
                 .text_color(t.muted_foreground.opacity(0.7))
         };
@@ -586,7 +673,8 @@ impl PreviewPane {
                 .aria_label(t!("No access"))
                 .child(
                     icon(IconName::FolderLock)
-                        .size(px(56.))
+                        .size(px(40.))
+                        .mb(space(1.))
                         .flex_none()
                         .text_color(t.muted_foreground.opacity(0.6)),
                 )
@@ -640,7 +728,11 @@ impl PreviewPane {
         };
         card("preview-nothing")
             .aria_label(t!("Select a file to preview it"))
-            .child(crate::art::folder(px(88.), theme::folder_tone(cx), None, cx))
+            .child(
+                div()
+                    .mb(space(1.))
+                    .child(crate::art::folder(px(56.), theme::folder_tone(cx), None, cx)),
+            )
             .child(named(name.into()))
             .child(line(match summary.total {
                 Some(total) => format!(

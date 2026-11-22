@@ -7,7 +7,7 @@ use super::choose::{Body, View};
 use super::frame::{chosen, EntryView};
 use super::notebook::NotebookView;
 use super::pane::{PreviewPane, Shown};
-use super::picture::PictureView;
+use super::picture::{Backdrop, PictureView};
 use super::probe::{Probed, TextProbe};
 use super::program::ProgramPreview;
 use super::quick_look;
@@ -83,6 +83,8 @@ pub(crate) struct Fake {
     pub counts: RefCell<Option<Result<Counts, String>>>,
     pub archive: RefCell<Option<Result<ArchiveFacts, String>>>,
     pub media: RefCell<Option<Media>>,
+    /// The next read of a photo's details waits for a message on this (None: answers at once).
+    pub media_gate: RefCell<Option<async_channel::Receiver<()>>>,
     pub thumbnail: RefCell<Option<glint_core::thumbs::Thumbnail>>,
     pub lines: RefCell<Vec<String>>,
     pub extracted: RefCell<HashMap<String, String>>,
@@ -160,7 +162,13 @@ impl Fake {
                 let fake = fake.clone();
                 Rc::new(move |_| {
                     let answer = fake.media.borrow().clone();
-                    Box::pin(async move { answer })
+                    let gate = fake.media_gate.borrow_mut().take();
+                    Box::pin(async move {
+                        if let Some(gate) = gate {
+                            gate.recv().await.ok();
+                        }
+                        answer
+                    })
                 })
             },
             thumbnail: {
@@ -350,6 +358,21 @@ impl Env {
             window.click(id, cx);
         });
         self.visual.run_until_parked();
+    }
+
+    /// The rows of the header's "…" menu for the item shown (opened, read, and closed again).
+    pub fn more_rows(&mut self) -> Vec<String> {
+        let Some(view) = self.entry_view() else {
+            return Vec::new();
+        };
+        if !self.has_id("preview-more") {
+            return Vec::new();
+        }
+        self.click("preview-more");
+        let rows = view.read_with(&self.visual, |v, cx| v.more_labels(cx));
+        self.visual.update(|window, cx| window.press("escape", cx));
+        self.visual.run_until_parked();
+        rows
     }
 
     pub fn press(&mut self, key: &str) {
@@ -849,18 +872,23 @@ fn x_ray_is_offered_for_files_on_disk_and_opens_its_dialog(cx: &mut TestAppConte
     let _guard = testing::lock();
     let mut env = setup(cx);
     env.select("notes.txt");
-    assert!(env.has_id("preview-xray"));
     assert!(
         !env.has_id("preview-compare"),
         "one file alone has nothing to compare with"
     );
-    env.click("preview-xray");
+    // File X-Ray is rare: it is under the header's "…", after Show in File Explorer.
+    assert_eq!(
+        env.more_rows(),
+        ["Show in File Explorer", "File X-Ray: hashes and hidden streams"]
+    );
+    env.click("preview-more");
+    env.click(("menu-row", 1usize));
     assert!(env.dialog_open());
     // Not for a folder, a file in an archive or the Recycle Bin.
     env.visual.update(|window, cx| window.close_dialog(cx));
     for name in ["sub", "inside.txt", "gone.txt"] {
         env.select(name);
-        assert!(!env.has_id("preview-xray"), "{name}");
+        assert!(!env.more_rows().iter().any(|row| row.contains("X-Ray")), "{name}");
     }
 }
 
@@ -1151,8 +1179,33 @@ fn a_picture_is_drawn_here_and_says_its_size(cx: &mut TestAppContext) {
     assert_eq!(picture.read_with(&env.visual, |p, _| p.dimensions()), Some((4, 2)));
     assert!(env.has("4 × 2 px"));
     assert!(env.has("Picture: photo.bmp"));
-    // Windows' tools for a picture on disk: BMPs rotate and are wallpaper.
-    assert!(env.has_id("preview-copy-text") && env.has_id("preview-rotate") && env.has_id("preview-wallpaper"));
+    // Windows' tools for a picture on disk, most used first, one row: BMPs rotate (and are wallpaper); the row
+    // holds two, the rest are under "…". An opaque picture has no backdrop to choose.
+    assert!(env.has_id("preview-rotate") && env.has_id("preview-colors"));
+    assert!(!env.has_id("preview-copy-text") && !env.has_id("preview-wallpaper"));
+    assert!(!env.has_id("preview-backdrop"), "nothing shows through it");
+    env.click("preview-picture-more");
+    let rows = picture.read_with(&env.visual, |p, cx| p.menu_labels(cx));
+    assert_eq!(rows, ["Copy text", "Wallpaper"]);
+}
+
+#[gpui_kit::test]
+fn a_see_through_picture_has_a_backdrop_and_a_jpeg_never_does(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut env = setup(cx);
+    env.select("photo.bmp");
+    let picture = env.picture();
+    env.until("the picture decodes", |env| {
+        picture.read_with(&env.visual, |p, _| p.dimensions().is_some())
+    });
+    picture.update(&mut env.visual, |p, cx| p.set_alpha(true, cx));
+    env.visual.update(|window, cx| window.render_frame(cx));
+    env.click("preview-picture-more");
+    let rows = picture.read_with(&env.visual, |p, cx| p.menu_labels(cx));
+    assert_eq!(rows, ["Copy text", "Wallpaper", "Backdrop: Checks"]);
+    // Choosing it from the menu cycles it.
+    env.click(("menu-row", 2usize));
+    assert_eq!(picture.read_with(&env.visual, |p, _| p.backdrop()), Backdrop::Dark);
 }
 
 #[gpui_kit::test]
@@ -1192,13 +1245,10 @@ fn zoom_backdrop_and_windows_tools_work_on_a_picture(cx: &mut TestAppContext) {
         });
     }
     assert_eq!(picture.read_with(&env.visual, |p, _| p.zoom()), 1.);
-    // What shows through: checks, then dark, then light.
-    assert!(env.has("Backdrop: Checks"));
-    env.click("preview-backdrop");
-    assert!(env.has("Backdrop: Dark"));
-    // Rotate and Wallpaper ask Windows.
+    // Rotate (in the row) and Wallpaper (under "…") ask Windows.
     env.click("preview-rotate");
-    env.click("preview-wallpaper");
+    env.click("preview-picture-more");
+    env.click(("menu-row", 1usize));
     assert_eq!(env.fake.count("rotate"), 1);
     assert_eq!(env.fake.count("wallpaper"), 1);
 }
@@ -1213,7 +1263,8 @@ fn copy_text_puts_the_text_on_the_clipboard(cx: &mut TestAppContext) {
     env.until("the picture decodes", |env| {
         picture.read_with(&env.visual, |p, _| p.dimensions().is_some())
     });
-    env.click("preview-copy-text");
+    env.click("preview-picture-more");
+    env.click(("menu-row", 0usize));
     env.until("the text is copied", |env| {
         env.visual.read_from_clipboard().and_then(|item| item.text()).as_deref() == Some("Invoice\n2026-10-24")
     });
@@ -1502,7 +1553,8 @@ fn the_actions_open_reveal_and_restore(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let mut env = setup(cx);
     env.select("notes.txt");
-    env.click("preview-reveal");
+    env.click("preview-more");
+    env.click(("menu-row", 0usize));
     assert!(
         env.fake.logged().contains(&format!("reveal {}", env.path("notes.txt"))),
         "{:?}",
@@ -1589,7 +1641,7 @@ fn an_item_in_the_recycle_bin_is_restored_not_opened(cx: &mut TestAppContext) {
     let mut env = setup(cx);
     env.select("gone.txt");
     assert!(env.has("Restore"));
-    assert!(!env.has_id("preview-open") && !env.has_id("preview-reveal"));
+    assert!(!env.has_id("preview-open") && !env.has_id("preview-more"));
     // It was deleted from somewhere: said under it.
     assert!(
         env.has(r"Deleted from: C:\Users\a\Documents"),
@@ -1651,4 +1703,101 @@ fn every_icon_the_preview_draws_is_embedded() {
         let path = name.path();
         assert!(matches!(AllAssets.load(&path), Ok(Some(_))), "{path} is not embedded");
     }
+}
+
+// ---- Switching ---------------------------------------------------------------------------------------------
+
+impl Env {
+    /// Selects one item and lets only the pane's rest pass: the new preview is made and may still be waiting.
+    fn select_without_settling(&mut self, name: &str) {
+        let path = self.path(name);
+        self.explorer
+            .update(&mut self.visual, |e, cx| e.select_only(Some(&path), cx));
+        self.executor.advance_clock(Duration::from_millis(80));
+        self.visual.run_until_parked();
+        self.visual.update(|window, cx| window.render_frame(cx));
+    }
+
+    fn shown_name(&mut self) -> Option<String> {
+        let view = self.entry_view()?;
+        Some(view.read_with(&self.visual, |v, _| v.entry().name.clone()))
+    }
+
+    fn incoming_name(&mut self) -> Option<String> {
+        let view = self.pane.read_with(&self.visual, |pane, _| pane.incoming().cloned())?;
+        Some(view.read_with(&self.visual, |v, _| v.entry().name.clone()))
+    }
+}
+
+#[gpui_kit::test]
+fn the_old_preview_stays_until_the_next_one_has_its_details(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut env = setup(cx);
+    env.select("notes.txt");
+    assert_eq!(env.shown_name().as_deref(), Some("notes.txt"));
+    *env.fake.media.borrow_mut() = Some(Media {
+        rows: vec![("Camera".into(), "Canon EOS".into())],
+        place: None,
+    });
+    let (release, gate) = async_channel::bounded(1);
+    *env.fake.media_gate.borrow_mut() = Some(gate);
+    env.select_without_settling("photo.bmp");
+    // The picture is decoded, but its details are not in: the text is still what the pane shows, whole.
+    assert_eq!(
+        env.shown_name().as_deref(),
+        Some("notes.txt"),
+        "no empty frame between two files"
+    );
+    assert_eq!(env.incoming_name().as_deref(), Some("photo.bmp"));
+    assert!(env.has("Preview of notes.txt"));
+    // The details arrive: the picture takes its place at once, with them.
+    release.try_send(()).expect("the gate opens");
+    env.visual.run_until_parked();
+    assert_eq!(env.shown_name().as_deref(), Some("photo.bmp"));
+    assert_eq!(env.incoming_name(), None, "nothing is held any more");
+    env.visual.update(|window, cx| window.render_frame(cx));
+    assert!(env.has("Camera: Canon EOS"), "the rows are there on the first frame");
+}
+
+#[gpui_kit::test]
+fn the_old_preview_is_held_for_a_moment_only(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut env = setup(cx);
+    env.select("notes.txt");
+    let (_release, gate) = async_channel::bounded::<()>(1);
+    *env.fake.media_gate.borrow_mut() = Some(gate);
+    env.select_without_settling("photo.bmp");
+    assert_eq!(env.shown_name().as_deref(), Some("notes.txt"));
+    // Never ready: after the hold the new preview shows as it is.
+    env.executor.advance_clock(Duration::from_millis(160));
+    env.visual.run_until_parked();
+    assert_eq!(env.shown_name().as_deref(), Some("photo.bmp"));
+    assert_eq!(env.incoming_name(), None);
+}
+
+#[gpui_kit::test]
+fn going_back_to_the_item_on_screen_drops_the_one_that_was_coming(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut env = setup(cx);
+    env.select("notes.txt");
+    let (_release, gate) = async_channel::bounded::<()>(1);
+    *env.fake.media_gate.borrow_mut() = Some(gate);
+    env.select_without_settling("photo.bmp");
+    assert_eq!(env.incoming_name().as_deref(), Some("photo.bmp"));
+    env.select_without_settling("notes.txt");
+    assert_eq!(env.incoming_name(), None);
+    assert_eq!(env.shown_name().as_deref(), Some("notes.txt"));
+    // Clearing the selection brings the folder's card at once, nothing held.
+    env.select_without_settling("photo.bmp");
+    env.explorer.update(&mut env.visual, |e, cx| e.select_only(None, cx));
+    env.visual.run_until_parked();
+    assert_eq!(env.incoming_name(), None);
+    assert!(env.entry_view().is_none());
+}
+
+#[test]
+fn a_picture_is_see_through_when_any_pixel_is_not_opaque() {
+    assert!(!super::picture::has_alpha(&[1, 2, 3, 255, 4, 5, 6, 255]));
+    assert!(super::picture::has_alpha(&[1, 2, 3, 255, 4, 5, 6, 254]));
+    assert!(!super::picture::has_alpha(&[]));
 }

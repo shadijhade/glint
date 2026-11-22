@@ -43,6 +43,8 @@ pub struct TextProbe {
     entry: FileEntry,
     waiting: Entity<Waiting>,
     state: Probed,
+    /// The text previewer's own reading tells this view when it is in.
+    _inner: Option<gpui_kit::Subscription>,
     _task: Task<()>,
 }
 
@@ -61,6 +63,7 @@ impl TextProbe {
             entry: shown,
             waiting,
             state: Probed::Reading,
+            _inner: None,
             _task: task,
         }
     }
@@ -68,6 +71,19 @@ impl TextProbe {
     /// How it read.
     pub fn state(&self) -> &Probed {
         &self.state
+    }
+
+    /// Whether what shows is the file itself or why it can't be: the start has been read and, for text, the
+    /// previewer has read its text.
+    pub fn is_ready(&self, cx: &App) -> bool {
+        match &self.state {
+            Probed::Reading => false,
+            Probed::Text(view) => view
+                .clone()
+                .downcast::<TextPreview>()
+                .map_or(true, |text| text.read(cx).is_ready()),
+            _ => true,
+        }
     }
 
     /// The text view once built.
@@ -107,7 +123,11 @@ impl TextProbe {
             }
             Ok(Probe { empty: true, .. }) => Probed::Empty,
             Ok(_) => match kind {
-                As::Text => Probed::Text(cx.new(|cx| TextPreview::new(path, window, cx)).into()),
+                As::Text => {
+                    let text = cx.new(|cx| TextPreview::new(path, window, cx));
+                    self._inner = Some(cx.observe(&text, |_, _, cx| cx.notify()));
+                    Probed::Text(text.into())
+                }
                 As::Markdown => Probed::Text(cx.new(|cx| MarkdownPreview::new(path, window, cx)).into()),
             },
         };

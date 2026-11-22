@@ -24,6 +24,7 @@ use super::data::DataPreview;
 use super::details::{has_details, map_link, rows};
 use super::docx::{DocxEvent, DocxView};
 use super::hex::HexPreview;
+use super::more::{self, OpenMore};
 use super::notebook::NotebookView;
 use super::pdf::PdfView;
 use super::picture::{release_retired, PictureView};
@@ -38,6 +39,7 @@ use super::sources::{sources, Media, Sources};
 use super::sqlite::{SqliteEvent, SqlitePreview};
 use crate::components::command_bar::{Facts, Pair};
 use crate::components::git::{self, ChangesView};
+use crate::components::menus::Node;
 use crate::dialogs::action_run::{tools_model, Tooling};
 use crate::dialogs::data_tools::{core_backend, ProfileView, QueryView};
 use crate::dialogs::password::{unlocks, Unlocks};
@@ -47,7 +49,13 @@ use crate::kit::prelude::*;
 use crate::{state, t, theme};
 use glint_model::entries::{is_archived, is_closed, is_recycled, is_remote, FileEntry};
 use glint_model::paths::same_path;
-use gpui_kit::{ScrollHandle, Subscription, Task};
+use gpui_kit::{canvas, ScrollHandle, Subscription, Task};
+
+thread_local! {
+    /// How tall the details of a photo, video or song were last drawn with everything read: the next one keeps
+    /// that much room while its own rows are still being read, so the preview above doesn't jump when they arrive.
+    static DETAILS_HEIGHT: std::cell::Cell<f32> = const { std::cell::Cell::new(0.) };
+}
 
 /// Where an item's preview is: the pane beside the files, or Quick Look over them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -122,6 +130,8 @@ pub struct EntryView {
     key: Option<Key>,
     body: Option<AnyView>,
     media: Option<Media>,
+    /// What the details read is in (or nothing was asked for): the rows are all there.
+    media_done: bool,
     maximized: bool,
     /// Git has a change for the file, so it has a Changes view (`useGitMark`).
     changed: bool,
@@ -130,9 +140,13 @@ pub struct EntryView {
     /// The SQL a database's Rows button asked the Query view to start with: the file's path and the SQL.
     draft: Option<(String, String)>,
     scroll: ScrollHandle,
+    /// The header's "…" menu while it is open.
+    more: Option<OpenMore>,
     _media: Option<Task<()>>,
     /// What the body told the frame (the database's Rows button).
     _body_events: Option<Subscription>,
+    /// The picture or text being read tells the frame when it is in, for [`EntryView::ready`].
+    _body_watch: Option<Subscription>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -172,6 +186,7 @@ impl EntryView {
                 let media = running.await;
                 this.update(cx, |this, cx| {
                     this.media = media;
+                    this.media_done = true;
                     cx.notify();
                 })
                 .ok();
@@ -186,13 +201,16 @@ impl EntryView {
             key: None,
             body: None,
             media: None,
+            media_done: media.is_none(),
             maximized: false,
             changed,
             pair,
             draft: None,
             scroll: ScrollHandle::new(),
+            more: None,
             _media: media,
             _body_events: None,
+            _body_watch: None,
             _subscriptions: subscriptions,
         };
         view.build(window, cx);
@@ -229,6 +247,22 @@ impl EntryView {
         self.changed
     }
 
+    /// The labels of the rows of the "…" menu while it is open, for tests.
+    #[cfg(test)]
+    pub fn more_labels(&self, cx: &App) -> Vec<String> {
+        self.more.as_ref().map_or_else(Vec::new, |open| {
+            open.view()
+                .read(cx)
+                .nodes()
+                .iter()
+                .filter_map(|node| match node {
+                    Node::Item(entry) => Some(entry.label.to_string()),
+                    _ => None,
+                })
+                .collect()
+        })
+    }
+
     /// The two files the Compare button opens, if it shows.
     pub fn compare_pair(&self) -> Option<&Pair> {
         self.pair.as_ref()
@@ -237,6 +271,22 @@ impl EntryView {
     /// The SQL the Query view starts with, once a database's Rows button asked for it.
     pub fn draft(&self) -> Option<&str> {
         self.draft.as_ref().map(|(_, sql)| sql.as_str())
+    }
+
+    /// Whether the preview is all there: what the previewer reads is in (a picture decoded, a text read) and so
+    /// are the details. The pane keeps the old preview up until the next one is.
+    pub fn ready(&self, cx: &App) -> bool {
+        if !self.media_done {
+            return false;
+        }
+        let Some(body) = &self.body else { return true };
+        if let Ok(picture) = body.clone().downcast::<PictureView>() {
+            return picture.read(cx).is_ready();
+        }
+        if let Ok(probe) = body.clone().downcast::<TextProbe>() {
+            return probe.read(cx).is_ready(cx);
+        }
+        true
     }
 
     /// The item shown.
@@ -331,6 +381,7 @@ impl EntryView {
         }
         self.key = Some(key);
         self._body_events = None;
+        self._body_watch = None;
         let entry = self.entry.clone();
         let path = entry.path.clone();
         let claimant = self.place.claimant();
@@ -345,13 +396,17 @@ impl EntryView {
             Body::Icon => plain(Plain::Icon, cx),
             Body::Locked => cx.new(|cx| LockedCard::new(entry.clone(), window, cx)).into(),
             Body::Archive => cx.new(|cx| ArchiveCard::new(entry.clone(), cx)).into(),
-            Body::Picture => cx.new(|cx| PictureView::new(entry.clone(), window, cx)).into(),
-            Body::Text => cx
-                .new(|cx| TextProbe::new(entry.clone(), As::Text, claimant, window, cx))
-                .into(),
-            Body::Markdown => cx
-                .new(|cx| TextProbe::new(entry.clone(), As::Markdown, claimant, window, cx))
-                .into(),
+            Body::Picture => {
+                let view = cx.new(|cx| PictureView::new(entry.clone(), window, cx));
+                self._body_watch = Some(cx.observe(&view, |_, _, cx| cx.notify()));
+                view.into()
+            }
+            Body::Text | Body::Markdown => {
+                let kind = if kind == Body::Text { As::Text } else { As::Markdown };
+                let view = cx.new(|cx| TextProbe::new(entry.clone(), kind, claimant, window, cx));
+                self._body_watch = Some(cx.observe(&view, |_, _, cx| cx.notify()));
+                view.into()
+            }
             Body::Data => cx.new(|cx| DataPreview::new(path, window, cx)).into(),
             Body::Hex => cx.new(|cx| HexPreview::new(path, window, cx)).into(),
             Body::Sqlite => {
@@ -451,6 +506,62 @@ impl EntryView {
         });
     }
 
+    /// File X-Ray reads the file itself: not a folder, nothing in an archive or a closed folder or the bin.
+    fn reads(&self) -> bool {
+        let entry = &self.entry;
+        !entry.dir && !is_archived(entry) && !is_closed(entry) && !is_recycled(entry)
+    }
+
+    /// Whether File Explorer can be asked to show the item.
+    fn can_reveal(&self) -> bool {
+        !is_recycled(&self.entry) && !is_remote(&self.entry)
+    }
+
+    /// The rare actions the header's "…" holds, most used first. Empty when none applies here.
+    fn rare_actions(&self) -> Vec<Node> {
+        let mut rows = Vec::new();
+        if self.can_reveal() {
+            let label = if is_archived(&self.entry) {
+                t!("Show the archive in File Explorer")
+            } else {
+                t!("Show in File Explorer")
+            };
+            rows.push(Node::Item(more::row_of("reveal", label, IconName::FolderSearch)));
+        }
+        if self.reads() {
+            rows.push(Node::Item(more::row_of(
+                "xray",
+                t!("File X-Ray: hashes and hidden streams"),
+                IconName::FingerprintPattern,
+            )));
+        }
+        rows
+    }
+
+    /// The "…" menu, under the click.
+    fn open_more(&mut self, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        self.more = more::open(
+            self.rare_actions(),
+            t!("More actions"),
+            at,
+            window,
+            cx,
+            |this, id, window, cx| {
+                this.more = None;
+                cx.notify();
+                match id.as_deref() {
+                    Some("reveal") => {
+                        let target = this.reveal_target(cx);
+                        (this.sources.reveal)(&target);
+                    }
+                    Some("xray") => xray::open(window, cx, this.entry.path.clone()),
+                    _ => {}
+                }
+            },
+        );
+        cx.notify();
+    }
+
     /// What File Explorer is asked to show: the archive, for an item inside one.
     fn reveal_target(&self, cx: &App) -> String {
         let archive = explorer::try_explorer(cx).and_then(|e| e.read(cx).archive_of(None).map(|a| a.outer.clone()));
@@ -466,7 +577,6 @@ impl Render for EntryView {
         let t = theme::tokens(cx).clone();
         let prefix = self.place.prefix();
         let entry = self.entry.clone();
-        let archived = is_archived(&entry);
         let recycled = is_recycled(&entry);
         let current = self.key.map(|k| k.view).unwrap_or_default();
 
@@ -526,9 +636,8 @@ impl Render for EntryView {
                 .accessibility_label(label)
                 .tooltip(hint)
         };
-        // Compare and X-Ray read the file itself: not a folder, nothing in an archive or a closed folder or the bin.
-        let reads = !entry.dir && !archived && !is_closed(&entry) && !recycled;
-        let compare = self.pair.clone().filter(|_| reads).map(|pair| {
+        // Compare reads the file itself: not a folder, nothing in an archive or a closed folder or the bin.
+        let compare = self.pair.clone().filter(|_| self.reads()).map(|pair| {
             action(
                 "compare",
                 IconName::GitCompareArrows,
@@ -547,16 +656,6 @@ impl Render for EntryView {
             .text_color(t.primary)
             .on_click(move |_, window, cx| compare_files::open(window, cx, pair.left.clone(), pair.right.clone()))
         });
-        let x_ray = reads.then(|| {
-            let path = entry.path.clone();
-            action(
-                "xray",
-                IconName::FingerprintPattern,
-                t!("File X-Ray"),
-                t!("File X-Ray: hashes and hidden streams"),
-            )
-            .on_click(move |_, window, cx| xray::open(window, cx, path.clone()))
-        });
         let restore = recycled.then(|| {
             let hint = t!(
                 "Restore: back into {folder}",
@@ -573,15 +672,19 @@ impl Render for EntryView {
                 }
             })
         });
-        let reveal = (!recycled && !is_remote(&entry)).then(|| {
-            let hint = if archived {
-                t!("Show the archive in File Explorer")
-            } else {
-                t!("Show in File Explorer")
-            };
-            let target = self.reveal_target(cx);
-            let reveal = self.sources.reveal.clone();
-            action("reveal", IconName::FolderSearch, hint.clone(), hint).on_click(move |_, _, _| reveal(&target))
+        // Show in File Explorer and File X-Ray are rare: they live in the "…" menu, which is there only when
+        // one of them applies.
+        let more = (!self.rare_actions().is_empty()).then(|| {
+            action(
+                "more",
+                IconName::Ellipsis,
+                t!("More actions"),
+                t!("More: Show in File Explorer, File X-Ray…"),
+            )
+            .selected(self.more.is_some())
+            .on_click(
+                cx.listener(|this, event: &ClickEvent, window, cx| this.open_more(more::below(event), window, cx)),
+            )
         });
         let open = (!recycled).then(|| {
             action("open", IconName::ExternalLink, t!("Open"), t!("Open (Enter)"))
@@ -653,16 +756,16 @@ impl Render for EntryView {
                             .flex_none()
                             .gap(space(0.5))
                             .children(compare)
-                            .children(x_ray)
                             .children(restore)
-                            .children(reveal)
                             .children(open)
+                            .children(more)
                             .children(maximize)
                             .children(close),
                     ),
             )
             .children(below.map(|views| row_start().pe(3.).ps(1.).pb(space(2.)).child(views)));
 
+        let menu = self.more.as_ref().map(more::element);
         let body = self
             .body
             .clone()
@@ -690,6 +793,7 @@ impl Render for EntryView {
                     .child(body),
             )
             .child(self.details(&t))
+            .children(menu)
     }
 }
 
@@ -699,8 +803,29 @@ impl EntryView {
         let prefix = self.place.prefix();
         let place = self.media.as_ref().and_then(|media| media.place);
         let list = rows(&self.entry, self.media.as_ref());
+        // Rows still being read keep the room the last ones took; once read, the height is learnt again.
+        let has_rows = has_details(&self.entry) && !is_archived(&self.entry);
+        let pending = has_rows && !self.media_done;
+        let learn = has_rows && self.media_done;
+        let reserve = if pending {
+            DETAILS_HEIGHT.with(std::cell::Cell::get)
+        } else {
+            0.
+        };
+        let measure = canvas(
+            move |bounds, _, _| {
+                if learn {
+                    DETAILS_HEIGHT.with(|height| height.set(f32::from(bounds.size.height)));
+                }
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .size_full();
         col()
             .id(format!("{prefix}-details"))
+            .relative()
+            .min_h(px(reserve))
             .role(Role::Group)
             .aria_label(t!("Details"))
             .test_support()
@@ -711,6 +836,7 @@ impl EntryView {
             .px(space(4.))
             .py(space(3.))
             .text_size(theme::size::XS)
+            .child(measure)
             .children(list.into_iter().enumerate().map(|(i, row_)| {
                 let is_place = row_.label.as_ref() == "Place" && place.is_some();
                 let label = row_.label.clone();
