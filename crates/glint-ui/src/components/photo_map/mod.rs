@@ -834,6 +834,7 @@ mod tests {
                 lat: 35.6595,
                 lon: 139.7004,
                 taken: 1_700_000_000,
+                ..Default::default()
             },
             GeoPhoto {
                 path: "C:\\Trip\\eiffel.jpg".into(),
@@ -841,6 +842,7 @@ mod tests {
                 lat: 48.8584,
                 lon: 2.2945,
                 taken: 1_700_000_100,
+                ..Default::default()
             },
         ];
         let loader: GeoLoader = std::sync::Arc::new(move |_| sample.clone());

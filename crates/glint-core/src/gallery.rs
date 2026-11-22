@@ -2,24 +2,30 @@
 //! folders (Pictures and Videos, and the ones added in Settings), every one below them, newest first by
 //! when each was taken. Instant search's index lists them at once where it covers the folders; else
 //! they're walked. When each was taken comes from what it says (a photo's EXIF, a video's recording
-//! date), read once and kept by path, size and date (gallery-dates.json, with Glint's data), so the
-//! gallery opens at once the next time; while new ones are read, in the background, they're dated
-//! when they were modified, and the app is told once they're done ("gallery-dated").
+//! date), read once and kept by path, size and date (gallery-meta.bin, with Glint's data: `meta.rs`, which
+//! also holds where each was taken and how big it is, for the Photo Map), so the gallery opens at once the
+//! next time; while new ones are read, in the background, they're dated when they were modified, and the app
+//! is told once they're done ("gallery-dated").
 
 use crate::fsx::{self, Entry};
 use crate::host::{AppHandle, Event};
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use glint_model::world_map::GeoPhoto;
+use meta::{Job, Meta, Records, F_DATE, F_GEO};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex, MutexGuard};
 use std::time::Instant;
+
+pub mod meta;
 
 /// Gallery's path in Glint.
 pub const PLACE: &str = "shell:Gallery";
 
 /// The most it lists.
 const MOST: usize = 200_000;
+
+/// The most photos the map looks into (a folder's, or the Gallery's).
+const GEO_CAP: usize = 100_000;
 
 /// What a photo or a video is, by its extension: the pictures cameras and phones make, and videos.
 const KINDS: &[&str] = &[
@@ -37,19 +43,12 @@ fn is_media(name: &str) -> bool {
         .is_some_and(|(_, ext)| KINDS.iter().any(|k| k.eq_ignore_ascii_case(ext)))
 }
 
-type GeoCoords = Option<[f64; 2]>;
-type GeoRecord = (u64, i64, i64, GeoCoords);
-type GeoRow = (String, u64, i64, i64, GeoCoords);
-
 #[derive(Default)]
 struct State {
     folders: Vec<String>,
     app: Option<AppHandle>,
-    /// When each file was taken (0: it doesn't say), by its path in lower case, with the size and date
-    /// it had when it was read.
-    dates: Option<HashMap<String, (u64, i64, i64)>>,
-    /// Cached `(size, modified, taken, Option<[lat, lon]>)` keyed by lowercase path.
-    geo: Option<HashMap<String, GeoRecord>>,
+    /// What is known of each file, by its path in lower case (None until first asked for).
+    records: Option<Records>,
 }
 
 static STATE: LazyLock<Mutex<State>> = LazyLock::new(Default::default);
@@ -60,67 +59,29 @@ fn state() -> MutexGuard<'static, State> {
     STATE.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-fn dates_file() -> Option<PathBuf> {
-    crate::tools::data_dir().map(|d| d.join("gallery-dates.json"))
-}
-
-fn geo_file() -> Option<PathBuf> {
-    crate::tools::data_dir().map(|d| d.join("gallery-geo.json"))
-}
-
-#[derive(Serialize, Deserialize)]
-struct Saved(Vec<(String, u64, i64, i64)>);
-
-#[derive(Serialize, Deserialize)]
-struct SavedGeo(Vec<GeoRow>);
-
-fn load_dates() -> HashMap<String, (u64, i64, i64)> {
-    let saved: Option<Saved> = dates_file()
-        .and_then(|f| std::fs::read(f).ok())
-        .and_then(|b| serde_json::from_slice(&b).ok());
-    saved
-        .map(|s| {
-            s.0.into_iter()
-                .map(|(path, size, modified, taken)| (path, (size, modified, taken)))
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn save_dates(dates: &HashMap<String, (u64, i64, i64)>) {
-    let saved = Saved(
-        dates
-            .iter()
-            .map(|(path, &(size, modified, taken))| (path.clone(), size, modified, taken))
-            .collect(),
-    );
-    if let (Some(file), Ok(text)) = (dates_file(), serde_json::to_vec(&saved)) {
-        let _ = std::fs::write(file, text);
+/// Runs `f` on the records, loading them (and the old JSON files', once) the first time.
+fn with_records<R>(f: impl FnOnce(&mut Records) -> R) -> R {
+    let mut st = state();
+    if st.records.is_none() {
+        let (records, imported) = match crate::tools::data_dir() {
+            Some(dir) => meta::load(&dir),
+            None => (Records::new(), false),
+        };
+        st.records = Some(records);
+        if imported {
+            save_soon();
+        }
     }
+    f(st.records.get_or_insert_with(Records::new))
 }
 
-fn load_geo() -> HashMap<String, GeoRecord> {
-    let saved: Option<SavedGeo> = geo_file()
-        .and_then(|f| std::fs::read(f).ok())
-        .and_then(|b| serde_json::from_slice(&b).ok());
-    saved
-        .map(|s| {
-            s.0.into_iter()
-                .map(|(path, size, modified, taken, place)| (path, (size, modified, taken, place)))
-                .collect()
-        })
-        .unwrap_or_default()
+/// The records are written soon (once for a burst of changes), and the old JSON files go after.
+fn save_soon() {
+    meta::schedule_save(crate::tools::data_dir(), || state().records.clone());
 }
 
-fn save_geo(geo: &HashMap<String, GeoRecord>) {
-    let saved = SavedGeo(
-        geo.iter()
-            .map(|(path, &(size, modified, taken, place))| (path.clone(), size, modified, taken, place))
-            .collect(),
-    );
-    if let (Some(file), Ok(text)) = (geo_file(), serde_json::to_vec(&saved)) {
-        let _ = std::fs::write(file, text);
-    }
+fn lower(path: &str) -> String {
+    path.to_lowercase()
 }
 
 /// The gallery's folders, as the app has them (Pictures, Videos and the ones added in Settings).
@@ -223,21 +184,23 @@ pub fn listing(started: Instant) -> Result<fsx::Listing, String> {
         .collect();
     let mut entries = files(&folders);
     let mut unread = Vec::new();
-    {
-        let mut state = state();
-        let dates = state.dates.get_or_insert_with(load_dates);
+    with_records(|records| {
         for e in &mut entries {
-            let key = e.path.as_deref().unwrap_or_default().to_lowercase();
-            match dates.get(&key) {
-                Some(&(size, modified, taken)) if size == e.size && modified == e.modified => {
-                    if taken > 0 {
-                        e.modified = taken;
+            let path = e.path.as_deref().unwrap_or_default();
+            match records.get(&lower(path)) {
+                Some(m) if m.is_of(e.size, e.modified) && m.flags & F_DATE != 0 => {
+                    if m.taken > 0 {
+                        e.modified = m.taken;
                     }
                 }
-                _ => unread.push((key, e.path.clone().unwrap_or_default(), e.size, e.modified)),
+                _ => unread.push(Job {
+                    path: path.to_string(),
+                    size: e.size,
+                    modified: e.modified,
+                }),
             }
         }
-    }
+    });
     entries.sort_by_key(|e| std::cmp::Reverse(e.modified));
     if !unread.is_empty() && !DATING.swap(true, Ordering::SeqCst) {
         std::thread::spawn(move || date(unread));
@@ -250,132 +213,111 @@ pub fn listing(started: Instant) -> Result<fsx::Listing, String> {
     })
 }
 
-/// Reads when each file was taken, four at a time, keeps it, and tells the app.
-fn date(unread: Vec<(String, String, u64, i64)>) {
-    let read = std::sync::Mutex::new(Vec::with_capacity(unread.len()));
-    let next = std::sync::atomic::AtomicUsize::new(0);
-    std::thread::scope(|scope| {
-        for _ in 0..4 {
-            scope.spawn(|| loop {
-                let i = next.fetch_add(1, Ordering::Relaxed);
-                let Some((key, path, size, modified)) = unread.get(i) else {
-                    break;
-                };
-                let taken = crate::media::taken_of(path).unwrap_or(0);
-                read.lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .push((key.clone(), (*size, *modified, taken)));
-            });
+/// Keeps what a scan read of `jobs` (rows are indices into them, and their records).
+fn keep(jobs: &[Job], rows: &[(usize, Meta)]) {
+    with_records(|records| {
+        for &(i, meta) in rows {
+            if let Some(job) = jobs.get(i) {
+                records.insert(lower(&job.path), meta);
+            }
         }
     });
-    let app = {
-        let mut state = state();
-        let dates = state.dates.get_or_insert_with(load_dates);
-        dates.extend(read.into_inner().unwrap_or_else(|e| e.into_inner()));
-        save_dates(dates);
-        state.app.clone()
-    };
+    save_soon();
+}
+
+/// Reads when each file was taken (and the rest of what its header says), keeps it, and tells the app.
+fn date(unread: Vec<Job>) {
+    meta::scan(&unread, &|rows| keep(&unread, &rows));
+    let app = state().app.clone();
     DATING.store(false, Ordering::SeqCst);
     if let Some(app) = app {
         app.emit(Event::GalleryDated);
     }
 }
 
-/// Scans `folder` (or all Gallery folders for `shell:Gallery`) for photos/videos with EXIF GPS coordinates,
-/// backed by `gallery-geo.json` and 4 parallel EXIF readers.
-pub fn geo_photos_in(folder: &str) -> Vec<glint_model::world_map::GeoPhoto> {
-    const GEO_CAP: usize = 5_000;
-    let entries = if is_place(folder) {
+/// The files the map looks into for `folder` (or all Gallery folders for `shell:Gallery`).
+fn geo_entries(folder: &str) -> Vec<Entry> {
+    if is_place(folder) {
         let folders: Vec<String> = state()
             .folders
             .iter()
             .filter(|f| Path::new(f).is_dir())
             .cloned()
             .collect();
-        files(&folders).into_iter().take(GEO_CAP).collect::<Vec<_>>()
+        files(&folders).into_iter().take(GEO_CAP).collect()
     } else if Path::new(folder).is_dir() {
         walk_capped(&[folder.to_string()], GEO_CAP)
     } else {
-        return Vec::new();
-    };
+        Vec::new()
+    }
+}
 
-    let mut out = Vec::new();
+fn geo_photo(path: &str, size: u64, modified: i64, meta: &Meta) -> Option<GeoPhoto> {
+    let [lat, lon] = meta.place()?;
+    let name = path.rsplit(['\\', '/']).next().unwrap_or(path);
+    Some(GeoPhoto {
+        path: path.to_string(),
+        name: name.to_string(),
+        lat,
+        lon,
+        taken: if meta.taken > 0 { meta.taken } else { modified },
+        size,
+        modified,
+    })
+}
+
+/// Finds the photos and videos with a place in `folder` (or all Gallery folders for `shell:Gallery`) and hands
+/// them to `emit` as they are found: first every one the cache already knows, at once, then the ones read
+/// now, a batch every ~100 ms while the scan runs. `emit` may be called from several threads.
+pub fn geo_photos_stream(folder: &str, emit: &(dyn Fn(Vec<GeoPhoto>) + Sync)) {
+    let entries = geo_entries(folder);
+    let mut known = Vec::new();
     let mut unread = Vec::new();
-    {
-        let mut st = state();
-        let geo = st.geo.get_or_insert_with(load_geo);
+    with_records(|records| {
         for e in &entries {
             let Some(path) = e.path.as_ref() else {
                 continue;
             };
-            let key = path.to_lowercase();
-            match geo.get(&key) {
-                Some(&(size, modified, taken, place)) if size == e.size && modified == e.modified => {
-                    if let Some([lat, lon]) = place {
-                        if lat.is_finite() && lon.is_finite() {
-                            out.push(glint_model::world_map::GeoPhoto {
-                                path: path.clone(),
-                                name: e.name.clone(),
-                                lat,
-                                lon,
-                                taken: if taken > 0 { taken } else { e.modified },
-                            });
-                        }
-                    }
+            match records.get(&lower(path)) {
+                Some(m) if m.is_of(e.size, e.modified) && m.flags & F_GEO != 0 => {
+                    known.extend(geo_photo(path, e.size, e.modified, m));
                 }
-                _ => unread.push((key, path.clone(), e.name.clone(), e.size, e.modified)),
+                _ => unread.push(Job {
+                    path: path.clone(),
+                    size: e.size,
+                    modified: e.modified,
+                }),
             }
         }
+    });
+    if !known.is_empty() {
+        emit(known);
     }
-
-    if !unread.is_empty() {
-        let read = std::sync::Mutex::new(Vec::with_capacity(unread.len()));
-        let next = std::sync::atomic::AtomicUsize::new(0);
-        std::thread::scope(|scope| {
-            for _ in 0..4 {
-                scope.spawn(|| loop {
-                    let i = next.fetch_add(1, Ordering::Relaxed);
-                    let Some((key, path, name, size, modified)) = unread.get(i) else {
-                        break;
-                    };
-                    let (taken_opt, place) = crate::media::taken_and_place(path);
-                    let taken = taken_opt.unwrap_or(*modified);
-                    read.lock().unwrap_or_else(|e| e.into_inner()).push((
-                        key.clone(),
-                        path.clone(),
-                        name.clone(),
-                        *size,
-                        *modified,
-                        taken,
-                        place,
-                    ));
-                });
-            }
-        });
-        let added = read.into_inner().unwrap_or_else(|e| e.into_inner());
-        {
-            let mut st = state();
-            let geo = st.geo.get_or_insert_with(load_geo);
-            for (key, path, name, size, modified, taken, place) in added {
-                geo.insert(key, (size, modified, taken, place));
-                if let Some([lat, lon]) = place {
-                    if lat.is_finite() && lon.is_finite() {
-                        out.push(glint_model::world_map::GeoPhoto {
-                            path,
-                            name,
-                            lat,
-                            lon,
-                            taken,
-                        });
-                    }
-                }
-            }
-            if !cfg!(test) {
-                save_geo(geo);
-            }
+    if unread.is_empty() {
+        return;
+    }
+    meta::scan(&unread, &|rows| {
+        keep(&unread, &rows);
+        let found: Vec<GeoPhoto> = rows
+            .iter()
+            .filter_map(|(i, m)| {
+                let job = unread.get(*i)?;
+                geo_photo(&job.path, job.size, job.modified, m)
+            })
+            .collect();
+        if !found.is_empty() {
+            emit(found);
         }
-    }
+    });
+}
 
+/// [`geo_photos_stream`], waiting for all of them: newest first.
+pub fn geo_photos_in(folder: &str) -> Vec<GeoPhoto> {
+    let all = Mutex::new(Vec::new());
+    geo_photos_stream(folder, &|mut batch| {
+        all.lock().unwrap_or_else(|e| e.into_inner()).append(&mut batch)
+    });
+    let mut out = all.into_inner().unwrap_or_else(|e| e.into_inner());
     out.sort_by_key(|p| std::cmp::Reverse(p.taken));
     out
 }
@@ -409,24 +351,28 @@ mod tests {
     }
 
     #[test]
-    fn geo_cache_round_trips_and_handles_plain_folders() {
-        let saved = SavedGeo(vec![(
-            r"c:\pics\kyoto.jpg".into(),
-            2048,
-            1_700_000_000,
-            1_700_000_000,
-            Some([35.0116, 135.7681]),
-        )]);
-        let bytes = serde_json::to_vec(&saved).unwrap();
-        let back: SavedGeo = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(back.0[0].4, Some([35.0116, 135.7681]));
-
+    fn a_plain_folder_gives_only_its_geotagged_photos_and_streams_them() {
         let dir = std::env::temp_dir().join(format!("glint-geo-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("notes.txt"), "plain").unwrap();
         std::fs::write(dir.join("empty.jpg"), "not exif").unwrap();
         assert!(geo_photos_in(&dir.to_string_lossy()).is_empty());
+
+        let tokyo = meta::tests::test_jpeg("2022:03:04 05:06:07", Some((35.6762, 139.6503)), (800, 600), 3_000);
+        let plain = meta::tests::test_jpeg("2022:03:05 05:06:07", None, (800, 600), 3_000);
+        std::fs::write(dir.join("tokyo.jpg"), tokyo).unwrap();
+        std::fs::write(dir.join("nowhere.jpg"), plain).unwrap();
+        let batches = Mutex::new(Vec::new());
+        geo_photos_stream(&dir.to_string_lossy(), &|batch| batches.lock().unwrap().push(batch));
+        let batches = batches.into_inner().unwrap();
+        let all: Vec<&GeoPhoto> = batches.iter().flatten().collect();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].name, "tokyo.jpg");
+        assert!((all[0].lat - 35.6762).abs() < 1e-3 && (all[0].lon - 139.6503).abs() < 1e-3);
+        assert!(all[0].taken > 0 && all[0].size > 0 && all[0].modified > 0);
+        // The same photo as a list, newest first.
+        assert_eq!(geo_photos_in(&dir.to_string_lossy()).len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

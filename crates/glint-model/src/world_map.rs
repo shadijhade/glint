@@ -437,6 +437,10 @@ pub struct GeoPhoto {
     pub lon: f64,
     /// When it was taken, ms since 1970 (when it was modified, if it doesn't say).
     pub taken: i64,
+    /// The file's size and last-write time as the listing has them: the thumbnail service keys its pictures by
+    /// them, so a pin asks for the same picture a tile of the same file shows.
+    pub size: u64,
+    pub modified: i64,
 }
 
 /// The photos a map shows, and where each lies on the world map: worked out once when the set is made, so
@@ -836,6 +840,7 @@ mod tests {
             lat,
             lon,
             taken,
+            ..Default::default()
         }
     }
 

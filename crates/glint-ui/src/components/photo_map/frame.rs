@@ -66,6 +66,7 @@ mod tests {
                     lat: la + (next() - 0.5) * 2.0,
                     lon: lo + (next() - 0.5) * 2.0,
                     taken: 1_600_000_000_000 + i as i64 * 3_000_000,
+                    ..Default::default()
                 }
             })
             .collect()
