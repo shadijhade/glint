@@ -242,7 +242,7 @@ impl Sidebar {
         };
         let tip = tooltip_of(name.clone(), format!("{subtitle}\n{}", p.path).into());
         let (accent, pressed, active) = (t.accent, t.pressed, p.active);
-        let (glass, foreground, ring_color) = (t.glass, t.foreground, t.ring);
+        let (here, foreground, ring_color) = (t.current, t.foreground, t.ring);
         let unmount_id = p.id.clone();
         let unmount_name = p.name.clone();
         let unmount_path = p.path.clone();
@@ -261,12 +261,14 @@ impl Sidebar {
             .py(space(1.5))
             .rounded(theme::size::RADIUS_ROW)
             .border_1()
-            .border_color(super::row_border(t, focused, active))
+            .border_color(super::ring(t, focused))
             .cursor_pointer()
             .text_color(t.foreground.opacity(0.9))
             .hover(move |s| s.bg(accent))
             .active(move |s| s.bg(pressed))
-            .when(active, move |d| d.bg(glass).text_color(foreground))
+            .when(active, move |d| {
+                d.bg(here).text_color(foreground).font_weight(FontWeight::MEDIUM)
+            })
             .on_click(cx.listener(move |this, _, window, cx| this.click(ix, window, cx)))
             .on_mouse_down(
                 MouseButton::Middle,
@@ -279,7 +281,6 @@ impl Sidebar {
                 }),
             )
             .tooltip(tip)
-            .when(active, |d| d.child(Self::pill(t, space(4.))))
             .child(crate::art::chip(
                 theme::rem_size(cx) * 1.2,
                 theme::place_tone(theme::Place::Remote, cx),

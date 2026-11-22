@@ -1863,7 +1863,8 @@ impl Render for FileGrid {
             .size_full()
             .min_h_0()
             .items_stretch()
-            .bg(tokens.background)
+            // No fill of its own: it lies on the sheet, as the list does (a fill here would be a patch on it, with
+            // the window's light cut off at its edge).
             .on_key_down(cx.listener(|this, event, window, cx| this.key_down(event, window, cx)))
             .on_action(cx.listener(|this, _: &OpenItem, _, cx| this.open_selected(cx)))
             .on_action(cx.listener(|this, _: &OpenInNewTab, _, cx| this.open_selected_in_tabs(cx)))

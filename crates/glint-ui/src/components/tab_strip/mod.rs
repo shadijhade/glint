@@ -915,11 +915,9 @@ impl TabStrip {
                         })),
                 )
         });
-        let glass = t.glass;
+        let here = t.current;
         let accent = t.accent;
         let pressed = t.pressed;
-        let stroke = t.stroke;
-        let glint = theme::glint_fill(cx);
         let ring = t.ring;
         let primary = t.primary;
         let passive_selected = selected && !current;
@@ -971,11 +969,12 @@ impl TabStrip {
                     .pe(1.)
                     .rounded(theme::size::RADIUS_ROW)
                     .border_1()
-                    .border_color(if current { stroke } else { gpui_kit::transparent_black() })
+                    .border_color(gpui_kit::transparent_black())
                     .text_size(theme::size::SM)
                     .text_color(if selected { t.foreground } else { t.muted_foreground })
-                    // Active pane's selected tab is glass + stroke; passive pane's selected tab sits quietly in accent.
-                    .when(current, move |d| d.bg(glass))
+                    // The tab shown where the keyboard is: a quiet fill, its name in full strength. The other
+                    // pane's tab sits a step quieter.
+                    .when(current, move |d| d.bg(here).font_weight(FontWeight::MEDIUM))
                     .when(passive_selected, move |d| d.bg(accent))
                     .when(!selected, {
                         let foreground = t.foreground;
@@ -1028,19 +1027,6 @@ impl TabStrip {
                                         m.bottom(px(-2.))
                                     }
                                 }),
-                        )
-                    })
-                    // The tab with the keyboard's pane: the glint at its start edge.
-                    .when(current, move |d| {
-                        d.child(
-                            div()
-                                .absolute()
-                                .top(rems(0.4375))
-                                .bottom(rems(0.4375))
-                                .w(px(3.))
-                                .rounded_full()
-                                .bg(glint)
-                                .map(|bar| if rtl { bar.right(px(-1.)) } else { bar.left(px(-1.)) }),
                         )
                     })
                     .child(glyph)

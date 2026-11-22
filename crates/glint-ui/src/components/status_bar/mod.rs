@@ -1104,7 +1104,7 @@ impl StatusBar {
                     row_start()
                         .items_center()
                         .gap(space(1.))
-                        .child(icon(IconName::Zap).size_3().text_color(t.primary).flex_none())
+                        .child(icon(IconName::Zap).size_3().flex_none())
                         .children(wide.large.then(|| div().child(lead.clone())))
                         .children(wide.work.then(|| div().child(shown.clone())))
                         .children(sized)

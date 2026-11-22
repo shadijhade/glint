@@ -604,8 +604,8 @@ impl SettingsView {
             .children(items)
     }
 
-    /// The top of a page: its sign in a tile of the glint's colour, its name and what it is for.
-    fn page_header(&self, t: &theme::Tokens, cx: &App) -> impl IntoElement {
+    /// The top of a page: its sign in a tile of the accent's tint, its name and what it is for.
+    fn page_header(&self, t: &theme::Tokens) -> impl IntoElement {
         let page = self.page;
         row_start()
             .id("settings-page-header")
@@ -624,8 +624,8 @@ impl SettingsView {
                     .items_center()
                     .justify_center()
                     .rounded(theme::size::RADIUS_LG)
-                    .bg(theme::glint_fill(cx))
-                    .child(icon(page.icon()).size_5().text_color(t.primary_foreground)),
+                    .bg(t.selected)
+                    .child(icon(page.icon()).size_5().text_color(t.primary)),
             )
             .child(
                 col()
@@ -715,7 +715,7 @@ impl Render for SettingsView {
         let mut body: Vec<AnyElement> = Vec::new();
         let mut order: Vec<&'static str> = Vec::new();
         if query.is_empty() {
-            body.push(self.page_header(&t, cx).into_any_element());
+            body.push(self.page_header(&t).into_any_element());
             if self.page == Page::Overview {
                 order.push("overview");
                 body.push(self.overview(&t, window, cx));

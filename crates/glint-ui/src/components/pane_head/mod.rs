@@ -35,6 +35,8 @@ const CHIPS: usize = 6;
 /// A window shorter than this has the head on one line (the name, then the facts beside it), so a small window
 /// keeps its room for the files.
 const SHORT_WINDOW: Pixels = px(620.);
+/// How strong the band's colors are: it is a hairline across the whole pane, so it is told quietly.
+const BAND_STRENGTH: f32 = 0.6;
 
 /// What the head says, worked out when the explorer changes.
 #[derive(Clone, Debug, PartialEq)]
@@ -649,11 +651,12 @@ impl Render for PaneHead {
                 .absolute()
                 .size_full(),
             );
-        // The band: the folder's make-up, each kind in its color.
+        // The band: the folder's make-up, each kind in its color. A hairline of them, quiet enough to be the
+        // line under the head as well: the chips above it carry the colors and the counts.
         let band = row_start()
             .id("pane-head-band")
             .w_full()
-            .h(px(3.))
+            .h(px(2.))
             .gap(px(2.))
             .children(head.kinds.iter().zip(shares(&head.kinds)).map(|(kind, share)| {
                 div()
@@ -661,7 +664,7 @@ impl Render for PaneHead {
                     .flex_shrink(1.)
                     .w(relative(share))
                     .rounded_full()
-                    .bg(theme::hsl(kind.group.hue as f32, kind.group.sat as f32, 54.).opacity(0.85))
+                    .bg(theme::hsl(kind.group.hue as f32, kind.group.sat as f32, 54.).opacity(BAND_STRENGTH))
             }));
         // Arriving: the name comes in from the start edge as it clears, and the band grows to its width.
         let (name_row, band) = (

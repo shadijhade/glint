@@ -129,18 +129,23 @@ pub fn drive_icon(kind: crate::explorer::DriveKind) -> IconName {
 }
 
 /// The used-space bar of a drive (or a cloud), red when nearly full like Explorer's (`CapacityBar`): `height`
-/// tall, filling from the reading direction's start. None when the total isn't known.
-pub fn capacity_bar(total: u64, free: u64, height: Rems, cx: &App) -> Option<Div> {
+/// tall, filling from the reading direction's start. None when the total isn't known. `quiet` is for a bar among
+/// rows of other things (the rail's drives): gray, so the accent stays for what is chosen there; a drive's own
+/// card has it in the accent.
+pub fn capacity_bar(total: u64, free: u64, height: Rems, quiet: bool, cx: &App) -> Option<Div> {
     if total == 0 {
         return None;
     }
     let t = theme::tokens(cx);
     let used = (total.saturating_sub(free) as f64 / total as f64).clamp(0., 1.);
-    // The glint for a drive with room, plain red for one nearly full (matching `this_pc::model::nearly_full`).
+    // One even color for a drive with room; plain red for one nearly full (matching
+    // `this_pc::model::nearly_full`), quiet or not.
     let fill = if (used * 100. + 0.5).floor() >= 90. {
-        gpui_kit::Background::from(t.destructive)
+        t.destructive
+    } else if quiet {
+        t.muted_foreground.opacity(0.7)
     } else {
-        theme::glint_fill(cx)
+        t.primary
     };
     Some(
         row_start()

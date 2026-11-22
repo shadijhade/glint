@@ -17,8 +17,9 @@
 //! (see [`size`]). Fonts are Windows 11's UI font and Cascadia Mono, with fallbacks for a PC that lacks them.
 //!
 //! **Depth.** The window has three levels. *Chrome* (title bar, toolbar, sidebar) is the darkest and lets Mica
-//! through. The *sheet* (`background`) holds the files and sits on it with a rounded corner and a hairline
-//! ([`Tokens::stroke`]). *Floating* things (menus, the palette, dialogs, notices) are lighter still and cast a
+//! through. The *sheet* ([`Tokens::sheet`]) holds the files: it is part of the window, a step forward of the
+//! chrome, with one rounded corner and a hairline ([`Tokens::stroke`]) where it meets the bar and the rail.
+//! *Floating* things (menus, the palette, dialogs, notices) are lighter still and cast a
 //! shadow ([`elevation`]). Hover, pressed and selected fills are see-through ([`Tokens::accent`],
 //! [`Tokens::pressed`], [`Tokens::selected`]), so they read the same on every level.
 //!
@@ -67,10 +68,11 @@ pub mod size {
     pub const RADIUS_LG: Pixels = px(8.);
     /// `rounded-xl`: dialogs.
     pub const RADIUS_XL: Pixels = px(12.);
-    /// The sheet the files are on: its corner against the chrome.
-    pub const RADIUS_SHEET: Pixels = px(14.);
-    /// A row's or a tile's highlight (hover, selection): a pill inside its line.
-    pub const RADIUS_ROW: Pixels = px(8.);
+    /// The sheet the files are on (its one corner, where the bar meets the rail), and what is as large on the
+    /// chrome or over the sheet: the address field, the dock's island.
+    pub const RADIUS_SHEET: Pixels = px(10.);
+    /// A row's or a tile's highlight (hover, selection): a rounded fill inside its line.
+    pub const RADIUS_ROW: Pixels = px(6.);
 }
 
 /// How things move: the durations and curves, and the switches for what the vendored GPUI adds for Glint.
@@ -330,12 +332,17 @@ pub struct Tokens {
     pub foreground: Hsla,
     /// Windows 11's gray chrome (title bar, toolbars) over the white content.
     pub chrome: Hsla,
-    /// The sheet the files are on: `background`, see-through enough for the window's light to tint it (glass).
-    /// What must hide what is under it (a header rows scroll beneath, a menu) uses `background` or `popover`.
+    /// The sheet the files are on: a veil over the chrome that takes it a step toward `background`, thin enough
+    /// that the window's light runs on under it unbroken (a fill that hid the light would cut it off at the
+    /// sheet's edge). What must hide what is under it (a header rows scroll beneath, a menu) uses `background`
+    /// or `popover`.
     pub sheet: Hsla,
-    /// A pane of glass lying on the chrome, with the window's light behind it: the address field, the tab
-    /// and the place you are in.
+    /// A pane of glass lying on the chrome, with the window's light behind it: the address field, This PC's
+    /// cards.
     pub glass: Hsla,
+    /// Where you are, in the rail: the fill of the tab shown and of its place. Gray and see-through, a step
+    /// past the hover's, and all that marks them: no bar at the edge, no outline.
+    pub current: Hsla,
     pub card: Hsla,
     pub popover: Hsla,
     pub popover_foreground: Hsla,
@@ -359,7 +366,7 @@ pub struct Tokens {
     /// reads on any surface, where `border` is a fixed gray.
     pub stroke: Hsla,
     /// The glint: the logo's sparkle as a two-color sweep (pink to fuchsia, or Windows' accent and its darker
-    /// shade), for the few things that should catch the eye: what is loading, what is current.
+    /// shade), for what is loading and nothing else. What is selected or current is one even fill.
     pub glint_from: Hsla,
     pub glint_to: Hsla,
     pub destructive: Hsla,
@@ -394,8 +401,9 @@ impl Tokens {
             background: hsl(0., 0., 100.),
             foreground: hsl(240., 10., 10.),
             chrome: hsl(240., 6., 95.6),
-            sheet: hsla(0., 0., 1., 0.74),
+            sheet: hsla(0., 0., 1., 0.58),
             glass: hsla(0., 0., 1., 0.62),
+            current: hsla(240. / 360., 0.1, 0.1, 0.075),
             card: hsl(0., 0., 100.),
             popover: hsl(0., 0., 100.),
             popover_foreground: hsl(240., 10., 10.),
@@ -445,8 +453,9 @@ impl Tokens {
             background: hsl(240., 6., 11.),
             foreground: hsl(240., 9., 95.5),
             chrome: hsl(240., 7., 7.5),
-            sheet: hsla(240. / 360., 0.09, 0.105, 0.70),
+            sheet: hsla(240. / 360., 0.2, 1., 0.034),
             glass: hsla(240. / 360., 0.2, 1., 0.085),
+            current: hsla(240. / 360., 0.2, 1., 0.09),
             card: hsl(240., 6., 13.5),
             popover: hsl(240., 6., 15.),
             popover_foreground: hsl(240., 9., 95.5),
@@ -645,18 +654,11 @@ pub fn glint_fill(cx: &App) -> gpui_kit::Background {
     )
 }
 
-/// The fill of what is selected where the keyboard is: the accent, fading along the reading direction (the
-/// selection's own light), stronger under the pointer.
+/// The fill of what is selected where the keyboard is: the accent's tint, one even color from edge to edge,
+/// a step stronger under the pointer.
 pub fn selected_fill(cx: &App, hovered: bool) -> gpui_kit::Background {
     let t = tokens(cx);
-    let strong = if hovered { t.selected_hover.a } else { t.selected.a } * 1.35;
-    let (from, to) = (t.primary.opacity(strong), t.glint_to.opacity(strong * 0.38));
-    let (from, to) = if crate::i18n::is_rtl() { (to, from) } else { (from, to) };
-    gpui_kit::linear_gradient(
-        90.,
-        gpui_kit::linear_color_stop(from, 0.),
-        gpui_kit::linear_color_stop(to, 1.),
-    )
+    if hovered { t.selected_hover } else { t.selected }.into()
 }
 
 /// The material Windows can draw: Mica Alt (as File Explorer has) from Windows 11 22H2, Mica on the first
@@ -1084,6 +1086,41 @@ mod tests {
             assert!(t.selected.a < t.selected_hover.a && t.stroke.a < 0.2);
         }
         assert!(dark.dark && !light.dark);
+    }
+
+    #[test]
+    fn the_sheet_is_a_veil_and_where_you_are_is_a_gray_a_step_past_hover() {
+        // `veil` over `under`, as sRGB channels.
+        let over = |under: Hsla, veil: Hsla| {
+            let (u, v) = (gpui_kit::Rgba::from(under), gpui_kit::Rgba::from(veil));
+            [(u.r, v.r), (u.g, v.g), (u.b, v.b)].map(|(u, v)| u + (v - u) * veil.a)
+        };
+        let channels = |color: Hsla| {
+            let c = gpui_kit::Rgba::from(color);
+            [c.r, c.g, c.b]
+        };
+        let (light, dark) = (Tokens::light(), Tokens::dark());
+        // In the dark nearly all of the window's light runs on under the sheet (a fill that hid it cut the light
+        // off at the sheet's edge), and over the chrome the sheet comes out as `background`, near enough that a
+        // view which must fill itself with that is no patch on it.
+        assert!(dark.sheet.a < 0.06, "{:?}", dark.sheet);
+        for (sheet, background) in over(dark.chrome, dark.sheet).into_iter().zip(channels(dark.background)) {
+            assert!((sheet - background).abs() < 3. / 255., "{sheet} for {background}");
+        }
+        // In the light it is the white paper on the gray chrome, and still lets some of the light through.
+        assert!(light.sheet.a < 0.7, "{:?}", light.sheet);
+        for ((sheet, chrome), background) in over(light.chrome, light.sheet)
+            .into_iter()
+            .zip(channels(light.chrome))
+            .zip(channels(light.background))
+        {
+            assert!(chrome < sheet && sheet <= background, "{chrome} {sheet} {background}");
+        }
+        // Where you are in the rail: gray, see-through, a step past the hover's fill and short of a selection.
+        for t in [&light, &dark] {
+            assert!(t.current.a > t.accent.a && t.current.a < 0.12, "{:?}", t.current);
+            assert!(t.current.s <= 0.2, "{:?}", t.current);
+        }
     }
 
     /// WCAG's contrast ratio of two opaque colors.

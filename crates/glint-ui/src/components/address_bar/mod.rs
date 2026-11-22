@@ -1064,18 +1064,8 @@ impl Render for AddressBar {
                     .right_0()
                     .rounded(theme::size::RADIUS_LG)
                     .border_1()
-                    .border_color(t.primary.opacity(0.55))
-                    .bg(t.field_focus)
-                    .child(
-                        div()
-                            .absolute()
-                            .bottom(px(-1.))
-                            .left(space(3.))
-                            .right(space(3.))
-                            .h(px(2.))
-                            .rounded_full()
-                            .bg(theme::glint_fill(cx)),
-                    );
+                    .border_color(t.primary.opacity(0.7))
+                    .bg(t.field_focus);
                 omni.child(if cx.reduce_motion() {
                     layer.into_any_element()
                 } else {

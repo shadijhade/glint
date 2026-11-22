@@ -148,6 +148,37 @@ short. 34 commits on master with this note, not pushed.*
 Not seen in the real window: Enter in each dialog, the motion (the island's width easing, the preview's hold, the
 fades), the flyouts' hover timing under a person's hand, History from a real shadow copy.
 
+### A quieter look (later the same night)
+
+*The user's words, with a screenshot of Downloads: "fix and polish the ui as it looks ugly and the gradients gets
+clipped out of the frame instead of blending in and the selected item has the ai … start border and the inner window
+looks floating instead of blending in, de slop the ui and make it more pro".*
+
+What the screenshot showed, measured: the window's light was four lamps at the corners at up to 44 % strength; the
+sheet hid 70 % of it and stood 8 px off the window's end and bottom edges, so the two lower lamps were seen only as
+bright strips in that gap, cut by the frame, and the rail's bottom fade painted a dark band over one of them. The
+current place had the accent's bar at its start edge and, after a click, the accent's ring round it.
+
+1. **The sheet is part of the window.** It runs to the window's end and bottom edges; a hairline and one rounded
+   corner where it meets the bar and the rail. No gap, no shadow, no gradient hairline on top.
+2. **The light is a wash, not lamps.** One color (the place's), from the top of the window, fullest over the rail
+   (16 %), gone before the foot: nothing of it ends at the frame. The sheet is a veil (3.4 % white in the dark, 58 %
+   in the light) instead of a cover, so the wash runs on under it unbroken. The grid painted its own opaque
+   background (since wave 4): removed, it lies on the sheet as the list does.
+3. **A state is one even fill.** No accent bar at the start edge (the rail's place and tab, the list's current row),
+   no stroke round the current place, no gradient across a selected row (`theme::selected_fill` is flat). Where you
+   are in the rail is `t.current`, a gray a step past hover, with the name a weight heavier. A row of the rail shows
+   the ring only after a key was pressed, never after a click.
+4. **The accent only for what is chosen or on.** The glint (pink to fuchsia) is left for what is loading. The
+   rail's drive bars and a row's size bar are gray; a drive's own card keeps the accent, flat. The head's band is a
+   2 px hairline at 60 %; the address field's underline while typing and Settings' gradient tile are gone; "shown
+   in 47 ms" is no longer pink.
+5. **Tighter corners.** Rows 8 → 6 px, the sheet's corner, the address flyouts, menus and the island 14 → 10 px.
+
+Seen in the real window (debug build beside the user's, its own profile): dark and light, Mica and solid, the list,
+the grid, columns, two panes, This PC, the app's menu and a file's menu. Not seen: right to left (the rounded corner
+and the hairline swap sides in code), Windows' accent color in place of the pink.
+
 ### Not tried for real
 
 - The journal wait on a real volume (it needs the service, elevated): tested against a fake journal through the
@@ -173,6 +204,12 @@ After the polish: `cargo test --workspace --no-fail-fast` (core 386, model 348, 
 clippy --workspace --all-targets -- -D warnings` clean at `16ebac1`. The polish adds no Windows API calls and no
 dependencies (the release build's import check wasn't run again). e2e 21/21 with the debug build of `f55dfa4` (its
 `smart-menu` check follows the new order, `16ebac1`).
+
+After the quieter look: `cargo clippy --workspace --all-targets -- -D warnings` clean and `cargo test --workspace
+--no-fail-fast` (core 386, model 348, ui 2,634, index 103). In the workspace run eight of the hover cards' tests
+(`peek_card`, the tab strip's card) failed once while another build had every core; alone and in a full run of the
+UI crate on an idle machine they pass. No Windows API calls and no dependencies added. e2e 21/21 with the debug
+build of that working tree (23:45, 2026-11-22).
 
 ## 0.15.1: updates that finish, and Space while renaming
 

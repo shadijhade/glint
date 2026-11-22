@@ -74,8 +74,10 @@ const TITLE_BAR_HEIGHT: Pixels = px(48.);
 const DOCK_HEIGHT: Pixels = crate::components::status_bar::HEIGHT;
 /// The room, in rems, the dock keeps at each side of the commands' island for the status bar's words.
 const DOCK_SIDE_ROOM: f32 = 10.;
-/// The air between the sheet and the window's end and bottom edges.
-const SHEET_GAP: Pixels = px(8.);
+/// The hairline where the sheet meets the bar and the rail (it runs to the window's other two edges).
+const SHEET_EDGE: Pixels = px(1.);
+/// The air under the rail's last row, above the window's bottom edge.
+const RAIL_FOOT: Pixels = px(8.);
 /// How long the window's light takes to turn to another place's color.
 const LIGHT_TURNS_IN: std::time::Duration = std::time::Duration::from_millis(700);
 
@@ -2068,8 +2070,9 @@ impl Workspace {
             .map_or(accent, |known| theme::place_tone(theme::Place::Known(known.id), cx))
     }
 
-    /// The light behind the window: soft color at its corners, the place's own at the start corner, under
-    /// everything. When the place changes the light turns to its color; while another window is in front it dims.
+    /// The light behind the window: a wash of the place's color from the top, fullest over the rail, under
+    /// everything (the sheet is a veil over it, so nothing cuts it off). When the place changes the light turns to
+    /// its color; while another window is in front it dims.
     fn light(&mut self, window: &Window, cx: &App) -> impl IntoElement {
         use gpui_kit::{Animation, AnimationExt as _};
         crate::art::set_scale(window.scale_factor());
@@ -2531,7 +2534,7 @@ impl Workspace {
                         .mx(space(4.))
                         .h(px(2.))
                         .rounded_full()
-                        .bg(theme::glint_fill(cx)),
+                        .bg(theme::tokens(cx).primary),
                 )
             })
             .child(PaneDropZone::new(pane))
@@ -2552,7 +2555,7 @@ impl Workspace {
             // The first pane at the start edge, the second beside it, the divider between them draggable.
             let container = (f32::from(window.viewport_size().width)
                 - f32::from(self.sidebar_width)
-                - f32::from(SHEET_GAP)
+                - f32::from(SHEET_EDGE)
                 - preview_w)
                 .max(0.);
             let share = state::settings(cx).dual_split.map(|s| s.clamp(0.2, 0.8));
@@ -2636,7 +2639,7 @@ impl Workspace {
             .flex_none()
             .h_full()
             .w(self.sidebar_width)
-            .pb(SHEET_GAP)
+            .pb(RAIL_FOOT)
             .child(div().flex_none().px(space(2.)).child(self.tabs.clone()))
             .child(div().flex_1().min_h_0().child(self.sidebar.clone()));
         // The dock at the foot of the sheet: the status bar's words at its two ends, and the commands' island
@@ -2659,61 +2662,34 @@ impl Workspace {
             .h(DOCK_HEIGHT)
             .child(self.status.clone())
             .child(div().absolute().inset_0().child(self.command_bar.clone()));
-        // The sheet: the files and the dock on their own surface, a step forward of the chrome: a card with a
-        // hairline, rounded all round, clear of the window's end and bottom edges.
-        let rim = hsla(0., 0., 1., if t.dark { 0.14 } else { 0.72 });
-        let rim_edge = rim.opacity(0.);
-        let top_sheen = div()
-            .absolute()
-            .top_0()
-            .left_0()
-            .right_0()
-            .h(px(1.))
-            .flex()
-            .flex_row()
-            .child(div().flex_1().h_full().bg(linear_gradient(
-                90.,
-                linear_color_stop(rim_edge, 0.),
-                linear_color_stop(rim, 1.),
-            )))
-            .child(div().flex_1().h_full().bg(linear_gradient(
-                90.,
-                linear_color_stop(rim, 0.),
-                linear_color_stop(rim_edge, 1.),
-            )));
+        // The sheet: the files and the dock, a step forward of the chrome and part of the window: it runs to
+        // the window's end and bottom edges, and where it meets the bar and the rail it has a hairline and one
+        // rounded corner. No shadow and no gap round it: it is the window's own floor, not a card lying on it.
         let sheet = div()
             .id("content")
             .role(Role::Main)
             .test_support()
             .relative()
             .size_full()
-            // Glass: the window's light shows through it, faintly; a lit edge at its top.
+            // A veil, so the window's light runs on under it unbroken.
             .bg(t.sheet)
-            .border_1()
             .border_color(t.stroke)
-            .rounded(theme::size::RADIUS_SHEET)
-            .shadow(theme::elevation::raised(cx))
+            .border_t_1()
+            .map(|sheet| {
+                if rtl {
+                    sheet.border_r_1().rounded_tr(theme::size::RADIUS_SHEET)
+                } else {
+                    sheet.border_l_1().rounded_tl(theme::size::RADIUS_SHEET)
+                }
+            })
             .overflow_hidden()
-            .child(top_sheen)
             .child(
                 col()
                     .size_full()
                     .child(div().flex_1().min_h_0().child(files))
                     .child(dock),
             );
-        let sheet = div()
-            .flex_1()
-            .min_w_0()
-            .h_full()
-            .pb(SHEET_GAP)
-            .map(|around| {
-                if rtl {
-                    around.pl(SHEET_GAP)
-                } else {
-                    around.pr(SHEET_GAP)
-                }
-            })
-            .child(sheet);
+        let sheet = div().flex_1().min_w_0().h_full().child(sheet);
         // The sidebar's edge: a strip over the seam that drags its width (a double-click puts it back).
         let grip = px(8.);
         let at = self.sidebar_width - grip / 2.;
@@ -2735,7 +2711,7 @@ impl Workspace {
             .tooltip(|w, cx| tooltip_under(t!("Drag to resize · Double-click to reset"), w, cx))
             .absolute()
             .top(theme::size::RADIUS_SHEET)
-            .bottom(SHEET_GAP + theme::size::RADIUS_SHEET)
+            .bottom_0()
             .w(grip)
             .flex()
             .items_center()
@@ -3853,8 +3829,9 @@ mod tests {
         let _guard = testing::lock();
         let mut visual = open(cx, true);
         let sidebar = bounds_of(&mut visual, "sidebar");
-        // The sheet ends where the sidebar starts.
+        // The sheet ends where the sidebar starts, and begins at the window's own edge.
         assert_eq!(bounds_of(&mut visual, "content").right(), sidebar.left());
+        assert_eq!(bounds_of(&mut visual, "content").left(), px(0.));
         let edge = point(sidebar.left(), sidebar.center().y);
         visual.update(|window, cx| {
             window.pointer_down(edge, MouseButton::Left, cx);
@@ -3863,6 +3840,23 @@ mod tests {
         });
         assert_eq!(bounds_of(&mut visual, "sidebar").size.width, SIDEBAR_START + px(40.));
         testing::set_rtl(false);
+    }
+
+    #[gpui_kit::test]
+    fn the_sheet_is_part_of_the_window_and_runs_to_its_end_and_bottom_edges(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let mut visual = open(cx, false);
+        let window = visual.update(|window, _| window.viewport_size());
+        let (sheet, sidebar) = (bounds_of(&mut visual, "content"), bounds_of(&mut visual, "sidebar"));
+        // No gap round it (a card standing off the frame showed the window's light as strips cut by the frame):
+        // it starts under the bar beside the rail, and ends where the window does.
+        assert_eq!(sheet.top(), sidebar.top());
+        assert_eq!(sheet.left(), sidebar.right());
+        assert_eq!((sheet.right(), sheet.bottom()), (window.width, window.height));
+        // The dock is its last strip, at the window's bottom edge; the rail keeps a little air under its last row.
+        let dock = bounds_of(&mut visual, "dock");
+        assert_eq!((dock.bottom(), dock.right()), (window.height, window.width));
+        assert_eq!(sidebar.bottom(), window.height);
     }
 
     /// The windows the app's spawner was asked for, parsed.

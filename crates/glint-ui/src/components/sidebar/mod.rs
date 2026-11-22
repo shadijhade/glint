@@ -1006,7 +1006,8 @@ impl Sidebar {
             return div().into_any_element();
         };
         let t = theme::tokens(cx).clone();
-        let focused = self.cursor == Some(ix) && self.focus.is_focused(window);
+        // The ring is for the keyboard: a row that was clicked is plain from its fill, and has none.
+        let focused = self.cursor == Some(ix) && self.focus.is_focused(window) && window.last_input_was_keyboard();
         let dropping = self.drop_hover.as_ref().is_some_and(|key| *key == row.key());
         match row {
             Row::Heading { .. } => self.draw_heading(ix, row, &t, focused, cx),
@@ -1088,17 +1089,6 @@ impl Sidebar {
                 .into_any_element()
         };
         shell.child(text).into_any_element()
-    }
-
-    /// The pill at the start edge of the row that is the folder shown (Windows 11's navigation selection).
-    fn pill(t: &Tokens, height: Rems) -> Div {
-        let wrap = div().absolute().top_0().bottom_0().flex().items_center();
-        let wrap = if crate::i18n::is_rtl() {
-            wrap.right_0()
-        } else {
-            wrap.left_0()
-        };
-        wrap.child(div().w(space(0.75)).h(height).rounded_full().bg(t.primary))
     }
 
     /// A tree arrow's wrapper: `offset` from the start edge, centred vertically.
@@ -1229,7 +1219,7 @@ impl Sidebar {
             );
         let bar = p
             .capacity
-            .and_then(|(total, free)| capacity_bar(total, free, space(1.), cx))
+            .and_then(|(total, free)| capacity_bar(total, free, space(1.), true, cx))
             .or_else(|| holds_place.then(|| div().h(space(1.)).w_full().rounded_full().bg(t.pressed)));
         let text = col()
             .flex_1()
@@ -1248,7 +1238,7 @@ impl Sidebar {
         if let Some(opens) = p.tree {
             button = button.aria_expanded(opens.open);
         }
-        let (glass, pressed, foreground) = (t.glass, t.pressed, t.foreground);
+        let (here, pressed, foreground) = (t.current, t.pressed, t.foreground);
         let button = button
             .test_support()
             .relative()
@@ -1259,12 +1249,15 @@ impl Sidebar {
             .when(p.gutter, |d| d.ps(6.))
             .rounded(theme::size::RADIUS_ROW)
             .border_1()
-            .border_color(row_border(t, focused, active))
+            .border_color(ring(t, focused))
             .cursor_pointer()
             .text_color(t.foreground.opacity(0.9))
             .hover(move |s| s.bg(accent))
             .active(move |s| s.bg(pressed))
-            .when(active, move |d| d.bg(glass).text_color(foreground))
+            // The folder shown: a quiet fill and its name in full strength. Nothing else marks it.
+            .when(active, move |d| {
+                d.bg(here).text_color(foreground).font_weight(FontWeight::MEDIUM)
+            })
             .when(dropping, move |d| {
                 d.drag_over::<ExternalPaths>(move |s, _, _, _| s.bg(lit).border_color(lit_ring))
             })
@@ -1286,7 +1279,6 @@ impl Sidebar {
                 cx.listener(move |this, files: &ExternalPaths, _, cx| this.drop_on(ix, files, cx)),
             )
             .tooltip(tip)
-            .when(active, |d| d.child(Self::pill(t, space(4.))))
             .child(self.glyph_art(&p.glyph, theme::rem_size(cx) * 1.25, t, cx))
             .child(text);
         let button = self.hop(button, ix, label.clone(), cx);
@@ -1348,7 +1340,7 @@ impl Sidebar {
         let (lit, lit_ring) = (t.primary.opacity(0.2), t.primary);
         let tip = tooltip_of(f.name.clone(), SharedString::from(f.path.clone()));
         let (active, accent, pressed, foreground) = (f.active, t.accent, t.pressed, t.foreground);
-        let glass = t.glass;
+        let here = t.current;
         let button = row_start()
             .id(("folder", ix))
             .role(Role::TreeItem)
@@ -1366,13 +1358,16 @@ impl Sidebar {
             .ps(indent)
             .rounded(theme::size::RADIUS_ROW)
             .border_1()
-            .border_color(row_border(t, focused, active))
+            .border_color(ring(t, focused))
             .cursor_pointer()
             .text_size(TREE_TEXT)
             .text_color(t.foreground.opacity(0.85))
             .hover(move |s| s.bg(accent))
             .active(move |s| s.bg(pressed))
-            .when(active, move |d| d.bg(glass).text_color(foreground))
+            // The folder shown: a quiet fill and its name in full strength. Nothing else marks it.
+            .when(active, move |d| {
+                d.bg(here).text_color(foreground).font_weight(FontWeight::MEDIUM)
+            })
             .when(dropping, move |d| {
                 d.drag_over::<ExternalPaths>(move |s, _, _, _| s.bg(lit).border_color(lit_ring))
             })
@@ -1394,7 +1389,6 @@ impl Sidebar {
                 cx.listener(move |this, files: &ExternalPaths, _, cx| this.drop_on(ix, files, cx)),
             )
             .tooltip(tip)
-            .when(active, |d| d.child(Self::pill(t, space(3.5))))
             .child(crate::art::folder(theme::rem_size(cx), self.folder_color(t), None, cx))
             .child(div().flex_1().min_w_0().truncate().child(isolate(f.name.clone())));
         let button = self.hop(button, ix, f.name.clone(), cx);
@@ -1630,20 +1624,9 @@ struct Look {
 }
 
 /// The ring a row shows while the keyboard is on it; transparent otherwise (so rows don't move).
-fn ring(t: &Tokens, focused: bool) -> Hsla {
+pub(super) fn ring(t: &Tokens, focused: bool) -> Hsla {
     if focused {
         t.ring
-    } else {
-        transparent_black()
-    }
-}
-
-/// Border color for rows that can be both active and focused without the active stroke erasing the focus ring.
-pub(super) fn row_border(t: &Tokens, focused: bool, active: bool) -> Hsla {
-    if focused {
-        t.ring
-    } else if active {
-        t.stroke
     } else {
         transparent_black()
     }

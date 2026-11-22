@@ -874,12 +874,13 @@ impl ThisPc {
                     .align_start()
                     .text_start()
                     .child(name_line)
-                    .child(
-                        div()
-                            .my(space(2.))
-                            .w_full()
-                            .children(capacity_bar(tile.total, tile.free, space(1.5), cx)),
-                    )
+                    .child(div().my(space(2.)).w_full().children(capacity_bar(
+                        tile.total,
+                        tile.free,
+                        space(1.5),
+                        false,
+                        cx,
+                    )))
                     .child(
                         row_start()
                             .w_full()

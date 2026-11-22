@@ -591,11 +591,9 @@ impl FileList {
                 let over = theme::selected_fill(cx, true);
                 if easing {
                     // Just selected: its fill (drawn first, under the text) fades in rather than switching on.
-                    fill.border_color(t.primary.opacity(0.22))
-                        .hover(move |style| style.bg(over))
+                    fill.hover(move |style| style.bg(over))
                 } else {
                     fill.bg(theme::selected_fill(cx, false))
-                        .border_color(t.primary.opacity(0.22))
                         .hover(move |style| style.bg(over))
                 }
             }
@@ -603,21 +601,6 @@ impl FileList {
             let over = t.accent;
             fill.hover(move |style| style.bg(over))
         };
-        if current && selected {
-            // The current item: Windows 11's accent bar at the start edge.
-            let bar = div()
-                .absolute()
-                .top(rems(0.4375))
-                .bottom(rems(0.4375))
-                .w(px(3.))
-                .rounded_full()
-                .bg(theme::glint_fill(cx));
-            fill = fill.child(if i18n::is_rtl() {
-                bar.right(px(-1.))
-            } else {
-                bar.left(px(-1.))
-            });
-        }
         // The keyboard's place when it isn't plain from the selection: on an item that isn't selected, or on
         // one of several that are.
         if current && (!selected || frame.selected.len() > 1) {
@@ -1000,7 +983,8 @@ fn size_cell(width: Pixels, text: String, percent: u32, t: &Tokens) -> AnyElemen
             .bottom(space(0.5))
             .w(relative(percent as f32 / 100.))
             .rounded(theme::size::RADIUS_SM)
-            .bg(t.primary.opacity(if t.dark { 0.16 } else { 0.11 }));
+            // A meter, not a mark: the hover's own gray, so the accent stays for what is selected.
+            .bg(t.accent);
         // The bar grows from the end edge.
         if i18n::is_rtl() {
             bar.left_0()

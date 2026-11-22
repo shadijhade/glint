@@ -299,80 +299,50 @@ pub fn kind(kind: &Kind, across: Pixels, cx: &App) -> Div {
 const LIGHT_W: usize = 144;
 const LIGHT_H: usize = 90;
 
-/// The hue the lights lean toward as they go round the window (violet), and the one for a place that is violet
-/// already (pink): a place's light is its own color at the start corner, sliding toward this at the others.
-const TOWARD: f32 = 265. / 360.;
-const TOWARD_FOR_VIOLET: f32 = 322. / 360.;
+/// How strong the light is where it is strongest: at the top of the window, at its start edge.
+const LIGHT_IN_THE_DARK: f32 = 0.16;
+const LIGHT_IN_THE_LIGHT: f32 = 0.16;
+/// How much of that the far end of the top edge still has.
+const LIGHT_AT_THE_END: f32 = 0.28;
+/// How far down the window the light has fallen to about a third (of the window's height), and how far along the
+/// top it has (of its width).
+const LIGHT_FALLS_IN: f32 = 0.33;
+const LIGHT_REACHES: f32 = 0.44;
 
-/// `from` moved `part` of the shorter way round the wheel to `to` (hues, 0..1).
-fn toward(from: f32, to: f32, part: f32) -> f32 {
-    let mut gap = (to - from).rem_euclid(1.);
-    if gap > 0.5 {
-        gap -= 1.;
-    }
-    (from + gap * part).rem_euclid(1.)
+/// How much of the light is left at (`x`, `y`), each 0..1: from the start edge to the end, and from the top down.
+/// It is a wash, not a lamp: fullest along the top, more of it over the rail, and gone well before the foot of the
+/// window, so it ends inside the window on every side but the one it comes from.
+fn lit(x: f32, y: f32) -> f32 {
+    let down = (-(y / LIGHT_FALLS_IN).powi(2)).exp();
+    let along = LIGHT_AT_THE_END + (1. - LIGHT_AT_THE_END) * (-(x / LIGHT_REACHES).powi(2)).exp();
+    down * along
 }
 
-/// The four lights for a place whose color has `hue`: where (0..1 across and down; they sit at the corners, the
-/// first at the start corner over the rail), how far they reach (of the width), their hue and their strength.
-fn lights(hue: f32, dark: bool) -> [(f32, f32, f32, f32, f32); 4] {
-    let far = if (toward(hue, TOWARD, 1.) - hue).abs() < 0.09 {
-        TOWARD_FOR_VIOLET
-    } else {
-        TOWARD
-    };
-    let strong = if dark { 0.44 } else { 0.40 };
-    [
-        (0.04, -0.12, 0.42, hue, strong),
-        (0.98, -0.22, 0.52, toward(hue, far, 0.5), strong * 0.62),
-        (1.02, 1.18, 0.50, toward(hue, far, 0.95), strong * 0.52),
-        (-0.08, 1.12, 0.42, toward(hue, far, 0.22), strong * 0.50),
-    ]
-}
-
-/// The light behind the window for a place whose color has `hue` (0..1): four soft lights at the window's corners,
-/// see-through between them. `rtl` mirrors it, so the place's own light stays over the rail.
+/// The light behind the window for a place whose color has `hue` (0..1): a wash of that one color from the top of
+/// the window, fullest over the rail, see-through everywhere else. `rtl` mirrors it, so it stays over the rail.
 pub fn aurora(hue: f32, dark: bool, rtl: bool) -> Arc<RenderImage> {
     // Hues a few degrees apart share a picture.
     let step = (hue.rem_euclid(1.) * 120.).round() as u16 % 120;
     if let Some(kept) = LIGHTS.with(|lights| lights.borrow().get(&(step, dark, rtl)).cloned()) {
         return kept;
     }
-    let hue = f32::from(step) / 120.;
-    let lit: Vec<(f32, f32, f32, [f32; 3], f32)> = lights(hue, dark)
-        .into_iter()
-        .map(|(x, y, reach, hue, strength)| {
-            let c = Rgba::from(Hsla {
-                h: hue,
-                s: 0.95,
-                l: if dark { 0.60 } else { 0.66 },
-                a: 1.,
-            });
-            (x, y, reach, [c.r, c.g, c.b], strength)
-        })
-        .collect();
-    // The window is wider than tall; distances are measured as if it were 16 by 10.
-    let tall = 10. / 16.;
+    let color = Rgba::from(Hsla {
+        h: f32::from(step) / 120.,
+        s: 0.78,
+        l: if dark { 0.60 } else { 0.62 },
+        a: 1.,
+    });
+    let strong = if dark { LIGHT_IN_THE_DARK } else { LIGHT_IN_THE_LIGHT };
+    // One color all over (straight alpha: where the light is gone the color is still its own, so the stretch
+    // never mixes in a darker one); only how much of it there is changes.
+    let (b, g, r) = (byte(color.b), byte(color.g), byte(color.r));
     let mut bgra = Vec::with_capacity(LIGHT_W * LIGHT_H * 4);
     for row in 0..LIGHT_H {
         let y = (row as f32 + 0.5) / LIGHT_H as f32;
         for col in 0..LIGHT_W {
             let across = (col as f32 + 0.5) / LIGHT_W as f32;
             let x = if rtl { 1. - across } else { across };
-            let (mut sum, mut color, mut dim) = (0., [0.; 3], 1.);
-            for (lx, ly, reach, rgb, strength) in &lit {
-                let (dx, dy) = (x - lx, (y - ly) * tall);
-                let far = (dx * dx + dy * dy) / (reach * reach);
-                let weight = strength * (-2.6 * far).exp();
-                sum += weight;
-                dim *= 1. - weight;
-                for (total, part) in color.iter_mut().zip(rgb) {
-                    *total += part * weight;
-                }
-            }
-            let alpha = 1. - dim;
-            let channel = |i: usize| if sum > 0. { byte(color[i] / sum) } else { 0 };
-            bgra.extend_from_slice(&[channel(2), channel(1), channel(0), byte(alpha)]);
+            bgra.extend_from_slice(&[b, g, r, byte(strong * lit(x, y))]);
         }
     }
     let image = image::RgbaImage::from_raw(LIGHT_W as u32, LIGHT_H as u32, bgra)
@@ -418,29 +388,31 @@ mod tests {
     }
 
     #[test]
-    fn hues_lean_the_shorter_way_round() {
-        // Amber (38°) to violet (265°) is shorter back through red than on through green.
-        let half = toward(38. / 360., TOWARD, 0.5) * 360.;
-        assert!(!(60. ..300.).contains(&half), "{half}");
-        // Sky (199°) goes on through blue.
-        let half = toward(199. / 360., TOWARD, 0.5) * 360.;
-        assert!((199. ..265.).contains(&half), "{half}");
-    }
-
-    #[test]
-    fn the_light_is_strongest_at_its_corner_and_see_through_in_the_middle() {
+    fn the_light_is_a_wash_from_the_top_that_ends_inside_the_window() {
         for (dark, rtl) in [(true, false), (false, false), (true, true)] {
             let image = aurora(0.9, dark, rtl);
             let bytes = image.as_bytes(0).expect("one frame");
             let alpha = |col: usize, row: usize| bytes[(row * LIGHT_W + col) * 4 + 3];
             let (start, end) = if rtl { (LIGHT_W - 1, 0) } else { (0, LIGHT_W - 1) };
-            let middle = alpha(LIGHT_W / 2, LIGHT_H / 2);
-            assert!(alpha(start, 0) > middle.saturating_add(40), "{dark} {rtl}");
+            // Fullest at the top of the start edge (over the rail), and quiet even there.
+            let most = alpha(start, 0);
+            assert!((30..=64).contains(&most), "{dark} {rtl}: {most}");
             assert!(
-                alpha(start, 0) > alpha(end, 0),
-                "the place's own light is the strongest"
+                (0..LIGHT_H).all(|row| (0..LIGHT_W).all(|col| alpha(col, row) <= most)),
+                "{dark} {rtl}"
             );
-            assert!(middle < 40, "{middle}");
+            // Less of it along the top, but the whole bar has some.
+            assert!(alpha(end, 0) > 0 && alpha(end, 0) < most / 2, "{dark} {rtl}");
+            // It falls away going down, and the foot of the window has none: nothing of it ends at the frame
+            // there, or at the sides below the middle.
+            assert!(alpha(start, LIGHT_H / 4) < most && alpha(start, LIGHT_H / 2) < most / 4);
+            assert!((0..LIGHT_W).all(|col| alpha(col, LIGHT_H - 1) == 0), "{dark} {rtl}");
+            // One color all over, the place's own: what changes is how much of it there is.
+            let color = |col: usize, row: usize| {
+                let at = (row * LIGHT_W + col) * 4;
+                [bytes[at], bytes[at + 1], bytes[at + 2]]
+            };
+            assert_eq!(color(start, 0), color(LIGHT_W / 2, LIGHT_H - 1));
         }
         // The same place asks for the same picture.
         assert!(Arc::ptr_eq(&aurora(0.9, true, false), &aurora(0.9, true, false)));
