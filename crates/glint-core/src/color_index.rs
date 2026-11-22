@@ -406,6 +406,9 @@ fn warm_with(items: &[(String, i64)], workers: usize, mut on_batch: impl FnMut(H
                     if !group.is_empty() {
                         let _ = sender.send(group);
                     }
+                    // These threads live for one warming: COM is let go with them (init_thread's threads live on).
+                    // SAFETY: matches init_thread's CoInitializeEx on this same, freshly made thread.
+                    unsafe { windows::Win32::System::Com::CoUninitialize() };
                 });
             }
             drop(sender);
