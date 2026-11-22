@@ -61,6 +61,7 @@
 //! folder's tile says its size once "Folder sizes" measured it, and "…" while that runs (`Explorer::size_run`).
 //! The context menu's content is the workspace's: the grid only emits [`FileGridEvent::ContextMenu`] (from the keyboard at the focused tile's bottom-start corner).
 
+mod ahead;
 mod empty;
 mod keys;
 mod rename;
@@ -297,6 +298,8 @@ pub struct FileGrid {
     scrub: scrub::ScrubSlot,
     /// The box that renames a tile in place (F2): it follows `Tab::renaming`.
     rename: Option<rename::RenameBox>,
+    /// The thumbnails asked for one screenful ahead of the scroll.
+    scroll_ahead: ahead::ScrollAhead,
     /// The thumbnail size drawn last, logical pixels.
     thumb: f32,
     _subscriptions: Vec<Subscription>,
@@ -369,6 +372,7 @@ impl FileGrid {
             placed_for: None,
             saved_place: None,
             scrolled_to: None,
+            scroll_ahead: ahead::ScrollAhead::default(),
             press: None,
             resting: None,
             prefetch: None,
@@ -479,6 +483,7 @@ impl FileGrid {
     pub fn pause(&mut self, cx: &mut Context<Self>) {
         let id = cx.entity_id();
         self.thumbs.update(cx, |thumbs, cx| thumbs.release(id, cx));
+        self.scroll_ahead.release(&self.thumbs, cx);
         self.shown.set(0);
         self.stop_pointer();
         self.dragging = None;
@@ -1673,6 +1678,20 @@ impl Render for FileGrid {
                     })
                 });
         }
+
+        // Where the scroll is heading, one screenful of thumbnails is asked for ahead of it.
+        let scroll_top = self.scroll_top();
+        self.scroll_ahead.follow(
+            &self.thumbs,
+            &lane,
+            ahead::context_of(&lane, &view_key, rows.len(), cols, tile.thumb, scale),
+            &rows,
+            layout,
+            scroll_top,
+            body_height,
+            (tile.thumb, scale),
+            cx,
+        );
 
         let place = place_of(self.scroll_top(), layout);
         if self.saved_place != Some(place) {

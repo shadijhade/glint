@@ -91,6 +91,9 @@ pub struct Ask {
     /// The tab asking, and the request's number in it.
     pub lane: String,
     pub seq: u32,
+    /// A prefetch for what the view will show once it scrolls on: served after every real ask, and promoted
+    /// when the same thumbnail is asked for for real.
+    pub ahead: bool,
 }
 
 /// Where thumbnails come from: glint-core in the app, a fake in tests.
@@ -102,6 +105,9 @@ pub trait ThumbSource {
     /// Drops `lane`'s requests up to number `up_to`, for `paths` or (None) all of them
     /// (`cancelThumbnails`). Never waits.
     fn cancel(&self, lane: &str, paths: Option<Vec<String>>, up_to: u32);
+
+    /// Drops `lane`'s prefetches (the view scrolled the other way) and only those. Never waits.
+    fn cancel_ahead(&self, _lane: &str) {}
 }
 
 /// glint-core's thumbnail service (`glint_core::thumbs`), through the app handle that registered its `Thumbs`.
@@ -121,17 +127,31 @@ impl ThumbSource for CoreThumbs {
         let app = self.app.clone();
         let running = crate::core_bridge::run(async move {
             let state = app.state::<glint_core::thumbs::Thumbs>();
-            glint_core::thumbs::thumbnail(
-                state,
-                ask.path,
-                ask.size,
-                ask.modified as f64,
-                ask.bytes as f64,
-                ask.cached_only,
-                ask.lane,
-                ask.seq,
-            )
-            .await
+            if ask.ahead {
+                glint_core::thumbs::thumbnail_ahead(
+                    state,
+                    ask.path,
+                    ask.size,
+                    ask.modified as f64,
+                    ask.bytes as f64,
+                    ask.cached_only,
+                    ask.lane,
+                    ask.seq,
+                )
+                .await
+            } else {
+                glint_core::thumbs::thumbnail(
+                    state,
+                    ask.path,
+                    ask.size,
+                    ask.modified as f64,
+                    ask.bytes as f64,
+                    ask.cached_only,
+                    ask.lane,
+                    ask.seq,
+                )
+                .await
+            }
         });
         // Two layers: the core task may panic (outer Err), the thumbnail may not come (inner Err).
         Box::pin(async move { running.await.and_then(|answer| answer) })
@@ -145,6 +165,16 @@ impl ThumbSource for CoreThumbs {
         drop(glint_core::host::async_runtime::spawn(async move {
             let state = app.state::<glint_core::thumbs::Thumbs>();
             let _ = glint_core::thumbs::cancel_thumbnails(state, lane, paths, up_to).await;
+        }));
+    }
+
+    fn cancel_ahead(&self, lane: &str) {
+        use glint_core::host::Manager as _;
+        let app = self.app.clone();
+        let lane = lane.to_string();
+        drop(glint_core::host::async_runtime::spawn(async move {
+            let state = app.state::<glint_core::thumbs::Thumbs>();
+            let _ = glint_core::thumbs::cancel_prefetches(state, lane).await;
         }));
     }
 }
@@ -536,6 +566,8 @@ struct Request {
     want: Want,
     /// How often it was asked again after being cancelled while a view still showed it.
     retries: u8,
+    /// A prefetch: no view shows it yet, and the status bar's burst doesn't count it.
+    ahead: bool,
 }
 
 /// A thumbnail cancelled while a view still shows it is asked again this many times at the most, so a source
@@ -715,6 +747,12 @@ impl Thumbnails {
                 self.held.touch(key);
                 continue;
             }
+            // Prefetched, and now shown: asked for for real (the service promotes the one it has).
+            if self.wanted.get(key).is_some_and(|request| request.ahead) {
+                self.wanted.remove(key);
+                to_ask.push((key.clone(), want.clone()));
+                continue;
+            }
             let is_new = fresh_for_lane || !old_keys.contains(key);
             if is_new && !self.wanted.contains_key(key) && !self.drawing.contains(key) {
                 to_ask.push((key.clone(), want.clone()));
@@ -733,6 +771,32 @@ impl Thumbnails {
             self.ask(key, want, lane, 0, cx);
         }
         self.evict();
+    }
+
+    /// Asks for `wants` ahead of need, for tab `lane`: what its view will show once it scrolls on. They go in
+    /// the service's lowest lane, behind every real ask, and a picture that arrives is kept like any other
+    /// (so the tile has it on its first frame). What is held, already asked or drawn here is left alone.
+    pub fn prefetch(&mut self, lane: &str, wants: Vec<Want>, cx: &mut Context<Self>) {
+        for want in wants {
+            if want.vector {
+                continue;
+            }
+            let key = want.key();
+            if self.held.contains(&key) || self.wanted.contains_key(&key) || self.drawing.contains(&key) {
+                continue;
+            }
+            self.send(key, want, lane, 0, true, cx);
+        }
+    }
+
+    /// Drops what `lane` asked for ahead of need (the view scrolled the other way, or moved on); real asks stay.
+    pub fn cancel_prefetches(&mut self, lane: &str) {
+        let before = self.wanted.len();
+        self.wanted
+            .retain(|_, request| !(request.ahead && request.lane == lane));
+        if self.wanted.len() != before {
+            self.source.cancel_ahead(lane);
+        }
     }
 
     /// `viewer` is gone (its view was released): what only it showed is cancelled.
@@ -786,15 +850,24 @@ impl Thumbnails {
             self.draw(key, &want, cx);
             return;
         }
+        self.send(key, want, lane, retries, false, cx);
+    }
+
+    /// One request out at the source, for real or as a prefetch.
+    fn send(&mut self, key: Key, want: Want, lane: &str, retries: u8, ahead: bool, cx: &mut Context<Self>) {
         self.seq = self.seq.wrapping_add(1).max(1);
         let seq = self.seq;
-        let run = self.runs.get_mut(lane).map(|run| {
-            if run.pending == 0 {
-                run.start_burst();
-            }
-            run.pending += 1;
-            run.id
-        });
+        let run = if ahead {
+            None
+        } else {
+            self.runs.get_mut(lane).map(|run| {
+                if run.pending == 0 {
+                    run.start_burst();
+                }
+                run.pending += 1;
+                run.id
+            })
+        };
         self.wanted.insert(
             key.clone(),
             Request {
@@ -803,6 +876,7 @@ impl Thumbnails {
                 run,
                 want: want.clone(),
                 retries,
+                ahead,
             },
         );
         let running = self.source.thumbnail(Ask {
@@ -813,6 +887,7 @@ impl Thumbnails {
             cached_only: want.cached_only,
             lane: lane.to_string(),
             seq,
+            ahead,
         });
         let css_box = want.css_box;
         cx.spawn(async move |this, cx| {
@@ -1247,13 +1322,17 @@ pub(super) mod tests {
         pub held_back: RefCell<HashSet<String>>,
         /// Every ask comes back cancelled.
         pub cancels_all: std::cell::Cell<bool>,
+        /// Prefetches are never served (a service without the prefetch lane: the grid as it was).
+        pub ignores_ahead: std::cell::Cell<bool>,
+        /// The lanes whose prefetches were dropped.
+        pub cancelled_ahead: RefCell<Vec<String>>,
     }
 
     impl ThumbSource for Rc<Fake> {
         fn thumbnail(&self, ask: Ask) -> Fut<Result<Thumbnail, String>> {
             self.asked.borrow_mut().push(ask.clone());
             let answer = self.answers.borrow().get(&ask.path).cloned();
-            let held = self.held_back.borrow().contains(&ask.path);
+            let held = self.held_back.borrow().contains(&ask.path) || (ask.ahead && self.ignores_ahead.get());
             let cancelled = self.cancels_all.get();
             Box::pin(async move {
                 if cancelled {
@@ -1269,6 +1348,10 @@ pub(super) mod tests {
 
         fn cancel(&self, lane: &str, paths: Option<Vec<String>>, up_to: u32) {
             self.cancelled.borrow_mut().push((lane.to_string(), paths, up_to));
+        }
+
+        fn cancel_ahead(&self, lane: &str) {
+            self.cancelled_ahead.borrow_mut().push(lane.to_string());
         }
     }
 
@@ -1485,6 +1568,83 @@ pub(super) mod tests {
             t.show(viewer, "tab1", vec![want("C:\\x\\a.jpg")], cx)
         });
         assert_eq!(fake.asked.borrow().len(), 2);
+    }
+
+    #[gpui_kit::test]
+    fn a_prefetch_is_asked_in_its_own_lane_and_is_not_part_of_the_burst(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let fake = Rc::new(Fake::default());
+        fake.held_back.borrow_mut().insert("C:\\x\\a.jpg".into());
+        let (mut visual, service) = service(cx, &fake);
+        service.update(&mut visual, |t, cx| {
+            t.time("tab1", "C:\\x:grid", cx);
+            t.prefetch("tab1", vec![want("C:\\x\\a.jpg"), want("C:\\x\\b.jpg")], cx);
+        });
+        let asked = fake.asked.borrow().clone();
+        assert_eq!(asked.len(), 2);
+        assert!(asked.iter().all(|ask| ask.ahead && ask.lane == "tab1"), "{asked:?}");
+        let pending = service.read_with(&visual, |t, _| t.run("tab1").map(|run| run.pending));
+        assert_eq!(pending, Some(0), "the status bar doesn't wait for what nobody sees yet");
+        // Asked for again: asked already, so nothing goes out twice.
+        service.update(&mut visual, |t, cx| {
+            t.prefetch("tab1", vec![want("C:\\x\\a.jpg"), want("C:\\x\\b.jpg")], cx)
+        });
+        assert_eq!(fake.asked.borrow().len(), 2);
+        settle(&mut visual, |cx| service.read_with(cx, |t, _| t.held_count() == 1));
+    }
+
+    #[gpui_kit::test]
+    fn showing_what_was_prefetched_asks_for_real_and_a_picture_comes_once(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let fake = Rc::new(Fake::default());
+        fake.held_back.borrow_mut().insert("C:\\x\\a.jpg".into());
+        fake.answers
+            .borrow_mut()
+            .insert("C:\\x\\a.jpg".into(), answer(8, 8, [1, 2, 3, 255], true, Origin::Cache));
+        let (mut visual, service) = service(cx, &fake);
+        service.update(&mut visual, |t, cx| t.prefetch("tab1", vec![want("C:\\x\\a.jpg")], cx));
+        service.update(&mut visual, |t, cx| t.time("tab1", "scope", cx));
+        let viewer = EntityId::from(7u64);
+        service.update(&mut visual, |t, cx| {
+            t.show(viewer, "tab1", vec![want("C:\\x\\a.jpg")], cx)
+        });
+        let asked = fake.asked.borrow().clone();
+        assert_eq!(
+            (asked.len(), asked[0].ahead, asked[1].ahead),
+            (2, true, false),
+            "{asked:?}"
+        );
+        assert!(asked[1].seq > asked[0].seq);
+        // The burst counts the real ask.
+        assert_eq!(
+            service.read_with(&visual, |t, _| t.run("tab1").map(|run| run.pending)),
+            Some(1)
+        );
+    }
+
+    #[gpui_kit::test]
+    fn cancelling_prefetches_leaves_the_real_asks_alone(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let fake = Rc::new(Fake::default());
+        for name in ["a", "b"] {
+            fake.held_back.borrow_mut().insert(format!("C:\\x\\{name}.jpg"));
+        }
+        let (mut visual, service) = service(cx, &fake);
+        let viewer = EntityId::from(7u64);
+        service.update(&mut visual, |t, cx| {
+            t.show(viewer, "tab1", vec![want("C:\\x\\a.jpg")], cx);
+            t.prefetch("tab1", vec![want("C:\\x\\b.jpg")], cx);
+        });
+        assert_eq!(service.read_with(&visual, |t, _| t.pending_count()), 2);
+        service.update(&mut visual, |t, _| t.cancel_prefetches("tab1"));
+        assert_eq!(*fake.cancelled_ahead.borrow(), ["tab1"]);
+        assert_eq!(service.read_with(&visual, |t, _| t.pending_count()), 1);
+        // Nothing to drop: the source isn't bothered.
+        service.update(&mut visual, |t, _| t.cancel_prefetches("tab1"));
+        assert_eq!(fake.cancelled_ahead.borrow().len(), 1);
+        // And a cancelled prefetch can be asked again.
+        service.update(&mut visual, |t, cx| t.prefetch("tab1", vec![want("C:\\x\\b.jpg")], cx));
+        assert_eq!(fake.asked.borrow().len(), 3);
     }
 
     #[gpui_kit::test]
