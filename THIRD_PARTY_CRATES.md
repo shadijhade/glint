@@ -6570,7 +6570,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## MIT License
 
-[form_urlencoded 1.2.2](https://github.com/servo/rust-url)
+[form_urlencoded 1.2.3](https://github.com/servo/rust-url)
 
 ````text
 Copyright (c) 2013-2016 The rust-url developers
@@ -6603,7 +6603,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## MIT License
 
-[data-url 0.3.2](https://github.com/servo/rust-url), [idna 1.1.0](https://github.com/servo/rust-url/), [percent-encoding 2.3.2](https://github.com/servo/rust-url/), [url 2.5.8](https://github.com/servo/rust-url)
+[data-url 0.3.2](https://github.com/servo/rust-url), [idna 1.1.0](https://github.com/servo/rust-url/), [percent-encoding 2.3.2](https://github.com/servo/rust-url/), [url 2.5.9](https://github.com/servo/rust-url)
 
 ````text
 Copyright (c) 2013-2025 The rust-url developers
