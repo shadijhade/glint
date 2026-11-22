@@ -63,7 +63,7 @@ Glint needs Windows 10 or 11, 64-bit, and nothing else: it draws its own window,
 
 ## What's new
 
-**0.16.0** (coming soon) is calmer to look at and quicker to get around: a quieter window, right-click menus sorted by what matters, **Hop mode** to reach anything in sight from the keyboard, and **named workspaces**. The photo map, the Color Wheel and Time Machine grew up, and a lot got faster.
+**0.16.0** (November 23, 2026) is calmer to look at and quicker to get around: a quieter window, right-click menus sorted by what matters, **Hop mode** to reach anything in sight from the keyboard, and **named workspaces**. The photo map, the Color Wheel and Time Machine grew up, and a lot got faster.
 
 -   **A quieter window.** The files are part of the window, edge to edge, instead of a card floating in it; the light behind it is one soft wash in the color of the place you're in; and what's selected is one plain fill, with the accent kept for what is chosen or switched on.
 -   **Right-click menus by importance.** What's done most in a strip, a short section for the kind of file, and the rest under **More**: a picture's menu went from 22 rows to 12, a folder's from 19 to 9. Submenus open beside the menu, and no menu is taller than three quarters of the window.
