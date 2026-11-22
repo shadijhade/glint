@@ -29,6 +29,7 @@
 //! tabs up to [`MOST_SHOWN`] rows, then scrolls.
 
 use crate::components::command_bar::keyed;
+use crate::components::peek_card::{self, PeekHost};
 use crate::explorer::{self, Drive, DriveKind, Explorer, Pane, Tab, TabId};
 use crate::kit::prelude::*;
 use crate::platform::dragdrop::{Answer, DropEffect, Under};
@@ -154,6 +155,9 @@ struct TabData {
     /// The folder files dropped on the tab go into: not a search, an archive, a closed folder, a remote
     /// (read-only), This PC, Recent or the Gallery (`dropInto`).
     drop_into: Option<String>,
+    /// The folder the tab's peek card is about, when it has one: a tab on a folder, not a search or a place that
+    /// is no folder (This PC, the Recycle Bin, Recent, the Gallery).
+    peek: Option<String>,
 }
 
 /// A pane's strip as drawn.
@@ -280,6 +284,15 @@ fn tab_data(explorer: &Explorer, id: TabId) -> TabData {
                     && !t.is_closed()
                     && !in_archive_path(&t.path)
                     && !is_remote_path(&t.path)
+                    && !is_recent(&t.path)
+                    && !is_gallery(&t.path)
+            })
+            .map(|t| t.path.clone()),
+        peek: tab
+            .filter(|t| {
+                t.find.is_none()
+                    && t.path != THIS_PC
+                    && !is_recycle_bin(&t.path)
                     && !is_recent(&t.path)
                     && !is_gallery(&t.path)
             })
@@ -491,6 +504,8 @@ pub struct TabStrip {
     spring_timer: Option<Task<()>>,
     /// The keyboard focus of each tab, for Tab, Enter and the arrows.
     focus: HashMap<TabId, FocusHandle>,
+    /// The card a background tab shows when the pointer rests on it: what its folder holds.
+    peek: Entity<PeekHost>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -499,6 +514,10 @@ impl TabStrip {
     pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
         let explorer = explorer::explorer(cx);
         let subscriptions = vec![cx.observe(&explorer, |_, _, cx| cx.notify())];
+        let peek = {
+            let explorer = explorer.clone();
+            cx.new(|cx| PeekHost::new(explorer, cx))
+        };
         Self {
             explorer,
             scrolls: Vec::new(),
@@ -509,6 +528,7 @@ impl TabStrip {
             spring: None,
             spring_timer: None,
             focus: HashMap::new(),
+            peek,
             _subscriptions: subscriptions,
         }
     }
@@ -787,6 +807,16 @@ impl TabStrip {
         let drop_into = d.drop_into.clone();
         let over_name = d.name.to_string();
         let drop_dest = d.drop_into.clone();
+        // A tab that isn't the one shown says what its folder holds when the pointer rests on it, in a card that
+        // has its path too (so it has no tooltip).
+        let peek_target = d.peek.clone().filter(|_| !selected).map(|path| peek_card::Target {
+            key: SharedString::from(format!("tab-{}", id.0)),
+            element: SharedString::from(format!("tab-{}", id.0)),
+            path,
+            name: d.name.clone(),
+            hint: None,
+            read_ahead: false,
+        });
         let drag = DraggedTab {
             id,
             from_pane: pane,
@@ -905,12 +935,27 @@ impl TabStrip {
             .track_focus(&self.focus[&id])
             .tab_stop(true)
             .focus_visible(move |s| s.border_1().border_color(ring))
-            .tooltip(move |window, cx| crate::kit::tooltip(tip.clone(), window, cx))
+            .when(peek_target.is_none(), |tab| {
+                tab.tooltip(move |window, cx| crate::kit::tooltip(tip.clone(), window, cx))
+            })
+            .when_some(peek_target, |tab, target| {
+                tab.on_hover(cx.listener(move |this, hovered: &bool, window, cx| {
+                    let target = target.clone();
+                    this.peek.update(cx, |peek, cx| {
+                        if *hovered {
+                            peek.enter(target, window, cx);
+                        } else {
+                            peek.leave(&target.element, cx);
+                        }
+                    });
+                }))
+            })
             // Pressing a tab shows it, as the TypeScript's mousedown did; the keyboard focus stays where it was.
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, window, cx| {
                     window.prevent_default();
+                    this.peek.update(cx, |peek, cx| peek.hide(cx));
                     this.explorer.update(cx, |e, cx| e.activate_tab(id, cx));
                 }),
             )
@@ -1162,6 +1207,7 @@ impl Render for TabStrip {
             )
             .children(strips)
             .children(menu)
+            .child(self.peek.clone())
     }
 }
 

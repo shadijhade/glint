@@ -36,6 +36,8 @@ pub mod palette;
 pub mod pane_bars;
 /// The head of a pane: the folder's name and picture, what is in it, and a chip for each kind.
 pub mod pane_head;
+/// The card a tab or a breadcrumb the pointer rests on shows: what its folder holds.
+pub mod peek_card;
 /// Offline 120 FPS interactive vector Photo World Map.
 pub mod photo_map;
 /// The preview pane and Quick Look.

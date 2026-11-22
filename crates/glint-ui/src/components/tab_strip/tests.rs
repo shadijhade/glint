@@ -615,3 +615,106 @@ fn a_tab_dropped_in_the_strip_only_moves(cx: &mut TestAppContext) {
     );
     testing::set_rtl(false);
 }
+
+// ---- Peek cards on background tabs ---------------------------------------------------------------------
+
+/// The peek card's name (role and words for a screen reader), when one is on screen.
+fn card(cx: &mut VisualTestContext) -> Option<(Option<Role>, String)> {
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window
+            .try_find("peek-card")
+            .map(|card| (card.role(), card.label().unwrap_or_default().to_string()))
+    })
+}
+
+fn rest(cx: &mut VisualTestContext, ms: u64) {
+    cx.executor().advance_clock(Duration::from_millis(ms));
+    cx.run_until_parked();
+}
+
+fn hover(cx: &mut VisualTestContext, id: &'static str) {
+    cx.update(|window, cx| window.hover(id, cx));
+    cx.run_until_parked();
+}
+
+#[gpui_kit::test]
+fn the_pointer_resting_on_a_background_tab_shows_what_its_folder_holds(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let (mut cx, _) = open(cx, false);
+    act(&mut cx, |e, cx| e.new_tab(Some("C:\\a"), cx));
+    act(&mut cx, |e, cx| e.new_tab(Some("C:\\b"), cx));
+    assert_eq!(active(&mut cx), TabId(3));
+    hover(&mut cx, "tab-2");
+    rest(&mut cx, 300);
+    assert!(card(&mut cx).is_none(), "not before the pointer has rested a moment");
+    rest(&mut cx, 150);
+    let (role, label) = card(&mut cx).expect("the tab's card");
+    assert_eq!(role, Some(Role::Tooltip));
+    // Name, path, and what is in it, from the tab's own listing.
+    assert!(label.starts_with("a, C:\\a, 1 file"), "{label}");
+    // It took nothing: the same tab is shown, and the pointer going away closes it.
+    assert_eq!(active(&mut cx), TabId(3));
+    hover(&mut cx, "new-tab-0");
+    rest(&mut cx, 200);
+    assert!(card(&mut cx).is_none(), "gone with the pointer");
+}
+
+#[gpui_kit::test]
+fn the_tab_shown_and_places_that_are_no_folder_have_no_card(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let (mut cx, _) = open(cx, false);
+    act(&mut cx, |e, cx| e.new_tab(Some("C:\\a"), cx));
+    // The tab shown (a) keeps its tooltip; This PC (tab-1) is no folder.
+    hover(&mut cx, "tab-2");
+    rest(&mut cx, 600);
+    assert!(card(&mut cx).is_none(), "the tab shown says its path in the tooltip");
+    hover(&mut cx, "tab-1");
+    rest(&mut cx, 600);
+    assert!(card(&mut cx).is_none(), "This PC has no folder to peek into");
+}
+
+#[gpui_kit::test]
+fn a_press_or_escape_closes_the_tabs_card(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let (mut cx, _) = open(cx, false);
+    act(&mut cx, |e, cx| e.new_tab(Some("C:\\a"), cx));
+    act(&mut cx, |e, cx| e.new_tab(Some("C:\\b"), cx));
+    hover(&mut cx, "tab-2");
+    rest(&mut cx, 450);
+    assert!(card(&mut cx).is_some());
+    cx.update(|window, cx| window.press("escape", cx));
+    cx.run_until_parked();
+    assert!(card(&mut cx).is_none(), "Escape closes it");
+    // Moved off and on again, it comes back; clicking the tab shows the tab and closes the card.
+    hover(&mut cx, "new-tab-0");
+    hover(&mut cx, "tab-2");
+    rest(&mut cx, 450);
+    assert!(card(&mut cx).is_some());
+    click(&mut cx, "tab-2");
+    assert_eq!(active(&mut cx), TabId(2));
+    assert!(card(&mut cx).is_none(), "the press closed it");
+    rest(&mut cx, 1_000);
+    assert!(card(&mut cx).is_none(), "and the tab, now shown, has none");
+}
+
+#[gpui_kit::test]
+fn an_arabic_folders_card_hangs_toward_the_start_edge_in_arabic(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let (mut cx, _) = open(cx, true);
+    act(&mut cx, |e, cx| e.new_tab(Some("C:\\تقارير"), cx));
+    act(&mut cx, |e, cx| e.new_tab(Some("C:\\b"), cx));
+    hover(&mut cx, "tab-2");
+    rest(&mut cx, 450);
+    let (_, label) = card(&mut cx).expect("the card");
+    assert!(label.starts_with("تقارير, C:\\تقارير, 1 file"), "{label}");
+    let (bounds, pointer) = cx.update(|window, cx| {
+        window.render_frame(cx);
+        (window.find("peek-card").bounds(), window.mouse_position())
+    });
+    assert!(
+        bounds.right() <= pointer.x,
+        "{bounds:?} against the pointer at {pointer:?}"
+    );
+    testing::set_rtl(false);
+}
