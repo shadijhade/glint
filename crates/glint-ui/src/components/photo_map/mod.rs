@@ -18,6 +18,7 @@ use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug, Default)]
 pub struct TabMapState {
@@ -27,7 +28,21 @@ pub struct TabMapState {
     pub serial: u64,
 }
 
-type GeoLoader = std::sync::Arc<dyn Fn(String) -> Vec<GeoPhoto> + Send + Sync>;
+/// Finds a folder's geotagged photos: calls the sink with each batch as it finds them, and returns when done.
+pub type GeoLoader = Arc<dyn Fn(String, &(dyn Fn(Vec<GeoPhoto>) + Sync)) + Send + Sync>;
+
+/// A loader that finds all of a folder's photos at once (what tests, and anything not streaming, use).
+pub fn loader_of(find: impl Fn(String) -> Vec<GeoPhoto> + Send + Sync + 'static) -> GeoLoader {
+    Arc::new(move |folder, sink| {
+        let found = find(folder);
+        if !found.is_empty() {
+            sink(found);
+        }
+    })
+}
+
+/// How often the map takes what a running scan has found so far.
+const SHOW_EVERY: Duration = Duration::from_millis(100);
 
 struct GlobalState(Entity<PhotoMapModel>);
 impl Global for GlobalState {}
@@ -121,22 +136,66 @@ impl PhotoMapModel {
         );
         cx.notify();
 
+        // The scan runs on a thread of the pool and hands its finds over as it makes them.
         let loader = self.loader.clone();
-        // The set's positions are worked out here, off the UI thread.
-        let photos_task = cx
-            .background_executor()
-            .spawn(async move { GeoSet::new((loader)(folder)) });
+        let (sender, receiver) = async_channel::unbounded::<Vec<GeoPhoto>>();
+        cx.background_executor()
+            .spawn(async move {
+                (loader)(folder, &|batch| {
+                    let _ = sender.try_send(batch);
+                });
+            })
+            .detach();
         cx.spawn(async move |this, cx| {
-            let photos = photos_task.await;
-            let _ = this.update(cx, |this, cx| {
-                if let Some(st) = this.tabs.get_mut(&tab) {
-                    if st.serial == serial {
-                        st.photos = photos;
-                        st.loading = false;
-                        cx.notify();
+            let mut found: Vec<GeoPhoto> = Vec::new();
+            let mut last: Option<Instant> = None;
+            loop {
+                // The next batch, or the end of the scan (the sender is gone, nothing more to come).
+                let mut done = match receiver.recv().await {
+                    Ok(batch) => {
+                        found.extend(batch);
+                        false
+                    }
+                    Err(_) => true,
+                };
+                // What is already waiting goes with it; and a map that was just updated waits out the rest of the
+                // interval, so a fast scan doesn't redraw it a hundred times a second.
+                if !done {
+                    if let Some(wait) = last.map(|at| SHOW_EVERY.saturating_sub(at.elapsed())) {
+                        if !wait.is_zero() {
+                            cx.background_executor().timer(wait).await;
+                        }
                     }
                 }
-            });
+                while let Ok(more) = receiver.try_recv() {
+                    found.extend(more);
+                }
+                done |= receiver.is_closed() && receiver.is_empty();
+                // The set (newest first, positions worked out) is made off the UI thread from a copy of the
+                // photos so far (their texts are shared, so the copy is cheap).
+                let mut snapshot = found.clone();
+                let photos = cx
+                    .background_spawn(async move {
+                        snapshot.sort_by_key(|p| std::cmp::Reverse(p.taken));
+                        GeoSet::new(snapshot)
+                    })
+                    .await;
+                let kept = this
+                    .update(cx, |this, cx| match this.tabs.get_mut(&tab) {
+                        Some(st) if st.serial == serial => {
+                            st.photos = photos;
+                            st.loading = !done;
+                            cx.notify();
+                            true
+                        }
+                        _ => false,
+                    })
+                    .unwrap_or(false);
+                if done || !kept {
+                    break;
+                }
+                last = Some(Instant::now());
+            }
         })
         .detach();
     }
@@ -158,7 +217,7 @@ pub fn shared(cx: &mut App) -> Entity<PhotoMapModel> {
     if let Some(state) = cx.try_global::<GlobalState>() {
         return state.0.clone();
     }
-    let loader: GeoLoader = std::sync::Arc::new(|folder| glint_core::gallery::geo_photos_in(&folder));
+    let loader: GeoLoader = Arc::new(|folder, sink| glint_core::gallery::geo_photos_stream(&folder, sink));
     init_with(cx, loader)
 }
 
@@ -220,8 +279,11 @@ pub struct PhotoMapView {
     model: Entity<PhotoMapModel>,
     focus: FocusHandle,
     camera: MapCamera,
-    /// The load (its serial) and how many photos the camera was last fitted to.
-    fitted_for: Option<(u64, usize)>,
+    /// The load (its serial) the camera was last fitted to, and how far its scan had got: 1 while photos were still
+    /// coming, 2 when they were all in.
+    fitted_for: Option<(u64, u8)>,
+    /// The person moved the camera since it was fitted: a scan that finishes doesn't take it back.
+    touched: bool,
     clusters: ClusterCache,
     drag: Option<DragState>,
     selected_cluster: Option<usize>,
@@ -245,6 +307,7 @@ impl PhotoMapView {
             focus: cx.focus_handle(),
             camera: MapCamera::default(),
             fitted_for: None,
+            touched: false,
             clusters: ClusterCache::default(),
             drag: None,
             selected_cluster: None,
@@ -285,6 +348,7 @@ impl PhotoMapView {
     fn fit_all(&mut self, cx: &mut Context<Self>) {
         let (set, _, _) = self.current(cx);
         self.camera = self.fit_camera(&set);
+        self.touched = false;
         self.selected_cluster = None;
         cx.notify();
     }
@@ -305,6 +369,7 @@ impl PhotoMapView {
         let w = f32::from(bounds.size.width).max(800.0);
         let h = f32::from(bounds.size.height).max(480.0);
         self.camera.zoom_at(factor, w * 0.5, h * 0.5, w, h);
+        self.touched = true;
         self.selected_cluster = None;
         cx.notify();
     }
@@ -360,6 +425,7 @@ impl PhotoMapView {
             "0" => {
                 cx.stop_propagation();
                 self.camera = MapCamera::default();
+                self.touched = true;
                 self.selected_cluster = None;
                 cx.notify();
             }
@@ -372,20 +438,27 @@ impl Render for PhotoMapView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tab = self.tab_id(cx);
         let (photos, loading, serial) = self.current(cx);
-        if !loading && !photos.is_empty() {
-            let key = (serial, photos.len());
-            if self.fitted_for != Some(key) {
-                self.fitted_for = Some(key);
-                self.camera = self.fit_camera(&photos);
-            }
+        // The camera frames the photos when the first come in and once more when the scan is done (so pins are
+        // there to see while it runs), unless the person has moved it meanwhile.
+        let stage = if loading { 1 } else { 2 };
+        let new_load = self.fitted_for.is_none_or(|(was, _)| was != serial);
+        if new_load {
+            self.touched = false;
+        }
+        let later = self.fitted_for.is_some_and(|(_, at)| at < stage) && !self.touched;
+        if !photos.is_empty() && (new_load || later) {
+            self.fitted_for = Some((serial, stage));
+            self.camera = self.fit_camera(&photos);
         }
 
         let clusters = self.clusters_now(&photos);
         let active_cluster = self.selected_cluster.and_then(|idx| clusters.pins.get(idx).copied());
 
         let t = theme::tokens(cx);
-        let count_text = if loading {
+        let count_text = if loading && photos.is_empty() {
             t!("Scanning EXIF GPS…")
+        } else if loading {
+            t!("Scanning… {n} geotagged photos so far", n = photos.len())
         } else {
             t!("{n} geotagged photos", n = photos.len())
         };
@@ -449,6 +522,7 @@ impl Render for PhotoMapView {
                             .label(t!("Reset"))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.camera = MapCamera::default();
+                                this.touched = true;
                                 this.selected_cluster = None;
                                 cx.notify();
                             })),
@@ -617,6 +691,7 @@ impl Render for PhotoMapView {
                 let sx = f32::from(ev.position.x - bounds.origin.x);
                 let sy = f32::from(ev.position.y - bounds.origin.y);
                 this.camera.zoom_at(factor, sx, sy, w, h);
+                this.touched = true;
                 this.selected_cluster = None;
                 cx.notify();
             }))
@@ -647,6 +722,7 @@ impl Render for PhotoMapView {
                 let w = f32::from(this.map_bounds.get().size.width);
                 if w > 1.0 && (dx.abs() > 0.0 || dy.abs() > 0.0) {
                     this.camera.pan_by(dx, dy, w);
+                    this.touched = true;
                     cx.notify();
                 }
             }))
@@ -748,8 +824,8 @@ impl Render for PhotoMapView {
                         .min_h_0()
                         .overflow_y_scroll()
                         .child(col().gap(space(0.5)).children(items.into_iter().map(|(row_i, photo)| {
-                            let reveal_path = photo.path.clone();
-                            let open_path = photo.path.clone();
+                            let reveal_path = photo.path.to_string();
+                            let open_path = photo.path.to_string();
                             row_start()
                                 .items_center()
                                 .justify_between()
@@ -845,7 +921,7 @@ mod tests {
                 ..Default::default()
             },
         ];
-        let loader: GeoLoader = std::sync::Arc::new(move |_| sample.clone());
+        let loader = loader_of(move |_| sample.clone());
 
         cx.update(|cx| {
             testing::init(cx);
@@ -873,5 +949,55 @@ mod tests {
         visual.update(|window, cx| window.click(("pm-close", 0usize), cx));
         visual.run_until_parked();
         assert!(!visual.update(|_, cx| shows(cx, tab)));
+    }
+    #[gpui_kit::test]
+    fn a_scan_that_finds_in_pieces_ends_as_one_set_newest_first(cx: &mut gpui_kit::TestAppContext) {
+        let _guard = testing::lock();
+        let disk = FakeDisk::new();
+        disk.folder("C:\\Trip", vec![file("C:\\Trip", "a.jpg", 420, 0)]);
+        // A scan that hands over three batches, the newest photo in the middle one. (The test executor runs the
+        // scan on the test's own thread, so a scan that waits between batches can't be watched here: the pieces
+        // arriving while a scan runs are covered by `gallery::meta`'s scan test.)
+        let loader: GeoLoader = Arc::new(|_, sink| {
+            for taken in [5i64, 9, 7] {
+                sink(vec![GeoPhoto {
+                    path: format!("C:\\Trip\\{taken}.jpg").into(),
+                    name: format!("{taken}.jpg").into(),
+                    lat: 35.0 + taken as f64,
+                    lon: 139.0,
+                    taken,
+                    ..Default::default()
+                }]);
+            }
+        });
+        cx.update(|cx| {
+            testing::init(cx);
+            crate::explorer::init_with(cx, disk.source());
+            init_with(cx, loader);
+        });
+        let (_view, visual) = cx.add_window_view(|window, cx| PhotoMapView::new(0, window, cx));
+        visual.update(|_, cx| {
+            explorer(cx).update(cx, |e, cx| e.navigate("C:\\Trip", NavOptions::default(), cx));
+        });
+        visual.run_until_parked();
+        let tab = visual.update(|_, cx| explorer(cx).read(cx).active_tab_id());
+        visual.update(|_, cx| toggle(cx, tab));
+        let mut state = None;
+        for _ in 0..1_000 {
+            visual.run_until_parked();
+            state = visual.update(|_, cx| {
+                shared(cx)
+                    .read(cx)
+                    .state_of(tab)
+                    .map(|s| (s.loading, s.photos.iter().map(|p| p.taken).collect::<Vec<_>>()))
+            });
+            if state.as_ref().is_some_and(|(loading, _)| !loading) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(state, Some((false, vec![9, 7, 5])));
+        // The camera was fitted to them, not left on the world.
+        visual.update(|window, cx| window.render_frame(cx));
     }
 }

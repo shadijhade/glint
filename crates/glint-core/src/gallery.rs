@@ -256,8 +256,8 @@ fn geo_photo(path: &str, size: u64, modified: i64, meta: &Meta) -> Option<GeoPho
     let [lat, lon] = meta.place()?;
     let name = path.rsplit(['\\', '/']).next().unwrap_or(path);
     Some(GeoPhoto {
-        path: path.to_string(),
-        name: name.to_string(),
+        path: path.into(),
+        name: name.into(),
         lat,
         lon,
         taken: if meta.taken > 0 { meta.taken } else { modified },
@@ -368,7 +368,7 @@ mod tests {
         let batches = batches.into_inner().unwrap();
         let all: Vec<&GeoPhoto> = batches.iter().flatten().collect();
         assert_eq!(all.len(), 1);
-        assert_eq!(all[0].name, "tokyo.jpg");
+        assert_eq!(&*all[0].name, "tokyo.jpg");
         assert!((all[0].lat - 35.6762).abs() < 1e-3 && (all[0].lon - 139.6503).abs() < 1e-3);
         assert!(all[0].taken > 0 && all[0].size > 0 && all[0].modified > 0);
         // The same photo as a list, newest first.

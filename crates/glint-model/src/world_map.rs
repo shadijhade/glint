@@ -3,7 +3,6 @@
 //! Zero network tiles, zero AI: embedded simplified continent and major island polygons paired with
 //! deterministic Web Mercator camera math and screen-space cluster bucketing.
 
-use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 /// Maximum latitude representable in standard Web Mercator (~85.0511°).
@@ -428,11 +427,13 @@ pub const LAND_POLYGONS: &[&[(f32, f32)]] = &[
     ],
 ];
 
-/// A single photo or video carrying EXIF GPS coordinates.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+/// A single photo or video carrying EXIF GPS coordinates. Its texts are shared (`Arc<str>`): the map takes a
+/// snapshot of the photos found so far ten times a second while a scan runs, and copying 50,000 paths each
+/// time would be most of the scan's cost.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct GeoPhoto {
-    pub path: String,
-    pub name: String,
+    pub path: Arc<str>,
+    pub name: Arc<str>,
     pub lat: f64,
     pub lon: f64,
     /// When it was taken, ms since 1970 (when it was modified, if it doesn't say).
@@ -931,7 +932,7 @@ mod tests {
         assert_eq!(a.time_range(), Some((5, 9)));
         assert_eq!(GeoSet::default().time_range(), None);
         let only_b = a.taken_between(6, 10);
-        assert_eq!((only_b.len(), only_b[0].path.as_str()), (1, "b"));
+        assert_eq!((only_b.len(), &*only_b[0].path), (1, "b"));
         assert_eq!(only_b.world_of(0), a.world_of(1));
     }
 

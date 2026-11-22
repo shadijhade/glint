@@ -61,8 +61,8 @@ mod tests {
             .map(|i| {
                 let (la, lo) = hubs[i % hubs.len()];
                 GeoPhoto {
-                    path: format!("C:\\Users\\someone\\Pictures\\Trips\\2024\\IMG_{i:06}.jpg"),
-                    name: format!("IMG_{i:06}.jpg"),
+                    path: format!("C:\\Users\\someone\\Pictures\\Trips\\2024\\IMG_{i:06}.jpg").into(),
+                    name: format!("IMG_{i:06}.jpg").into(),
                     lat: la + (next() - 0.5) * 2.0,
                     lon: lo + (next() - 0.5) * 2.0,
                     taken: 1_600_000_000_000 + i as i64 * 3_000_000,
