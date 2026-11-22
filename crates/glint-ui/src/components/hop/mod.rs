@@ -183,7 +183,11 @@ pub fn mark<E: ParentElement>(el: E, make: impl FnOnce() -> Mark) -> E {
             },
             |_, _, _, _| (),
         )
+        // Pinned to the target's corner: an absolute child with no insets takes its place in the flow, which in a
+        // block element (a list row, a rail tab) is under the target's content, a whole row lower.
         .absolute()
+        .top_0()
+        .left_0()
         .size_full(),
     )
 }
