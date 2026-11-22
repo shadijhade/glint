@@ -615,7 +615,7 @@ impl ThisPc {
             .gap(space(3.))
             .w(rems(model::FOLDER_TILE_REM))
             .min_w_0()
-            .flex_grow(1.)
+            .flex_grow(0.)
             .flex_shrink(1.)
             .p(space(3.))
             .rounded(theme::size::RADIUS_XL)
@@ -624,6 +624,7 @@ impl ThisPc {
             .bg(t.glass)
             .cursor_pointer()
             .hover(|style| style.border_color(primary.opacity(0.4)).bg(accent))
+            .active(|style| style.border_color(primary.opacity(0.65)))
             .drag_over::<ExternalPaths>(move |style, _, _, _| {
                 if lit.get() == Some(index) {
                     style.border_color(primary).bg(primary.opacity(0.15))
@@ -809,7 +810,7 @@ impl ThisPc {
             .gap(space(3.))
             .w(rems(model::DRIVE_TILE_REM))
             .min_w_0()
-            .flex_grow(1.)
+            .flex_grow(0.)
             .flex_shrink(1.)
             .p(space(3.))
             .rounded(theme::size::RADIUS_XL)
@@ -818,6 +819,7 @@ impl ThisPc {
             .bg(t.glass)
             .cursor_pointer()
             .hover(|style| style.border_color(primary.opacity(0.4)).bg(accent))
+            .active(|style| style.border_color(primary.opacity(0.65)))
             .drag_over::<ExternalPaths>(move |style, _, _, _| {
                 if lit.get() == Some(index) {
                     style.border_color(primary).bg(primary.opacity(0.15))
@@ -1013,7 +1015,7 @@ impl Render for ThisPc {
             .aria_label(t!("Folders"))
             .test_support()
             .flex_wrap()
-            .gap(space(2.))
+            .gap(space(model::FOLDER_GAP_REM / 0.25))
             .children(folders);
 
         let totals = self.totals.map(|totals| {

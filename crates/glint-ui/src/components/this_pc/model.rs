@@ -8,11 +8,12 @@ use crate::components::status_bar::index::{Index, State};
 use crate::explorer::{Drive, DriveKind};
 use glint_model::paths::{droppable, in_archive_path, is_remote_path};
 
-/// The folders' tiles are `minmax(10.5rem, 1fr)` with `gap-2` between them.
+/// The folders' tiles are 10.5rem wide, with the same gap between them as the drives' (every card the same size,
+/// the last row left where it falls instead of stretched wide).
 pub const FOLDER_TILE_REM: f32 = 10.5;
 /// See [`FOLDER_TILE_REM`].
-pub const FOLDER_GAP_REM: f32 = 0.5;
-/// The drives' tiles are `minmax(17.5rem, 1fr)` with `gap-3` between them.
+pub const FOLDER_GAP_REM: f32 = 0.75;
+/// The drives' tiles are 17.5rem wide with `gap-3` between them.
 pub const DRIVE_TILE_REM: f32 = 17.5;
 /// See [`DRIVE_TILE_REM`].
 pub const DRIVE_GAP_REM: f32 = 0.75;
