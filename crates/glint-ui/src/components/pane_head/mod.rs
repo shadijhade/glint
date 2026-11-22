@@ -64,7 +64,8 @@ pub struct Head {
 /// The line under the name: how many folders and files and how much they weigh; while the box narrows the list,
 /// how many of them are shown; for a folder too large to count by kind, how many items.
 pub fn facts(tab: &Tab, kinds: &[Category]) -> SharedString {
-    let entries = tab.entries().len();
+    // What the list shows: the items "Show hidden items" leaves out aren't counted.
+    let entries = tab.entries().len().saturating_sub(tab.rows.hidden);
     if tab.is_closed() && tab.listing.is_none() {
         return t!("No access");
     }
@@ -124,11 +125,19 @@ impl Head {
         if tab.find.is_some() || tab.is_this_pc() {
             return None;
         }
-        // The folder's make-up: the breakdown the status bar's popover shows, of the same entries.
+        // The folder's make-up: the breakdown the status bar's popover shows, of the items the list shows (a
+        // repository's hidden `.git` is no "1 folder" while the list has none).
         let kinds = tab
             .listing
             .as_ref()
-            .map(|listing| spectrum_of(&listing.entries, explorer.size_run(&tab.path)))
+            .map(|listing| {
+                let sizes = explorer.size_run(&tab.path);
+                if tab.rows.hidden > 0 {
+                    spectrum_of(&shown_entries(&listing.entries), sizes)
+                } else {
+                    spectrum_of(&listing.entries, sizes)
+                }
+            })
             .unwrap_or_default();
         Some(Head {
             tab: tab.id,
@@ -144,6 +153,36 @@ impl Head {
             is_gallery: glint_model::paths::is_gallery(&tab.path),
         })
     }
+}
+
+/// A listing's entries, shared.
+type Entries = Arc<[glint_model::entries::FileEntry]>;
+
+thread_local! {
+    /// Listings whose hidden items were left out, and what is left, newest first: the same listing gives the same
+    /// list (so the breakdown's own cache, keyed by it, keeps working) and a folder's refresh costs nothing.
+    static SHOWN: std::cell::RefCell<Vec<(Entries, Entries)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// `entries` without the hidden ones, kept for the listing (one per pane or two).
+fn shown_entries(entries: &Entries) -> Entries {
+    SHOWN.with(|kept| {
+        let mut kept = kept.borrow_mut();
+        if let Some(at) = kept.iter().position(|(from, _)| Arc::ptr_eq(from, entries)) {
+            let hit = kept.remove(at);
+            let shown = hit.1.clone();
+            kept.insert(0, hit);
+            return shown;
+        }
+        let shown: Entries = entries
+            .iter()
+            .filter(|entry| !glint_model::entries::is_hidden(entry))
+            .cloned()
+            .collect();
+        kept.insert(0, (entries.clone(), shown.clone()));
+        kept.truncate(4);
+        shown
+    })
 }
 
 /// A picture to look into for a place: its path, size and last-write time.

@@ -57,6 +57,31 @@ fn it_names_the_folder_and_counts_what_is_in_it(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn hidden_items_the_list_leaves_out_are_not_counted(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let disk = disk();
+    // A repository: its `.git` is hidden, and with "Show hidden items" off the list shows only the file.
+    disk.folder(
+        "C:\\Repo",
+        vec![
+            crate::explorer::fake::hidden("C:\\Repo", ".git"),
+            file("C:\\Repo", "a.txt", 10, 0),
+        ],
+    );
+    cx.update(|cx| {
+        testing::init(cx);
+        explorer::init_with(cx, disk.source());
+    });
+    let (head, visual) = cx.add_window_view(|window, cx| PaneHead::new(0, window, cx));
+    let mut visual = visual.clone();
+    go(&mut visual, "C:\\Repo");
+    let said = visual.update(|_, cx| head.update(cx, |head, cx| head.head(cx).cloned()));
+    let said = said.expect("a folder has a head");
+    assert_eq!(said.facts.as_ref(), "1 file · 10 B");
+    assert_eq!(said.kinds.iter().map(|kind| kind.count).sum::<usize>(), 1, "{:?}", said.kinds);
+}
+
+#[gpui_kit::test]
 fn an_empty_folder_says_so_and_this_pc_and_a_search_have_no_head(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let (head, mut visual) = open(cx);
