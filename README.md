@@ -20,7 +20,7 @@ A native Windows app written in Rust. Free, open source, and no account.
 
 **[Download the installer](https://github.com/shadijhade/glint/releases/latest/download/Glint-setup.exe)** · [Website](https://glint.rafd.tech/) · [What's new](#whats-new) · [Features](#features) · [Benchmarks](#benchmarks) · [Shortcuts](#keyboard-shortcuts)
 
-<img src="screenshots/demo.gif" alt="Glint in seven pictures: a folder with its head and a preview, one search for names and for what the files hold, Quick Look, folder sizes, the disk usage map, two panes side by side, and the command palette" width="100%">
+<img src="screenshots/demo.gif" alt="Glint at work: into a folder of photos, from the list to tiles as the wheel turns, Quick Look on Space, and two panes from Ctrl+K" width="100%">
 
 </div>
 
@@ -74,7 +74,7 @@ Glint needs Windows 10 or 11, 64-bit, and nothing else: it draws its own window,
 -   **Changing now, and Freeze order.** A live list of the files being written, and `Alt+F` keeps a folder's rows where they are while they change.
 -   **The photo map, the Color Wheel and Time Machine.** Photos in the pins, places named offline and a scrubber of months; sliders, color chords and palette dots; a timeline rail with a tick for every stop.
 -   **Drag to transform.** Pictures and videos dragged out get a strip of choices at the window's edge: without personal info, as WebP, under 10 MB, or the sound alone.
--   **Faster.** Color search about eight times, the map's frames about forty times, Time Machine's first stops in 7 ms instead of 92, thumbnails a screenful ahead of the scroll, and an instant search service that no longer wakes when nothing changes. Glint.exe is about 3 MB smaller.
+-   **Faster.** Color search about eight times, the map's frames about forty times, Time Machine's first stops in 7 ms instead of 92, thumbnails a screenful ahead of the scroll, and an instant search service that no longer wakes when nothing changes. Glint.exe is 2 MB smaller.
 
 Release notes: [0.16.0](https://github.com/shadijhade/glint/releases/tag/v0.16.0) · [Every release](https://github.com/shadijhade/glint/releases) · 0.15 gave files [a past, a place on the map and links that follow them](https://github.com/shadijhade/glint/releases/tag/v0.15.0), 0.14 made Glint [quicker, sharper and lighter](https://github.com/shadijhade/glint/releases/tag/v0.14.0), 0.13 made it [pay attention](https://github.com/shadijhade/glint/releases/tag/v0.13.0), 0.12 made it [smaller and quieter](https://github.com/shadijhade/glint/releases/tag/v0.12.0), 0.11 gave it [a window of its own](https://github.com/shadijhade/glint/releases/tag/v0.11.0), and 0.10 made it [a native app](https://github.com/shadijhade/glint/releases/tag/v0.10.0).
 
@@ -122,11 +122,19 @@ A tour of what Glint does. **Every feature, in detail: [docs/features.md](docs/f
 <table>
 <tr>
 <td width="50%"><img src="screenshots/folder-sizes.png" alt="C:\Windows sorted by size, with the size of every folder"></td>
-<td width="50%"><img src="screenshots/disk-usage.png" alt="The disk usage map of C:\Windows: every folder and file as a block sized by how much space it takes, mapped from the index in 21 ms"></td>
+<td width="50%"><img src="screenshots/disk-usage.png" alt="The disk usage map of C:\Windows, 75 GB: every folder and file as a block sized by how much space it takes, colored by its kind"></td>
 </tr>
 <tr>
 <td align="center">The size of every folder, in the list</td>
 <td align="center"><b>Disk usage</b>: what fills a drive</td>
+</tr>
+<tr>
+<td width="50%"><img src="screenshots/hero.png" alt="A project folder in the dark theme: its head with a chip for every kind of file in it, and the preview pane showing a picture"></td>
+<td width="50%"><img src="screenshots/light.png" alt="The same folder in the light theme"></td>
+</tr>
+<tr>
+<td align="center">A head on every folder, and a preview beside the files</td>
+<td align="center">Light or dark, as Windows is</td>
 </tr>
 </table>
 
@@ -140,6 +148,8 @@ A tour of what Glint does. **Every feature, in detail: [docs/features.md](docs/f
 [More about browsing →](docs/features.md#browsing)
 
 ### A menu and a dock that pay attention
+
+<p align="center"><img src="screenshots/smart-menu.png" alt="The right-click menu of a downloaded program: where it came from and who signed it, the commands used most in a strip, and Scan with Microsoft Defender suggested because it came from the web" width="76%"></p>
 
 -   **Sorted by importance.** Under the item's head, a strip of what's done most (Cut, Copy, Rename, Copy path, Share, Delete), what opens it, a short section for its kind, and everything rare under **More**. Submenus open beside the menu, and no menu is taller than three quarters of the window.
 -   **The menu starts with the item.** Its picture, name and what is true about it: a download's site, a program's signer (or that it has none), identical copies, the program that has it open, a video's length, a folder's weight.
@@ -155,12 +165,20 @@ A tour of what Glint does. **Every feature, in detail: [docs/features.md](docs/f
 
 <table>
 <tr>
-<td width="50%"><img src="screenshots/text-search.png" alt="A search for one word: the file with it in its name, then seven files with it inside them, each with the lines that matched"></td>
-<td width="50%"><img src="screenshots/instant-search.png" alt="5,094 DLLs found under System32 and its subfolders in 33 ms"></td>
+<td width="50%"><img src="screenshots/text-search.png" alt="A search for one word: five files with it in their names, the lines that matched under two of them, then nine files with it inside them"></td>
+<td width="50%"><img src="screenshots/instant-search.png" alt="5,046 DLLs found under System32 and its subfolders in 20 ms, from the index"></td>
 </tr>
 <tr>
 <td align="center">One search: names, and what the files hold</td>
 <td align="center">Instant search over every NTFS drive</td>
+</tr>
+<tr>
+<td width="50%"><img src="screenshots/search.gif" alt="Typing a word filters the folder; Enter lists the files with it in their names and the files with it inside them"></td>
+<td width="50%"><img src="screenshots/color-wheel.gif" alt="The pointer drags round the Color Wheel, and the photos closest to each color come first"></td>
+</tr>
+<tr>
+<td align="center">Typing filters the folder, <b>Enter</b> looks below it and inside the files</td>
+<td align="center"><b>Color Wheel</b>: the pictures closest to a color</td>
 </tr>
 </table>
 
@@ -177,12 +195,20 @@ A tour of what Glint does. **Every feature, in detail: [docs/features.md](docs/f
 
 <table>
 <tr>
-<td width="50%"><img src="screenshots/dual-pane.png" alt="Two panes side by side, each with its own list of tabs in the rail: a work folder as a list, and its photos as a grid"></td>
-<td width="50%"><img src="screenshots/grid-view.png" alt="The wallpapers under C:\Windows\Web found by name in 12 ms and shown as a grid of thumbnails, each with its folder under it"></td>
+<td width="50%"><img src="screenshots/dual-pane.png" alt="Two panes side by side, each with its own list of tabs in the rail: a project folder as a list, and its photos as a grid"></td>
+<td width="50%"><img src="screenshots/grid-view.png" alt="A folder of 36 photos as a grid of thumbnails, shown in 6 ms"></td>
 </tr>
 <tr>
 <td align="center"><b>Ctrl+Shift+D</b>: two panes, each with its tabs</td>
 <td align="center"><b>Ctrl+Shift+2</b>: the grid, with Windows' thumbnails</td>
+</tr>
+<tr>
+<td width="50%"><img src="screenshots/hop-mode.gif" alt="Alt+J puts a letter on every tab, place and file; typing one goes there"></td>
+<td width="50%"><img src="screenshots/photo-map.gif" alt="The Photo World Map: a pin of photos at every place they were taken, the trip drawn between them, a group's photos in a strip, and the years to pick from"></td>
+</tr>
+<tr>
+<td align="center"><b>Alt+J</b>: Hop mode, letters on everything in sight</td>
+<td align="center"><b>Ctrl+Shift+G</b>: where the photos were taken</td>
 </tr>
 </table>
 
@@ -200,7 +226,7 @@ A tour of what Glint does. **Every feature, in detail: [docs/features.md](docs/f
 
 <table>
 <tr>
-<td width="50%"><img src="screenshots/quick-look.png" alt="Quick Look showing a Rust file with syntax highlighting"></td>
+<td width="50%"><img src="screenshots/quick-look.png" alt="Quick Look showing a photo of the northern lights full size, with its dimensions and when it was taken"></td>
 <td width="50%"><img src="screenshots/command-palette.png" alt="The command palette listing the commands that match what was typed"></td>
 </tr>
 <tr>
@@ -252,6 +278,8 @@ A tour of what Glint does. **Every feature, in detail: [docs/features.md](docs/f
 [More about the tools →](docs/features.md#tools)
 
 ### Files in other places
+
+<p align="center"><img src="screenshots/time-machine.png" alt="Time Machine on a Git repository: a timeline with a tick for every stop, and the files the chosen commit changed, each with Compare and Restore" width="76%"></p>
 
 -   **Clouds and servers.** Google Drive, OneDrive, Dropbox and 60 more open as folders through [rclone](https://rclone.org), signed in to from Glint; S3 buckets, WebDAV and SFTP servers too, and any of them can show in File Explorer, on demand.
 -   **Share.** Send files to phones and computers nearby with LocalSend, or through Windows' own Share, from one dialog.

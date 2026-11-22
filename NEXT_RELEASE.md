@@ -8,7 +8,13 @@ The plan for 0.12 that was here is in git history (`git show df1245a:NEXT_RELEAS
 before it (`git show 47c33fa:NEXT_RELEASE.md`), and 0.13's own plan, the menu and the dock that know the selection,
 is [docs/gpui/aware/PLAN.md](docs/gpui/aware/PLAN.md) with its task cards beside it.*
 
-## Built for 0.16 (2026-11-22, not released)
+## In 0.16.0 (built 2026-11-22, released 2026-11-23)
+
+*[Its release](https://github.com/shadijhade/glint/releases/tag/v0.16.0): tag `v0.16.0` at `702cb2c`, built and
+signed on GitHub (run 45070565181). Glint.exe is 82,951,680 bytes (0.15.1: 85,088,768); the setup program 22.8 MB.
+On the way out: Freeze order's key moved to Alt+F (`5eaad06`), every window test starts with Hop mode off
+(`a8d5cb4`), and `url` went to 2.5.9 for RUSTSEC-2026-0592, which the release build's crates check stopped on
+(`702cb2c`).*
 
 *The user's list of eighteen points (speed and size first, then the interface: "do all the points below … any
 other ui enhancement are welcome"), built the same day by twelve agents, each in a worktree of its own from

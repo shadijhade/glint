@@ -40,13 +40,17 @@ Everything Glint does, in detail. The [README](../README.md) has the short tour,
 -   **Every folder opens.** A folder Windows keeps you out of, such as `C:\PerfLogs` or another account's profile, opens all the same and says why, with **Get access**: as File Explorer's Continue button does, Windows asks for administrator approval once, and your account may open it and everything in it from then on. With instant search on, even a folder Windows keeps to itself, such as *System Volume Information*, shows what's in it, read-only, from the index. Old links such as *Documents and Settings* open where they point, a shortcut to a folder opens the folder right here, and files open as a double-click in File Explorer opens them: with their app, or Windows' app picker when no app is set yet. Type `\\server` (or go up from one of its shares) for the folders a PC or NAS shares on your network, as File Explorer lists them; its administrative shares (`C$`, `ADMIN$`) show with hidden items.
 -   **The Recycle Bin, as a place.** Under the drives in the sidebar (or typed as `Recycle Bin`): what you deleted, every drive's, with the folder each was deleted from, when, and how big it is (a folder's, everything in it). **Restore** puts the selection back where it was deleted from, making that folder again if it's gone, and says so with **Undo**; Quick Look and the preview show an item before you decide. There, `Delete` deletes for good once Glint has asked, naming what goes; **Restore all items** and **Empty the Recycle Bin** are on the right-click menu (Windows asks before emptying), and files dropped on the sidebar's Recycle Bin are deleted, as in File Explorer. What's in it isn't opened, renamed or copied where it is: restore it first. Nothing watches the Recycle Bin, so it's read again after each delete or restore here, when Glint comes back to the front, and with `F5` ([how it works](recycle-bin.md)).
 -   **Paste a picture or text as a file.** With no files on the clipboard, `Ctrl+V` (or **Paste**) saves what's there as a new file in the folder: a picture (a screenshot, or one copied in a browser or the Snipping Tool) as *Pasted image* with the date and time, a PNG, and text as *Pasted text*, a UTF-8 .txt. Its name is selected to type a better one, and `Ctrl+Z` takes it back.
--   **Hop mode.** `Alt+J` puts a letter or two on every tab, part of the address, place in the sidebar and visible row or tile, in both panes: type them and Glint acts as a click there. `Backspace` takes a letter back and `Esc` leaves.
+-   <img src="../screenshots/hop-mode.png" alt="Hop mode: a letter on every tab, part of the address, place and file in the window" width="100%">
+
+    **Hop mode.** `Alt+J` puts a letter or two on every tab, part of the address, place in the sidebar and visible row or tile, in both panes: type them and Glint acts as a click there. `Backspace` takes a letter back and `Esc` leaves.
 -   **Hover cards.** Rest the pointer on a tab that isn't showing, on a parent folder in the address bar or on its arrow, and after a moment a card says what that folder holds: its name and path, how many folders and files, their size and a band of its make-up.
 -   **Live.** The open folder refreshes when files change elsewhere.
 -   **Freeze order.** While a build, a download or an unzip is writing to a folder, `Alt+F` (or the switch in **Changing now**'s list, or `Ctrl+K`) keeps its rows where they are: new files go to the end, ones that are gone dim, and sizes change in place. Turning it off sorts once.
 -   **More windows.** `Ctrl+N` opens another window on the folder shown.
 
 ## The menu and the dock
+
+<img src="../screenshots/smart-menu.png" alt="The right-click menu of a downloaded program: where it came from and who signed it, the commands used most in a strip, and Scan with Microsoft Defender suggested because it came from the web" width="100%">
 
 What Glint finds out about what you point at, and what it does with it. All of it happens on the PC: nothing is sent anywhere, and no model is involved, only rules, counts and what Windows and the files themselves say.
 
@@ -68,7 +72,7 @@ What Glint finds out about what you point at, and what it does with it. All of i
 
 ## Tabs and two panes
 
-<img src="../screenshots/dual-pane.png" alt="Two panes side by side, each with its own list of tabs in the rail: a work folder as a list, and its photos as a grid" width="100%">
+<img src="../screenshots/dual-pane.png" alt="Two panes side by side, each with its own list of tabs in the rail: a project folder as a list, and its photos as a grid" width="100%">
 
 -   **Tabs.** `Ctrl+T` opens a tab on the folder you're in, and tabs drag: along their list in the side rail, onto the other pane's (or its files), or to the far half of the files to open side by side. A middle-click (or `Ctrl+Enter`) opens a folder in a new tab behind the current one, as in a browser. `Ctrl+Tab` and `Ctrl+1`…`Ctrl+9` switch, `Ctrl+W` closes, and `Ctrl+Shift+T` brings the last one back. Each tab keeps its own history, selection, search and scroll position, and your tabs come back when the app starts (Settings → Reopen my tabs). A folder opened from File Explorer or a terminal (`Glint.exe C:\Projects`) gets a new tab in the window that's open: Glint runs once.
 -   **Dual pane.** `Ctrl+Shift+D` (or its button in the dock) shows two folders side by side, each pane with its own tabs. Click a pane or press `F6` to work in it: the other one steps back a little, and the address bar shows which pane it's on. Drag files across (`Shift` to move), or use **Copy to other pane** and **Move to other pane**, which run on Windows' own file engine like every other file operation. Drag the line between the panes to share out the width (double-click: halves again); each pane's menu, by its tabs, swaps the panes (`Ctrl+Shift+U`), shows a folder in the other pane, evens them out or closes one, and a folder's right-click menu has **Open in the other pane**.
@@ -80,7 +84,7 @@ What Glint finds out about what you point at, and what it does with it. All of i
 
 ## Grid view
 
-<img src="../screenshots/grid-view.png" alt="The wallpapers under C:\Windows\Web found by name in 12 ms and shown as a grid of thumbnails, each with its folder under it" width="100%">
+<img src="../screenshots/grid-view.png" alt="A folder of 36 photos as a grid of thumbnails, shown in 6 ms" width="100%">
 
 The **List** and **Grid** buttons in the command bar (or `Ctrl+Shift+6` and `Ctrl+Shift+2`, as in Explorer, or `Ctrl+K`) switch the tab you're in; each tab keeps its own view, and new tabs start in the view of the tab they came from. The grid works like the list: click, `Ctrl` and `Shift` to select, arrow keys in all four directions, `Enter` to open, `Space` for Quick Look, `F2` to rename, drag and drop (into the other pane too), the right-click menu and folder sizes under each folder. Sort it from the bar above it.
 
@@ -114,7 +118,7 @@ Bigger tiles ask for bigger thumbnails, one screen pixel to one (Huge at 125% sc
 
 The search box at the end of the address field looks for what you type in two places at once: in the names below the folder you're in, and inside the files there. Both come back as one list.
 
-<img src="../screenshots/text-search.png" alt="A search for one word: the file with it in its name, then seven files with it inside them, each with the lines that matched" width="100%">
+<img src="../screenshots/text-search.png" alt="A search for one word: five files with it in their names, the lines that matched under two of them, then nine files with it inside them" width="100%">
 
 -   **Files found by what's in them are rows like any other.** They are listed under **Inside files**, each with the lines that matched under it (the line's number, the match marked; the first three, then a count of the rest: press it to list them all under the file). Press a line to show it in the preview (Quick Look too), and double-press it to open the file in the editor **Settings → Inside files** names, at that line (VS Code and its kin, Notepad++, Sublime Text, Zed, Vim and the JetBrains IDEs take a line; another editor opens the file at its top). Open, copy, rename, delete, drag or preview them as you would any result.
 -   **Typing filters the folder; Enter searches below it.** Names come as you type where instant search covers the drive. What the files hold is read on Enter by ripgrep, streaming in as it's found. A whole drive is read inside only when you ask (**Inside files too** on the results' bar).
@@ -131,7 +135,7 @@ Up to version 0.10, searching inside files was a mode of its own (Text), with it
 
 ### Instant search (NTFS index)
 
-<img src="../screenshots/instant-search.png" alt="5,094 DLLs found under System32 and its subfolders in 33 ms" width="100%">
+<img src="../screenshots/instant-search.png" alt="5,046 DLLs found under System32 and its subfolders in 20 ms, from the index" width="100%">
 
 It's off until you turn it on: on This PC, with the status bar's **Turn on instant search**, or in **Settings → Instant search**. Windows asks for administrator approval once, and a small service indexes your fixed NTFS drives. When Glint updates, the service updates itself too, without asking again: it takes only a build signed with Glint's update key, and only a newer one. It reads each drive's Master File Table in one sequential pass (2.3–2.5 s for C: with 2.9 million records here), then follows the USN journal, so a file created, renamed or deleted anywhere is in the index within about 0.3 s. Name searches, folder sizes and disk-usage maps then answer from memory. fd and pdu take over wherever the index can't answer: network shares, FAT and exFAT drives, and searches that read `.gitignore`.
 
@@ -146,7 +150,7 @@ The service only runs once you opt in, with every privilege removed except the t
 
 ### Disk usage map
 
-<img src="../screenshots/disk-usage.png" alt="The disk usage map of C:\Windows: every folder and file as a block sized by how much space it takes, mapped from the index in 21 ms" width="100%">
+<img src="../screenshots/disk-usage.png" alt="The disk usage map of C:\Windows, 75 GB: every folder and file as a block sized by how much space it takes, colored by its kind" width="100%">
 
 **Disk usage** (in the command bar, or `Ctrl+K`) draws the open folder as a squarified treemap, the way WizTree and WinDirStat do: folders nest six levels deep, files are colored by type, and the 20,000 biggest items are drawn, with everything smaller grouped in its folder. Hover for the name, path and size, click a folder to go into it (or a file to go to its folder), `Backspace` or `Alt+Up` to go back out, `Enter` to open, and right-click for the usual menu.
 
@@ -160,7 +164,7 @@ With instant search on, the map comes from the index in one request: all of `C:\
 
 <table>
 <tr>
-<td width="50%"><img src="../screenshots/quick-look.png" alt="Quick Look showing a Rust file with syntax highlighting"></td>
+<td width="50%"><img src="../screenshots/quick-look-code.png" alt="Quick Look showing a Rust file with syntax highlighting"></td>
 <td width="50%"><img src="../screenshots/command-palette.png" alt="The command palette listing the commands that match what was typed"></td>
 </tr>
 <tr>
