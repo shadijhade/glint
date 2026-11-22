@@ -404,6 +404,19 @@ impl Rows {
     }
 }
 
+/// The key a photo's palette is stored under: its path in lower case (`color_index`'s keys). Built in `buf`, which is
+/// reused, so a pass over a listing allocates once; non-ASCII paths take `to_lowercase`'s own rules.
+fn palette_key<'a>(path: &str, buf: &'a mut String) -> &'a str {
+    buf.clear();
+    if path.is_ascii() {
+        buf.push_str(path);
+        buf.make_ascii_lowercase();
+    } else {
+        buf.push_str(&path.to_lowercase());
+    }
+    buf
+}
+
 /// Whether a filter or a grouping reads the folder's Git marks (`git:` in the box, Group by Git).
 pub fn reads_git(filter: &str, group: GroupBy) -> bool {
     group == GroupBy::Git || filter.to_lowercase().contains("git:")
@@ -424,6 +437,10 @@ pub fn build_rows(entries: &Arc<[FileEntry]>, spec: &RowSpec, now: i64) -> Rows 
     let narrowing = test.is_some() || !spec.show_hidden || diffs.is_some() || spec.color.is_some();
 
     let mut order: Option<Vec<u32>> = None;
+    // With a color filter every kept entry's distance to the target, measured once here, so ranking is a sort of
+    // plain numbers (no lookups or allocations in the comparator).
+    let mut distances: Vec<f32> = Vec::new();
+    let mut key_buf = String::new();
     if narrowing {
         let mut kept = Vec::new();
         for (i, entry) in entries.iter().enumerate() {
@@ -434,16 +451,19 @@ pub fn build_rows(entries: &Arc<[FileEntry]>, spec: &RowSpec, now: i64) -> Rows 
             if diffs.is_some_and(|d| d.get(&entry.lower) == Some(&glint_model::entries::DiffStatus::Same)) {
                 continue;
             }
+            let mut distance = 0.0f32;
             if let (Some(rc), Some(max_sq)) = (&spec.color, max_color_dist_sq) {
                 if entry.dir {
                     continue;
                 }
-                let Some(pal) = rc.palettes.get(&entry.path.to_lowercase()) else {
+                let Some(pal) = rc.palettes.get(palette_key(&entry.path, &mut key_buf)) else {
                     continue;
                 };
-                if glint_model::oklab::palette_distance_sq(pal, rc.filter.target) > max_sq {
+                let dist = glint_model::oklab::palette_distance_sq(pal, rc.filter.target);
+                if dist > max_sq {
                     continue;
                 }
+                distance = dist;
             }
             // The box's words are looked for in names here; a file found by what is in it needn't be named so
             // (the search's filters were applied to it when it was found).
@@ -455,6 +475,9 @@ pub fn build_rows(entries: &Arc<[FileEntry]>, spec: &RowSpec, now: i64) -> Rows 
                 continue;
             }
             kept.push(u32::try_from(i).unwrap_or(u32::MAX));
+            if spec.color.is_some() {
+                distances.push(distance);
+            }
         }
         // Nothing was left out and the order is the engine's: the listing is the rows.
         if kept.len() != entries.len() || !by_default || spec.color.is_some() {
@@ -480,23 +503,13 @@ pub fn build_rows(entries: &Arc<[FileEntry]>, spec: &RowSpec, now: i64) -> Rows 
             }
         }
     });
-    if let Some(rc) = &spec.color {
+    if spec.color.is_some() {
         if let Some(order) = order.as_mut() {
-            order.sort_by(|&a, &b| {
-                let da = entries
-                    .get(a as usize)
-                    .and_then(|e| rc.palettes.get(&e.path.to_lowercase()))
-                    .map_or(f32::INFINITY, |p| {
-                        glint_model::oklab::palette_distance_sq(p, rc.filter.target)
-                    });
-                let db = entries
-                    .get(b as usize)
-                    .and_then(|e| rc.palettes.get(&e.path.to_lowercase()))
-                    .map_or(f32::INFINITY, |p| {
-                        glint_model::oklab::palette_distance_sq(p, rc.filter.target)
-                    });
-                da.total_cmp(&db)
-            });
+            // Closest first; the sort is stable, so equals keep the listing's order.
+            let mut ranked: Vec<(u32, f32)> = order.iter().copied().zip(distances.iter().copied()).collect();
+            ranked.sort_by(|a, b| a.1.total_cmp(&b.1));
+            order.clear();
+            order.extend(ranked.into_iter().map(|(i, _)| i));
         }
     } else if !by_default {
         if let Some(order) = order.as_mut() {
@@ -1318,5 +1331,106 @@ mod tests {
         let rows = build_rows(&entries, &spec, 0);
         let names: Vec<&str> = rows.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["red.jpg", "orange.jpg"]);
+    }
+
+    /// 100,000 photos with palettes, half of them within tolerance: the rows the way 0.15 made them (a lowercase
+    /// path per kept entry and two per comparison) and the way they are made now. Prints both; they must agree.
+    /// `cargo test -p glint-ui --lib color_rows_cost_little -- --nocapture` (release shows the real gap).
+    #[test]
+    fn color_rows_cost_little() {
+        use glint_model::oklab::{palette_distance_sq, srgb_to_oklab, ColorFilter, Palette3};
+        let n = 100_000usize;
+        let mut list = Vec::with_capacity(n);
+        let mut palettes = std::collections::HashMap::with_capacity(n);
+        let mut seed = 0x2545_f491_u32;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            (seed % 1000) as f32 / 1000.0
+        };
+        for i in 0..n {
+            let name = format!("IMG_{i:06}.JPG");
+            let entry = with_details(
+                RawEntry {
+                    name: name.clone(),
+                    ..Default::default()
+                },
+                "C:\\Pics\\Trip",
+            );
+            palettes.insert(
+                entry.path.to_lowercase(),
+                Palette3 {
+                    colors: [
+                        glint_model::oklab::Oklab {
+                            l: 0.3 + next() * 0.5,
+                            a: next() * 0.4 - 0.2,
+                            b: next() * 0.4 - 0.2,
+                        },
+                        srgb_to_oklab(0, 0, 0),
+                        srgb_to_oklab(255, 255, 255),
+                    ],
+                    weights: [0.6, 0.3, 0.1],
+                },
+            );
+            list.push(entry);
+        }
+        let entries: Arc<[FileEntry]> = Arc::from(list);
+        let palettes = Arc::new(palettes);
+        let filter = ColorFilter {
+            target: srgb_to_oklab(180, 120, 90),
+            max_dist: 0.22,
+        };
+        let spec = RowSpec {
+            color: Some(RowColor {
+                filter,
+                palettes: palettes.clone(),
+            }),
+            ..RowSpec::default()
+        };
+        let old = || -> Vec<u32> {
+            let max_sq = filter.max_dist * filter.max_dist;
+            let mut order: Vec<u32> = Vec::new();
+            for (i, e) in entries.iter().enumerate() {
+                let Some(p) = palettes.get(&e.path.to_lowercase()) else {
+                    continue;
+                };
+                if palette_distance_sq(p, filter.target) <= max_sq {
+                    order.push(i as u32);
+                }
+            }
+            order.sort_by(|&a, &b| {
+                let da = palettes
+                    .get(&entries[a as usize].path.to_lowercase())
+                    .map_or(f32::INFINITY, |p| palette_distance_sq(p, filter.target));
+                let db = palettes
+                    .get(&entries[b as usize].path.to_lowercase())
+                    .map_or(f32::INFINITY, |p| palette_distance_sq(p, filter.target));
+                da.total_cmp(&db)
+            });
+            order
+        };
+        let best = |work: &dyn Fn() -> usize| {
+            (0..3)
+                .map(|_| {
+                    let started = std::time::Instant::now();
+                    std::hint::black_box(work());
+                    started.elapsed().as_secs_f64() * 1000.0
+                })
+                .fold(f64::MAX, f64::min)
+        };
+        let want = old();
+        let rows = build_rows(&entries, &spec, 0);
+        assert!(!want.is_empty() && want.len() < n);
+        assert_eq!(rows.len(), want.len());
+        for (row, &i) in rows.iter().zip(&want) {
+            assert_eq!(row.path, entries[i as usize].path);
+        }
+        let before = best(&|| old().len());
+        let after = best(&|| build_rows(&entries, &spec, 0).len());
+        println!(
+            "{n} photos, {} kept: color rows 0.15 way {before:.1} ms, now {after:.1} ms",
+            want.len()
+        );
     }
 }
