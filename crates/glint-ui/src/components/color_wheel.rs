@@ -5,12 +5,14 @@
 
 use crate::explorer::{explorer, Explorer, ExplorerEvent, TabId};
 use crate::kit::prelude::*;
-use crate::{t, theme};
+use crate::{i18n, t, theme};
 use glint_model::oklab::{
     oklab_to_srgb, wheel_point_to_oklab, wheel_raster_bgra, ColorFilter, Oklab, WHEEL_MAX_CHROMA,
 };
 use glint_model::paths::same_path;
-use gpui_kit::RenderImage;
+use gpui_kit::{
+    linear_color_stop, linear_gradient, Background, DispatchPhase, KeyDownEvent, RenderImage, ScrollDelta, ScrollEvent,
+};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -139,6 +141,51 @@ fn srgb_hsla(rgb: [u8; 3]) -> Hsla {
     .into()
 }
 
+/// What the pointer is dragging.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Drag {
+    Wheel,
+    Lightness,
+    Tolerance,
+}
+
+/// The lightness slider's ends: the wheel's own limits (`wheel_point_to_oklab` clamps to them).
+const L_MIN: f32 = 0.15;
+const L_MAX: f32 = 0.95;
+/// The tolerance slider's ends: the tightest match worth having, and one that takes in most of a folder.
+const TOL_MIN: f32 = 0.05;
+const TOL_MAX: f32 = 0.50;
+/// What an arrow key moves a slider by, and Page Up / Page Down (a tenth of the way).
+const KEY_STEP: f32 = 0.01;
+/// What one line of a mouse wheel moves the lightness by (a notch is three lines) and the tolerance by.
+const WHEEL_L_STEP: f32 = 0.01;
+const WHEEL_TOL_STEP: f32 = 0.005;
+
+impl Drag {
+    /// The slider's range, or none for the wheel.
+    fn range(self) -> Option<(f32, f32)> {
+        match self {
+            Drag::Wheel => None,
+            Drag::Lightness => Some((L_MIN, L_MAX)),
+            Drag::Tolerance => Some((TOL_MIN, TOL_MAX)),
+        }
+    }
+}
+
+/// How far a wheel event turned, in lines (a notch is three): whichever way it came, since Windows turns Shift
+/// plus the wheel into a sideways scroll.
+fn wheel_lines(delta: &ScrollDelta) -> f32 {
+    let (x, y) = match delta {
+        ScrollDelta::Lines(lines) => (lines.x, lines.y),
+        ScrollDelta::Pixels(pixels) => (f32::from(pixels.x) / 20.0, f32::from(pixels.y) / 20.0),
+    };
+    if y.abs() >= x.abs() {
+        y
+    } else {
+        x
+    }
+}
+
 /// Compact per-pane OKLab Color Wheel toolbar rendered above the pane listing while active.
 pub struct ColorWheelBar {
     pane: usize,
@@ -146,8 +193,20 @@ pub struct ColorWheelBar {
     model: Entity<ColorWheelModel>,
     lightness: f32,
     tolerance: f32,
-    dragging: bool,
+    /// What the pointer is dragging, shared with the window-level listeners that follow it outside the controls.
+    drag: Rc<Cell<Option<Drag>>>,
     wheel_bounds: Rc<Cell<Bounds<Pixels>>>,
+    /// Where each slider's track was drawn, and their keyboard focus.
+    l_track: Rc<Cell<Bounds<Pixels>>>,
+    t_track: Rc<Cell<Bounds<Pixels>>>,
+    l_focus: FocusHandle,
+    t_focus: FocusHandle,
+    /// The filter the controls last asked for, ranked at the next frame: a drag moves many times a frame and the
+    /// photos are ranked once for all of them.
+    pending: Option<ColorFilter>,
+    queued: bool,
+    /// How many times the controls have made the explorer rank the photos (a test reads it).
+    ranked: u32,
     /// The wheel's disk as one picture, for the lightness and size it was made at.
     disk: Option<Disk>,
     /// How many times the disk has been rasterized (a test reads it: it must not go up on every frame).
@@ -186,6 +245,11 @@ fn rasterize_disk(side: u32, step: u16) -> Option<Arc<RenderImage>> {
         .map(|buffer| Arc::new(RenderImage::new(vec![image::Frame::new(buffer)])))
 }
 
+/// A slider's value to the hundredth, kept in its range: what its keys, wheel and track give.
+fn settle(value: f32, range: (f32, f32)) -> f32 {
+    ((value * 100.0).round() / 100.0).clamp(range.0, range.1)
+}
+
 impl ColorWheelBar {
     pub fn new(pane: usize, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let exp = explorer(cx);
@@ -198,11 +262,27 @@ impl ColorWheelBar {
             model,
             lightness: 0.62,
             tolerance: ColorFilter::DEFAULT_TOLERANCE,
-            dragging: false,
+            drag: Rc::new(Cell::new(None)),
             wheel_bounds: Rc::new(Cell::new(Bounds::default())),
+            l_track: Rc::new(Cell::new(Bounds::default())),
+            t_track: Rc::new(Cell::new(Bounds::default())),
+            l_focus: cx.focus_handle(),
+            t_focus: cx.focus_handle(),
+            pending: None,
+            queued: false,
+            ranked: 0,
             disk: None,
             rasters: 0,
             _subs: [sub_m, sub_e],
+        }
+    }
+
+    /// The keyboard focus of a slider (the tests focus it).
+    #[cfg(test)]
+    fn focus_of(&self, which: Drag) -> FocusHandle {
+        match which {
+            Drag::Tolerance => self.t_focus.clone(),
+            _ => self.l_focus.clone(),
         }
     }
 
@@ -210,44 +290,256 @@ impl ColorWheelBar {
         self.explorer.read(cx).pane_tab_id(self.pane)
     }
 
-    fn apply_point(&mut self, pos: Point<Pixels>, cx: &mut Context<Self>) {
-        let bounds = self.wheel_bounds.get();
-        let w = f32::from(bounds.size.width);
-        let h = f32::from(bounds.size.height);
-        if w <= 1.0 || h <= 1.0 {
-            return;
+    /// The filter as the controls have it: what they last asked for, which the explorer has one frame to catch up
+    /// with, or else the tab's.
+    fn filter(&self, cx: &App) -> Option<ColorFilter> {
+        self.pending.or_else(|| {
+            let tab = self.tab_id(cx);
+            self.explorer.read(cx).tab(tab).and_then(|t| t.color_filter)
+        })
+    }
+
+    /// Asks for `filter`: the controls show it at once, and the photos are ranked for it at the next frame, once,
+    /// whatever number of times the pointer moved in between.
+    fn ask(&mut self, filter: ColorFilter, window: &mut Window, cx: &mut Context<Self>) {
+        self.lightness = filter.target.l;
+        self.tolerance = filter.max_dist;
+        self.pending = Some(filter);
+        if !self.queued {
+            self.queued = true;
+            let me = cx.entity();
+            window.on_next_frame(move |_, cx| me.update(cx, |this, cx| this.rank(cx)));
         }
-        let lx = (f32::from(pos.x - bounds.origin.x) / w) * 2.0 - 1.0;
-        let ly = (f32::from(pos.y - bounds.origin.y) / h) * 2.0 - 1.0;
-        let target = wheel_point_to_oklab(lx, ly, self.lightness);
-        let filter = ColorFilter {
-            target,
-            max_dist: self.tolerance,
+        cx.notify();
+    }
+
+    /// Hands the filter asked for to the explorer, which ranks the photos for it.
+    fn rank(&mut self, cx: &mut Context<Self>) {
+        self.queued = false;
+        let Some(filter) = self.pending.take() else {
+            return;
         };
+        self.ranked += 1;
         let tab = self.tab_id(cx);
         self.explorer
             .update(cx, |e, cx| e.set_color_filter(Some(filter), Some(tab), cx));
     }
 
-    fn update_params(&mut self, lightness: f32, tolerance: f32, cx: &mut Context<Self>) {
-        self.lightness = lightness;
-        self.tolerance = tolerance;
-        let tab = self.tab_id(cx);
-        let current = self.explorer.read(cx).tab(tab).and_then(|t| t.color_filter);
-        if let Some(prev) = current {
-            let next = ColorFilter {
-                target: Oklab {
-                    l: lightness,
-                    a: prev.target.a,
-                    b: prev.target.b,
-                },
-                max_dist: tolerance,
-            };
-            self.explorer
-                .update(cx, |e, cx| e.set_color_filter(Some(next), Some(tab), cx));
-        } else {
-            cx.notify();
+    /// Moves a slider to `value` (kept in its range, to the hundredth). With no color picked yet the value is
+    /// only remembered, for the wheel to be drawn at and the first click to pick with.
+    fn set_value(&mut self, which: Drag, value: f32, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(range) = which.range() else {
+            return;
+        };
+        let value = settle(value, range);
+        match self.filter(cx) {
+            Some(mut filter) => {
+                match which {
+                    Drag::Lightness => filter.target.l = value,
+                    _ => filter.max_dist = value,
+                }
+                self.ask(filter, window, cx);
+            }
+            None => {
+                match which {
+                    Drag::Lightness => self.lightness = value,
+                    _ => self.tolerance = value,
+                }
+                cx.notify();
+            }
         }
+    }
+
+    /// The value a slider has now.
+    fn value_of(&self, which: Drag, cx: &App) -> f32 {
+        let filter = self.filter(cx);
+        match which {
+            Drag::Lightness => filter.map_or(self.lightness, |f| f.target.l),
+            _ => filter.map_or(self.tolerance, |f| f.max_dist),
+        }
+    }
+
+    /// The pointer is at `pos` while dragging `which`: the wheel picks the color there, a slider the value there.
+    fn pointer(&mut self, which: Drag, pos: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        match which {
+            Drag::Wheel => {
+                let bounds = self.wheel_bounds.get();
+                let (w, h) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
+                if w <= 1.0 || h <= 1.0 {
+                    return;
+                }
+                let lx = (f32::from(pos.x - bounds.origin.x) / w) * 2.0 - 1.0;
+                let ly = (f32::from(pos.y - bounds.origin.y) / h) * 2.0 - 1.0;
+                let lightness = self.value_of(Drag::Lightness, cx);
+                let target = wheel_point_to_oklab(lx, ly, lightness);
+                let filter = match self.filter(cx) {
+                    Some(prev) => ColorFilter { target, ..prev },
+                    None => ColorFilter {
+                        target,
+                        max_dist: self.tolerance,
+                    },
+                };
+                self.ask(filter, window, cx);
+            }
+            slider => {
+                let (Some(range), track) = (
+                    slider.range(),
+                    if slider == Drag::Lightness {
+                        self.l_track.get()
+                    } else {
+                        self.t_track.get()
+                    },
+                ) else {
+                    return;
+                };
+                let width = f32::from(track.size.width);
+                if width <= 1.0 {
+                    return;
+                }
+                let mut along = f32::from(pos.x - track.origin.x) / width;
+                if i18n::is_rtl() {
+                    along = 1.0 - along;
+                }
+                self.set_value(
+                    slider,
+                    range.0 + along.clamp(0.0, 1.0) * (range.1 - range.0),
+                    window,
+                    cx,
+                );
+            }
+        }
+    }
+
+    /// A key on a slider: the arrows by a hundredth, Page Up and Page Down by a tenth of the way, Home and End to
+    /// the ends. The track starts at the reading direction's start, so Left and Right swap in Arabic.
+    fn slider_key(&mut self, which: Drag, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((lo, hi)) = which.range() else {
+            return;
+        };
+        let (more, less) = if i18n::is_rtl() {
+            ("left", "right")
+        } else {
+            ("right", "left")
+        };
+        let now = self.value_of(which, cx);
+        let next = match event.keystroke.key.as_str() {
+            k if k == more => now + KEY_STEP,
+            k if k == less => now - KEY_STEP,
+            "up" => now + KEY_STEP,
+            "down" => now - KEY_STEP,
+            "pageup" => now + (hi - lo) / 10.0,
+            "pagedown" => now - (hi - lo) / 10.0,
+            "home" => lo,
+            "end" => hi,
+            _ => return,
+        };
+        cx.stop_propagation();
+        self.set_value(which, next, window, cx);
+    }
+
+    /// The mouse wheel over the color wheel: lightness, or with Shift the tolerance (wheel up for more).
+    fn wheeled(&mut self, event: &ScrollEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let lines = wheel_lines(&event.delta);
+        if lines == 0.0 || !lines.is_finite() {
+            return;
+        }
+        let (which, per_line) = if event.modifiers.shift {
+            (Drag::Tolerance, WHEEL_TOL_STEP)
+        } else {
+            (Drag::Lightness, WHEEL_L_STEP)
+        };
+        let now = self.value_of(which, cx);
+        self.set_value(which, now + lines * per_line, window, cx);
+        cx.stop_propagation();
+    }
+}
+
+/// A slider as the bar draws it: a gradient track, a thumb on it, a name and a value for the accessibility tree.
+struct Slider {
+    id: &'static str,
+    pane: usize,
+    name: SharedString,
+    value: SharedString,
+    /// The slider's ends and where it is, for assistive technology.
+    range: (f32, f32),
+    current: f32,
+    /// Where the thumb is along the track, 0 to 1 from the reading direction's start.
+    at: f32,
+    track: Rc<Cell<Bounds<Pixels>>>,
+    focus: FocusHandle,
+    gradient: Background,
+    thumb: Hsla,
+}
+
+impl Slider {
+    fn element(
+        self,
+        window: &Window,
+        entity: EntityId,
+        t: &theme::Tokens,
+        on_down: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+        on_key: impl Fn(&KeyDownEvent, &mut Window, &mut App) + 'static,
+    ) -> impl IntoElement {
+        let rtl = i18n::is_rtl();
+        let focused = self.focus.is_focused(window);
+        let measure = self.track.clone();
+        let probe = canvas(
+            move |bounds, window, _| {
+                if measure.get() != bounds {
+                    measure.set(bounds);
+                    window.on_next_frame(move |_, cx| cx.notify(entity));
+                }
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .size_full();
+        let track = div()
+            .absolute()
+            .left_0()
+            .right_0()
+            .top(space(2.25))
+            .h(space(1.5))
+            .rounded_full()
+            .border_1()
+            .border_color(t.border)
+            .bg(self.gradient);
+        let knob = div()
+            .absolute()
+            .top(space(1.))
+            .size(space(4.))
+            .rounded_full()
+            .bg(self.thumb)
+            .border_2()
+            .border_color(if focused { t.ring } else { t.background })
+            .shadow_sm();
+        let knob = if rtl {
+            knob.right(gpui_kit::relative(self.at)).mr(space(-2.))
+        } else {
+            knob.left(gpui_kit::relative(self.at)).ml(space(-2.))
+        };
+        div()
+            .id((self.id, self.pane))
+            .role(Role::Slider)
+            .aria_label(self.name)
+            .aria_value(self.value)
+            .aria_min_numeric_value(f64::from(self.range.0))
+            .aria_max_numeric_value(f64::from(self.range.1))
+            .aria_numeric_value(f64::from(self.current))
+            .aria_numeric_value_step(f64::from(KEY_STEP))
+            .test_support()
+            .track_focus(&self.focus)
+            .tab_stop(true)
+            .relative()
+            .h(space(6.))
+            .flex_1()
+            .min_w(space(24.))
+            .cursor_pointer()
+            .on_mouse_down(MouseButton::Left, on_down)
+            .on_key_down(on_key)
+            .child(probe)
+            .child(track)
+            .child(knob)
     }
 }
 
@@ -257,7 +549,7 @@ impl Render for ColorWheelBar {
         if !self.model.read(cx).is_shown(tab) {
             return div().into_any_element();
         }
-        let (active_filter, matched_count, palette_count, total_files) = {
+        let (matched_count, palette_count, total_files) = {
             let exp = self.explorer.read(cx);
             let Some(t_state) = exp.tab(tab) else {
                 return div().into_any_element();
@@ -266,13 +558,9 @@ impl Render for ColorWheelBar {
                 return div().into_any_element();
             }
             let files = t_state.entries().iter().filter(|e| !e.dir).count();
-            (
-                t_state.color_filter,
-                t_state.rows.len(),
-                t_state.color_palettes.len(),
-                files,
-            )
+            (t_state.rows.len(), t_state.color_palettes.len(), files)
         };
+        let active_filter = self.filter(cx);
 
         let t = theme::tokens(cx);
         let active_lightness = active_filter.map_or(self.lightness, |f| f.target.l);
@@ -294,6 +582,38 @@ impl Render for ColorWheelBar {
             }
         }
         let disk = self.disk.as_ref().map(|d| d.image.clone());
+
+        // Window-level listeners that follow a drag outside the control it began on; they do nothing otherwise.
+        let (view, drag) = (cx.entity().downgrade(), self.drag.clone());
+        let follow = canvas(
+            |bounds, _, _| bounds,
+            move |_, _, window, _| {
+                let (moved, moving) = (view.clone(), drag.clone());
+                window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                    if phase != DispatchPhase::Bubble {
+                        return;
+                    }
+                    let Some(which) = moving.get() else {
+                        return;
+                    };
+                    if event.pressed_button != Some(MouseButton::Left) {
+                        moving.set(None);
+                        return;
+                    }
+                    moved
+                        .update(cx, |this, cx| this.pointer(which, event.position, window, cx))
+                        .ok();
+                });
+                let released = drag.clone();
+                window.on_mouse_event(move |event: &MouseUpEvent, phase, _, _| {
+                    if phase == DispatchPhase::Capture && event.button == MouseButton::Left {
+                        released.set(None);
+                    }
+                });
+            },
+        )
+        .absolute()
+        .inset_0();
 
         let wheel_canvas = canvas(
             move |bounds, _, _| {
@@ -338,6 +658,10 @@ impl Render for ColorWheelBar {
             .id(("cw-wheel", self.pane))
             .role(Role::Slider)
             .aria_label(t!("OKLab color wheel"))
+            .aria_description(t!(
+                "Click or drag to pick a color; the mouse wheel changes lightness, Shift and the wheel the tolerance"
+            ))
+            .test_support()
             .size(px(WHEEL_PX))
             .rounded_full()
             .overflow_hidden()
@@ -346,40 +670,111 @@ impl Render for ColorWheelBar {
             .cursor_pointer()
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|this, ev: &MouseDownEvent, _, cx| {
-                    this.dragging = true;
-                    this.apply_point(ev.position, cx);
+                cx.listener(|this, ev: &MouseDownEvent, window, cx| {
+                    this.drag.set(Some(Drag::Wheel));
+                    this.pointer(Drag::Wheel, ev.position, window, cx);
                 }),
             )
-            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
-                if this.dragging {
-                    this.apply_point(ev.position, cx);
-                }
-            }))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _, _, _| {
-                    this.dragging = false;
-                }),
-            )
-            .on_mouse_up_out(
-                MouseButton::Left,
-                cx.listener(|this, _, _, _| {
-                    this.dragging = false;
-                }),
-            )
+            .on_scroll(cx.listener(|this, ev: &ScrollEvent, window, cx| this.wheeled(ev, window, cx)))
             .child(wheel_canvas);
 
-        let lightness_buttons = [
-            ("cw-l-dark", t!("Dark"), 0.38f32),
-            ("cw-l-mid", t!("Mid"), 0.62f32),
-            ("cw-l-light", t!("Light"), 0.82f32),
-        ];
-        let tolerance_buttons = [
-            ("cw-tol-tight", t!("Tight"), 0.14f32),
-            ("cw-tol-balanced", t!("Balanced"), 0.22f32),
-            ("cw-tol-wide", t!("Wide"), 0.34f32),
-        ];
+        // The lightness track runs from dark to light in the picked color's own hue; the tolerance track from the
+        // color itself to a faint wash of it. Both run from the reading direction's start.
+        let (hue_a, hue_b) = active_filter.map_or((0.0, 0.0), |f| (f.target.a, f.target.b));
+        let tone = |l: f32| srgb_hsla(oklab_to_srgb(Oklab { l, a: hue_a, b: hue_b }));
+        let angle = if i18n::is_rtl() { 270. } else { 90. };
+        let picked = swatch.unwrap_or(t.primary);
+        let lightness_slider = Slider {
+            id: "cw-lightness",
+            pane: self.pane,
+            name: t!("Lightness"),
+            value: SharedString::from(format!("{}%", (active_lightness * 100.0).round())),
+            range: (L_MIN, L_MAX),
+            current: active_lightness,
+            at: ((active_lightness - L_MIN) / (L_MAX - L_MIN)).clamp(0.0, 1.0),
+            track: self.l_track.clone(),
+            focus: self.l_focus.clone(),
+            gradient: linear_gradient(
+                angle,
+                linear_color_stop(tone(L_MIN), 0.),
+                linear_color_stop(tone(L_MAX), 1.),
+            ),
+            thumb: tone(active_lightness),
+        };
+        let tolerance_slider = Slider {
+            id: "cw-tolerance",
+            pane: self.pane,
+            name: t!("Tolerance"),
+            value: SharedString::from(format!("{}%", (active_tol * 100.0).round())),
+            range: (TOL_MIN, TOL_MAX),
+            current: active_tol,
+            at: ((active_tol - TOL_MIN) / (TOL_MAX - TOL_MIN)).clamp(0.0, 1.0),
+            track: self.t_track.clone(),
+            focus: self.t_focus.clone(),
+            gradient: linear_gradient(
+                angle,
+                linear_color_stop(picked, 0.),
+                linear_color_stop(picked.opacity(0.12), 1.),
+            ),
+            thumb: t.primary,
+        };
+        let entity = cx.entity_id();
+        let slider_row = |label: SharedString, value: SharedString, slider: AnyElement| {
+            row_start()
+                .items_center()
+                .gap(space(2.))
+                .child(
+                    div()
+                        .w(space(18.))
+                        .flex_none()
+                        .text_xs()
+                        .text_color(t.muted_foreground)
+                        .child(label),
+                )
+                .child(slider)
+                .child(
+                    div()
+                        .w(space(10.))
+                        .flex_none()
+                        .text_xs()
+                        .text_color(t.muted_foreground)
+                        .child(value),
+                )
+        };
+        let lightness_row = slider_row(
+            t!("Lightness"),
+            lightness_slider.value.clone(),
+            lightness_slider
+                .element(
+                    window,
+                    entity,
+                    t,
+                    cx.listener(|this, ev: &MouseDownEvent, window, cx| {
+                        window.focus(&this.l_focus, cx);
+                        this.drag.set(Some(Drag::Lightness));
+                        this.pointer(Drag::Lightness, ev.position, window, cx);
+                    }),
+                    cx.listener(|this, ev: &KeyDownEvent, window, cx| this.slider_key(Drag::Lightness, ev, window, cx)),
+                )
+                .into_any_element(),
+        );
+        let tolerance_row = slider_row(
+            t!("Tolerance"),
+            tolerance_slider.value.clone(),
+            tolerance_slider
+                .element(
+                    window,
+                    entity,
+                    t,
+                    cx.listener(|this, ev: &MouseDownEvent, window, cx| {
+                        window.focus(&this.t_focus, cx);
+                        this.drag.set(Some(Drag::Tolerance));
+                        this.pointer(Drag::Tolerance, ev.position, window, cx);
+                    }),
+                    cx.listener(|this, ev: &KeyDownEvent, window, cx| this.slider_key(Drag::Tolerance, ev, window, cx)),
+                )
+                .into_any_element(),
+        );
 
         let status = if active_filter.is_some() {
             t!("{n} matching photos", n = matched_count)
@@ -393,6 +788,7 @@ impl Render for ColorWheelBar {
 
         row_start()
             .id(("color-wheel-bar", self.pane))
+            .relative()
             .w_full()
             .items_center()
             .gap(space(4.))
@@ -401,12 +797,13 @@ impl Render for ColorWheelBar {
             .bg(t.background)
             .border_b_1()
             .border_color(t.border)
+            .child(follow)
             .child(wheel)
             .child(
                 col()
                     .flex_1()
                     .min_w_0()
-                    .gap(space(1.5))
+                    .gap(space(1.))
                     .child(
                         row_start()
                             .items_center()
@@ -446,6 +843,7 @@ impl Render for ColorWheelBar {
                                                 .ghost()
                                                 .label(t!("Clear"))
                                                 .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.pending = None;
                                                     this.explorer
                                                         .update(cx, |e, cx| e.set_color_filter(None, Some(tab), cx));
                                                 })),
@@ -462,46 +860,8 @@ impl Render for ColorWheelBar {
                                     ),
                             ),
                     )
-                    .child(
-                        row_start()
-                            .items_center()
-                            .flex_wrap()
-                            .gap(space(3.))
-                            .child(
-                                row_start()
-                                    .items_center()
-                                    .gap(space(1.))
-                                    .child(div().text_xs().text_color(t.muted_foreground).child(t!("Lightness:")))
-                                    .children(lightness_buttons.into_iter().map(|(id_s, label, l_val)| {
-                                        let active = (active_lightness - l_val).abs() < 0.08;
-                                        Button::new((id_s, self.pane))
-                                            .compact()
-                                            .when(active, |b| b.primary())
-                                            .when(!active, |b| b.ghost())
-                                            .label(label)
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.update_params(l_val, active_tol, cx);
-                                            }))
-                                    })),
-                            )
-                            .child(
-                                row_start()
-                                    .items_center()
-                                    .gap(space(1.))
-                                    .child(div().text_xs().text_color(t.muted_foreground).child(t!("Match:")))
-                                    .children(tolerance_buttons.into_iter().map(|(id_s, label, tol_val)| {
-                                        let active = (active_tol - tol_val).abs() < 0.04;
-                                        Button::new((id_s, self.pane))
-                                            .compact()
-                                            .when(active, |b| b.primary())
-                                            .when(!active, |b| b.ghost())
-                                            .label(label)
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.update_params(active_lightness, tol_val, cx);
-                                            }))
-                                    })),
-                            ),
-                    ),
+                    .child(lightness_row)
+                    .child(tolerance_row),
             )
             .into_any_element()
     }
@@ -514,7 +874,7 @@ mod tests {
     use crate::explorer::NavOptions;
     use crate::testing;
     use glint_model::oklab::srgb_to_oklab;
-    use gpui_kit::test::TestWindowExt;
+    use gpui_kit::test::{TestQueryExt as _, TestWindowExt as _};
 
     #[gpui_kit::test]
     fn toggle_and_open_with_track_tab_state_and_filter(cx: &mut gpui_kit::TestAppContext) {
@@ -583,11 +943,11 @@ mod tests {
         frames(visual, 30);
         assert_eq!(rasters(visual), 1, "thirty frames, one disk");
 
-        visual.update(|_, cx| view.update(cx, |bar, cx| bar.update_params(0.40, 0.22, cx)));
+        visual.update(|window, cx| view.update(cx, |bar, cx| bar.set_value(Drag::Lightness, 0.40, window, cx)));
         frames(visual, 30);
         assert_eq!(rasters(visual), 2, "a new lightness makes a new disk, once");
         // The same hundredth again is the same disk.
-        visual.update(|_, cx| view.update(cx, |bar, cx| bar.update_params(0.4001, 0.30, cx)));
+        visual.update(|window, cx| view.update(cx, |bar, cx| bar.set_value(Drag::Lightness, 0.4001, window, cx)));
         frames(visual, 5);
         assert_eq!(rasters(visual), 2);
 
@@ -606,6 +966,194 @@ mod tests {
             best(WHEEL_PX as u32),
             DISK_MAX_SIDE,
             best(DISK_MAX_SIDE)
+        );
+    }
+
+    /// A window with the bar over a folder with one photo, the wheel open, and a color picked.
+    fn bar_with_a_color(
+        cx: &mut gpui_kit::TestAppContext,
+    ) -> (Entity<ColorWheelBar>, &mut gpui_kit::VisualTestContext, TabId) {
+        let disk = FakeDisk::new();
+        disk.folder("C:\\Photos", vec![file("C:\\Photos", "sky.jpg", 120, 0)]);
+        cx.update(|cx| {
+            testing::init(cx);
+            crate::explorer::init_with(cx, disk.source());
+        });
+        let (view, visual) = cx.add_window_view(|window, cx| ColorWheelBar::new(0, window, cx));
+        visual.update(|_, cx| {
+            explorer(cx).update(cx, |e, cx| e.navigate("C:\\Photos", NavOptions::default(), cx));
+        });
+        visual.run_until_parked();
+        let tab = visual.update(|_, cx| explorer(cx).read(cx).active_tab_id());
+        visual.update(|_, cx| open_with(cx, tab, srgb_to_oklab(220, 120, 40)));
+        visual.update(|window, cx| window.render_frame(cx));
+        (view, visual, tab)
+    }
+
+    fn filter_of(visual: &mut gpui_kit::VisualTestContext, tab: TabId) -> ColorFilter {
+        visual.update(|_, cx| {
+            explorer(cx)
+                .read(cx)
+                .tab(tab)
+                .and_then(|t| t.color_filter)
+                .expect("a filter")
+        })
+    }
+
+    #[gpui_kit::test]
+    fn the_sliders_are_named_and_a_drag_ranks_the_photos_once_a_frame(cx: &mut gpui_kit::TestAppContext) {
+        let _guard = testing::lock();
+        let (view, visual, tab) = bar_with_a_color(cx);
+        let role_of = |visual: &mut gpui_kit::VisualTestContext, label: &str| {
+            visual.update(|window, cx| {
+                window.render_frame(cx);
+                window.try_find_by_label(label).and_then(|e| e.role())
+            })
+        };
+        assert_eq!(role_of(visual, "Lightness"), Some(Role::Slider));
+        assert_eq!(role_of(visual, "Tolerance"), Some(Role::Slider));
+
+        // Fifty moves inside one frame make one ranking.
+        let before = visual.update(|_, cx| view.read(cx).ranked);
+        visual.update(|window, cx| {
+            view.update(cx, |bar, cx| {
+                for n in 0..50 {
+                    bar.set_value(Drag::Lightness, 0.30 + n as f32 * 0.01, window, cx);
+                }
+                assert_eq!(bar.ranked, before, "nothing is ranked until the frame");
+                bar.rank(cx);
+                bar.rank(cx);
+            })
+        });
+        assert_eq!(visual.update(|_, cx| view.read(cx).ranked), before + 1);
+        let filter = filter_of(visual, tab);
+        assert!(
+            (filter.target.l - 0.79).abs() < 1e-4,
+            "the last move wins: {}",
+            filter.target.l
+        );
+        // Only the lightness moved: the color's hue and the tolerance are as they were.
+        let first = srgb_to_oklab(220, 120, 40);
+        assert!(
+            (filter.target.a - first.a).abs() < 1e-6 && (filter.max_dist - ColorFilter::DEFAULT_TOLERANCE).abs() < 1e-6
+        );
+
+        // Past the ends is the end.
+        visual.update(|window, cx| {
+            view.update(cx, |bar, cx| {
+                bar.set_value(Drag::Lightness, 9.0, window, cx);
+                bar.set_value(Drag::Tolerance, -1.0, window, cx);
+                bar.rank(cx);
+            })
+        });
+        let filter = filter_of(visual, tab);
+        assert_eq!((filter.target.l, filter.max_dist), (L_MAX, TOL_MIN));
+    }
+
+    #[gpui_kit::test]
+    fn a_slider_answers_the_keyboard_and_a_press_on_its_track(cx: &mut gpui_kit::TestAppContext) {
+        let _guard = testing::lock();
+        for rtl in [false, true] {
+            let (view, visual, tab) = bar_with_a_color(cx);
+            testing::set_rtl(rtl);
+            visual.update(|window, cx| window.render_frame(cx));
+            let (more, less) = if rtl { ("left", "right") } else { ("right", "left") };
+            let focus = |visual: &mut gpui_kit::VisualTestContext, which: Drag| {
+                visual.update(|window, cx| {
+                    let handle = view.read(cx).focus_of(which);
+                    window.focus(&handle, cx);
+                });
+            };
+            let rank = |visual: &mut gpui_kit::VisualTestContext| {
+                visual.update(|_, cx| view.update(cx, |bar, cx| bar.rank(cx)));
+            };
+            focus(visual, Drag::Lightness);
+            visual.simulate_keystrokes("home");
+            rank(visual);
+            assert_eq!(filter_of(visual, tab).target.l, L_MIN, "Home");
+            visual.simulate_keystrokes(more);
+            rank(visual);
+            assert!(
+                (filter_of(visual, tab).target.l - 0.16).abs() < 1e-4,
+                "an arrow is a hundredth"
+            );
+            visual.simulate_keystrokes("pageup");
+            rank(visual);
+            assert!(
+                (filter_of(visual, tab).target.l - 0.24).abs() < 1e-4,
+                "Page Up is a tenth of the way"
+            );
+            visual.simulate_keystrokes(less);
+            visual.simulate_keystrokes("down");
+            rank(visual);
+            assert!((filter_of(visual, tab).target.l - 0.22).abs() < 1e-4);
+            visual.simulate_keystrokes("end");
+            rank(visual);
+            assert_eq!(filter_of(visual, tab).target.l, L_MAX, "End");
+
+            focus(visual, Drag::Tolerance);
+            visual.simulate_keystrokes("home");
+            rank(visual);
+            assert_eq!(filter_of(visual, tab).max_dist, TOL_MIN);
+            visual.simulate_keystrokes("end");
+            rank(visual);
+            assert_eq!(filter_of(visual, tab).max_dist, TOL_MAX);
+
+            // A press a quarter of the way along the lightness track, from the reading direction's start.
+            visual.update(|window, cx| window.render_frame(cx));
+            let track = visual.update(|_, cx| view.read(cx).l_track.get());
+            let along = if rtl { 0.75 } else { 0.25 };
+            let at = point(
+                track.origin.x + track.size.width * along,
+                track.origin.y + track.size.height / 2.0,
+            );
+            visual.simulate_mouse_down(at, MouseButton::Left, gpui_kit::Modifiers::default());
+            visual.simulate_mouse_up(at, MouseButton::Left, gpui_kit::Modifiers::default());
+            rank(visual);
+            let l = filter_of(visual, tab).target.l;
+            assert!(
+                (l - (L_MIN + 0.25 * (L_MAX - L_MIN))).abs() < 0.011,
+                "a quarter along: {l}"
+            );
+        }
+        testing::set_rtl(false);
+    }
+
+    #[gpui_kit::test]
+    fn the_wheel_changes_lightness_and_with_shift_the_tolerance(cx: &mut gpui_kit::TestAppContext) {
+        let _guard = testing::lock();
+        let (view, visual, tab) = bar_with_a_color(cx);
+        let before = filter_of(visual, tab);
+        let wheel = visual.update(|window, cx| {
+            window.render_frame(cx);
+            window.find(("cw-wheel", 0usize)).bounds()
+        });
+        let at = wheel.center();
+        let scroll = |visual: &mut gpui_kit::VisualTestContext, lines: f32, shift: bool| {
+            visual.simulate_event(gpui_kit::ScrollEvent {
+                position: at,
+                delta: gpui_kit::ScrollDelta::Lines(point(0.0, lines)),
+                modifiers: gpui_kit::Modifiers {
+                    shift,
+                    ..Default::default()
+                },
+                touch_phase: gpui_kit::TouchPhase::Moved,
+                source: gpui_kit::ScrollSource::Pointer,
+            });
+            visual.update(|_, cx| view.update(cx, |bar, cx| bar.rank(cx)));
+        };
+        scroll(visual, 3.0, false);
+        let after = filter_of(visual, tab);
+        assert!(
+            (after.target.l - (before.target.l + 0.03)).abs() < 0.011,
+            "a notch up is lighter"
+        );
+        assert_eq!(after.max_dist, before.max_dist);
+        scroll(visual, -3.0, true);
+        let after = filter_of(visual, tab);
+        assert!(
+            (after.max_dist - (before.max_dist - 0.015)).abs() < 0.011,
+            "Shift: a notch down is tighter"
         );
     }
 }
