@@ -18,6 +18,12 @@ impl Explorer {
         &self.ops.basket
     }
 
+    /// These paths as rows (size, date, kind), read in the background: what the basket's drawer shows of its items.
+    /// One that can't be read still gets its row.
+    pub fn basket_rows(&self, paths: Vec<String>) -> super::source::Fut<Vec<glint_model::entries::FileEntry>> {
+        self.source.entries_of(paths)
+    }
+
     /// Adds `paths` to the basket (Ctrl+Shift+B). What is in it already, and what can't be moved or copied from
     /// where it is (inside an archive, on a remote connection, in the Recycle Bin), is left out. Says how many
     /// were added.

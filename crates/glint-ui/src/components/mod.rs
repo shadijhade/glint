@@ -4,6 +4,8 @@
 
 /// Breadcrumbs, editing and completion (AddressBar.tsx).
 pub mod address_bar;
+/// The basket's drawer: what it holds, and what to do with it.
+pub mod basket_drawer;
 /// 120 FPS OKLab Color-Wheel Photo Surfing bar.
 pub mod color_wheel;
 /// Columns: the folders down to the one open, side by side (ColumnsView.tsx).

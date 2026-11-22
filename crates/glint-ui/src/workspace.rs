@@ -2715,6 +2715,10 @@ impl Render for Workspace {
             .on_action(
                 cx.listener(|_, _: &actions::Paste, _, cx| Self::explorer(cx, |e, cx| e.paste(None, cx).detach())),
             )
+            .on_action(cx.listener(|this, _: &actions::ToggleBasket, window, cx| {
+                this.command_bar
+                    .update(cx, |bar, cx| bar.toggle_basket(window, cx))
+            }))
             .on_action(cx.listener(|_, _: &actions::AddToBasket, _, cx| {
                 let paths = Self::selection(cx);
                 Self::explorer(cx, |e, cx| e.add_to_basket(paths, cx))

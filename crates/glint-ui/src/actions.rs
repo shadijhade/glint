@@ -63,6 +63,7 @@ actions!(
         ListView,
         FlatView,
         AddToBasket,
+        ToggleBasket,
         ColumnsView,
         GridLarger,
         GridSmaller,
@@ -252,6 +253,12 @@ pub static BINDINGS: &[Binding] = &[
         "Workspace",
         AddToBasket,
         "Add the selection to the basket, to move, copy, zip or rename together from any folder"
+    ),
+    bind!(
+        "alt-b",
+        "Workspace",
+        ToggleBasket,
+        "Open or close the basket's drawer: what it holds, and what to do with it"
     ),
     bind!(
         "ctrl-shift-h",

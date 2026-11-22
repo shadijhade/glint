@@ -960,6 +960,15 @@ pub fn actions(inputs: &Inputs) -> Vec<Command> {
         ),
     );
     push(
+        true,
+        Command::action(
+            "basket-drawer",
+            t!("Basket: open or close its drawer"),
+            I::Package,
+            || Box::new(actions::ToggleBasket),
+        ),
+    );
+    push(
         inputs.chosen && !inputs.in_archive,
         Command::new(
             "add-to-basket",

@@ -796,7 +796,9 @@ fn the_tools_menu_speaks_of_the_selection_and_offers_its_tools_on_one_file() {
     );
     assert_eq!(
         entry(&nodes, "Share the selection…").run,
-        Run::Ask(MenuEvent::Share { paths: vec![one.path.clone()] })
+        Run::Ask(MenuEvent::Share {
+            paths: vec![one.path.clone()]
+        })
     );
     assert_eq!(
         entry(&nodes, "Scan the selection with Microsoft Defender").run,
@@ -809,7 +811,9 @@ fn the_tools_menu_speaks_of_the_selection_and_offers_its_tools_on_one_file() {
     let nodes = menus::tools_menu(&f, &two, 0, false);
     assert_eq!(
         entry(&nodes, "Share the selection…").run,
-        Run::Ask(MenuEvent::Share { paths: vec![one.path.clone(), two[1].path.clone()] })
+        Run::Ask(MenuEvent::Share {
+            paths: vec![one.path.clone(), two[1].path.clone()]
+        })
     );
     assert!(!entry(&nodes, "Scan the selection with Microsoft Defender").disabled);
 }
@@ -821,10 +825,7 @@ fn the_tools_are_greyed_in_a_read_only_place_and_a_remote_has_no_clean_up() {
     let mut f = folder_facts();
     f.read_only = true;
     let nodes = menus::tools_menu(&f, &[], 0, false);
-    for off in [
-        "Clean up this folder…",
-        "Scan this folder with Microsoft Defender",
-    ] {
+    for off in ["Clean up this folder…", "Scan this folder with Microsoft Defender"] {
         assert!(entry(&nodes, off).disabled, "{off}");
     }
     // The rules in general still open (an empty folder asks for them all).
@@ -855,13 +856,7 @@ fn the_view_menu_has_the_toggles_and_the_views_only_when_the_bar_is_that_narrow(
     let narrow = menus::view_menu(&f, 3);
     assert_eq!(
         labels(&narrow),
-        [
-            "Show hidden items",
-            FLAT,
-            "Preview pane",
-            "Dual pane",
-            "Compare panes"
-        ]
+        ["Show hidden items", FLAT, "Preview pane", "Dual pane", "Compare panes"]
     );
     // The flat view is on offer in a folder (with its key), off while it can't be shown (This PC), and checked while on.
     assert_eq!(entry(&narrow, FLAT).hint.as_deref(), Some("Ctrl+B"));
@@ -1565,17 +1560,17 @@ fn the_basket_pill_is_in_the_island_only_while_the_basket_holds_something(cx: &m
     let mut rig = open(cx, false, 1400.);
     rig.go("C:\\Work");
     assert!(
-        !rig.present("Basket 1") && !rig.present("Basket 2"),
+        !rig.present("Basket 1 · 120 B") && !rig.present("Basket 2 · 129 B"),
         "no pill for an empty basket"
     );
     rig.act(|e, cx| e.add_to_basket(vec!["C:\\Work\\notes.txt".into()], cx));
-    assert!(rig.present("Basket 1"));
+    assert!(rig.present("Basket 1 · 120 B"));
     // It stays across folders, and counts.
     rig.go("C:\\Other");
     rig.act(|e, cx| e.add_to_basket(vec!["C:\\Other\\other.txt".into()], cx));
-    assert!(rig.present("Basket 2"));
+    assert!(rig.present("Basket 2 · 129 B"));
     rig.act(|e, cx| e.empty_basket(cx));
-    assert!(!rig.present("Basket 2"), "the pill goes with the last item");
+    assert!(!rig.present("Basket 2 · 129 B"), "the pill goes with the last item");
 }
 
 #[test]
@@ -1624,4 +1619,230 @@ fn the_baskets_menu_offers_the_four_jobs_lists_what_is_in_it_and_can_be_emptied(
         .collect();
     assert_eq!(disabled, [true, true, false, false, false]);
     assert!(menus::basket_menu(&[], &here).is_empty());
+}
+
+// ---- The basket's drawer ---------------------------------------------------------------------------------------
+
+/// An Arabic file name ("report.txt"), as the fake disk holds it.
+const ARABIC: &str = "تقرير.txt";
+
+impl Rig {
+    fn drawer(&self) -> Entity<BasketDrawer> {
+        self.bar.read_with(&self.cx, |bar, _| bar.drawer.clone())
+    }
+
+    fn drawer_open(&self) -> bool {
+        self.drawer().read_with(&self.cx, |drawer, _| drawer.is_open())
+    }
+
+    fn click_id(&mut self, id: impl Into<ElementId>) {
+        let id = id.into();
+        self.cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click(id, cx);
+        });
+        self.cx.run_until_parked();
+        self.settle();
+    }
+
+    fn held(&mut self) -> Vec<String> {
+        self.cx
+            .update(|_, cx| explorer::explorer(cx).read(cx).basket().to_vec())
+    }
+
+    /// The basket holds two files from Work (one with an Arabic name) and the drawer is open over the pill.
+    fn with_open_drawer(cx: &mut TestAppContext, rtl: bool) -> Rig {
+        let mut rig = open(cx, rtl, 1400.);
+        rig.go("C:\\Work");
+        rig.act(|e, cx| e.add_to_basket(vec!["C:\\Work\\notes.txt".into(), format!("C:\\Work\\{ARABIC}")], cx));
+        rig.click("basket");
+        rig
+    }
+
+    fn jobs(&self) -> Vec<MenuEvent> {
+        self.events()
+            .into_iter()
+            .filter_map(|event| match event {
+                CommandBarEvent::Menu(menu) => Some(menu),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+#[gpui_kit::test]
+fn pressing_the_pill_opens_a_drawer_with_a_named_row_for_each_item_and_escape_closes_it(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut rig = Rig::with_open_drawer(cx, false);
+    assert!(rig.drawer_open());
+    assert!(rig.present("Basket"), "the drawer is a group named Basket");
+    assert!(rig.present("In the basket (2)"));
+    assert!(rig.present("notes.txt, 120 B"));
+    // An Arabic name is a row like any other.
+    assert!(rig.present(&format!("{ARABIC}, 5 B")));
+    assert!(rig.present("Basket: 2 items · 125 B"));
+    // The jobs and the buttons that take items out are named.
+    for name in [
+        "Batch rename",
+        "Compare",
+        "Zip",
+        "Move here",
+        "Copy here",
+        "Clear",
+        "Close the basket",
+    ] {
+        assert!(rig.present(name), "{name}");
+    }
+    assert!(rig.present("Take out “notes.txt”"));
+    rig.press("escape");
+    rig.settle();
+    assert!(!rig.drawer_open());
+    assert!(!rig.present("In the basket (2)"));
+    // The pill is still there, and pressing it opens the drawer again and closes it again.
+    rig.click("basket");
+    assert!(rig.drawer_open());
+    // (The test window is too short for the drawer to clear the pill, so the second press is the command.)
+    rig.bar.update_in(&mut rig.cx, |bar, window, cx| bar.toggle_basket(window, cx));
+    rig.settle();
+    assert!(!rig.drawer_open(), "the command closes it again");
+}
+
+#[gpui_kit::test]
+fn the_command_opens_and_closes_the_drawer_and_an_empty_basket_has_none(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut rig = open(cx, false, 1400.);
+    rig.go("C:\\Work");
+    rig.bar
+        .update_in(&mut rig.cx, |bar, window, cx| bar.toggle_basket(window, cx));
+    rig.settle();
+    assert!(!rig.drawer_open(), "nothing in the basket, nothing to open");
+    rig.act(|e, cx| e.add_to_basket(vec!["C:\\Work\\notes.txt".into()], cx));
+    rig.bar
+        .update_in(&mut rig.cx, |bar, window, cx| bar.toggle_basket(window, cx));
+    rig.settle();
+    assert!(rig.drawer_open());
+    rig.bar
+        .update_in(&mut rig.cx, |bar, window, cx| bar.toggle_basket(window, cx));
+    rig.settle();
+    assert!(!rig.drawer_open());
+}
+
+#[gpui_kit::test]
+fn an_item_is_taken_out_by_its_button_and_clear_empties_the_basket_and_closes_the_drawer(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut rig = Rig::with_open_drawer(cx, false);
+    rig.click_id(("basket-take-out", 0usize));
+    assert_eq!(rig.held().len(), 1);
+    assert!(!rig.present("notes.txt, 120 B"), "the row went with the item");
+    assert!(rig.present("In the basket (1)"));
+    rig.click_id("basket-clear");
+    assert!(rig.held().is_empty());
+    assert!(!rig.drawer_open(), "an empty basket has no drawer");
+    assert!(!rig.present("In the basket (1)"));
+}
+
+#[gpui_kit::test]
+fn the_arrows_move_through_the_items_and_delete_takes_the_one_the_keyboard_is_on_out(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut rig = Rig::with_open_drawer(cx, false);
+    let cursor = |rig: &Rig| rig.drawer().read_with(&rig.cx, |drawer, _| drawer.cursor());
+    assert_eq!(cursor(&rig), 0);
+    rig.press("down");
+    assert_eq!(cursor(&rig), 1);
+    rig.press("down");
+    assert_eq!(cursor(&rig), 1, "it stops at the last item");
+    rig.press("home");
+    assert_eq!(cursor(&rig), 0);
+    rig.press("end");
+    assert_eq!(cursor(&rig), 1);
+    rig.press("delete");
+    rig.settle();
+    assert_eq!(
+        rig.held(),
+        ["C:\\Work\\notes.txt"],
+        "the Arabic one, which the keyboard was on, went"
+    );
+    assert_eq!(cursor(&rig), 0);
+    rig.press("backspace");
+    rig.settle();
+    assert!(rig.held().is_empty());
+    assert!(!rig.drawer_open());
+}
+
+#[gpui_kit::test]
+fn each_job_in_the_drawer_asks_the_window_for_the_action_the_baskets_menu_asks_for(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut rig = Rig::with_open_drawer(cx, false);
+    rig.clear();
+    for id in [
+        "basket-rename",
+        "basket-zip",
+        "basket-move",
+        "basket-copy",
+        "basket-compare",
+    ] {
+        rig.click_id(id);
+    }
+    assert_eq!(
+        rig.jobs(),
+        [
+            MenuEvent::BasketRename,
+            MenuEvent::BasketZip,
+            MenuEvent::BasketMove,
+            MenuEvent::BasketCopy,
+            MenuEvent::Compare {
+                left: "C:\\Work\\notes.txt".into(),
+                right: format!("C:\\Work\\{ARABIC}"),
+            },
+        ]
+    );
+}
+
+#[gpui_kit::test]
+fn compare_needs_two_files_and_move_and_copy_need_a_folder_that_can_take_them(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut rig = Rig::with_open_drawer(cx, false);
+    assert!(rig.enabled("Compare"));
+    assert!(rig.enabled("Move here") && rig.enabled("Copy here"));
+    rig.act(|e, cx| e.add_to_basket(vec!["C:\\Work\\todo.txt".into()], cx));
+    assert!(!rig.enabled("Compare"), "three files are not a pair");
+    rig.clear();
+    rig.click_id("basket-compare");
+    assert!(rig.jobs().is_empty(), "a disabled job asks for nothing");
+    rig.act(|e, cx| e.remove_from_basket("C:\\Work\\todo.txt", cx));
+    assert!(rig.enabled("Compare"));
+    // A folder is not a file to compare.
+    rig.act(|e, cx| e.add_to_basket(vec!["C:\\Work\\src".into()], cx));
+    rig.act(|e, cx| e.remove_from_basket("C:\\Work\\notes.txt", cx));
+    assert!(!rig.enabled("Compare"));
+    // Inside an archive nothing can be put.
+    rig.go("C:\\Work\\pack.zip");
+    assert!(!rig.enabled("Move here") && !rig.enabled("Copy here"));
+    rig.clear();
+    rig.click_id("basket-move");
+    assert!(rig.jobs().is_empty());
+}
+
+#[gpui_kit::test]
+fn dragging_a_row_takes_the_whole_basket_out_as_a_group(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut rig = Rig::with_open_drawer(cx, false);
+    let drawer = rig.drawer();
+    drawer.update_in(&mut rig.cx, |drawer, window, cx| drawer.drag_out(window, cx));
+    let dragged = drawer.read_with(&rig.cx, |drawer, _| drawer.dragged().to_vec());
+    assert_eq!(dragged, [rig.held()]);
+    assert_eq!(dragged[0].len(), 2);
+}
+
+#[gpui_kit::test]
+fn the_drawer_works_mirrored_with_arabic_names(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut rig = Rig::with_open_drawer(cx, true);
+    assert!(rig.drawer_open());
+    assert!(rig.present(&format!("{ARABIC}, 5 B")));
+    assert!(rig.present("Copy here"));
+    rig.press("escape");
+    rig.settle();
+    assert!(!rig.drawer_open());
+    testing::set_rtl(false);
 }

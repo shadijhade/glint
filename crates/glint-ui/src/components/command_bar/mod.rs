@@ -70,6 +70,7 @@ pub use facts::{Facts, Folding, Pair, MOST};
 pub use menus::{keyed, keyed_with, keys_of, Pick};
 
 use crate::actions;
+use crate::components::basket_drawer::{BasketDrawer, BasketDrawerEvent};
 use crate::components::disk_usage;
 use crate::components::menus::{
     visible_items, MenuEvent, MenuView, MenuViewEvent, Node, Run, Suggested, Task as MenuTask,
@@ -230,6 +231,10 @@ pub struct CommandBar {
     clip_turn: u64,
     /// How many items the basket holds: its pill is in the island only while this is more than none.
     basket: usize,
+    /// The basket's drawer, opened over its pill.
+    drawer: Entity<BasketDrawer>,
+    /// What had the keyboard before the drawer took it.
+    drawer_focus: Option<FocusHandle>,
     /// The button whose menu a press closed last, and when.
     dismissed: Option<(&'static str, Instant)>,
     /// Press origin for starting a Drag-to-Transform chip drag.
@@ -246,7 +251,7 @@ impl CommandBar {
     }
 
     /// The same, reading from `sources` (tests give fakes).
-    pub fn with_sources(_window: &mut Window, cx: &mut Context<Self>, sources: Sources) -> Self {
+    pub fn with_sources(window: &mut Window, cx: &mut Context<Self>, sources: Sources) -> Self {
         let explorer = explorer::explorer(cx);
         let mut subscriptions = vec![
             // Anything the explorer changes may change a button: the facts are made again on the next draw.
@@ -273,6 +278,9 @@ impl CommandBar {
                 cx.notify();
             }));
         }
+        let drawer = cx.new(BasketDrawer::new);
+        subscriptions.push(cx.observe(&drawer, |_, _, cx| cx.notify()));
+        subscriptions.push(cx.subscribe_in(&drawer, window, Self::on_drawer_event));
         CommandBar {
             explorer,
             sources,
@@ -291,6 +299,8 @@ impl CommandBar {
             clip: Clip::Empty,
             clip_turn: 0,
             basket: 0,
+            drawer,
+            drawer_focus: None,
             dismissed: None,
             virtual_press: None,
             _subscriptions: subscriptions,
@@ -373,6 +383,8 @@ impl CommandBar {
         }
         self.clip = clip;
         self.basket = self.explorer.read(cx).basket().len();
+        let here = facts.in_folder && !facts.find && !facts.read_only;
+        self.drawer.update(cx, |drawer, cx| drawer.set_here(here, cx));
         let step = if (1..=MOST_FOR_STEP).contains(&facts.selected) {
             smart::next_step(cx, self.explorer.read(cx).active_pane())
         } else {
@@ -670,6 +682,54 @@ impl CommandBar {
     fn show_tasks(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let nodes = menus::tasks_menu(&self.tasks.groups);
         self.open_menu("tasks", nodes, t!("Run"), window, cx);
+    }
+
+    /// Opens the basket's drawer over its pill, or closes it (Alt+B, the pill). With nothing in the basket it says
+    /// so instead.
+    pub fn toggle_basket(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.drawer.read(cx).is_open() {
+            self.drawer.update(cx, |drawer, cx| drawer.close(window, cx));
+            return;
+        }
+        if self.explorer.read(cx).basket().is_empty() {
+            window.push_notification(
+                Notification::info(t!("Ctrl+Shift+B puts the selection in it, from any folder."))
+                    .title(t!("The basket is empty")),
+                cx,
+            );
+            return;
+        }
+        self.close_menu(false, window, cx);
+        self.drawer_focus = window.focused(cx);
+        self.drawer.update(cx, |drawer, cx| drawer.open(window, cx));
+        // A native preview draws above GPUI: it steps aside while the drawer covers it.
+        preview::cover(cx);
+        cx.notify();
+    }
+
+    /// The drawer closed, or chose a job.
+    fn on_drawer_event(
+        &mut self,
+        _: &Entity<BasketDrawer>,
+        event: &BasketDrawerEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            BasketDrawerEvent::Menu(menu) => cx.emit(CommandBarEvent::Menu(menu.clone())),
+            BasketDrawerEvent::Closed => {
+                preview::uncover(cx);
+                if let Some(focus) = self.drawer_focus.take() {
+                    focus.focus(window, cx);
+                }
+                cx.notify();
+            }
+            BasketDrawerEvent::Dismissed => {
+                preview::uncover(cx);
+                self.drawer_focus = None;
+                cx.notify();
+            }
+        }
     }
 
     /// The basket's menu: what can be done with what it holds, and what it holds. What was moved or deleted since
@@ -1276,16 +1336,34 @@ impl CommandBar {
         if self.basket == 0 {
             return None;
         }
-        let words = t!("Basket {n}", n = glint_model::format::format_count(self.basket));
-        let tip = t!(
-            "Basket: {n} gathered from any folder, to move, copy, zip or rename together",
-            n = plural(self.basket, "item")
+        let count = glint_model::format::format_count(self.basket);
+        // How big it is, once every item has been looked at.
+        let words = match self.drawer.read(cx).size_words() {
+            Some(size) => t!("Basket {n} · {size}", n = count, size = size),
+            None => t!("Basket {n}", n = count),
+        };
+        let tip = keyed_with(
+            "Basket: {n} gathered from any folder: open its drawer ({0}), or right-click for its menu",
+            &[&actions::ToggleBasket],
+            &[("n", &plural(self.basket, "item"))],
         );
+        let open = self.drawer.read(cx).is_open();
         Some(
             self.anchored(
                 "basket",
                 menu_word(cx, t, "basket", IconName::Package, words, fold < 4, tip)
-                    .on_click(cx.listener(|this, _, window, cx| this.show_basket(window, cx))),
+                    .toggled(open)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        // The press that closed the drawer is this click's own: it does not open it again.
+                        if this.drawer.update(cx, |drawer, _| drawer.take_just_dismissed()) {
+                            return;
+                        }
+                        this.toggle_basket(window, cx)
+                    })),
+            )
+            .on_mouse_down(
+                gpui_kit::MouseButton::Right,
+                cx.listener(|this, _, window, cx| this.show_basket(window, cx)),
             )
             .into_any_element(),
         )
@@ -1680,6 +1758,22 @@ impl Render for CommandBar {
             )
             .with_priority(gpui_kit::base::POPUP_PRIORITY)
         });
+        // The basket's drawer opens upward from its pill, at the pill's start edge.
+        let drawer = self.drawer.read(cx).is_open().then(|| {
+            let rtl = i18n::is_rtl();
+            let at = match self.anchors.borrow().get("basket").copied() {
+                Some(bounds) => point(if rtl { bounds.right() } else { bounds.left() }, bounds.top() - px(6.)),
+                None => point(px(8.), window.viewport_size().height - px(56.)),
+            };
+            deferred(
+                anchored()
+                    .position(at)
+                    .anchor(if rtl { Anchor::BottomRight } else { Anchor::BottomLeft })
+                    .snap_to_window_with_margin(px(4.))
+                    .child(self.drawer.clone()),
+            )
+            .with_priority(gpui_kit::base::POPUP_PRIORITY)
+        });
         // The island: a raised pill holding the two groups, as wide as they are.
         let island = row_start()
             .id("command-bar")
@@ -1703,6 +1797,7 @@ impl Render for CommandBar {
             .child(divider(&t))
             .child(right)
             .children(menu)
+            .children(drawer)
             // Files dragged onto the dock go into the basket (the drag's words say so); nothing moves or copies.
             .on_drag_move(cx.listener(|_, event: &DragMoveEvent<ExternalPaths>, _, cx| {
                 if event.bounds.contains(&event.event.position) {
