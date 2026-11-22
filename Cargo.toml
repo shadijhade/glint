@@ -40,8 +40,15 @@ debug = "line-tables-only"
 [profile.release]
 lto = "thin"
 
-# The instant search service was built with one codegen unit in the Tauri app's profile; it keeps that.
+# The instant search service was built with one codegen unit in the Tauri app's profile; it keeps that. Glint's
+# own UI and core crates get one too (0.16): Glint.exe is 2.7 MB smaller (the compiler sees every function of
+# a crate at once, folds duplicates and inlines across what 16 units kept apart), `Glint.exe bench`'s listing
+# and sort numbers are the same, and the build takes about two minutes longer.
 [profile.release.package.shadui-index]
+codegen-units = 1
+[profile.release.package.glint-ui]
+codegen-units = 1
+[profile.release.package.glint-core]
 codegen-units = 1
 
 # Crates only rare actions reach (a Parquet or workbook preview, math, the calculator, a photo's or song's
@@ -68,4 +75,152 @@ opt-level = "s"
 [profile.release.package.sevenz-rust2]
 opt-level = "s"
 [profile.release.package.msi]
+opt-level = "s"
+
+# 0.16: the same for more crates nobody waits on (Glint.exe 84.92 MB, 83.04 MB with these).
+# gitoxide: the Git column's status, Time Machine's Git stops and a folder's history (measured: same speed).
+[profile.release.package.gix]
+opt-level = "s"
+[profile.release.package.gix-actor]
+opt-level = "s"
+[profile.release.package.gix-attributes]
+opt-level = "s"
+[profile.release.package.gix-bitmap]
+opt-level = "s"
+[profile.release.package.gix-chunk]
+opt-level = "s"
+[profile.release.package.gix-command]
+opt-level = "s"
+[profile.release.package.gix-commitgraph]
+opt-level = "s"
+[profile.release.package.gix-config]
+opt-level = "s"
+[profile.release.package.gix-config-value]
+opt-level = "s"
+[profile.release.package.gix-date]
+opt-level = "s"
+[profile.release.package.gix-diff]
+opt-level = "s"
+[profile.release.package.gix-dir]
+opt-level = "s"
+[profile.release.package.gix-discover]
+opt-level = "s"
+[profile.release.package.gix-error]
+opt-level = "s"
+[profile.release.package.gix-filter]
+opt-level = "s"
+[profile.release.package.gix-fs]
+opt-level = "s"
+[profile.release.package.gix-glob]
+opt-level = "s"
+[profile.release.package.gix-hash]
+opt-level = "s"
+[profile.release.package.gix-hashtable]
+opt-level = "s"
+[profile.release.package.gix-ignore]
+opt-level = "s"
+[profile.release.package.gix-imara-diff]
+opt-level = "s"
+[profile.release.package.gix-index]
+opt-level = "s"
+[profile.release.package.gix-lock]
+opt-level = "s"
+[profile.release.package.gix-object]
+opt-level = "s"
+[profile.release.package.gix-odb]
+opt-level = "s"
+[profile.release.package.gix-pack]
+opt-level = "s"
+[profile.release.package.gix-packetline]
+opt-level = "s"
+[profile.release.package.gix-parallel]
+opt-level = "s"
+[profile.release.package.gix-path]
+opt-level = "s"
+[profile.release.package.gix-pathspec]
+opt-level = "s"
+[profile.release.package.gix-protocol]
+opt-level = "s"
+[profile.release.package.gix-quote]
+opt-level = "s"
+[profile.release.package.gix-ref]
+opt-level = "s"
+[profile.release.package.gix-refspec]
+opt-level = "s"
+[profile.release.package.gix-revision]
+opt-level = "s"
+[profile.release.package.gix-revwalk]
+opt-level = "s"
+[profile.release.package.gix-sec]
+opt-level = "s"
+[profile.release.package.gix-shallow]
+opt-level = "s"
+[profile.release.package.gix-status]
+opt-level = "s"
+[profile.release.package.gix-submodule]
+opt-level = "s"
+[profile.release.package.gix-tempfile]
+opt-level = "s"
+[profile.release.package.gix-trace]
+opt-level = "s"
+[profile.release.package.gix-transport]
+opt-level = "s"
+[profile.release.package.gix-traverse]
+opt-level = "s"
+[profile.release.package.gix-url]
+opt-level = "s"
+[profile.release.package.gix-utils]
+opt-level = "s"
+[profile.release.package.gix-validate]
+opt-level = "s"
+[profile.release.package.gix-worktree]
+opt-level = "s"
+[profile.release.package.gix-zlib]
+opt-level = "s"
+# SVG: Glint's own art and icons are drawn once and cached, and only first paint rasterizes them (a few
+# microseconds more an icon, measured).
+[profile.release.package.usvg]
+opt-level = "s"
+[profile.release.package.resvg]
+opt-level = "s"
+[profile.release.package.tiny-skia]
+opt-level = "s"
+[profile.release.package.tiny-skia-path]
+opt-level = "s"
+[profile.release.package.rustybuzz]
+opt-level = "s"
+[profile.release.package.ttf-parser]
+opt-level = "s"
+[profile.release.package.fontdb]
+opt-level = "s"
+[profile.release.package.svgtypes]
+opt-level = "s"
+[profile.release.package.simplecss]
+opt-level = "s"
+[profile.release.package.xmlwriter]
+opt-level = "s"
+[profile.release.package.strict-num]
+opt-level = "s"
+# TLS and its C crypto (the update check, downloads), PDF text, jq filters and RAR.
+[profile.release.package.rustls]
+opt-level = "s"
+[profile.release.package.rustls-webpki]
+opt-level = "s"
+[profile.release.package.rustls-pki-types]
+opt-level = "s"
+[profile.release.package.ring]
+opt-level = "s"
+[profile.release.package.lopdf]
+opt-level = "s"
+[profile.release.package.pdf-extract]
+opt-level = "s"
+[profile.release.package.jaq-core]
+opt-level = "s"
+[profile.release.package.jaq-fmts]
+opt-level = "s"
+[profile.release.package.jaq-json]
+opt-level = "s"
+[profile.release.package.jaq-std]
+opt-level = "s"
+[profile.release.package.unrar_sys]
 opt-level = "s"
