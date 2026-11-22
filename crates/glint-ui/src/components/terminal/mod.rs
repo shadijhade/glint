@@ -63,14 +63,15 @@ pub mod view;
 pub use session::{Backend, Shell};
 pub use view::{palette_of, TerminalEvent, TerminalView};
 
+use crate::components::menus::{self, Entry, MenuView, MenuViewEvent, Node, Run, Task as MenuTask};
 use crate::explorer::{Explorer, NavOptions, TerminalJob};
 use crate::kit::prelude::*;
 use crate::{state, t, theme};
 use glint_model::cd::cd_command;
 use glint_model::paths::{base_name, is_folder_path, same_path, THIS_PC};
 use gpui_kit::{
-    anchored, deferred, Anchor, ClickEvent, DismissEvent, DragMoveEvent, FontWeight, MouseButton, MouseDownEvent, Role,
-    Subscription, Task, WeakEntity,
+    anchored, deferred, Anchor, ClickEvent, DragMoveEvent, FontWeight, MouseButton, MouseDownEvent, Role, Subscription,
+    Task, WeakEntity,
 };
 use std::rc::Rc;
 use std::time::Duration;
@@ -162,11 +163,11 @@ fn usable_title(title: &str) -> Option<String> {
     (!title.is_empty() && !program).then(|| title.to_string())
 }
 
-/// The shell picker while it is open.
+/// The shell picker (a menu of the app's own look) while it is open.
 struct OpenMenu {
     at: Point<Pixels>,
-    menu: Entity<PopupMenu>,
-    _dismissed: Subscription,
+    view: Entity<MenuView>,
+    _subscription: Subscription,
 }
 
 /// The terminal pane, under the file panes: terminal tabs, each a shell, following the folder shown.
@@ -672,35 +673,50 @@ impl TerminalPane {
     // ---- The shell picker
 
     fn open_shell_menu(&mut self, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
-        let pane: WeakEntity<Self> = cx.weak_entity();
-        let shells = self.shells.clone();
-        let menu = PopupMenu::build(window, cx, move |mut menu, _, _| {
-            for shell in &shells {
-                let (pane, id) = (pane.clone(), shell.id.clone());
-                menu = menu.item(
-                    PopupMenuItem::new(shell.name.clone())
-                        .icon(IconName::SquareTerminal)
-                        .on_click(move |_, window, cx| {
-                            pane.update(cx, |pane, cx| {
-                                let cwd = pane.terminal_folder(cx);
-                                pane.open_with(&id, &cwd, window, cx);
-                            })
-                            .ok();
-                        }),
-                );
-            }
-            menu
-        });
-        window.focus(&menu.focus_handle(cx), cx);
-        let dismissed = cx.subscribe(&menu, |this, _, _: &DismissEvent, cx| {
-            this.menu = None;
-            cx.notify();
-        });
+        let nodes: Vec<Node> = self
+            .shells
+            .iter()
+            .filter_map(|shell| {
+                // The shell's id rides in the row's task: `on_menu_view` finds the shell by it.
+                Entry::new(
+                    shell.name.clone().into(),
+                    IconName::SquareTerminal,
+                    Run::Do(MenuTask::OpenTerminal(shell.id.clone())),
+                )
+                .node()
+            })
+            .collect();
+        let nodes = menus::visible_items(nodes);
+        if nodes.is_empty() {
+            return;
+        }
+        let view = cx.new(|cx| MenuView::new(nodes, t!("New terminal with another shell"), cx));
+        view.update(cx, |view, cx| view.focus(window, cx));
+        let subscription = cx.subscribe_in(&view, window, Self::on_menu_view);
         self.menu = Some(OpenMenu {
             at,
-            menu,
-            _dismissed: dismissed,
+            view,
+            _subscription: subscription,
         });
+        cx.notify();
+    }
+
+    /// A shell was chosen, or the menu went away: either way the keyboard goes back to the terminal.
+    fn on_menu_view(
+        &mut self,
+        _: &Entity<MenuView>,
+        event: &MenuViewEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.menu = None;
+        match event {
+            MenuViewEvent::Chose(Run::Do(MenuTask::OpenTerminal(id))) => {
+                let cwd = self.terminal_folder(cx);
+                self.open_with(id, &cwd, window, cx);
+            }
+            _ => self.focus_active(window, cx),
+        }
         cx.notify();
     }
 
@@ -912,7 +928,7 @@ impl Render for TerminalPane {
                     .position(open.at)
                     .anchor(Anchor::TopLeft)
                     .snap_to_window_with_margin(px(8.))
-                    .child(open.menu.clone()),
+                    .child(open.view.clone()),
             )
             .with_priority(1)
         });

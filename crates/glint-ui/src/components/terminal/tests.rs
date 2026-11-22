@@ -531,6 +531,43 @@ fn the_pane_is_named_for_screen_readers_and_keyboard_only_use_works(cx: &mut Tes
 }
 
 #[gpui_kit::test]
+fn the_shell_picker_is_a_menu_view_that_opens_the_shell_chosen_and_hands_the_keyboard_back(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut env = open(cx, &SHELLS);
+    env.start();
+    let pane = env.pane.clone();
+    env.cx.update(|window, cx| {
+        pane.update(cx, |pane, cx| {
+            pane.open_shell_menu(gpui_kit::point(px(40.), px(40.)), window, cx)
+        })
+    });
+    assert!(env.cx.update(|_, cx| pane.read(cx).menu.is_some()));
+    // Every shell is a row, named as the shell is.
+    // (PowerShell is also the first tab's name, so only the other two are looked up.)
+    for name in ["Command Prompt", "WSL"] {
+        assert!(env.role_of(name).is_some(), "{name} has a row");
+    }
+    // Enter chooses the row the keyboard is on: a second terminal starts, the menu is gone, the terminal has the keys.
+    env.press("enter");
+    let log = env.log.clone();
+    settle(&mut env.cx, move |_| log.spawned.lock().unwrap().len() == 2);
+    assert!(env.cx.update(|_, cx| pane.read(cx).menu.is_none()));
+    let view = env.view();
+    assert!(env
+        .cx
+        .update(|window, cx| view.read(cx).focus_handle().is_focused(window)));
+    // Escape closes the menu without starting anything, and the keyboard goes back as well.
+    env.cx.update(|window, cx| {
+        pane.update(cx, |pane, cx| {
+            pane.open_shell_menu(gpui_kit::point(px(40.), px(40.)), window, cx)
+        })
+    });
+    env.press("escape");
+    assert!(env.cx.update(|_, cx| pane.read(cx).menu.is_none()));
+    assert_eq!(env.log.spawned.lock().unwrap().len(), 2);
+}
+
+#[gpui_kit::test]
 fn one_shell_means_no_shell_picker(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let mut env = open(cx, &[("cmd", "Command Prompt")]);
