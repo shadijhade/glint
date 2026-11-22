@@ -59,8 +59,8 @@ use index::{Index, IndexModel, Source, Volume};
 use std::cell::Cell;
 use std::rc::Rc;
 use summary::{
-    chip_active, chip_title, drives, items, segment_title, stages, thumbs_line, thumbs_stage, thumbs_title,
-    Category, Stage, Summary, Thumbs, Work,
+    chip_active, chip_title, drives, items, segment_title, stages, thumbs_line, thumbs_stage, thumbs_title, Category,
+    Stage, Summary, Thumbs, Work,
 };
 
 /// The bar's height: the dock's, at the foot of the sheet (the commands' island sits over its middle).
@@ -130,6 +130,8 @@ pub struct StatusBar {
     counted: summary::SelectedCount,
     /// The explorer changed since the summary was made.
     dirty: bool,
+    /// Counts the folders (and their times to screen) that arrived: the work line fades in once for each.
+    arrived: u64,
     /// The "What's in this folder" popover is open.
     details_open: bool,
     /// The popover of "Changing now" (`activity.rs`).
@@ -215,6 +217,7 @@ impl StatusBar {
             insight_focus: cx.focus_handle().tab_stop(true),
             counted: summary::SelectedCount::default(),
             dirty: true,
+            arrived: 0,
             details_open: false,
             feed: activity::Feed::new(cx),
             frozen_focus: cx.focus_handle().tab_stop(true),
@@ -237,6 +240,10 @@ impl StatusBar {
             let sizes = tab.and_then(|tab| explorer.size_run(&tab.path));
             Summary::of_counted(tab, explorer.drives().len(), sizes, &mut self.counted)
         };
+        // A folder shown (a new tab, a new place, a new time to screen) is news; a selection is not.
+        if summary.tab != self.summary.tab || summary.shown_in.to_bits() != self.summary.shown_in.to_bits() {
+            self.arrived += 1;
+        }
         if summary.tab != self.summary.tab {
             self.details_open = false;
             self.feed.close();
@@ -581,8 +588,8 @@ impl Render for StatusBar {
         });
         let popover = (s.has_listing && !s.this_pc && s.find.is_none() && self.details_open)
             .then(|| self.details(s, thumbs.as_ref(), &t, cx));
-        let activity = (s.has_listing && !s.this_pc && s.find.is_none() && self.feed.open)
-            .then(|| self.activity_popover(&t, cx));
+        let activity =
+            (s.has_listing && !s.this_pc && s.find.is_none() && self.feed.open).then(|| self.activity_popover(&t, cx));
 
         row_start()
             .id("status-bar")
@@ -845,14 +852,7 @@ impl StatusBar {
     }
 
     /// The selection's words as pieces, the size and the files inside rolling to their new numbers.
-    fn rolling_words(
-        &self,
-        s: &Summary,
-        deep: &sentence::Deep,
-        rolls: Rolls,
-        brief: bool,
-        cx: &App,
-    ) -> AnyElement {
+    fn rolling_words(&self, s: &Summary, deep: &sentence::Deep, rolls: Rolls, brief: bool, cx: &App) -> AnyElement {
         let mut row = row_start().items_center().gap(space(1.));
         // Where the start is tight, what is selected is a line of its own and the numbers roll under it.
         let mut head: Option<AnyElement> = None;
@@ -890,13 +890,7 @@ impl StatusBar {
     /// Pressing it (or Enter or Space on it) tells the window. Beside the island with little room it says it in
     /// fewer words and its line is shorter, and with less still it is its picture alone; what a screen reader
     /// calls it is the same.
-    fn insight_chip(
-        &self,
-        insight: Insight,
-        room: ChipRoom,
-        t: &theme::Tokens,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    fn insight_chip(&self, insight: Insight, room: ChipRoom, t: &theme::Tokens, cx: &mut Context<Self>) -> AnyElement {
         let tight = room != ChipRoom::Whole;
         let short = match &insight {
             Insight::Changing(_) => t!("Changing"),
@@ -936,7 +930,11 @@ impl StatusBar {
             .focus(|style| style.bg(t.ring))
             .flex_none()
             .h(px(22.))
-            .px(if room == ChipRoom::Picture { space(1.5) } else { space(2.5) })
+            .px(if room == ChipRoom::Picture {
+                space(1.5)
+            } else {
+                space(2.5)
+            })
             .rounded_full()
             .flex()
             .flex_row()
@@ -1005,7 +1003,11 @@ impl StatusBar {
             .focus(|style| style.bg(t.ring))
             .flex_none()
             .h(px(22.))
-            .px(if room == ChipRoom::Picture { space(1.5) } else { space(2.5) })
+            .px(if room == ChipRoom::Picture {
+                space(1.5)
+            } else {
+                space(2.5)
+            })
             .rounded_full()
             .flex()
             .flex_row()
@@ -1036,7 +1038,8 @@ impl StatusBar {
 
     /// The "Order frozen" chip was pressed: the active tab's list sorts again.
     fn unfreeze(&mut self, cx: &mut Context<Self>) {
-        self.explorer.update(cx, |explorer, cx| explorer.set_frozen(None, false, cx));
+        self.explorer
+            .update(cx, |explorer, cx| explorer.set_frozen(None, false, cx));
         cx.notify();
     }
 
@@ -1111,6 +1114,19 @@ impl StatusBar {
             }
             // Nothing to say about the folder yet: the button still opens the popover, with its breakdown.
             Work::Nothing | Work::Search { .. } => (None, div().into_any_element()),
+        };
+        // How the folder was read fades in after each navigation and then rests.
+        let pieces = if cx.reduce_motion() {
+            pieces
+        } else {
+            div()
+                .child(pieces)
+                .with_animation(
+                    ("status-work", self.arrived as usize),
+                    Animation::new(theme::motion::BASE).with_easing(theme::motion::glide),
+                    |el, delta| el.opacity(delta),
+                )
+                .into_any_element()
         };
         let trigger = Button::new("status-bar-details")
             .custom(
