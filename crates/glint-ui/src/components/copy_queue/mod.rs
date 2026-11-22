@@ -25,11 +25,13 @@ mod job;
 #[cfg(test)]
 mod tests;
 
+use crate::components::panel_header::{header_row, tool_button, Header};
 use crate::kit::prelude::*;
 use crate::platform::window_state::taskbar_progress;
 use crate::{core_bridge, t, theme};
 use glint_core::queue::JobView;
 use glint_model::format::format_count;
+use gpui_kit::{Animation, AnimationExt as _, FocusHandle, KeyDownEvent};
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
@@ -137,6 +139,8 @@ pub enum CopyQueueEvent {
     Finished(Box<JobView>),
     /// `queue_files` could not queue it ("Couldn't queue the copy"): the app shows `reason` in a notice.
     NotQueued { kind: JobKind, reason: String },
+    /// Escape hid the panel: the keyboard goes back to the files.
+    Hidden,
 }
 
 impl EventEmitter<CopyQueueEvent> for CopyQueue {}
@@ -154,6 +158,11 @@ pub struct CopyQueue {
     all: HashSet<u64>,
     /// Jobs whose list of what didn't go is open.
     errors_open: HashSet<u64>,
+    /// How far each running job's bar was and is going to, so it slides to the new number between two of core's
+    /// news (150 ms apart) instead of jumping: `(from, to, version)`, the version names the slide.
+    slides: HashMap<u64, (f32, f32, u32)>,
+    /// The panel's keyboard focus (a press inside it takes it), so Escape can hide it.
+    focus: FocusHandle,
     _events: Option<Subscription>,
 }
 
@@ -197,6 +206,8 @@ impl CopyQueue {
             taskbar_shown: String::new(),
             all: HashSet::new(),
             errors_open: HashSet::new(),
+            slides: HashMap::new(),
+            focus: cx.focus_handle(),
             _events: events,
         }
     }
@@ -245,6 +256,14 @@ impl CopyQueue {
         // Choices about a job that is gone are forgotten with it.
         self.all.retain(|id| jobs.iter().any(|j| j.id == *id));
         self.errors_open.retain(|id| jobs.iter().any(|j| j.id == *id));
+        self.slides.retain(|id, _| jobs.iter().any(|j| j.id == *id));
+        for job in &jobs {
+            let to = (share_of(job) / 100.0) as f32;
+            let slide = self.slides.entry(job.id).or_insert((to, to, 0));
+            if (slide.1 - to).abs() > f32::EPSILON {
+                *slide = (slide.1, to, slide.2.wrapping_add(1));
+            }
+        }
         self.jobs = jobs;
         self.sync_taskbar(cx);
         cx.notify();
@@ -324,6 +343,21 @@ impl Service for NoService {
 
 // ---- Drawing -------------------------------------------------------------------------------------------
 
+/// How much of a job is done, in percent: by bytes, all of a finished job, none before the size is known.
+fn share_of(job: &JobView) -> f64 {
+    if job.bytes > 0 {
+        ((job.bytes_done as f64 / job.bytes as f64) * 100.0).min(100.0)
+    } else if finished(job) {
+        100.0
+    } else {
+        0.0
+    }
+}
+
+/// How long a bar takes to reach the number core just told: as long as core waits between news, so it is always
+/// on its way and never waits.
+const SLIDE: std::time::Duration = std::time::Duration::from_millis(150);
+
 /// The ids of buttons that carry a job's number.
 fn job_key(id: u64) -> usize {
     usize::try_from(id).unwrap_or(usize::MAX)
@@ -338,16 +372,12 @@ impl CopyQueue {
     /// One job: title, status, its buttons, the bar, the file it's on, the question, the errors.
     fn job_card(&self, job: &JobView, last: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme::tokens(cx).clone();
+        let reduce = cx.reduce_motion();
         let id = job.id;
         let key = job_key(id);
         let over = finished(job);
-        let share = if job.bytes > 0 {
-            ((job.bytes_done as f64 / job.bytes as f64) * 100.0).min(100.0)
-        } else if over {
-            100.0
-        } else {
-            0.0
-        };
+        let share = share_of(job);
+        let (slide_from, slide_to, version) = self.slides.get(&id).copied().unwrap_or((0., (share / 100.0) as f32, 0));
         let title = SharedString::from(job_title(job));
         let status = SharedString::from(status_line(job));
         let from_to = t!("From {from} to {to}", from = job_from(job), to = job.dest);
@@ -447,10 +477,20 @@ impl CopyQueue {
                 .bg(t.muted)
                 .child(
                     div()
+                        .id(("copy-queue-fill", key))
                         .h_full()
-                        .w(relative((share / 100.0) as f32))
+                        .w(relative(slide_to))
                         .rounded_full()
-                        .bg(fill),
+                        .bg(fill)
+                        // Slides from where the bar was to where it is, once for each news of core's.
+                        .with_animation(
+                            ("copy-queue-slide", key * 65_536 + version as usize),
+                            Animation::new(SLIDE),
+                            move |fill, delta| {
+                                let delta = if reduce { 1.0 } else { delta };
+                                fill.w(relative(slide_from + (slide_to - slide_from) * delta))
+                            },
+                        ),
                 )
         });
 
@@ -679,6 +719,8 @@ impl Render for CopyQueue {
                         .icon(IconName::Copy)
                         .label(label.clone())
                         .accessibility_label(label)
+                        // "7%" to "100%" must not move the pill's start edge.
+                        .min_w(space(38.))
                         .when(asking, |b| b.border_color(t.warning))
                         .on_click(cx.listener(|this, _, _, cx| this.show(cx))),
                 )
@@ -690,38 +732,42 @@ impl Render for CopyQueue {
         let any_finished = self.jobs.iter().any(finished);
         let last = self.jobs.len().saturating_sub(1);
 
-        let header = align_row(2.)
-            .flex_none()
-            .px(space(3.))
-            .py(space(2.))
-            .border_b_1()
-            .border_color(t.border)
-            .child(icon(IconName::ShieldCheck).size_4().text_color(t.primary))
-            .child(
-                div()
-                    .flex_1()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_size(theme::size::SM)
-                    .child(t!("Copy queue")),
-            )
-            .when(any_finished, |this| {
-                this.child(
-                    Button::new("copy-queue-clear")
-                        .ghost()
-                        .small()
-                        .label(t!("Clear finished"))
-                        .on_click(cx.listener(|this, _, _, cx| this.send(Command::Clear, cx))),
+        let subtitle = if running.is_empty() {
+            t!("All done")
+        } else if asking {
+            t!("Waiting for your answer")
+        } else {
+            t!("{n} running", n = format_count(running.len()))
+        };
+        let mut tools: Vec<AnyElement> = Vec::new();
+        if any_finished {
+            tools.push(
+                tool_button(
+                    "copy-queue-clear",
+                    IconName::BrushCleaning,
+                    t!("Clear finished"),
+                    t!("Clear finished: take the ended jobs off the list"),
+                    cx.listener(|this, _, _, cx| this.send(Command::Clear, cx)),
                 )
-            })
-            .child(
-                Button::new("copy-queue-hide")
-                    .ghost()
-                    .small()
-                    .icon(IconName::X)
-                    .accessibility_label(t!("Hide the copy queue"))
-                    .tooltip(t!("Hide (it carries on)"))
-                    .on_click(cx.listener(|this, _, _, cx| this.hide(cx))),
+                .into_any_element(),
             );
+        }
+        let header = header_row(
+            Header {
+                close_id: "copy-queue-hide".into(),
+                glyph: IconName::ShieldCheck,
+                title: t!("Copy queue"),
+                subtitle: Some(subtitle),
+                tools,
+                close_name: Some(t!("Hide the copy queue")),
+            },
+            cx.listener(|this, _, _, cx| this.hide(cx)),
+            &t,
+        )
+        .px(space(3.))
+        .py(space(2.))
+        .border_b_1()
+        .border_color(t.border);
 
         let cards: Vec<AnyElement> = self
             .jobs
@@ -747,6 +793,20 @@ impl Render for CopyQueue {
                     .role(Role::Group)
                     .aria_label(t!("Copy queue"))
                     .test_support()
+                    .track_focus(&self.focus)
+                    // A press inside takes the keyboard (the panel never takes it by itself: a copy that starts
+                    // must not steal what the person is typing), so Escape can hide the panel.
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, window, cx| window.focus(&this.focus, cx)),
+                    )
+                    .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| {
+                        if ev.keystroke.key == "escape" && !ev.keystroke.modifiers.modified() {
+                            cx.stop_propagation();
+                            this.hide(cx);
+                            cx.emit(CopyQueueEvent::Hidden);
+                        }
+                    }))
                     // The panel is over the window's content: clicks on it go no further.
                     .occlude()
                     .w(rems(27.))

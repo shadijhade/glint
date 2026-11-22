@@ -3,6 +3,7 @@
 //! Renders an interactive perceptual OKLab chroma wheel and lightness/tolerance controls above the
 //! pane when toggled open, re-ranking matching photos in real time without touching disk or AI.
 
+use crate::components::panel_header::{header_row, tool_button, Header};
 use crate::explorer::{explorer, Explorer, ExplorerEvent, TabId};
 use crate::kit::prelude::*;
 use crate::{i18n, t, theme};
@@ -247,6 +248,13 @@ fn wheel_lines(delta: &ScrollDelta) -> f32 {
     }
 }
 
+/// What the bar tells the window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ColorWheelEvent {
+    /// The person closed the bar (its x, or Escape on it): the keyboard goes back to the files.
+    Closed,
+}
+
 /// Compact per-pane OKLab Color Wheel toolbar rendered above the pane listing while active.
 pub struct ColorWheelBar {
     pane: usize,
@@ -311,7 +319,17 @@ fn settle(value: f32, range: (f32, f32)) -> f32 {
     ((value * 100.0).round() / 100.0).clamp(range.0, range.1)
 }
 
+impl EventEmitter<ColorWheelEvent> for ColorWheelBar {}
+
 impl ColorWheelBar {
+    /// Closes the bar for the tab it is on and says so, so the window can hand the keyboard back to the files.
+    fn close(&mut self, tab: TabId, cx: &mut Context<Self>) {
+        if is_shown(cx, tab) {
+            toggle(cx, tab);
+        }
+        cx.emit(ColorWheelEvent::Closed);
+    }
+
     pub fn new(pane: usize, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let exp = explorer(cx);
         let model = shared(cx);
@@ -1004,8 +1022,46 @@ impl Render for ColorWheelBar {
             )
         };
 
+        // What the header holds besides its title: the color picked, and a way to let go of the filter.
+        let mut tools: Vec<gpui_kit::AnyElement> = Vec::new();
+        if let Some(fill_color) = swatch {
+            tools.push(
+                div()
+                    .size(px(14.))
+                    .flex_none()
+                    .rounded(theme::size::RADIUS_SM)
+                    .border_1()
+                    .border_color(t.border)
+                    .bg(fill_color)
+                    .into_any_element(),
+            );
+        }
+        if active_filter.is_some() {
+            tools.push(
+                tool_button(
+                    ("cw-clear", self.pane),
+                    IconName::RotateCcw,
+                    t!("Clear"),
+                    t!("Clear the color: show every photo again"),
+                    cx.listener(move |this, _, _, cx| {
+                        this.pending = None;
+                        this.explorer
+                            .update(cx, |e, cx| e.set_color_filter(None, Some(tab), cx));
+                    }),
+                )
+                .into_any_element(),
+            );
+        }
+
         row_start()
             .id(("color-wheel-bar", self.pane))
+            // Escape anywhere on the bar (a slider has the keys when it was used) closes it.
+            .on_key_down(cx.listener(move |this, ev: &KeyDownEvent, _, cx| {
+                if ev.keystroke.key == "escape" && !ev.keystroke.modifiers.modified() {
+                    cx.stop_propagation();
+                    this.close(tab, cx);
+                }
+            }))
             .relative()
             .w_full()
             .items_center()
@@ -1022,62 +1078,18 @@ impl Render for ColorWheelBar {
                     .flex_1()
                     .min_w_0()
                     .gap(space(1.))
-                    .child(
-                        row_start()
-                            .items_center()
-                            .justify_between()
-                            .gap(space(2.))
-                            .child(
-                                row_start()
-                                    .items_center()
-                                    .gap(space(2.))
-                                    .when_some(swatch, |r, fill_color| {
-                                        r.child(
-                                            div()
-                                                .size(px(14.))
-                                                .rounded(theme::size::RADIUS_SM)
-                                                .border_1()
-                                                .border_color(t.border)
-                                                .bg(fill_color),
-                                        )
-                                    })
-                                    .child(
-                                        div()
-                                            .text_sm()
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .text_color(t.foreground)
-                                            .child(t!("Color Wheel")),
-                                    )
-                                    .child(div().text_xs().text_color(t.muted_foreground).child(status)),
-                            )
-                            .child(
-                                row_start()
-                                    .items_center()
-                                    .gap(space(1.))
-                                    .when(active_filter.is_some(), |r| {
-                                        r.child(
-                                            Button::new(("cw-clear", self.pane))
-                                                .compact()
-                                                .ghost()
-                                                .label(t!("Clear"))
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.pending = None;
-                                                    this.explorer
-                                                        .update(cx, |e, cx| e.set_color_filter(None, Some(tab), cx));
-                                                })),
-                                        )
-                                    })
-                                    .child(
-                                        Button::new(("cw-close", self.pane))
-                                            .compact()
-                                            .ghost()
-                                            .icon(Icon::new(IconName::X))
-                                            .accessibility_label(t!("Close Color Wheel"))
-                                            .tooltip(t!("Close Color Wheel"))
-                                            .on_click(move |_, _, cx| toggle(cx, tab)),
-                                    ),
-                            ),
-                    )
+                    .child(header_row(
+                        Header {
+                            close_id: ("cw-close", self.pane).into(),
+                            glyph: IconName::Pipette,
+                            title: t!("Color Wheel"),
+                            subtitle: Some(status),
+                            tools,
+                            close_name: None,
+                        },
+                        cx.listener(move |this, _, _, cx| this.close(tab, cx)),
+                        t,
+                    ))
                     .child(chord_row)
                     .child(lightness_row)
                     .child(tolerance_row),
@@ -1127,6 +1139,53 @@ mod tests {
         assert!(!visual.update(|_, cx| is_shown(cx, tab)));
         let cleared = visual.update(|_, cx| explorer(cx).read(cx).tab(tab).and_then(|t| t.color_filter));
         assert!(cleared.is_none());
+    }
+
+    /// Escape on a slider (or the x) closes the bar, lets go of the filter and tells the window to give the files
+    /// the keyboard back; the header's buttons are named and say what they do.
+    #[gpui_kit::test]
+    fn escape_closes_the_bar_and_the_close_button_does_too(cx: &mut gpui_kit::TestAppContext) {
+        let _guard = testing::lock();
+        let disk = FakeDisk::new();
+        disk.folder("C:\\Photos", vec![file("C:\\Photos", "sky.jpg", 120, 0)]);
+        cx.update(|cx| {
+            testing::init(cx);
+            crate::explorer::init_with(cx, disk.source());
+        });
+        let (view, visual) = cx.add_window_view(|window, cx| ColorWheelBar::new(0, window, cx));
+        let closed = Rc::new(Cell::new(0u32));
+        let heard = closed.clone();
+        let _sub =
+            visual.update(|_, cx| cx.subscribe(&view, move |_, _: &ColorWheelEvent, _| heard.set(heard.get() + 1)));
+        visual.update(|_, cx| {
+            explorer(cx).update(cx, |e, cx| e.navigate("C:\\Photos", NavOptions::default(), cx));
+        });
+        visual.run_until_parked();
+        let tab = visual.update(|_, cx| explorer(cx).read(cx).active_tab_id());
+
+        // Escape with the lightness slider focused.
+        visual.update(|_, cx| open_with(cx, tab, srgb_to_oklab(0, 210, 230)));
+        visual.update(|window, cx| {
+            window.render_frame(cx);
+            let handle = view.read(cx).focus_of(Drag::Lightness);
+            window.focus(&handle, cx);
+            window.render_frame(cx);
+            window.press("escape", cx);
+        });
+        visual.run_until_parked();
+        assert!(!visual.update(|_, cx| is_shown(cx, tab)));
+        assert_eq!(closed.get(), 1);
+        let filter = visual.update(|_, cx| explorer(cx).read(cx).tab(tab).and_then(|t| t.color_filter));
+        assert!(filter.is_none(), "closing lets go of the color");
+
+        // The x does the same, and is named.
+        visual.update(|_, cx| toggle(cx, tab));
+        visual.update(|window, cx| window.render_frame(cx));
+        assert!(visual.update(|window, _| window.try_find_by_label("Close Color Wheel").is_some()));
+        visual.update(|window, cx| window.click(("cw-close", 0usize), cx));
+        visual.run_until_parked();
+        assert!(!visual.update(|_, cx| is_shown(cx, tab)));
+        assert_eq!(closed.get(), 2);
     }
 
     /// The disk is one picture, made when the wheel first shows and again only when the lightness (to the

@@ -289,6 +289,57 @@ fn the_pill_opens_the_panel_and_hide_closes_it_again(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn escape_hides_the_panel_and_gives_the_keyboard_back_to_the_files(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let (mut visual, queue, _) = open(cx, Fake::default());
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let heard = seen.clone();
+    let _subscription = visual.update(|_, cx| {
+        cx.subscribe(&queue, move |_, event: &CopyQueueEvent, _| {
+            if matches!(event, CopyQueueEvent::Hidden) {
+                heard.borrow_mut().push(());
+            }
+        })
+    });
+    tell(&mut visual, &[job(1, "copying")]);
+    settle(&mut visual, |cx| has(cx, "Copy queue · 40%"));
+    click(&mut visual, "copy-queue-pill");
+    visual.run_until_parked();
+    assert!(queue.read_with(&visual, |q, _| q.is_open()));
+    // A press inside the panel gives it the keyboard; Escape then hides it and says so.
+    click(&mut visual, ("copy-queue-pause", 1usize));
+    visual.update(|window, cx| window.press("escape", cx));
+    visual.run_until_parked();
+    assert!(!queue.read_with(&visual, |q, _| q.is_open()));
+    assert_eq!(seen.borrow().len(), 1, "the window is told to hand the keyboard back");
+}
+
+#[gpui_kit::test]
+fn the_panels_header_names_its_buttons_and_the_bar_slides_to_each_new_number(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let (mut visual, queue, _) = open(cx, Fake::default());
+    tell(&mut visual, &[job(1, "copying")]);
+    settle(&mut visual, |cx| has(cx, "Copy queue · 40%"));
+    click(&mut visual, "copy-queue-pill");
+    visual.run_until_parked();
+    // The header's line says how many run; the close button is named for what it does.
+    assert!(has(&mut visual, "Hide the copy queue"));
+    assert_eq!(role_of(&mut visual, "Hide the copy queue"), Some(Role::Button));
+    // Two numbers from core: the second starts a slide from the first to it.
+    let slide = |visual: &mut VisualTestContext| queue.read_with(visual, |q, _| q.slides.get(&1).copied());
+    assert_eq!(slide(&mut visual), Some((0.4, 0.4, 0)));
+    let mut more = job(1, "copying");
+    more.bytes_done = 700;
+    tell(&mut visual, &[more.clone()]);
+    settle(&mut visual, |cx| slide(cx).is_some_and(|s| s.2 == 1));
+    assert_eq!(slide(&mut visual), Some((0.4, 0.7, 1)));
+    // The same number again changes nothing (no slide to restart).
+    tell(&mut visual, &[more]);
+    visual.run_until_parked();
+    assert_eq!(slide(&mut visual), Some((0.4, 0.7, 1)));
+}
+
+#[gpui_kit::test]
 fn a_running_job_shows_its_progress_and_pause_resume_cancel_reach_core(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let (mut visual, queue, log) = open(cx, Fake::default());

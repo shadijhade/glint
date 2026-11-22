@@ -21,7 +21,7 @@
 //! - The window's background material (Mica) follows the theme: while it is on, chrome is see-through.
 
 use crate::components::address_bar::{AddressBar, AddressBarEvent};
-use crate::components::color_wheel::{self, ColorWheelBar};
+use crate::components::color_wheel::{self, ColorWheelBar, ColorWheelEvent};
 use crate::components::columns_view::ColumnsView;
 use crate::components::command_bar::{CommandBar, CommandBarEvent};
 use crate::components::compare_bar::CompareBar;
@@ -434,6 +434,12 @@ impl Workspace {
         subscriptions.push(cx.subscribe_in(&views.photo_map, window, move |_, _, event, _, cx| {
             Self::on_photo_map_event(event, cx)
         }));
+        // The Color Wheel closed (its x, Escape): the files have the keyboard back.
+        subscriptions.push(cx.subscribe_in(
+            &views.color_wheel,
+            window,
+            |this, _, _: &ColorWheelEvent, window, cx| this.focus_files(window, cx),
+        ));
         // A right-click on a frequent folder: the shared folder menu, as on This PC's tiles.
         subscriptions.push(cx.subscribe_in(
             &views.frequent,
@@ -1772,6 +1778,7 @@ impl Workspace {
         match event {
             // The explorer hears the queue's events itself: it offers Undo, words what didn't go, reads folders again.
             CopyQueueEvent::Finished(_) => {}
+            CopyQueueEvent::Hidden => self.focus_files(window, cx),
             CopyQueueEvent::NotQueued { reason, .. } => window.push_notification(
                 Notification::error(reason.clone()).title(t!("Couldn't queue the copy")),
                 cx,
