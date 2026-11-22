@@ -90,6 +90,10 @@ impl Job {
 
     /// Waits while it's paused (false once it's cancelled).
     fn hold(&self) -> bool {
+        // Not paused (nearly always): no lock to take.
+        if !self.paused.load(Ordering::SeqCst) {
+            return !self.cancelled.load(Ordering::SeqCst);
+        }
         let mut woken = self.woken.lock().unwrap_or_else(|e| e.into_inner());
         while self.paused.load(Ordering::SeqCst) && !self.cancelled.load(Ordering::SeqCst) {
             woken = self.wake.wait_timeout(woken, Duration::from_millis(250)).unwrap_or_else(|e| e.into_inner()).0;
@@ -447,64 +451,104 @@ fn run(job: &Job) {
     // the drive's full speed, with progress inside each.
     type Todo = Vec<(usize, PathBuf)>;
     let (small, large): (Todo, Todo) = todo.into_iter().partition(|(i, _)| steps[*i].size < SMALL_FILE);
-    let made = Mutex::new((created, copied_from));
     let stopped = AtomicBool::new(false);
     let started = Instant::now();
     let next = std::sync::atomic::AtomicUsize::new(0);
     let workers = if small.len() >= 16 { std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(2, SMALL_WORKERS) } else { 1 };
-    std::thread::scope(|scope| {
+    #[cfg(test)]
+    let workers = match FORCE_WORKERS.load(Ordering::Relaxed) {
+        0 => workers,
+        n => n,
+    };
+    // The workers count what they do with atomics and keep what they made in a list of their own; the job's
+    // view is brought up to date every `TELL_EVERY` by whichever worker comes by then, not by every file.
+    let (small_done, small_checked) = (AtomicU64::new(0), AtomicU64::new(0));
+    let reported = Mutex::new((0u64, 0u64));
+    let last_tell = AtomicU64::new(0);
+    let tell_view = |current: Option<&Path>| {
+        let mut reported = reported.lock().unwrap_or_else(|e| e.into_inner());
+        let (files, checked) = (small_done.load(Ordering::Relaxed), small_checked.load(Ordering::Relaxed));
+        let (new_files, new_checked) = (files - reported.0, checked - reported.1);
+        *reported = (files, checked);
+        let bytes = done.load(Ordering::Relaxed);
+        let speed = bytes as f64 / started.elapsed().as_secs_f64().max(0.001);
+        job.set(|v| {
+            v.files_done += new_files;
+            v.verified += new_checked;
+            v.bytes_done = bytes;
+            v.speed = speed;
+            if let Some(current) = current {
+                v.current = Some(current.to_string_lossy().into_owned());
+            }
+        });
+    };
+    // Per worker: which small files it copied (their place in `small`), and whether each is good to take the
+    // original of (copied, and checked when asked).
+    let made: Vec<Vec<(usize, bool)>> = std::thread::scope(|scope| {
+        let mut handles = Vec::new();
         for _ in 0..workers {
-            scope.spawn(|| loop {
-                let at = next.fetch_add(1, Ordering::Relaxed);
-                let Some((index, to)) = small.get(at) else { break };
-                if stopped.load(Ordering::SeqCst) || !job.hold() {
-                    stopped.store(true, Ordering::SeqCst);
-                    break;
-                }
-                let step = &steps[*index];
-                match copy_plain(&step.from, to) {
-                    Ok(()) => {
-                        let good = !verify || match same(&step.from, to, job) {
-                            Ok(true) => {
-                                job.set(|v| v.verified += 1);
-                                true
-                            }
-                            Ok(false) => {
-                                job.set(|v| v.errors.push(Failure { path: to.to_string_lossy().into_owned(), error: "It differs from its original after copying: the copy is kept, to look at".into() }));
-                                false
-                            }
-                            Err(e) if e == "cancelled" => {
-                                stopped.store(true, Ordering::SeqCst);
-                                break;
-                            }
-                            Err(e) => {
-                                job.set(|v| v.errors.push(Failure { path: to.to_string_lossy().into_owned(), error: format!("Couldn't check it: {e}") }));
-                                false
-                            }
-                        };
-                        let mut lists = made.lock().unwrap_or_else(|e| e.into_inner());
-                        lists.0[step.item].push((step.from.clone(), to.clone()));
-                        if good {
-                            lists.1[step.item].push(step.from.clone());
-                        }
+            handles.push(scope.spawn(|| {
+                let mut mine: Vec<(usize, bool)> = Vec::new();
+                loop {
+                    let at = next.fetch_add(1, Ordering::Relaxed);
+                    let Some((index, to)) = small.get(at) else { break };
+                    if stopped.load(Ordering::SeqCst) || !job.hold() {
+                        stopped.store(true, Ordering::SeqCst);
+                        break;
                     }
-                    Err(e) => job.set(|v| v.errors.push(Failure { path: step.from.to_string_lossy().into_owned(), error: e })),
+                    let step = &steps[*index];
+                    match copy_plain(&step.from, to) {
+                        Ok(()) => {
+                            let good = !verify || match same(&step.from, to, job) {
+                                Ok(true) => {
+                                    small_checked.fetch_add(1, Ordering::Relaxed);
+                                    true
+                                }
+                                Ok(false) => {
+                                    job.set(|v| v.errors.push(Failure { path: to.to_string_lossy().into_owned(), error: "It differs from its original after copying: the copy is kept, to look at".into() }));
+                                    false
+                                }
+                                Err(e) if e == "cancelled" => {
+                                    stopped.store(true, Ordering::SeqCst);
+                                    break;
+                                }
+                                Err(e) => {
+                                    job.set(|v| v.errors.push(Failure { path: to.to_string_lossy().into_owned(), error: format!("Couldn't check it: {e}") }));
+                                    false
+                                }
+                            };
+                            mine.push((at, good));
+                        }
+                        Err(e) => job.set(|v| v.errors.push(Failure { path: step.from.to_string_lossy().into_owned(), error: e })),
+                    }
+                    done.fetch_add(step.size, Ordering::Relaxed);
+                    small_done.fetch_add(1, Ordering::Relaxed);
+                    let at_ms = started.elapsed().as_millis() as u64;
+                    let last = last_tell.load(Ordering::Relaxed);
+                    if at_ms >= last + TELL_EVERY_MS && last_tell.compare_exchange(last, at_ms, Ordering::Relaxed, Ordering::Relaxed).is_ok() {
+                        tell_view(Some(&step.from));
+                    }
                 }
-                let now = done.fetch_add(step.size, Ordering::Relaxed) + step.size;
-                let speed = now as f64 / started.elapsed().as_secs_f64().max(0.001);
-                job.set(|v| {
-                    v.files_done += 1;
-                    v.bytes_done = now;
-                    v.speed = speed;
-                    v.current = Some(step.from.to_string_lossy().into_owned());
-                });
-            });
+                mine
+            }));
         }
+        handles.into_iter().filter_map(|h| h.join().ok()).collect()
     });
+    tell_view(None);
     if stopped.load(Ordering::SeqCst) {
         return finish(job, "cancelled");
     }
-    let (mut created, mut copied_from) = made.into_inner().unwrap_or_else(|e| e.into_inner());
+    let (mut created, mut copied_from) = (created, copied_from);
+    let mut copied: Vec<(usize, bool)> = made.into_iter().flatten().collect();
+    copied.sort_unstable_by_key(|(at, _)| *at);
+    for (at, good) in copied {
+        let (index, to) = &small[at];
+        let step = &steps[*index];
+        created[step.item].push((step.from.clone(), to.clone()));
+        if good {
+            copied_from[step.item].push(step.from.clone());
+        }
+    }
     let mut window = (Instant::now(), done.load(Ordering::Relaxed));
     for (index, to) in &large {
         let step = &steps[*index];
@@ -699,8 +743,13 @@ fn rename(from: &Path, to: &Path) -> std::io::Result<()> {
 
 /// Files under this size are copied several at a time.
 const SMALL_FILE: u64 = 1 << 20;
+/// How often (ms) the small files' workers bring the job's view and the app up to date.
+const TELL_EVERY_MS: u64 = 75;
 /// The most small files copied at once.
 const SMALL_WORKERS: usize = 8;
+/// Tests: how many workers the small files get (0: as usual).
+#[cfg(test)]
+static FORCE_WORKERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Copies one small file with Windows' CopyFileEx, without progress (its streams, attributes and dates
 /// go too; a link is copied as the link).
@@ -893,5 +942,69 @@ mod tests {
         assert!(!same(&dir.join("one.txt"), &dir.join("to").join("one.txt"), &job).unwrap());
         assert_eq!(free_name(&dir.join("to").join("one.txt")), dir.join("to").join("one (2).txt"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Copies `count` small files through the queue's own `run` with `workers` workers: the seconds it took,
+    /// and the job it left.
+    fn timed_copy(count: usize, workers: usize, verify: bool) -> (f64, JobView) {
+        let dir = std::env::temp_dir().join(format!("glint-queue-bench-{}-{count}-{workers}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (from, to) = (dir.join("from"), dir.join("to"));
+        std::fs::create_dir_all(&to).unwrap();
+        for d in 0..(count / 500).max(1) {
+            std::fs::create_dir_all(from.join(format!("d{d}"))).unwrap();
+        }
+        let data = vec![5u8; 4096];
+        for i in 0..count {
+            std::fs::write(from.join(format!("d{}", i % (count / 500).max(1))).join(format!("f{i}.bin")), &data).unwrap();
+        }
+        let job = quiet();
+        job.set(|v| {
+            v.kind = "copy".into();
+            v.sources = vec![from.to_string_lossy().into_owned()];
+            v.dest = to.to_string_lossy().into_owned();
+            v.verify = verify;
+        });
+        FORCE_WORKERS.store(workers, Ordering::Relaxed);
+        let start = Instant::now();
+        run(&job);
+        let seconds = start.elapsed().as_secs_f64();
+        FORCE_WORKERS.store(0, Ordering::Relaxed);
+        let view = job.view().clone();
+        let copied = walk_count(&to.join("from"));
+        assert_eq!(copied, count, "every file is there");
+        let _ = std::fs::remove_dir_all(&dir);
+        (seconds, view)
+    }
+
+    fn walk_count(dir: &Path) -> usize {
+        std::fs::read_dir(dir).map_or(0, |entries| {
+            entries.flatten().map(|e| if e.file_type().is_ok_and(|t| t.is_dir()) { walk_count(&e.path()) } else { 1 }).sum()
+        })
+    }
+
+    /// Prints the cost of a copy of many small files (run with `-- --nocapture`; `GLINT_BENCH_COPY=50000`
+    /// for the big one) and checks what the job says at the end.
+    #[test]
+    fn small_files_cost_little_through_the_queue() {
+        let count = std::env::var("GLINT_BENCH_COPY").ok().and_then(|n| n.parse().ok()).unwrap_or(2000);
+        for workers in [1, 16] {
+            let (seconds, view) = timed_copy(count, workers, false);
+            println!("queue copy of {count} small files, {workers} worker(s): {:.0} ms ({:.0} files/s)", seconds * 1000.0, count as f64 / seconds);
+            assert_eq!(view.state, "done");
+            assert_eq!(view.files, count as u64);
+            assert_eq!(view.files_done, count as u64);
+            assert_eq!(view.bytes_done, count as u64 * 4096);
+            assert!(view.errors.is_empty(), "{:?}", view.errors);
+            assert_eq!(view.made.len(), 1, "a new folder is one entry for Undo");
+        }
+    }
+
+    #[test]
+    fn a_verified_queue_copy_counts_every_file_checked() {
+        let (_, view) = timed_copy(300, 4, true);
+        assert_eq!(view.state, "done");
+        assert_eq!(view.verified, 300);
+        assert_eq!(view.files_done, 300);
     }
 }
