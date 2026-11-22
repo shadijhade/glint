@@ -562,6 +562,8 @@ pub fn entry_for_path(path: &str, dir_hint: bool) -> Entry {
 pub use win::{has_subfolder, probe, read_dir, stat, stat_sized};
 #[cfg(windows)]
 pub(crate) use win::{io_error, wide};
+#[cfg(all(windows, test))]
+use win::name_of;
 
 #[cfg(windows)]
 mod win {
@@ -699,6 +701,20 @@ mod win {
         }
     }
 
+    /// A name from the UTF-16 units Windows lists it in. Nearly every name is ASCII, and its units are its bytes:
+    /// those are copied as they are, which makes the string `String::from_utf16_lossy` makes without decoding
+    /// each unit as a character.
+    pub(super) fn name_of(units: &[u16]) -> String {
+        if units.iter().all(|&unit| unit < 0x80) {
+            // `unit < 0x80` above, so the cast loses nothing.
+            let bytes: Vec<u8> = units.iter().map(|&unit| unit as u8).collect();
+            // SAFETY: every byte is below 0x80, so the bytes are valid UTF-8.
+            unsafe { String::from_utf8_unchecked(bytes) }
+        } else {
+            String::from_utf16_lossy(units)
+        }
+    }
+
     /// FindFirstFileExW with FindExInfoBasic (no 8.3 names) and LARGE_FETCH: 20–35% faster than std::fs::read_dir.
     /// Cloud files come with their states (`shown`).
     pub fn read_dir(dir: &str) -> io::Result<Vec<Entry>> {
@@ -724,7 +740,7 @@ mod win {
         let mut entries = Vec::new();
         let result = loop {
             let len = data.cFileName.iter().position(|&c| c == 0).unwrap_or(data.cFileName.len());
-            let name = String::from_utf16_lossy(&data.cFileName[..len]);
+            let name = name_of(&data.cFileName[..len]);
             if name != "." && name != ".." {
                 entries.push(entry(name, shown(data.dwFileAttributes, data.dwReserved0), data.nFileSizeHigh, data.nFileSizeLow, data.ftLastWriteTime));
             }
@@ -1111,6 +1127,74 @@ mod tests {
             .collect();
         sort_entries(&mut entries);
         entries.into_iter().map(|e| e.name).collect()
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn names_from_units_are_the_lossy_ones() {
+        let samples = ["", "a", "Report_2026.PDF", ".gitignore", "a b (2).txt", "é", "日本語.txt", "😀 x", "mixed é ascii"];
+        for sample in samples {
+            let units: Vec<u16> = sample.encode_utf16().collect();
+            assert_eq!(name_of(&units), String::from_utf16_lossy(&units), "{sample:?}");
+        }
+        // An unpaired surrogate (Windows allows one in a name) turns into the replacement character either way.
+        let lone = [b'a' as u16, 0xD800, b'b' as u16];
+        assert_eq!(name_of(&lone), "a\u{FFFD}b");
+    }
+
+    /// What reading a name costs, as it was and as it is, over 100,000 ASCII names. Prints the numbers.
+    #[cfg(windows)]
+    #[test]
+    fn names_from_units_cost_little() {
+        let names: Vec<Vec<u16>> = (0..100_000).map(|i| format!("IMG_{i:06}_holiday.JPG").encode_utf16().collect()).collect();
+        let time = |convert: &dyn Fn(&[u16]) -> String| {
+            let mut best = f64::MAX;
+            for _ in 0..9 {
+                let started = Instant::now();
+                let total: usize = names.iter().map(|units| convert(units).len()).sum();
+                std::hint::black_box(total);
+                best = best.min(ms_since(started));
+            }
+            best
+        };
+        let lossy = time(&|units| String::from_utf16_lossy(units));
+        let fast = time(&|units| name_of(units));
+        println!("100,000 names: String::from_utf16_lossy {lossy:.2} ms, name_of {fast:.2} ms");
+    }
+
+    /// Reading folders for real (FOLDERS=a;b), and a made-up one of 100,000 files when MAKE=1. Prints the best of 9.
+    #[cfg(windows)]
+    #[test]
+    #[ignore]
+    fn read_dir_speed_on_real_folders() {
+        let mut folders: Vec<String> = std::env::var("FOLDERS").unwrap_or_default().split(';').filter(|f| !f.is_empty()).map(String::from).collect();
+        let made = std::env::temp_dir().join(format!("glint-100k-{}", std::process::id()));
+        if std::env::var("MAKE").is_ok() {
+            std::fs::create_dir_all(&made).unwrap();
+            let started = Instant::now();
+            for i in 0..100_000 {
+                std::fs::File::create(made.join(format!("IMG_{i:06}_holiday.JPG"))).unwrap();
+            }
+            println!("made 100,000 files in {:.1} s", started.elapsed().as_secs_f64());
+            folders.push(made.to_string_lossy().into_owned());
+        }
+        for folder in &folders {
+            let mut best = f64::MAX;
+            let mut count = 0;
+            for run in 0..9 {
+                let started = Instant::now();
+                count = read_dir(folder).unwrap().len();
+                let took = ms_since(started);
+                if run == 0 {
+                    println!("{folder}: first read {took:.1} ms");
+                }
+                best = best.min(took);
+            }
+            println!("{folder} ({count} items): best of 9 {best:.1} ms");
+        }
+        if made.exists() {
+            let _ = std::fs::remove_dir_all(&made);
+        }
     }
 
     #[test]
