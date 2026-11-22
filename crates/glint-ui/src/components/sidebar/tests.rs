@@ -1018,8 +1018,15 @@ fn the_menu_key_and_shift_f10_ask_for_the_menu_at_the_rows_bottom_start_corner(c
 fn ejecting_goes_through_the_explorer_and_the_button_is_a_tab_stop(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let mut w = world(cx, "eject");
-    // Tab moves from the list on to the eject button of the removable drive, which then shows.
+    // Tab moves from the list through the Workspaces button (at the top) on to the eject button of the removable
+    // drive, which then shows.
     w.focus();
+    w.cx.update(|window, cx| window.focus_next(cx));
+    w.frame();
+    let sidebar = w.sidebar.clone();
+    let on_button =
+        w.cx.update(|window, cx| sidebar.read(cx).eject_focus.values().any(|h| h.is_focused(window)));
+    assert!(!on_button, "the Workspaces button comes first");
     w.cx.update(|window, cx| window.focus_next(cx));
     w.frame();
     let sidebar = w.sidebar.clone();
@@ -1350,4 +1357,230 @@ fn a_portal_is_told_by_its_source() {
     assert_eq!(items[2].what, "01234567 · C:\\repo");
     assert_eq!(items[3].what, "fedcba98");
     assert!(items.iter().all(|k| k.path == "C:\\m" && k.id == "p"));
+}
+
+// ---- Workspaces ---------------------------------------------------------------------------------------
+
+mod workspace_tests {
+    use super::*;
+    use crate::components::sidebar::workspaces;
+    use crate::explorer::TabId;
+    use glint_model::store::ViewMode;
+
+    /// Every pane's tabs, as (folder, view) pairs.
+    fn layout(w: &mut World) -> Vec<Vec<(String, ViewMode)>> {
+        w.explorer.read_with(&w.cx, |e, _| {
+            e.panes()
+                .iter()
+                .map(|p| {
+                    p.tabs
+                        .iter()
+                        .filter_map(|id| e.tab(*id).map(|t| (t.path.clone(), t.view)))
+                        .collect()
+                })
+                .collect()
+        })
+    }
+
+    fn act(w: &mut World, f: impl FnOnce(&mut Explorer, &mut Context<Explorer>)) {
+        w.explorer.update(&mut w.cx, f);
+        w.settle(|w| !w.tab_loading());
+    }
+
+    fn active_tab(w: &mut World) -> TabId {
+        w.explorer.read_with(&w.cx, |e, _| e.active_tab_id())
+    }
+
+    #[gpui_kit::test]
+    fn a_saved_workspace_puts_the_tabs_views_split_and_scroll_back_without_reading_open_folders(
+        cx: &mut TestAppContext,
+    ) {
+        let _guard = testing::lock();
+        let mut w = world(cx, "ws-switch");
+        // "Work": Home and Documents (as tiles) on the left, This drive on the right, split at 30 %, the right
+        // list scrolled a little.
+        act(&mut w, |e, cx| e.new_tab(Some(DOCS), cx));
+        w.settle(|w| w.path() == DOCS && !w.tab_loading());
+        act(&mut w, |e, cx| e.set_view(ViewMode::Grid, None, cx));
+        act(&mut w, |e, cx| e.toggle_dual(cx));
+        act(&mut w, |e, cx| {
+            e.navigate("C:\\".to_string(), NavOptions::default(), cx);
+        });
+        w.settle(|w| w.path() == "C:\\" && !w.tab_loading());
+        let right = active_tab(&mut w);
+        let key = w.explorer.read_with(&w.cx, |e, _| e.view_key(None));
+        act(&mut w, |e, _| e.save_scroll(right, &key, 33.));
+        w.cx.update(|_, cx| state::update(cx, |s| s.dual_split = Some(0.3)));
+        let before = layout(&mut w);
+        assert_eq!(before.len(), 2);
+
+        let id = w.cx.update(|_, cx| workspaces::save_as("  Work ", cx)).expect("saved");
+        let listed = w.cx.update(|_, cx| workspaces::listed(cx));
+        assert_eq!(
+            listed,
+            [workspaces::Listed {
+                id: id.clone(),
+                name: "Work".into(),
+                current: true
+            }]
+        );
+
+        // Then the window goes elsewhere: one pane, the right folder shown in the Documents tab, no split.
+        act(&mut w, |e, cx| e.close_pane(1, cx));
+        act(&mut w, |e, cx| {
+            e.navigate("C:\\".to_string(), NavOptions::default(), cx);
+        });
+        w.settle(|w| w.path() == "C:\\" && !w.tab_loading());
+        w.cx.update(|_, cx| state::update(cx, |s| s.dual_split = None));
+        assert_ne!(layout(&mut w), before);
+        assert!(!w.cx.update(|_, cx| workspaces::listed(cx))[0].current);
+
+        // Switching puts it all back, and reads only the folder no tab had open.
+        let reads = w.disk.listed().len();
+        assert!(w.cx.update(|_, cx| workspaces::switch_to(&id, cx)));
+        w.settle(|w| !w.tab_loading());
+        w.cx.run_until_parked();
+        assert_eq!(layout(&mut w), before);
+        let (dual, pane, split) = w.cx.update(|_, cx| {
+            let e = explorer(cx).read(cx);
+            (e.is_dual(), e.active_pane(), state::settings(cx).dual_split)
+        });
+        assert!(dual && pane == 1 && split == Some(0.3), "{dual} {pane} {split:?}");
+        let again: Vec<String> = w.disk.listed()[reads..].iter().map(|p| p.to_lowercase()).collect();
+        assert_eq!(again, [DOCS.to_lowercase()], "only Documents was read again");
+        // The right list is where it was left, and the layout is the one saved.
+        let right = active_tab(&mut w);
+        assert_eq!(w.explorer.read_with(&w.cx, |e, _| e.saved_scroll(right, &key)), 33.);
+        assert!(w.cx.update(|_, cx| workspaces::listed(cx))[0].current);
+        // Switching to what is already there changes no listing.
+        let reads = w.disk.listed().len();
+        assert!(w.cx.update(|_, cx| workspaces::switch_to(&id, cx)));
+        w.settle(|w| !w.tab_loading());
+        assert_eq!(w.disk.listed().len(), reads, "nothing was read again");
+        assert_eq!(layout(&mut w), before);
+    }
+
+    #[gpui_kit::test]
+    fn workspaces_are_saved_again_under_a_name_renamed_and_deleted(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let mut w = world(cx, "ws-rename");
+        let work = w.cx.update(|_, cx| workspaces::save_as("Work", cx)).unwrap();
+        act(&mut w, |e, cx| e.new_tab(Some(DOCS), cx));
+        let photos = w.cx.update(|_, cx| workspaces::save_as("تقارير", cx)).unwrap();
+        assert_ne!(work, photos);
+        // The same name (in any case) keeps the workspace and takes the new layout.
+        let again = w.cx.update(|_, cx| workspaces::save_as("WORK", cx)).unwrap();
+        assert_eq!(again, work);
+        let names = |w: &mut World| {
+            w.cx.update(|_, cx| workspaces::listed(cx))
+                .into_iter()
+                .map(|l| l.name)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(&mut w), ["WORK", "تقارير"]);
+
+        assert!(w.cx.update(|_, cx| workspaces::rename(&photos, "Pictures", cx)));
+        assert!(!w.cx.update(|_, cx| workspaces::rename(&photos, "work", cx)), "taken");
+        assert!(!w.cx.update(|_, cx| workspaces::rename(&photos, "   ", cx)), "empty");
+        assert_eq!(names(&mut w), ["WORK", "Pictures"]);
+        assert!(w.cx.update(|_, cx| workspaces::delete(&work, cx)));
+        assert!(!w.cx.update(|_, cx| workspaces::delete(&work, cx)));
+        assert_eq!(names(&mut w), ["Pictures"]);
+        // A workspace that is gone can't be switched to, and the window stays as it is.
+        let shown = layout(&mut w);
+        assert!(!w.cx.update(|_, cx| workspaces::switch_to(&work, cx)));
+        assert_eq!(layout(&mut w), shown);
+        // They are in the saved state, so they come back with the next start.
+        let saved = w.cx.update(|_, cx| persistence::app(cx).map(|a| a.workspaces.len()));
+        assert_eq!(saved, Some(1));
+    }
+
+    #[gpui_kit::test]
+    fn the_workspaces_button_lists_them_and_the_name_box_saves_renames_and_refuses_a_name_in_use(
+        cx: &mut TestAppContext,
+    ) {
+        let _guard = testing::lock();
+        let mut w = world(cx, "ws-menu");
+        assert_eq!(w.role_of("Workspaces"), Some(Role::Button));
+
+        // Nothing saved: the menu says so and offers to save.
+        w.click("Workspaces");
+        w.frame();
+        assert!(w.has("Save current layout as…"));
+        assert!(!w.has("Rename workspace"), "nothing to rename yet");
+        w.press("escape");
+
+        // Save as…: the box takes a name; Enter saves.
+        w.cx.update(workspaces::ask_save_as);
+        w.frame();
+        assert!(w.has("Workspace name"));
+        w.cx.update(|window, cx| window.input("  Work  day ", cx));
+        w.cx.run_until_parked();
+        w.press("enter");
+        w.settle(|w| w.cx.update(|_, cx| workspaces::listed(cx)).len() == 1);
+        assert_eq!(w.cx.update(|_, cx| workspaces::listed(cx))[0].name, "Work day");
+        assert!(!w.has("Workspace name"), "the box closed");
+
+        // The menu has it now, checked, with Rename and Delete.
+        w.click("Workspaces");
+        w.frame();
+        assert!(w.has("Work day") && w.has("Rename workspace") && w.has("Delete workspace"));
+        w.press("escape");
+
+        // Rename: a name another workspace has is refused (Enter does nothing), another name works.
+        let other = w.cx.update(|_, cx| workspaces::save_as("Other", cx)).unwrap();
+        w.cx.update(|window, cx| workspaces::ask_rename(window, cx, other.clone()));
+        w.frame();
+        w.press("ctrl-a");
+        w.cx.update(|window, cx| window.input("work DAY", cx));
+        w.cx.run_until_parked();
+        w.frame();
+        assert!(w.has("Another workspace has this name"));
+        w.press("enter");
+        assert!(w.has("Workspace name"), "still asking");
+        w.press("ctrl-a");
+        w.cx.update(|window, cx| window.input("Later", cx));
+        w.cx.run_until_parked();
+        w.press("enter");
+        w.settle(|w| {
+            w.cx.update(|_, cx| workspaces::listed(cx))
+                .iter()
+                .any(|l| l.name == "Later")
+        });
+    }
+
+    #[test]
+    fn the_palette_offers_save_and_one_entry_for_each_workspace_with_rename_and_delete_when_typing() {
+        use crate::components::palette::commands::{self, Inputs, Run, WorkspaceDo};
+        let none = commands::actions(&Inputs::default());
+        let save = none
+            .iter()
+            .find(|c| c.id == "workspace-save")
+            .expect("Save workspace as…");
+        assert_eq!(save.label.as_ref(), "Save workspace as…");
+        assert!(matches!(&save.run, Run::Workspace(WorkspaceDo::SaveAs)));
+        assert!(none.iter().all(|c| !c.id.starts_with("workspace-ws")));
+
+        let inputs = Inputs {
+            workspaces: vec![
+                ("ws-1".into(), "Work".into(), true),
+                ("ws-2".into(), "تقارير".into(), false),
+            ],
+            ..Default::default()
+        };
+        let all = commands::actions(&inputs);
+        let find = |id: &str| all.iter().find(|c| c.id == id).unwrap_or_else(|| panic!("{id}"));
+        let work = find("workspace-ws-1");
+        assert_eq!(work.label.as_ref(), "Workspace: Work");
+        assert!(work.detail.is_some() && !work.search_only, "the one on screen says so");
+        assert!(matches!(&work.run, Run::Workspace(WorkspaceDo::Switch(id)) if id == "ws-1"));
+        assert!(find("workspace-ws-2").detail.is_none());
+        assert_eq!(find("workspace-ws-2").label.as_ref(), "Workspace: تقارير");
+        for (id, what) in [("workspace-rename-ws-2", "Rename"), ("workspace-delete-ws-2", "Delete")] {
+            let command = find(id);
+            assert!(command.search_only, "{id} is listed once something is typed");
+            assert_eq!(command.label.as_ref(), format!("{what} workspace: تقارير"));
+        }
+        assert!(matches!(&find("workspace-delete-ws-1").run, Run::Workspace(WorkspaceDo::Delete(id)) if id == "ws-1"));
+    }
 }

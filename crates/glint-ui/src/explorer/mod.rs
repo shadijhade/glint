@@ -126,6 +126,7 @@ mod tabs;
 mod types;
 mod undo;
 mod view;
+mod workspaces;
 
 #[cfg(test)]
 mod actions_tests;

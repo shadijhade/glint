@@ -78,6 +78,19 @@ pub enum Change {
     MoveTab(TabId),
 }
 
+/// What a workspace command does.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WorkspaceDo {
+    /// Ask for a name and keep the window's layout under it.
+    SaveAs,
+    /// Put the workspace with this id on screen.
+    Switch(String),
+    /// Ask for another name for it.
+    Rename(String),
+    /// Ask, then forget it.
+    Delete(String),
+}
+
 /// What choosing a result does. The view carries it out after closing the palette.
 #[derive(Clone, Debug)]
 pub enum Run {
@@ -121,6 +134,8 @@ pub enum Run {
     FileExplorer(String),
     /// The dialog that adds a remote connection (`addRemote`).
     AddRemote,
+    /// Named workspaces: saving the layout, switching to one, renaming, deleting (`sidebar::workspaces`).
+    Workspace(WorkspaceDo),
     /// Folder rules, for one folder or none (`openRules`).
     Rules(Option<String>),
     /// Windows' own Properties dialog for this path (`properties`).
@@ -293,6 +308,8 @@ pub struct Inputs {
     pub archive_outer: Option<String>,
     /// Saved searches (`savedSearches`).
     pub saved_searches: Vec<SavedSearch>,
+    /// Named workspaces: id, name, and whether the window shows that layout now.
+    pub workspaces: Vec<(String, String, bool)>,
     /// The scripts of the Scripts folder (read in the background when the palette opens).
     pub scripts: Vec<Script>,
     /// The editors and terminals found on this PC (read in the background).
@@ -1064,6 +1081,51 @@ pub fn actions(inputs: &Inputs) -> Vec<Command> {
             Run::AddRemote,
         ),
     );
+    push(
+        true,
+        Command::new(
+            "workspace-save",
+            t!("Save workspace as…"),
+            I::Layers,
+            Kind::Action,
+            Run::Workspace(WorkspaceDo::SaveAs),
+        ),
+    );
+    for (id, name, current) in &inputs.workspaces {
+        let mut switch = Command::new(
+            format!("workspace-{id}"),
+            t!("Workspace: {name}", name = name.clone()),
+            I::Layers,
+            Kind::Action,
+            Run::Workspace(WorkspaceDo::Switch(id.clone())),
+        );
+        if *current {
+            switch.detail = Some(t!("Showing now"));
+        }
+        push(true, switch);
+        for (what, label, run) in [
+            (
+                "rename",
+                t!("Rename workspace: {name}", name = name.clone()),
+                WorkspaceDo::Rename(id.clone()),
+            ),
+            (
+                "delete",
+                t!("Delete workspace: {name}", name = name.clone()),
+                WorkspaceDo::Delete(id.clone()),
+            ),
+        ] {
+            let mut command = Command::new(
+                format!("workspace-{what}-{id}"),
+                label,
+                if what == "rename" { I::Pencil } else { I::Trash },
+                Kind::Action,
+                Run::Workspace(run),
+            );
+            command.search_only = true;
+            push(true, command);
+        }
+    }
     push(
         true,
         Command::new(

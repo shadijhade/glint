@@ -25,6 +25,10 @@
 //! the explorer's; the pinned folders, saved searches and connections are the saved state's; the folder tree
 //! settings are the settings'. The view observes all three.
 //!
+//! **Added since the TypeScript:** the Portals section ([`portals`]: the live portals mounted under Glint portals,
+//! their menu, and a change notice from glint-core) and the Workspaces button at the top ([`workspaces`]: the
+//! window's tabs and panes kept under a name, switched to from its menu or from Ctrl+K).
+//!
 //! **Not in the TypeScript, and so not here:** sections do not collapse (the TypeScript never let them); the
 //! "rail" below the `md` breakpoint (a 48 px icon-only sidebar) is the window width's business in CSS, and the
 //! GPUI workspace resizes the sidebar between fixed limits instead.
@@ -33,6 +37,7 @@ mod drop;
 mod portals;
 mod rows;
 mod tree;
+pub mod workspaces;
 
 use crate::core_bridge;
 use crate::dialogs::tags;
@@ -230,6 +235,8 @@ pub struct Sidebar {
     /// The live portals mounted, as last read, and the menu of one while it is open.
     portals: Vec<PortalItem>,
     portal_menu: Option<portals::OpenMenu>,
+    /// The Workspaces menu while it is open.
+    workspace_menu: Option<portals::OpenMenu>,
     /// What the rows were last built from. The explorer, the saved state and the settings change far more often
     /// than anything the sidebar shows (a selection, a scroll, a sort, a visit): such a change rebuilds nothing.
     seen: Option<Seen>,
@@ -303,6 +310,7 @@ impl Sidebar {
             last_drives: None,
             portals: Vec::new(),
             portal_menu: None,
+            workspace_menu: None,
             seen: None,
             #[cfg(test)]
             built: 0,
@@ -1631,6 +1639,7 @@ impl Render for Sidebar {
             .pt(space(2.))
             .text_size(theme::size::SM)
             .text_color(t.foreground)
+            .child(self.draw_workspaces(cx))
             .child(
                 list(
                     self.list.clone(),
@@ -1641,6 +1650,7 @@ impl Render for Sidebar {
                 .w_full(),
             )
             .children(self.portal_menu.as_ref().map(portals::OpenMenu::element))
+            .children(self.workspace_menu.as_ref().map(portals::OpenMenu::element))
     }
 }
 

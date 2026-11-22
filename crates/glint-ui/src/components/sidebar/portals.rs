@@ -73,6 +73,15 @@ pub(super) struct OpenMenu {
 }
 
 impl OpenMenu {
+    /// A menu built and shown at `at`, which goes when `dismissed` (kept alive here) fires.
+    pub(super) fn new(at: Point<Pixels>, menu: Entity<PopupMenu>, dismissed: Subscription) -> Self {
+        OpenMenu {
+            at,
+            menu,
+            _dismissed: dismissed,
+        }
+    }
+
     /// The menu, to place under the sidebar's other children.
     pub(super) fn element(&self) -> impl IntoElement {
         deferred(
@@ -178,11 +187,7 @@ impl Sidebar {
             window.focus(&this.focus, cx);
             cx.notify();
         });
-        self.portal_menu = Some(OpenMenu {
-            at,
-            menu,
-            _dismissed: dismissed,
-        });
+        self.portal_menu = Some(OpenMenu::new(at, menu, dismissed));
         cx.notify();
         true
     }

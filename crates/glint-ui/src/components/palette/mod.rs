@@ -618,6 +618,15 @@ fn carry_out(run: Run, shape: Shape, window: &mut Window, cx: &mut App) {
         }
         Run::Properties(path) => show_properties(path, cx),
         Run::AddRemote => window.defer(cx, crate::dialogs::remote::open_add),
+        Run::Workspace(what) => window.defer(cx, move |window, cx| {
+            use crate::components::sidebar::workspaces as ws;
+            match what {
+                commands::WorkspaceDo::SaveAs => ws::ask_save_as(window, cx),
+                commands::WorkspaceDo::Switch(id) => ws::switch_and_say(window, cx, &id),
+                commands::WorkspaceDo::Rename(id) => ws::ask_rename(window, cx, id),
+                commands::WorkspaceDo::Delete(id) => ws::ask_delete(window, cx, id),
+            }
+        }),
         // The files are rewritten in their place, and Undo is offered in a notification over the window.
         Run::ToUtf8(paths) => window.defer(cx, move |window, cx| {
             crate::components::preview::text::convert_to_utf8(paths, None, window, cx).detach();
@@ -773,6 +782,10 @@ pub fn read_inputs(cx: &mut App) -> Inputs {
             .map(|p| ((p.left, p.left_name), (p.right, p.right_name))),
         archive_outer: tab.and_then(|t| t.archive().map(|a| a.outer.clone())),
         saved_searches: app.map(|a| a.saved_searches.clone()).unwrap_or_default(),
+        workspaces: crate::components::sidebar::workspaces::listed(cx)
+            .into_iter()
+            .map(|w| (w.id, w.name, w.current))
+            .collect(),
         scripts: Vec::new(),
         openers: Vec::new(),
         tasks: Vec::new(),

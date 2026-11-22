@@ -210,6 +210,49 @@ pub struct Session {
     pub panes: Vec<SessionPane>,
 }
 
+/// Where a tab's list was scrolled: `key` names the folder or search it was for (`Tab::view_key`), `top` is how far.
+#[derive(Debug, Clone, PartialEq, Serialize, Default)]
+pub struct TabScroll {
+    pub key: String,
+    pub top: f32,
+}
+
+/// The most workspaces that are kept.
+pub const MOST_WORKSPACES: usize = 40;
+
+/// The longest name a workspace has, in characters.
+pub const LONGEST_WORKSPACE_NAME: usize = 60;
+
+/// A layout of the window kept under a name (`Work`, `Photos`, `Release`): the session's panes with their tabs,
+/// folders and views, the split between two panes, and where each tab's list was scrolled. Built from the
+/// [`Session`] the window already keeps between runs, so older saved states have none and load as before.
+#[derive(Debug, Clone, PartialEq, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Workspace {
+    /// Made when it is first saved ("ws-1"), kept when it is saved again or renamed.
+    pub id: String,
+    pub name: String,
+    pub session: Session,
+    /// Dual-pane view: the first pane's share of the width (`Settings::dual_split`; none is half).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dual_split: Option<f64>,
+    /// Where each tab was scrolled: `scrolls[pane][tab]`, in the order of the session's panes and paths.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub scrolls: Vec<Vec<Option<TabScroll>>>,
+}
+
+/// A workspace's name as it is kept: the words with single spaces between them, at most
+/// [`LONGEST_WORKSPACE_NAME`] characters.
+pub fn clean_workspace_name(name: &str) -> String {
+    let words = name.split_whitespace().collect::<Vec<_>>().join(" ");
+    words
+        .chars()
+        .take(LONGEST_WORKSPACE_NAME)
+        .collect::<String>()
+        .trim_end()
+        .to_string()
+}
+
 /// The interface's theme.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -719,6 +762,9 @@ pub struct AppState {
     pub rules: Vec<FolderRule>,
     pub last_folder: Option<String>,
     pub session: Option<Session>,
+    /// Layouts kept under a name, in the order they were first saved. Not written while empty.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub workspaces: Vec<Workspace>,
     /// Folders opened, for ranking in the command palette.
     pub visits: OrderedMap<Visit>,
     /// Each folder's own view, by its path in lower case.
@@ -754,6 +800,7 @@ impl Default for AppState {
             rules: Vec::new(),
             last_folder: None,
             session: None,
+            workspaces: Vec::new(),
             visits: OrderedMap::new(),
             folder_views: OrderedMap::new(),
             recent_tags: Vec::new(),
@@ -798,6 +845,14 @@ lenient_deserialize!(SearchOptions {
 });
 lenient_deserialize!(SessionPane { "paths" => paths, "active" => active, "views" => views });
 lenient_deserialize!(Session { "dual" => dual, "activePane" => active_pane, "panes" => panes });
+lenient_deserialize!(TabScroll { "key" => key, "top" => top });
+lenient_deserialize!(Workspace {
+    "id" => id,
+    "name" => name,
+    "session" => session,
+    "dualSplit" => dual_split,
+    "scrolls" => scrolls,
+});
 lenient_deserialize!(ColumnWidths {
     "date" => date,
     "type" => r#type,
@@ -939,6 +994,7 @@ lenient_deserialize!(AppState {
     "rules" => rules,
     "lastFolder" => last_folder,
     "session" => session,
+    "workspaces" => workspaces,
     "visits" => visits,
     "folderViews" => folder_views,
     "recentTags" => recent_tags,
@@ -989,6 +1045,8 @@ pub fn parse_persisted(text: &str) -> Option<AppState> {
     };
     // A connection of a retired kind loads with no id: it goes (see `RETIRED_REMOTE_KINDS`).
     state.remotes.retain(|remote| !remote.id.is_empty());
+    // A workspace entry that wasn't one (damaged, or from a newer Glint) loads as an empty shell: it goes too.
+    state.workspaces.retain(|w| !w.id.is_empty() && !w.name.is_empty());
     Some(state)
 }
 
@@ -1050,6 +1108,75 @@ impl AppState {
         } else {
             self.pinned.push(path.to_string());
         }
+    }
+
+    /// The workspace with this id.
+    pub fn workspace(&self, id: &str) -> Option<&Workspace> {
+        self.workspaces.iter().find(|w| w.id == id && !w.id.is_empty())
+    }
+
+    /// Keeps `layout` (its id and name are ignored) under `name`. A name another workspace has, in any case,
+    /// replaces that workspace's layout and keeps its place, id and the name as it is now typed. Returns the id,
+    /// or `None` for a name with nothing in it, a layout without a tab, or a new name when [`MOST_WORKSPACES`]
+    /// are kept already.
+    pub fn save_workspace(&mut self, name: &str, mut layout: Workspace) -> Option<String> {
+        let name = clean_workspace_name(name);
+        if name.is_empty() || layout.session.panes.iter().all(|p| p.paths.is_empty()) {
+            return None;
+        }
+        layout.name = name.clone();
+        // What an older or hand-edited file left without an id or a name is not a workspace.
+        self.workspaces.retain(|w| !w.id.is_empty() && !w.name.is_empty());
+        let lower = name.to_lowercase();
+        if let Some(kept) = self.workspaces.iter_mut().find(|w| w.name.to_lowercase() == lower) {
+            layout.id = kept.id.clone();
+            *kept = layout;
+            return Some(kept.id.clone());
+        }
+        if self.workspaces.len() >= MOST_WORKSPACES {
+            return None;
+        }
+        let next = self
+            .workspaces
+            .iter()
+            .filter_map(|w| w.id.strip_prefix("ws-").and_then(|n| n.parse::<u64>().ok()))
+            .max()
+            .map_or(1, |n| n + 1);
+        layout.id = format!("ws-{next}");
+        let id = layout.id.clone();
+        self.workspaces.push(layout);
+        Some(id)
+    }
+
+    /// Gives a workspace another name. `false` if there is no such workspace, the name has nothing in it, or
+    /// another workspace has it (in any case); the workspace's own name may change case.
+    pub fn rename_workspace(&mut self, id: &str, name: &str) -> bool {
+        let name = clean_workspace_name(name);
+        let lower = name.to_lowercase();
+        if name.is_empty() || self.workspace(id).is_none() {
+            return false;
+        }
+        if self
+            .workspaces
+            .iter()
+            .any(|w| w.id != id && w.name.to_lowercase() == lower)
+        {
+            return false;
+        }
+        match self.workspaces.iter_mut().find(|w| w.id == id) {
+            Some(w) => {
+                w.name = name;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Forgets a workspace. `false` if there was none with this id.
+    pub fn delete_workspace(&mut self, id: &str) -> bool {
+        let before = self.workspaces.len();
+        self.workspaces.retain(|w| w.id != id);
+        self.workspaces.len() != before
     }
 
     /// Keeps the search in the sidebar, or takes it out if it's there. The folder compares ignoring case.
@@ -1588,5 +1715,162 @@ mod tests {
         let m: OrderedMap<Visit> = serde_json::from_str(text).unwrap();
         assert_eq!(m.keys().collect::<Vec<_>>(), vec!["z", "a"]);
         assert_eq!(serde_json::to_string(&m).unwrap(), text);
+    }
+
+    // ---- Named workspaces --------------------------------------------------------------------------------
+
+    fn layout(paths: &[&str], dual_split: Option<f64>) -> Workspace {
+        Workspace {
+            session: Session {
+                dual: paths.len() > 1,
+                active_pane: 0,
+                panes: paths
+                    .iter()
+                    .map(|p| SessionPane {
+                        paths: vec![(*p).to_string()],
+                        active: 0,
+                        views: Some(vec![ViewMode::Grid]),
+                    })
+                    .collect(),
+            },
+            dual_split,
+            scrolls: vec![vec![Some(TabScroll {
+                key: "dir:C:\\a".into(),
+                top: 120.5,
+            })]],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_workspace_is_saved_under_a_name_and_the_same_name_replaces_it_in_place() {
+        let mut s = AppState::default();
+        let work = s.save_workspace("  Work  ", layout(&["C:\\a"], None)).unwrap();
+        let photos = s
+            .save_workspace("تقارير الصور", layout(&["C:\\p", "C:\\q"], Some(0.3)))
+            .unwrap();
+        assert_ne!(work, photos);
+        assert_eq!(
+            s.workspaces.iter().map(|w| w.name.as_str()).collect::<Vec<_>>(),
+            ["Work", "تقارير الصور"]
+        );
+        // Saved again, in any case: the layout is replaced where it was, with the id it had.
+        let again = s.save_workspace("WORK", layout(&["C:\\b"], Some(0.6))).unwrap();
+        assert_eq!(again, work);
+        assert_eq!(s.workspaces.len(), 2);
+        let w = s.workspace(&work).unwrap();
+        assert_eq!((w.name.as_str(), w.dual_split), ("WORK", Some(0.6)));
+        assert_eq!(w.session.panes[0].paths, ["C:\\b"]);
+        // Nothing to keep: no name, or no tab.
+        assert!(s.save_workspace("   ", layout(&["C:\\a"], None)).is_none());
+        assert!(s.save_workspace("Empty", Workspace::default()).is_none());
+        assert_eq!(s.workspaces.len(), 2);
+    }
+
+    #[test]
+    fn ids_are_not_reused_after_a_delete_and_there_is_a_most() {
+        let mut s = AppState::default();
+        let a = s.save_workspace("a", layout(&["C:\\a"], None)).unwrap();
+        let b = s.save_workspace("b", layout(&["C:\\a"], None)).unwrap();
+        assert!(s.delete_workspace(&a));
+        assert!(!s.delete_workspace(&a));
+        let c = s.save_workspace("c", layout(&["C:\\a"], None)).unwrap();
+        assert!(c != a && c != b, "{a} {b} {c}");
+        for n in s.workspaces.len()..MOST_WORKSPACES {
+            assert!(s.save_workspace(&format!("w{n}"), layout(&["C:\\a"], None)).is_some());
+        }
+        assert!(s.save_workspace("one too many", layout(&["C:\\a"], None)).is_none());
+        // An existing one can still be saved over when the list is full.
+        assert!(s.save_workspace("b", layout(&["C:\\z"], None)).is_some());
+    }
+
+    #[test]
+    fn a_workspace_is_renamed_unless_the_name_is_empty_or_taken() {
+        let mut s = AppState::default();
+        let work = s.save_workspace("Work", layout(&["C:\\a"], None)).unwrap();
+        let home = s.save_workspace("Home", layout(&["C:\\h"], None)).unwrap();
+        assert!(s.rename_workspace(&work, "  Office   work "));
+        assert_eq!(s.workspace(&work).unwrap().name, "Office work");
+        assert!(
+            !s.rename_workspace(&work, "home"),
+            "another workspace has it, in any case"
+        );
+        assert!(!s.rename_workspace(&work, "  "));
+        assert!(!s.rename_workspace("ws-99", "Anything"));
+        // Its own name in another case is a rename, not a clash.
+        assert!(s.rename_workspace(&home, "HOME"));
+        assert_eq!(s.workspace(&home).unwrap().name, "HOME");
+        let long = "x".repeat(200);
+        assert!(s.rename_workspace(&home, &long));
+        assert_eq!(s.workspace(&home).unwrap().name.chars().count(), LONGEST_WORKSPACE_NAME);
+    }
+
+    #[test]
+    fn workspaces_survive_a_save_and_a_load_with_their_split_views_and_scrolls() {
+        let mut s = AppState::default();
+        let id = s
+            .save_workspace("Photos", layout(&["C:\\p", "C:\\q"], Some(0.35)))
+            .unwrap();
+        let loaded = load_persisted(&persisted_json(&s).unwrap());
+        assert_eq!(loaded.workspaces, s.workspaces);
+        let w = loaded.workspace(&id).unwrap();
+        assert!(w.session.dual);
+        assert_eq!(w.session.panes[1].views, Some(vec![ViewMode::Grid]));
+        assert_eq!(w.dual_split, Some(0.35));
+        assert_eq!(
+            w.scrolls[0][0],
+            Some(TabScroll {
+                key: "dir:C:\\a".into(),
+                top: 120.5
+            })
+        );
+        // The JSON names are camelCase, like the rest of the file.
+        assert!(persisted_json(&s).unwrap().contains(r#""dualSplit":0.35"#));
+    }
+
+    #[test]
+    fn a_state_saved_before_workspaces_loads_and_saves_without_them() {
+        let text = r#"{"state":{"pinned":["C:\\Work"],"session":{"dual":false,"panes":[{"paths":["C:\\"],"active":0}]}},"version":0}"#;
+        let s = load_persisted(text);
+        assert!(s.workspaces.is_empty());
+        assert_eq!(s.pinned, ["C:\\Work"]);
+        assert!(s.session.is_some());
+        // Nothing is written for none, so an older Glint reading the file sees what it always saw.
+        assert!(!persisted_json(&s).unwrap().contains("workspaces"));
+    }
+
+    #[test]
+    fn a_damaged_workspace_costs_only_itself() {
+        let text = r#"{"state":{"pinned":["C:\\Work"],"workspaces":[
+            {"id":"ws-1","name":"Good","session":{"dual":false,"activePane":0,"panes":[{"paths":["C:\\a"],"active":0,"views":["grid"]}]}},
+            {"id":"ws-2","name":"Odd","session":{"dual":"yes","panes":7},"dualSplit":"wide","scrolls":"none"},
+            "not an object",
+            {"name":"No id"}]},"version":0}"#;
+        let s = load_persisted(text);
+        assert_eq!(s.pinned, ["C:\\Work"]);
+        let kept: Vec<_> = s.workspaces.iter().map(|w| w.name.as_str()).collect();
+        assert!(kept.contains(&"Good") && kept.contains(&"Odd"), "{kept:?}");
+        assert!(s.workspaces.iter().all(|w| !w.id.is_empty() && !w.name.is_empty()));
+        assert_eq!(s.workspace("ws-1").unwrap().session.panes[0].paths, ["C:\\a"]);
+        // A field it can't read keeps its default.
+        let odd = s.workspace("ws-2").unwrap();
+        assert_eq!(
+            (odd.dual_split, odd.scrolls.len(), odd.session.panes.len()),
+            (None, 0, 0)
+        );
+        // And a workspace in the list that isn't a real one is not offered a second time as a new id.
+        let mut s = s;
+        let next = s.save_workspace("New", layout(&["C:\\n"], None)).unwrap();
+        assert_eq!(next, "ws-3");
+    }
+
+    #[test]
+    fn workspace_names_are_single_spaced_and_not_too_long() {
+        assert_eq!(clean_workspace_name("  a \t b\n c  "), "a b c");
+        assert_eq!(clean_workspace_name(""), "");
+        assert_eq!(
+            clean_workspace_name(&"é".repeat(100)).chars().count(),
+            LONGEST_WORKSPACE_NAME
+        );
     }
 }
