@@ -99,7 +99,7 @@ whole workspace was checked at the end (**Checks**). 36 commits on master, not p
    typing one acts as a click there (Backspace takes a letter back, Escape cancels) (`15cbc39`, `d4e3485`: in
    the real window every row's letter had shown on the row below it).
 8. **What's changing, and Freeze order.** The status bar's "Changing now" opens a live list of the files being
-   written (size growing, time since the last write; click to select one). Freeze order (in that list, Ctrl+Alt+F
+   written (size growing, time since the last write; click to select one). Freeze order (in that list, Alt+F
    or the palette) keeps the folder's rows where they are while files change: new ones go at the end, gone ones
    dim, sizes update in place; turning it off sorts once (`fdbcef6`, `9c88c98`).
 9. **The basket's drawer.** The dock's basket pill (Alt+B) opens a drawer: thumbnails, sizes, remove and Clear,
@@ -192,7 +192,8 @@ and the hairline swap sides in code), Windows' accent color in place of the pink
 
 ### Keys added
 
-Alt+J hop mode, Alt+B the basket's drawer, Ctrl+Alt+F Freeze order.
+Alt+J hop mode, Alt+B the basket's drawer, Alt+F Freeze order (it was Ctrl+Alt+F until the release: that is
+Quick search's shortcut, taken from every app, so the key never reached the window).
 
 ### Checks
 

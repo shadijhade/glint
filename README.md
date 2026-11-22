@@ -63,21 +63,20 @@ Glint needs Windows 10 or 11, 64-bit, and nothing else: it draws its own window,
 
 ## What's new
 
-**0.15.1** (November 21, 2026) fixes updates that stopped at *Error opening file for writing … rg.exe* (a search Glint had left running held the file), and Space while renaming, which opened Quick Look instead of typing a space.
+**0.16.0** (coming soon) is calmer to look at and quicker to get around: a quieter window, right-click menus sorted by what matters, **Hop mode** to reach anything in sight from the keyboard, and **named workspaces**. The photo map, the Color Wheel and Time Machine grew up, and a lot got faster.
 
-**0.15.0** (November 21, 2026) gives files a past, a place on the map and links that follow them. **Time Machine** steps through a folder's history, **live portals** open archives, Git commits and backups as real folders for every app, and a `glint://` link finds a file wherever it moves on its drive.
+-   **A quieter window.** The files are part of the window, edge to edge, instead of a card floating in it; the light behind it is one soft wash in the color of the place you're in; and what's selected is one plain fill, with the accent kept for what is chosen or switched on.
+-   **Right-click menus by importance.** What's done most in a strip, a short section for the kind of file, and the rest under **More**: a picture's menu went from 22 rows to 12, a folder's from 19 to 9. Submenus open beside the menu, and no menu is taller than three quarters of the window.
+-   **Hop mode.** `Alt+J` puts letters on every tab, crumb, place and visible file in both panes: type them to go there.
+-   **Named workspaces.** Save the window's tabs, panes, views and scroll places under a name (the sidebar's **Workspaces** button, or `Ctrl+K`) and switch between them.
+-   **Hover cards and a smarter head.** A background tab or a parent folder in the address bar says what's in it when the pointer rests there, and **Map**, **Colors** and **History** appear on a folder only when they would show something.
+-   **The basket's drawer** (`Alt+B`): what the basket holds, with thumbnails, and what to do with it, or drag it all out.
+-   **Changing now, and Freeze order.** A live list of the files being written, and `Alt+F` keeps a folder's rows where they are while they change.
+-   **The photo map, the Color Wheel and Time Machine.** Photos in the pins, places named offline and a scrubber of months; sliders, color chords and palette dots; a timeline rail with a tick for every stop.
+-   **Drag to transform.** Pictures and videos dragged out get a strip of choices at the window's edge: without personal info, as WebP, under 10 MB, or the sound alone.
+-   **Faster.** Color search about eight times, the map's frames about forty times, Time Machine's first stops in 7 ms instead of 92, thumbnails a screenful ahead of the scroll, and an instant search service that no longer wakes when nothing changes. Glint.exe is about 3 MB smaller.
 
--   **Time Machine.** `Ctrl+Shift+H` lays a folder's past out on one timeline, from Windows' shadow copies, its Git commits, its restic backups and the drive's change journal: see what was deleted, changed or added since, and restore it (a file a restore would replace goes to the Recycle Bin first).
--   **Live portals.** **Mount as live folder** turns an archive, a saved search, a Git commit or a restic snapshot into a real folder in your user folder, through Windows' Cloud Files API, so any app can open what's in it; a file is read from its source only when an app opens it.
--   **Links that follow a file.** **Copy permalink** gives a `glint://` link that still finds the file after it's renamed or moved anywhere on the same drive. Put it in a note or a chat, and opening it shows the file in Glint.
--   **Rename by example.** In Batch rename, type the new name of one or two items, and the rest follow the same rule, in the live preview.
--   **File Lego.** Drop one file onto another: two PDFs merge, a video and a sound track or subtitles become one video, files go into an archive, and a file and its checksum file are checked against each other.
--   **Photos and colors.** `Ctrl+Shift+G` shows the folder's photos on a world map Glint draws itself, offline, in clusters that split as you zoom. The **Color Wheel** ranks pictures by how close their colors come, and **Find similar colors** starts from a picture.
--   **Frames and clips.** With the pointer on a video's tile in the grid, `C` copies the frame under it, and `Shift`+drag across the tile saves that stretch as an MP4 clip (with `Alt+Shift`, a GIF).
--   **Drag clean.** The command bar's chips drag out a copy without its personal info, shrunk under a size, or as a WebP or PNG, made as it's dropped.
--   **A touchpad that taps back.** On a haptic touchpad, light taps mark zoom steps, the end of a list and a matching checksum (**Settings → Touchpad haptics**).
-
-Release notes: [0.15.0](https://github.com/shadijhade/glint/releases/tag/v0.15.0) · [Every release](https://github.com/shadijhade/glint/releases) · 0.14 made Glint [quicker, sharper and lighter](https://github.com/shadijhade/glint/releases/tag/v0.14.0), 0.13 made it [pay attention](https://github.com/shadijhade/glint/releases/tag/v0.13.0), 0.12 made it [smaller and quieter](https://github.com/shadijhade/glint/releases/tag/v0.12.0), 0.11 gave it [a window of its own](https://github.com/shadijhade/glint/releases/tag/v0.11.0), and 0.10 made it [a native app](https://github.com/shadijhade/glint/releases/tag/v0.10.0).
+Release notes: [0.16.0](https://github.com/shadijhade/glint/releases/tag/v0.16.0) · [Every release](https://github.com/shadijhade/glint/releases) · 0.15 gave files [a past, a place on the map and links that follow them](https://github.com/shadijhade/glint/releases/tag/v0.15.0), 0.14 made Glint [quicker, sharper and lighter](https://github.com/shadijhade/glint/releases/tag/v0.14.0), 0.13 made it [pay attention](https://github.com/shadijhade/glint/releases/tag/v0.13.0), 0.12 made it [smaller and quieter](https://github.com/shadijhade/glint/releases/tag/v0.12.0), 0.11 gave it [a window of its own](https://github.com/shadijhade/glint/releases/tag/v0.11.0), and 0.10 made it [a native app](https://github.com/shadijhade/glint/releases/tag/v0.10.0).
 
 ## Benchmarks
 
@@ -134,7 +133,7 @@ A tour of what Glint does. **Every feature, in detail: [docs/features.md](docs/f
 -   **Instant folders.** One Win32 pass reads every name, size, date and attribute, Rust sorts them in natural order (`img9` before `img10`), and only the rows on screen are drawn.
 -   **A size for every folder**, in the list as it opens with instant search on, or one click away with pdu, with a bar showing how each compares with the biggest.
 -   **Disk usage map.** A treemap like WizTree's, six levels deep, colored by kind of file, by age, or by what grew in the last day, week or month.
--   **A head on every folder.** What's in it (*6 folders · 15 files · 13 MB*), a chip for each kind of file to show only those, and soft light behind the window in the color of the place you're in.
+-   **A head on every folder.** What's in it (*6 folders · 15 files · 13 MB*), a chip for each kind of file to show only those, **Map**, **Colors** and **History** when they'd show something, and a soft wash of light behind the window in the color of the place you're in.
 -   **It answers before you ask.** Rest the pointer on a folder and its row says what's in it: Glint has read it by then, so opening it takes a frame.
 -   **List, grid, columns and gallery.** Windows' own thumbnails in five tile sizes, a Columns view (`Ctrl+Shift+9`), **Group by** kind, date, size, type or Git status, a Gallery of your photos and videos by month, and a **Photo World Map** (`Ctrl+Shift+G`) of where they were taken, drawn offline.
 
@@ -142,10 +141,12 @@ A tour of what Glint does. **Every feature, in detail: [docs/features.md](docs/f
 
 ### A menu and a dock that pay attention
 
+-   **Sorted by importance.** Under the item's head, a strip of what's done most (Cut, Copy, Rename, Copy path, Share, Delete), what opens it, a short section for its kind, and everything rare under **More**. Submenus open beside the menu, and no menu is taller than three quarters of the window.
 -   **The menu starts with the item.** Its picture, name and what is true about it: a download's site, a program's signer (or that it has none), identical copies, the program that has it open, a video's length, a folder's weight.
 -   **Suggested, with the reason.** Up to three rows put first for this kind of thing, and for what you did with it before: *Extract here*, *Scan with Microsoft Defender · It came from github.com*, *Run in Windows Sandbox · It isn't signed*. The menu's own rows never move.
 -   **Type to find a row**, in submenus too, and `Enter` runs the first. A greyed row says why.
--   **The dock knows the selection.** A next step with one press, **Paste** that says what it holds (*Paste 3 files*), and what the selection weighs: *2 selected · 68 B · 4 lines*, *1 selected · 600 MB · 3 files inside*. It says **Changing now** while the folder is being written to, and when its drive is nearly full.
+-   **The dock knows the selection.** A next step with one press, **Paste** that says what it holds (*Paste 3 files*), and what the selection weighs: *2 selected · 68 B · 4 lines*, *1 selected · 600 MB · 3 files inside*. It says **Changing now** while the folder is being written to (press it for a live list of the files, and **Freeze order**, `Alt+F`, to keep the rows where they are meanwhile), and when its drive is nearly full.
+-   **The basket's drawer.** Gather files from any folder (`Ctrl+Shift+B`), then `Alt+B` shows what the basket holds, with thumbnails: batch rename, compare, zip, move or copy here, or drag it all out.
 -   **Nothing leaves the PC, and nothing waits.** Glint looks while the pointer rests, on threads Windows runs in efficiency mode; what isn't known yet isn't said.
 
 [More about the menu and the dock →](docs/features.md#the-menu-and-the-dock)
@@ -185,7 +186,9 @@ A tour of what Glint does. **Every feature, in detail: [docs/features.md](docs/f
 </tr>
 </table>
 
--   **Tabs** in each pane, listed whole in the side rail and back when you start Glint again.
+-   **Tabs** in each pane, listed whole in the side rail and back when you start Glint again. Rest the pointer on a background tab, or on a parent folder in the address bar, and a card says what's in it.
+-   **Named workspaces.** Save the window's tabs, panes, split, views and scroll places under a name, and switch between them from the sidebar or `Ctrl+K`.
+-   **Hop mode.** `Alt+J` puts letters on every tab, crumb, place and visible file in both panes: type them to go there, as a click would.
 -   **Two panes.** Drag between them, compare them down through every subfolder and by contents, and **Sync**.
 -   **Compare two files** (`Ctrl+M`): text side by side with the words that changed marked, code by its structure with Difftastic, pictures with a swipe, an onion skin or a pixel diff, anything else byte by byte.
 -   **Thumbnails that never hold up the folder**, from Windows' own cache (30 in 71 ms), and made on several threads when Windows hasn't seen a photo yet.
@@ -344,6 +347,7 @@ Agents that show apps (MCP Apps) draw `folder_sizes` and `largest_files` as a ma
 | `F2` | Rename (several selected: batch rename) |
 | `Ctrl+Z` | Undo the last copy, move, rename, delete or new item |
 | `Ctrl+Shift+H` · `Ctrl+Shift+G` | Time Machine for the folder · Photo World Map |
+| `Alt+J` | Hop mode: letters on everything in sight, type them to go there |
 
 <details>
 <summary><b>Every shortcut</b></summary>
@@ -394,6 +398,9 @@ Agents that show apps (MCP Apps) draw `folder_sizes` and `largest_files` as a ma
 | `Ctrl+Shift+G` | Photo World Map: the folder's photos on a map of where they were taken |
 | `C` · `Shift`+drag, on a video's tile in the grid | Copy the frame under the pointer · save that stretch as an MP4 clip (`Alt+Shift`+drag: a GIF) |
 | `Alt+P` | Show or hide the preview pane |
+| `Alt+J` | Hop mode: letters on every tab, crumb, place and visible file in both panes; type them to go there (`Backspace` takes a letter back, `Esc` leaves) |
+| `Ctrl+Shift+B` · `Alt+B` | Add the selection to the basket · open the basket's drawer |
+| `Alt+F` | Freeze order: keep the folder's rows where they are while files change (again: sort once) |
 
 #### Disk usage map
 
@@ -503,6 +510,7 @@ npm run test:signing
 ## Roadmap
 
 -   [ ] Code-signed installers (the SignPath Foundation invited a new application once Glint is better known)
+-   [x] 0.16: a quieter window, right-click menus by importance, Hop mode, named workspaces, the basket's drawer, and a faster photo map, Color Wheel and Time Machine
 -   [x] 0.15: Time Machine, live portals, links that follow a file, rename by example, File Lego, and photos by place and by color
 -   [x] 0.14: quicker, sharper and lighter: Back that remembers searches, Flat view, matched checksums, and 11 MB less
 -   [x] 0.13: a right-click menu and a dock that know what you picked, and Settings reworked
