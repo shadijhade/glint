@@ -6,11 +6,15 @@
 use crate::explorer::{explorer, Explorer, ExplorerEvent, TabId};
 use crate::kit::prelude::*;
 use crate::{t, theme};
-use glint_model::oklab::{oklab_to_srgb, wheel_point_to_oklab, ColorFilter, Oklab};
+use glint_model::oklab::{
+    oklab_to_srgb, wheel_point_to_oklab, wheel_raster_bgra, ColorFilter, Oklab, WHEEL_MAX_CHROMA,
+};
 use glint_model::paths::same_path;
+use gpui_kit::RenderImage;
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use std::sync::Arc;
 
 struct GlobalState(Entity<ColorWheelModel>);
 impl Global for GlobalState {}
@@ -144,7 +148,42 @@ pub struct ColorWheelBar {
     tolerance: f32,
     dragging: bool,
     wheel_bounds: Rc<Cell<Bounds<Pixels>>>,
+    /// The wheel's disk as one picture, for the lightness and size it was made at.
+    disk: Option<Disk>,
+    /// How many times the disk has been rasterized (a test reads it: it must not go up on every frame).
+    rasters: u32,
     _subs: [Subscription; 2],
+}
+
+/// The wheel's disk rasterized once: `side` pixels square at lightness `step` hundredths.
+struct Disk {
+    side: u32,
+    step: u16,
+    image: Arc<RenderImage>,
+}
+
+/// The wheel's size on screen, in logical pixels.
+const WHEEL_PX: f32 = 112.0;
+
+/// The most pixels the disk is rasterized at: the wheel is small, and this is plenty for a 2x screen.
+const DISK_MAX_SIDE: u32 = 256;
+
+/// The disk's side in device pixels for a window at `scale`.
+fn disk_side(scale: f32) -> u32 {
+    ((WHEEL_PX * scale).round() as u32).clamp(WHEEL_PX as u32, DISK_MAX_SIDE)
+}
+
+/// The lightness the disk is drawn at, in hundredths: the slider moves by that much, so a drag never makes more
+/// pictures than it has positions.
+fn disk_step(lightness: f32) -> u16 {
+    (lightness.clamp(0.0, 1.0) * 100.0).round() as u16
+}
+
+/// The disk at `side` pixels and lightness `step` hundredths as a picture GPUI can draw in one go.
+fn rasterize_disk(side: u32, step: u16) -> Option<Arc<RenderImage>> {
+    let bgra = wheel_raster_bgra(side, f32::from(step) / 100.0);
+    image::RgbaImage::from_raw(side, side, bgra)
+        .map(|buffer| Arc::new(RenderImage::new(vec![image::Frame::new(buffer)])))
 }
 
 impl ColorWheelBar {
@@ -161,6 +200,8 @@ impl ColorWheelBar {
             tolerance: ColorFilter::DEFAULT_TOLERANCE,
             dragging: false,
             wheel_bounds: Rc::new(Cell::new(Bounds::default())),
+            disk: None,
+            rasters: 0,
             _subs: [sub_m, sub_e],
         }
     }
@@ -211,7 +252,7 @@ impl ColorWheelBar {
 }
 
 impl Render for ColorWheelBar {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tab = self.tab_id(cx);
         if !self.model.read(cx).is_shown(tab) {
             return div().into_any_element();
@@ -240,60 +281,64 @@ impl Render for ColorWheelBar {
         let wheel_bounds = self.wheel_bounds.clone();
         let target_marker = active_filter.map(|f| (f.target.a, f.target.b));
 
+        // The disk is one picture, made again only when the lightness (to the hundredth) or the window's scale
+        // changes, never per frame.
+        let side = disk_side(window.scale_factor());
+        let step = disk_step(active_lightness);
+        if self.disk.as_ref().is_none_or(|d| d.side != side || d.step != step) {
+            if let Some(image) = rasterize_disk(side, step) {
+                self.rasters += 1;
+                if let Some(old) = self.disk.replace(Disk { side, step, image }) {
+                    let _ = window.drop_image(old.image);
+                }
+            }
+        }
+        let disk = self.disk.as_ref().map(|d| d.image.clone());
+
         let wheel_canvas = canvas(
             move |bounds, _, _| {
                 wheel_bounds.set(bounds);
                 bounds
             },
             move |_, bounds, window, _| {
-                const CELLS: usize = 24;
                 let side = f32::from(bounds.size.width).min(f32::from(bounds.size.height));
                 if side <= 2.0 {
                     return;
                 }
-                let cell = side / (CELLS as f32);
-                let step_px = cell.ceil();
-                for iy in 0..CELLS {
-                    for ix in 0..CELLS {
-                        let nx = ((ix as f32 + 0.5) / (CELLS as f32)) * 2.0 - 1.0;
-                        let ny = ((iy as f32 + 0.5) / (CELLS as f32)) * 2.0 - 1.0;
-                        if nx * nx + ny * ny > 1.02 {
-                            continue;
-                        }
-                        let color = srgb_hsla(oklab_to_srgb(wheel_point_to_oklab(nx, ny, active_lightness)));
-                        let x = f32::from(bounds.origin.x) + (ix as f32) * cell;
-                        let y = f32::from(bounds.origin.y) + (iy as f32) * cell;
-                        window.paint_quad(fill(
-                            Bounds::new(point(px(x), px(y)), size(px(step_px), px(step_px))),
+                let square = Bounds::new(bounds.origin, size(px(side), px(side)));
+                if let Some(image) = &disk {
+                    let _ = window.paint_image(square, square, Corners::default(), image.clone(), 0, false);
+                }
+                if let Some((a, b)) = target_marker {
+                    let nx = (a / WHEEL_MAX_CHROMA).clamp(-1.0, 1.0);
+                    let ny = (-b / WHEEL_MAX_CHROMA).clamp(-1.0, 1.0);
+                    let cx_px = f32::from(bounds.origin.x) + (nx * 0.5 + 0.5) * side;
+                    let cy_px = f32::from(bounds.origin.y) + (ny * 0.5 + 0.5) * side;
+                    // A dark ring around the white one, so it reads on pale colors too.
+                    for (r, width, color) in [
+                        (7.0, 1.0, gpui_kit::black().opacity(0.45)),
+                        (6.0, 2.0, gpui_kit::white()),
+                    ] {
+                        let ring = Bounds::new(point(px(cx_px - r), px(cy_px - r)), size(px(r * 2.0), px(r * 2.0)));
+                        window.paint_quad(quad(
+                            ring,
+                            r,
+                            gpui_kit::transparent_black(),
+                            Edges::all(px(width)),
                             color,
+                            BorderStyle::Solid,
                         ));
                     }
                 }
-                if let Some((a, b)) = target_marker {
-                    const MAX_CHROMA: f32 = 0.32;
-                    let nx = (a / MAX_CHROMA).clamp(-1.0, 1.0);
-                    let ny = (-b / MAX_CHROMA).clamp(-1.0, 1.0);
-                    let cx_px = f32::from(bounds.origin.x) + (nx * 0.5 + 0.5) * side;
-                    let cy_px = f32::from(bounds.origin.y) + (ny * 0.5 + 0.5) * side;
-                    let ring = Bounds::new(point(px(cx_px - 6.0), px(cy_px - 6.0)), size(px(12.0), px(12.0)));
-                    window.paint_quad(quad(
-                        ring,
-                        6.0,
-                        gpui_kit::transparent_black(),
-                        Edges::all(px(2.0)),
-                        gpui_kit::white(),
-                        BorderStyle::Solid,
-                    ));
-                }
             },
         )
-        .size(px(112.));
+        .size(px(WHEEL_PX));
 
         let wheel = div()
             .id(("cw-wheel", self.pane))
             .role(Role::Slider)
             .aria_label(t!("OKLab color wheel"))
-            .size(px(112.))
+            .size(px(WHEEL_PX))
             .rounded_full()
             .overflow_hidden()
             .border_1()
@@ -469,6 +514,7 @@ mod tests {
     use crate::explorer::NavOptions;
     use crate::testing;
     use glint_model::oklab::srgb_to_oklab;
+    use gpui_kit::test::TestWindowExt;
 
     #[gpui_kit::test]
     fn toggle_and_open_with_track_tab_state_and_filter(cx: &mut gpui_kit::TestAppContext) {
@@ -502,5 +548,64 @@ mod tests {
         assert!(!visual.update(|_, cx| is_shown(cx, tab)));
         let cleared = visual.update(|_, cx| explorer(cx).read(cx).tab(tab).and_then(|t| t.color_filter));
         assert!(cleared.is_none());
+    }
+
+    /// The disk is one picture, made when the wheel first shows and again only when the lightness (to the
+    /// hundredth) or the window's scale changes: frames in between draw the picture they have. Prints what a
+    /// disk costs: `cargo test -p glint-ui --lib color_wheel::tests::the_disk -- --nocapture`.
+    #[gpui_kit::test]
+    fn the_disk_is_rasterized_once_and_again_only_when_the_lightness_changes(cx: &mut gpui_kit::TestAppContext) {
+        let _guard = testing::lock();
+        let disk = FakeDisk::new();
+        disk.folder("C:\\Photos", vec![file("C:\\Photos", "sky.jpg", 120, 0)]);
+        cx.update(|cx| {
+            testing::init(cx);
+            crate::explorer::init_with(cx, disk.source());
+        });
+        let (view, visual) = cx.add_window_view(|window, cx| ColorWheelBar::new(0, window, cx));
+        visual.update(|_, cx| {
+            explorer(cx).update(cx, |e, cx| e.navigate("C:\\Photos", NavOptions::default(), cx));
+        });
+        visual.run_until_parked();
+        let tab = visual.update(|_, cx| explorer(cx).read(cx).active_tab_id());
+        let rasters = |visual: &mut gpui_kit::VisualTestContext| visual.update(|_, cx| view.read(cx).rasters);
+        let frames = |visual: &mut gpui_kit::VisualTestContext, n: usize| {
+            for _ in 0..n {
+                visual.update(|window, cx| {
+                    window.refresh();
+                    window.render_frame(cx);
+                });
+            }
+        };
+
+        assert_eq!(rasters(visual), 0, "a closed wheel draws nothing");
+        visual.update(|_, cx| toggle(cx, tab));
+        frames(visual, 30);
+        assert_eq!(rasters(visual), 1, "thirty frames, one disk");
+
+        visual.update(|_, cx| view.update(cx, |bar, cx| bar.update_params(0.40, 0.22, cx)));
+        frames(visual, 30);
+        assert_eq!(rasters(visual), 2, "a new lightness makes a new disk, once");
+        // The same hundredth again is the same disk.
+        visual.update(|_, cx| view.update(cx, |bar, cx| bar.update_params(0.4001, 0.30, cx)));
+        frames(visual, 5);
+        assert_eq!(rasters(visual), 2);
+
+        let best = |side: u32| {
+            (0..5)
+                .map(|n| {
+                    let started = std::time::Instant::now();
+                    std::hint::black_box(rasterize_disk(side, 50 + n));
+                    started.elapsed().as_secs_f64() * 1000.0
+                })
+                .fold(f64::MAX, f64::min)
+        };
+        println!(
+            "wheel disk: {} px {:.2} ms, {} px {:.2} ms (once per lightness step); 0.15 painted 576 quads every frame",
+            WHEEL_PX as u32,
+            best(WHEEL_PX as u32),
+            DISK_MAX_SIDE,
+            best(DISK_MAX_SIDE)
+        );
     }
 }

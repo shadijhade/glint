@@ -109,12 +109,41 @@ pub fn wheel_point_to_oklab(nx: f32, ny: f32, lightness: f32) -> Oklab {
     } else {
         (nx, ny)
     };
-    const MAX_CHROMA: f32 = 0.32;
     Oklab {
         l: lightness.clamp(0.15, 0.95),
-        a: cx * MAX_CHROMA,
-        b: -cy * MAX_CHROMA,
+        a: cx * WHEEL_MAX_CHROMA,
+        b: -cy * WHEEL_MAX_CHROMA,
     }
+}
+
+/// The chroma that the wheel's edge stands for (`wheel_point_to_oklab`'s radius).
+pub const WHEEL_MAX_CHROMA: f32 = 0.32;
+
+/// The wheel disk at `lightness` as `side` x `side` straight-alpha BGRA pixels (what GPUI draws): each pixel is the
+/// color `wheel_point_to_oklab` gives for its center, and the rim is anti-aliased by the pixel's coverage of the
+/// disk. Empty when `side` is 0.
+pub fn wheel_raster_bgra(side: u32, lightness: f32) -> Vec<u8> {
+    let n = side as usize;
+    let mut out = vec![0u8; n * n * 4];
+    if n == 0 {
+        return out;
+    }
+    let radius = n as f32 / 2.0;
+    for iy in 0..n {
+        let dy = iy as f32 + 0.5 - radius;
+        for ix in 0..n {
+            let dx = ix as f32 + 0.5 - radius;
+            // Coverage of a one-pixel-wide rim: 1 inside it, 0 outside, a ramp across.
+            let coverage = (radius - (dx * dx + dy * dy).sqrt() + 0.5).clamp(0.0, 1.0);
+            if coverage <= 0.0 {
+                continue;
+            }
+            let [r, g, b] = oklab_to_srgb(wheel_point_to_oklab(dx / radius, dy / radius, lightness));
+            let at = (iy * n + ix) * 4;
+            out[at..at + 4].copy_from_slice(&[b, g, r, (coverage * 255.0 + 0.5) as u8]);
+        }
+    }
+    out
 }
 
 /// Squared Euclidean OKLab distance between two colors.
