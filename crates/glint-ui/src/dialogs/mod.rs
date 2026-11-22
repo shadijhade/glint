@@ -246,9 +246,13 @@ pub fn confirm(
         dialog
             .title(title.clone())
             .w(px(440.))
+            // Enter is the main button, unless that button destroys something that can't be taken back: then
+            // only a deliberate click does it, and Enter does nothing (Escape still cancels).
             .on_ok(move |_, window, cx| {
-                window.close_dialog(cx);
-                on_enter(window, cx);
+                if !danger {
+                    window.close_dialog(cx);
+                    on_enter(window, cx);
+                }
                 false
             })
             .child(
@@ -402,5 +406,44 @@ mod tests {
         visual.run_until_parked();
         visual.update(|window, cx| window.render_frame(cx));
         visual.update(|_, cx| assert!(!cx.default_global::<MainActions>().0.contains_key(&id)));
+    }
+
+    fn ask(cx: &mut TestAppContext, danger: bool) -> (VisualTestContext, Rc<Cell<usize>>) {
+        cx.update(testing::init);
+        let mut visual = testing::open_window(cx, |_, cx| cx.new(|_| Host)).0;
+        let ran = Rc::new(Cell::new(0));
+        let counted = ran.clone();
+        visual.update(|window, cx| {
+            confirm(window, cx, "Sure?".into(), "It goes.".into(), "Do it".into(), danger, move |_, _| {
+                counted.set(counted.get() + 1)
+            })
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| window.render_frame(cx));
+        (visual, ran)
+    }
+
+    #[gpui_kit::test]
+    fn enter_confirms_a_plain_question(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let (mut visual, ran) = ask(cx, false);
+        visual.update(|window, cx| window.press("enter", cx));
+        visual.run_until_parked();
+        assert_eq!(ran.get(), 1);
+        visual.update(|window, cx| assert!(!window.has_active_dialog(cx)));
+    }
+
+    #[gpui_kit::test]
+    fn enter_never_confirms_a_danger_question_but_escape_cancels(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let (mut visual, ran) = ask(cx, true);
+        visual.update(|window, cx| window.press("enter", cx));
+        visual.run_until_parked();
+        assert_eq!(ran.get(), 0, "Enter ran nothing");
+        visual.update(|window, cx| assert!(window.has_active_dialog(cx), "and left it open"));
+        visual.update(|window, cx| window.press("escape", cx));
+        visual.run_until_parked();
+        assert_eq!(ran.get(), 0);
+        visual.update(|window, cx| assert!(!window.has_active_dialog(cx)));
     }
 }

@@ -3797,9 +3797,13 @@ fn ask(window: &mut Window, cx: &mut App, question: Question, on_ok: impl Fn(&mu
         dialog
             .title(title.clone())
             .w(px(440.))
+            // Enter is the main button, unless that button destroys something that can't be taken back: then
+            // only a deliberate click does it, and Enter does nothing (Escape still cancels).
             .on_ok(move |_, window, cx| {
-                window.close_dialog(cx);
-                on_enter(window, cx);
+                if !danger {
+                    window.close_dialog(cx);
+                    on_enter(window, cx);
+                }
                 false
             })
             .child(
