@@ -192,6 +192,17 @@ pub(crate) fn render_tooltip(
     })
 }
 
+/// Glint: dismisses every tooltip of the window, the managed ones (buttons, switches, ...) and GPUI's own
+/// (`.tooltip(..)` on an element), the ones waiting out their delay too. A menu that opens under the pointer
+/// calls this, so the tooltip of what it opened over doesn't cover it. Tooltips asked for afterwards work as
+/// usual (an element the menu doesn't cover can still show one).
+pub fn dismiss_all(window: &mut Window, cx: &mut App) {
+    window.dismiss_tooltips();
+    if let Some(overlay) = WindowState::tooltip_overlay(window, cx) {
+        overlay.update(cx, |overlay: &mut BaseTooltipOverlay, cx| overlay.hide(cx));
+    }
+}
+
 // ── Extension trait for managed tooltips ─────────────────────────────────────
 
 // ── Shared tooltip state for components ─────────────────────────────────────

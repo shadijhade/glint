@@ -1266,6 +1266,8 @@ pub struct Window {
     next_hitbox_id: HitboxId,
     pub(crate) next_tooltip_id: TooltipId,
     pub(crate) tooltip_bounds: Option<TooltipBounds>,
+    /// Glint: counts the times the window's tooltips were dismissed at once ([`Window::dismiss_tooltips`]).
+    tooltip_epoch: u32,
     pub(crate) next_frame_callbacks: Rc<RefCell<Vec<FrameCallback>>>,
     pub(crate) dirty_views: FxHashSet<EntityId>,
     focus_listeners: SingleSubscriberSet<AnyWindowFocusListener>,
@@ -2443,6 +2445,7 @@ impl Window {
             next_hitbox_id: HitboxId(0),
             next_tooltip_id: TooltipId::default(),
             tooltip_bounds: None,
+            tooltip_epoch: 0,
             dirty_views: FxHashSet::default(),
             focus_listeners: SingleSubscriberSet::new(),
             focus_lost_listeners: SingleSubscriberSet::new(),
@@ -4477,6 +4480,20 @@ impl Window {
             hitbox_id: None,
             style,
         })
+    }
+
+    /// Glint: dismisses every tooltip the window has up or is waiting to show, and the ones whose delay is
+    /// running: they were asked for before now and are not shown. Tooltips asked for afterwards (an element
+    /// the pointer then enters, or one under it that is not covered) work as usual. A menu that opens under
+    /// the pointer calls this, so the tooltip of what it opened over doesn't cover it.
+    pub fn dismiss_tooltips(&mut self) {
+        self.tooltip_epoch = self.tooltip_epoch.wrapping_add(1);
+    }
+
+    /// Glint: how many times [`Window::dismiss_tooltips`] was called (a tooltip remembers the number it was
+    /// asked for under).
+    pub fn tooltip_epoch(&self) -> u32 {
+        self.tooltip_epoch
     }
 
     /// Sets a tooltip to be rendered for the upcoming frame. This method should only be called

@@ -4171,6 +4171,7 @@ fn handle_tooltip_mouse_move(
             active_tooltip.borrow_mut().take();
         }
         Action::ScheduleShow => {
+            let asked_under = window.tooltip_epoch();
             let delayed_show_task = window.spawn(cx, {
                 let weak_active_tooltip = Rc::downgrade(active_tooltip);
                 let build_tooltip = build_tooltip.clone();
@@ -4181,6 +4182,11 @@ fn handle_tooltip_mouse_move(
                         return;
                     };
                     cx.update(|window, cx| {
+                        if window.tooltip_epoch() != asked_under {
+                            // Dismissed while the delay ran (a menu opened over the element).
+                            active_tooltip.borrow_mut().take();
+                            return;
+                        }
                         show_tooltip(
                             &active_tooltip,
                             &build_tooltip,
@@ -4211,6 +4217,8 @@ fn show_tooltip(
     window: &mut Window,
     cx: &mut App,
 ) -> bool {
+    // Glint: a tooltip asked for before `Window::dismiss_tooltips` is not shown after it.
+    let epoch = window.tooltip_epoch();
     let new_tooltip = build_tooltip(window, cx).map(|(view, tooltip_is_hoverable)| {
         let weak_active_tooltip = Rc::downgrade(active_tooltip);
         let check_is_hovered_during_prepaint = check_is_hovered_during_prepaint.clone();
@@ -4228,6 +4236,11 @@ fn show_tooltip(
                     let Some(active_tooltip) = weak_active_tooltip.upgrade() else {
                         return false;
                     };
+                    if window.tooltip_epoch() != epoch {
+                        // Dismissed: forget it, so the element can ask again when the pointer comes back.
+                        active_tooltip.borrow_mut().take();
+                        return false;
+                    }
                     handle_tooltip_check_visible_and_update(
                         &active_tooltip,
                         tooltip_is_hoverable,
