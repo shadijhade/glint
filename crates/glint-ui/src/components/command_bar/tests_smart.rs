@@ -31,7 +31,10 @@ fn paste_says_how_many_files_it_would_paste_or_move() {
     assert_eq!(said(&files(1, false, None, &[])).as_deref(), Some("Paste 1 file"));
     assert_eq!(said(&files(3, true, None, &[])).as_deref(), Some("Move 3 files here"));
     assert_eq!(said(&files(1, true, None, &[])).as_deref(), Some("Move 1 file here"));
-    assert_eq!(said(&files(1204, false, None, &[])).as_deref(), Some("Paste 1,204 files"));
+    assert_eq!(
+        said(&files(1204, false, None, &[])).as_deref(),
+        Some("Paste 1,204 files")
+    );
 }
 
 #[test]
@@ -190,8 +193,10 @@ fn open(cx: &mut TestAppContext, width: f32) -> Rig {
     let events: Rc<RefCell<Vec<MenuEvent>>> = Rc::default();
     let sink = events.clone();
     visual.update(|window, cx| {
-        cx.subscribe(&menus, move |_, event: &MenuEvent, _| sink.borrow_mut().push(event.clone()))
-            .detach();
+        cx.subscribe(&menus, move |_, event: &MenuEvent, _| {
+            sink.borrow_mut().push(event.clone())
+        })
+        .detach();
         window.activate_window();
     });
     let mut rig = Rig {
@@ -216,7 +221,12 @@ impl Rig {
             self.cx.run_until_parked();
             let now = self.bar.read_with(&self.cx, |bar, _| {
                 let m = &bar.measured;
-                (bar.fold(), m.bar.get() as i32, m.left.get() as i32, m.right.get() as i32)
+                (
+                    bar.fold(),
+                    m.bar.get() as i32,
+                    m.left.get() as i32,
+                    m.right.get() as i32,
+                )
             });
             if last == Some(now) {
                 stable += 1;
@@ -373,7 +383,8 @@ fn pressing_the_step_runs_the_menus_row_and_counts_it(cx: &mut TestAppContext) {
 fn with_suggestions_off_the_island_has_no_step(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let mut rig = open(cx, WIDE);
-    rig.cx.update(|_, cx| state::update(cx, |settings| settings.suggest = false));
+    rig.cx
+        .update(|_, cx| state::update(cx, |settings| settings.suggest = false));
     rig.select(&[ZIP]);
     assert!(rig.step().is_none());
     assert!(!rig.present("Extract here"));
@@ -460,15 +471,25 @@ fn the_step_keeps_its_word_to_the_fourth_fold_and_stays_as_a_picture_while_the_e
         seen.entry(rig.fold()).or_insert(width);
         width -= 20.;
     }
-    assert!(seen.contains_key(&0) && seen.contains_key(&2) && seen.contains_key(&5), "{seen:?}");
+    assert!(
+        seen.contains_key(&0) && seen.contains_key(&3) && seen.contains_key(&5),
+        "{seen:?}"
+    );
     rig.width(seen[&0]);
     let (_, wide) = rig.find("Extract here").expect("the step at fold 0");
-    rig.width(seen[&2]);
-    let (_, folded) = rig.find("Extract here").expect("the step at fold 2");
-    assert_eq!(folded.size.width, wide.size.width, "it keeps its word while the others lose theirs");
+    // (Fold 2 only drops Folder sizes' word, which an archive has no use for: the step is the same at fold 3.)
+    rig.width(seen[&3]);
+    let (_, folded) = rig.find("Extract here").expect("the step at fold 3");
+    assert_eq!(
+        folded.size.width, wide.size.width,
+        "it keeps its word while the others lose theirs"
+    );
     rig.width(seen[&5]);
     let (_, narrow) = rig.find("Extract here").expect("the step at fold 5");
-    assert!(narrow.size.width < wide.size.width, "a picture alone at fold 5: {narrow:?} < {wide:?}");
+    assert!(
+        narrow.size.width < wide.size.width,
+        "a picture alone at fold 5: {narrow:?} < {wide:?}"
+    );
     if let Some(most) = seen.get(&MOST) {
         rig.width(*most);
         assert!(!rig.present("Extract here"), "gone with the edits at the last fold");

@@ -460,8 +460,15 @@ fn a_search_keeps_the_edits_off_what_cant_be_made_and_this_pc_has_no_folder_tool
     let mut rig = open(cx, false, 1000.);
     // This PC is not a folder: nothing is made or pasted there, no map, no folder sizes.
     assert!(!rig.facts().in_folder);
-    assert!(!rig.enabled("New folder") && !rig.enabled("Paste (Ctrl+V)"));
-    assert!(!rig.enabled("Disk usage") && !rig.enabled("Folder sizes"));
+    for gone in [
+        "New folder",
+        "Paste (Ctrl+V)",
+        "Disk usage",
+        "Folder sizes",
+        "List (Ctrl+Shift+6)",
+    ] {
+        assert!(!rig.present(gone), "{gone} has nothing to act on in This PC");
+    }
     // The palette and the toggles still work.
     assert!(rig.enabled("Command palette (Ctrl+K)") && rig.enabled("Show hidden items (Ctrl+H)"));
 
@@ -474,8 +481,10 @@ fn a_search_keeps_the_edits_off_what_cant_be_made_and_this_pc_has_no_folder_tool
     }
     let f = rig.facts();
     assert!(f.find, "a search is showing");
-    assert!(!rig.enabled("New folder") && !rig.enabled("Paste (Ctrl+V)"));
-    assert!(!rig.enabled("Disk usage") && !rig.enabled("Folder sizes"));
+    for gone in ["New folder", "Paste (Ctrl+V)", "Disk usage", "Folder sizes"] {
+        assert!(!rig.present(gone), "{gone} can't act on a search's results");
+    }
+    assert!(rig.present("List (Ctrl+Shift+6)"), "the views still apply");
     testing::set_rtl(false);
 }
 
@@ -512,7 +521,8 @@ fn the_edit_buttons_run_the_workspaces_actions(cx: &mut TestAppContext) {
 fn a_disabled_button_does_nothing(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let mut rig = open(cx, false, 1000.);
-    // This PC is no folder: New folder and Paste are there, greyed out, and pressing them does nothing.
+    // An archive can't be changed: New folder and Paste are there, greyed out, and pressing them does nothing.
+    rig.go("C:\\Work\\pack.zip");
     assert!(!rig.enabled("New folder") && !rig.enabled("Paste (Ctrl+V)"));
     rig.click("new-folder");
     rig.click("paste");
@@ -641,6 +651,9 @@ fn the_tile_size_menu_sets_the_size_and_shows_the_grid(cx: &mut TestAppContext) 
     let _guard = testing::lock();
     let mut rig = open(cx, false, 1000.);
     rig.go("C:\\Work");
+    // The arrow is the grid's: the list has none.
+    assert!(!rig.present("Tile size: Medium (Ctrl+wheel, Ctrl+= and Ctrl+- in the grid)"));
+    rig.click("view-grid");
     rig.click("tile-sizes");
     assert!(rig.bar.read_with(&rig.cx, |bar, _| bar.menu_open()));
     let nodes = rig
@@ -718,6 +731,7 @@ fn folder_facts() -> Facts {
     f.path = "C:\\Work".into();
     f.in_folder = true;
     f.can_flat = true;
+    f.has_folders = true;
     f
 }
 
@@ -734,15 +748,12 @@ fn the_tools_menu_grows_as_the_bar_folds_and_is_greyed_for_what_cant_be_done() {
             "Terminal here, under the files",
             "Open in Terminal",
             "# Inspect",
-            "Compare two files",
-            "File X-Ray: hashes and hidden streams",
             "What's locking this folder?",
             "Recent changes in this folder",
             "Moved and deleted: where did a file go?",
             "# Clean up",
             "Find duplicate files in this folder",
             "Clean up this folder…",
-            "Convert the selected pictures…",
             "Folder rules: sort out what comes in…",
             "# Share",
             "Share this folder…",
@@ -756,12 +767,15 @@ fn the_tools_menu_grows_as_the_bar_folds_and_is_greyed_for_what_cant_be_done() {
     assert_eq!(at(3), plain);
 
     let nodes = menus::tools_menu(&f, &[], 0, false);
-    assert!(entry(&nodes, "Compare two files").disabled, "no pair");
-    assert!(
-        entry(&nodes, "File X-Ray: hashes and hidden streams").disabled,
-        "no file"
-    );
-    assert!(entry(&nodes, "Convert the selected pictures…").disabled, "no pictures");
+    // What can't apply is not there; nothing is greyed with nothing selected.
+    for gone in [
+        "Compare two files",
+        "File X-Ray: hashes and hidden streams",
+        "Convert the selected pictures…",
+    ] {
+        assert!(!plain.iter().any(|row| row == gone), "{gone}");
+    }
+    assert!(!nodes.iter().any(|node| matches!(node, Node::Item(e) if e.disabled)));
     assert!(!entry(&nodes, "Find duplicate files in this folder").disabled);
 
     // A running measure says Stop; the map says how to get back.
@@ -825,8 +839,12 @@ fn the_tools_are_greyed_in_a_read_only_place_and_a_remote_has_no_clean_up() {
     let mut f = folder_facts();
     f.read_only = true;
     let nodes = menus::tools_menu(&f, &[], 0, false);
+    let words = labels(&nodes);
     for off in ["Clean up this folder…", "Scan this folder with Microsoft Defender"] {
-        assert!(entry(&nodes, off).disabled, "{off}");
+        assert!(
+            !words.iter().any(|row| row == off),
+            "{off} is left out of a read-only place"
+        );
     }
     // The rules in general still open (an empty folder asks for them all).
     assert_eq!(
@@ -864,7 +882,9 @@ fn the_view_menu_has_the_toggles_and_the_views_only_when_the_bar_is_that_narrow(
     let mut shown = f.clone();
     shown.flat = true;
     assert_eq!(entry(&menus::view_menu(&shown, 3), FLAT).check, Some(true));
-    assert!(entry(&menus::view_menu(&Facts::none(), 3), FLAT).disabled);
+    assert!(!labels(&menus::view_menu(&Facts::none(), 3))
+        .iter()
+        .any(|row| row == FLAT));
     assert_eq!(entry(&narrow, "Show hidden items").check, Some(true));
     assert_eq!(entry(&narrow, "Show hidden items").hint.as_deref(), Some("Ctrl+H"));
     assert_eq!(entry(&narrow, "Preview pane").hint.as_deref(), Some("Alt+P"));
@@ -887,10 +907,9 @@ fn the_view_menu_has_the_toggles_and_the_views_only_when_the_bar_is_that_narrow(
     );
     assert_eq!(entry(&narrower, "List").check, Some(true));
     assert_eq!(entry(&narrower, "List").hint.as_deref(), Some("Ctrl+Shift+6"));
-    // Where views can't be chosen (This PC) they are greyed; a map unchecks them.
-    let mut pc = Facts::none();
-    pc.mapped = false;
-    assert!(entry(&menus::view_menu(&pc, 5), "List").disabled);
+    // Where views can't be chosen (This PC) they are not offered; a map unchecks them.
+    let pc = Facts::none();
+    assert!(!labels(&menus::view_menu(&pc, 5)).iter().any(|row| row == "List"));
     f.mapped = true;
     assert_eq!(entry(&menus::view_menu(&f, 5), "List").check, Some(false));
 }
@@ -900,10 +919,14 @@ fn the_edits_menu_has_what_the_folded_buttons_had_with_their_conditions() {
     let _guard = testing::lock();
     testing::set_rtl(false);
     let mut f = folder_facts();
+    // Nothing selected: only what needs no selection, and nothing greyed.
+    let nothing = menus::edits_menu(&f);
+    assert_eq!(labels(&nothing), ["Paste"]);
+    assert!(!entry(&nothing, "Paste").disabled);
+    f.selected = 1;
     let nodes = menus::edits_menu(&f);
     assert_eq!(labels(&nodes), ["Cut", "Copy", "Paste", "-", "Rename", "Delete"]);
-    assert!(entry(&nodes, "Cut").disabled && entry(&nodes, "Delete").disabled);
-    assert!(!entry(&nodes, "Paste").disabled);
+    assert!(!nodes.iter().any(|node| matches!(node, Node::Item(e) if e.disabled)));
     assert_eq!(entry(&nodes, "Cut").hint.as_deref(), Some("Ctrl+X"));
     assert_eq!(entry(&nodes, "Rename").hint.as_deref(), Some("F2"));
     assert_eq!(entry(&nodes, "Delete").hint.as_deref(), Some("Del"));
@@ -1604,20 +1627,27 @@ fn the_baskets_menu_offers_the_four_jobs_lists_what_is_in_it_and_can_be_emptied(
         panic!("the list of what it holds")
     };
     assert_eq!(listed.len(), 13);
+    assert!(
+        matches!(listed.last(), Some(Node::Heading(_))),
+        "the count of the rest is a line, not a row"
+    );
     assert!(matches!(
         &listed[0],
         Node::Item(Entry { run: Run::Ask(MenuEvent::BasketRemove { path }), .. }) if path == "C:\\Work\\file0.txt"
     ));
     // Move and Copy need a folder that can take them; the other two do not.
     let nowhere = menus::basket_menu(&items, &Facts::none());
-    let disabled: Vec<bool> = nowhere
+    let offered: Vec<String> = nowhere
         .iter()
         .filter_map(|n| match n {
-            Node::Item(entry) => Some(entry.disabled),
+            Node::Item(entry) => {
+                assert!(!entry.disabled, "nothing greyed");
+                Some(entry.label.to_string())
+            }
             _ => None,
         })
         .collect();
-    assert_eq!(disabled, [true, true, false, false, false]);
+    assert_eq!(offered, ["Zip", "Batch rename", "Empty the basket"]);
     assert!(menus::basket_menu(&[], &here).is_empty());
 }
 
@@ -1702,7 +1732,8 @@ fn pressing_the_pill_opens_a_drawer_with_a_named_row_for_each_item_and_escape_cl
     rig.click("basket");
     assert!(rig.drawer_open());
     // (The test window is too short for the drawer to clear the pill, so the second press is the command.)
-    rig.bar.update_in(&mut rig.cx, |bar, window, cx| bar.toggle_basket(window, cx));
+    rig.bar
+        .update_in(&mut rig.cx, |bar, window, cx| bar.toggle_basket(window, cx));
     rig.settle();
     assert!(!rig.drawer_open(), "the command closes it again");
 }
@@ -1844,5 +1875,192 @@ fn the_drawer_works_mirrored_with_arabic_names(cx: &mut TestAppContext) {
     rig.press("escape");
     rig.settle();
     assert!(!rig.drawer_open());
+    testing::set_rtl(false);
+}
+
+// ---- What the dock shows where ---------------------------------------------------------------------------------
+
+/// The ids of the buttons the island draws now.
+fn shown(rig: &mut Rig, ids: &[&'static str]) -> Vec<&'static str> {
+    rig.cx.update(|window, cx| {
+        window.render_frame(cx);
+        ids.iter()
+            .copied()
+            .filter(|id| window.try_find(*id).is_some())
+            .collect()
+    })
+}
+
+#[gpui_kit::test]
+fn a_plain_folder_shows_what_acts_here_and_a_folder_of_only_files_has_no_folder_sizes(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut rig = open(cx, false, 1400.);
+    rig.go("C:\\Work");
+    assert!(rig.facts().has_folders);
+    let all = [
+        "new-folder",
+        "paste",
+        "disk-usage",
+        "folder-sizes",
+        "view-list",
+        "flat",
+        "palette",
+        "tools",
+    ];
+    assert_eq!(shown(&mut rig, &all), all);
+    // No folder inside: nothing for Folder sizes to measure; the map still has files to show.
+    rig.go("C:\\Other");
+    assert!(!rig.facts().has_folders);
+    let here = shown(&mut rig, &all);
+    assert!(
+        !here.contains(&"folder-sizes") && here.contains(&"disk-usage"),
+        "{here:?}"
+    );
+    testing::set_rtl(false);
+}
+
+#[gpui_kit::test]
+fn folder_sizes_stays_while_it_runs_so_it_can_be_stopped(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut rig = open(cx, false, 1400.);
+    rig.go("C:\\Other");
+    rig.bar
+        .update(&mut rig.cx, |bar, cx| bar.set_folder_sizes_running(true, cx));
+    rig.settle();
+    assert!(rig.present("Stop"));
+    testing::set_rtl(false);
+}
+
+#[gpui_kit::test]
+fn search_results_drop_what_cant_act_on_them_and_keep_the_views(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut rig = open(cx, false, 1400.);
+    rig.go("C:\\Work");
+    rig.act(|e, cx| {
+        e.run_find("notes", explorer::Wider::default(), cx).detach();
+    });
+    for _ in 0..8 {
+        rig.cx.run_until_parked();
+    }
+    rig.select(&["C:\\Work\\notes.txt"]);
+    let ids = [
+        "new-folder",
+        "paste",
+        "disk-usage",
+        "folder-sizes",
+        "view-list",
+        "copy",
+        "tools",
+    ];
+    let here = shown(&mut rig, &ids);
+    assert_eq!(here, ["view-list", "copy", "tools"], "{here:?}");
+    testing::set_rtl(false);
+}
+
+#[gpui_kit::test]
+fn the_other_panes_buttons_and_compare_come_only_when_they_apply(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut rig = open(cx, false, 1400.);
+    rig.go("C:\\Work");
+    rig.select(&["C:\\Work\\todo.txt"]);
+    let ids = ["copy-other", "move-other", "compare"];
+    assert!(shown(&mut rig, &ids).is_empty(), "one pane, one file");
+    rig.act(|e, cx| e.toggle_dual(cx));
+    rig.go("C:\\Other");
+    rig.act(|e, cx| e.switch_pane(cx));
+    rig.select(&["C:\\Work\\todo.txt"]);
+    // A file with no namesake over there: send it, nothing to compare.
+    assert_eq!(shown(&mut rig, &ids), ["copy-other", "move-other"]);
+    rig.select(&["C:\\Work\\notes.txt"]);
+    assert_eq!(shown(&mut rig, &ids), ["copy-other", "move-other", "compare"]);
+    testing::set_rtl(false);
+}
+
+#[test]
+fn no_menu_of_the_dock_has_a_greyed_row_where_nothing_is_selected() {
+    let _guard = testing::lock();
+    testing::set_rtl(false);
+    let f = folder_facts();
+    let greyed = |nodes: &[Node]| nodes.iter().any(|node| matches!(node, Node::Item(e) if e.disabled));
+    for fold in [0, 4, 5] {
+        assert!(!greyed(&menus::tools_menu(&f, &[], fold, false)), "tools at {fold}");
+        assert!(!greyed(&menus::view_menu(&f, fold)), "view at {fold}");
+    }
+    assert!(!greyed(&menus::edits_menu(&f)));
+    assert!(!greyed(&menus::new_menu(&[])));
+    // The tile sizes at either end offer only the step that exists.
+    let smallest = labels(&menus::sizes_menu(TileSize::Small));
+    assert!(smallest.contains(&"Larger tiles".to_string()) && !smallest.contains(&"Smaller tiles".to_string()));
+    let tools = menus::tools_menu(&f, &[], 0, false);
+    assert!(
+        !labels(&tools).iter().any(|row| row.starts_with('#') && row.len() < 3),
+        "no empty heading"
+    );
+}
+
+#[test]
+fn the_view_menu_holds_the_tile_sizes_once_the_arrow_has_folded_away() {
+    let _guard = testing::lock();
+    testing::set_rtl(false);
+    let mut f = folder_facts();
+    assert!(
+        !labels(&menus::view_menu(&f, 5)).contains(&"Tile size>".to_string()),
+        "a list has none"
+    );
+    f.view = ViewMode::Grid;
+    assert!(labels(&menus::view_menu(&f, 5)).contains(&"Tile size>".to_string()));
+    assert!(
+        !labels(&menus::view_menu(&f, 3)).contains(&"Tile size>".to_string()),
+        "the arrow is still in the bar"
+    );
+}
+
+#[test]
+fn the_island_eases_to_a_new_width_and_snaps_while_the_window_is_resized() {
+    let start = Instant::now();
+    let at = |ms: u64| start + Duration::from_millis(ms);
+    let mut ease = Ease::default();
+    // The first width is taken as it is.
+    assert_eq!(ease.step(Some(400.), 1000., false, at(0)), None);
+    // Buttons arrive: the island is held at 400 and grows toward 460, never jumping.
+    let first = ease.step(Some(460.), 1000., false, at(1000)).expect("pinned");
+    assert!((first - 400.).abs() < 1.);
+    let mid = ease.step(Some(460.), 1000., false, at(1085)).expect("moving");
+    assert!(mid > 400. && mid < 460., "{mid}");
+    assert!(ease.moving());
+    assert_eq!(
+        ease.step(Some(460.), 1000., false, at(1400)),
+        Some(460.),
+        "arrived, held at its width"
+    );
+    assert!(!ease.moving());
+    // Reduce motion lands at once.
+    assert_eq!(ease.step(Some(300.), 1000., true, at(1500)), None);
+    // A window being resized does not slide the island behind it.
+    assert_eq!(ease.step(Some(300.), 900., false, at(1600)), None);
+    assert_eq!(ease.step(Some(350.), 900., false, at(1700)), None);
+    // Content not painted yet: what was shown is held.
+    let held = ease.step(None, 900., false, at(2500));
+    assert_eq!(held, Some(350.));
+}
+
+#[gpui_kit::test]
+fn the_dock_draws_with_motion_on_while_buttons_come_and_go(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut rig = open(cx, false, 1400.);
+    rig.cx.update(|_, cx| cx.set_reduce_motion(false));
+    rig.go("C:\\Work");
+    rig.select(&["C:\\Work\\notes.txt"]);
+    for _ in 0..6 {
+        rig.cx.update(|window, cx| window.render_frame(cx));
+        rig.cx.run_until_parked();
+    }
+    assert!(rig.present("Cut (Ctrl+X)"));
+    rig.select(&[]);
+    for _ in 0..6 {
+        rig.cx.update(|window, cx| window.render_frame(cx));
+    }
+    assert!(!rig.present("Cut (Ctrl+X)"));
+    rig.cx.update(|_, cx| cx.set_reduce_motion(true));
     testing::set_rtl(false);
 }

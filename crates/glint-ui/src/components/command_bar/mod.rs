@@ -105,6 +105,10 @@ const ISLAND_PAD: f32 = 1.75;
 /// ([`CommandBar::set_side_room`]): between this and the width at which both sides have their room, the island's
 /// room stays as it is while the sides grow, so a narrower place never has more room for it than a wider one.
 const ISLAND_FIRST: f32 = 30.;
+/// What the island adds to its two groups besides its border, in rems: its padding and its divider with its margins.
+const ISLAND_OWN: f32 = 1.25;
+/// The island's border, in pixels (one at each side, one px wide, and the divider's own line).
+const ISLAND_BORDER: f32 = 3.;
 /// The most items a selection may have for the island to offer a next step (the menus' own limit).
 const MOST_FOR_STEP: usize = 200;
 /// A press that closed a menu is the press of the button that opened it if it comes this soon after.
@@ -175,6 +179,8 @@ struct Measured {
     bar: Cell<f32>,
     left: Cell<f32>,
     right: Cell<f32>,
+    /// The island's own box, inside its border.
+    island: Cell<f32>,
     /// The fold and the signature the painted frame was drawn with.
     fold: Cell<usize>,
     signature: Cell<u64>,
@@ -215,6 +221,13 @@ pub struct CommandBar {
     /// The room kept free at each side of the island's place, in rems (see `set_side_room`).
     side_room: f32,
     measured: Rc<Measured>,
+    /// The island's width easing from one size to the next.
+    ease: Ease,
+    /// What the island is wider than its two groups by (padding, border, divider), in rems, as last measured
+    /// while it was free to size itself.
+    overhead: f32,
+    /// The island was held to a width in the last frame.
+    was_pinned: bool,
     /// Where the buttons that open menus were painted, by name.
     anchors: Rc<RefCell<HashMap<&'static str, Bounds<Pixels>>>>,
     /// Folder sizes are being measured (the window says so).
@@ -290,6 +303,9 @@ impl CommandBar {
             folding: Folding::default(),
             side_room: 0.,
             measured: Rc::new(Measured::default()),
+            ease: Ease::default(),
+            overhead: ISLAND_OWN + ISLAND_BORDER / 16.,
+            was_pinned: false,
             anchors: Rc::new(RefCell::new(HashMap::new())),
             sizing: false,
             tasks: Tasks::default(),
@@ -444,6 +460,18 @@ impl CommandBar {
             self.sizing,
             i18n::is_rtl(),
             (rem * 10.) as u32,
+        )
+            .hash(&mut hasher);
+        // What else comes and goes with the place.
+        (
+            f.in_folder,
+            f.find,
+            f.has_folders,
+            f.can_flat || f.flat,
+            f.view == ViewMode::Grid && !f.mapped,
+            f.mapped,
+            f.dual && f.other,
+            f.can_view(),
         )
             .hash(&mut hasher);
         // The next step and Paste's words change how much room the island needs.
@@ -850,6 +878,90 @@ fn arrow(cx: &App, t: &Tokens, id: &'static str, name: SharedString) -> Button {
         .tooltip(name)
 }
 
+/// `el` fading in over a short moment when it first arrives (a button that comes with the selection or the place);
+/// it stays as it is while it is there, and is plain with reduce motion. `key` makes a fresh fade when it changes.
+fn fade(name: &'static str, key: usize, el: Div, cx: &App) -> AnyElement {
+    if cx.reduce_motion() {
+        return el.into_any_element();
+    }
+    el.with_animation(
+        (name, key),
+        Animation::new(theme::motion::FAST).with_easing(theme::motion::glide),
+        |el, delta| el.opacity(delta),
+    )
+    .into_any_element()
+}
+
+/// How the island's width moves from one size to the next: easing between the two, not jumping, while buttons
+/// come and go or a label changes length. Pure arithmetic over measured widths and the clock.
+#[derive(Default)]
+struct Ease {
+    /// The width the island rests at (the last one settled on).
+    shown: Option<f32>,
+    /// The move in flight: where it started, where it goes, when.
+    going: Option<(f32, f32, Instant)>,
+    /// The dock's width the last time, and when it last changed (a window being resized snaps).
+    dock: f32,
+    dock_moved: Option<Instant>,
+}
+
+/// How long the island takes to find its new width.
+const EASE: Duration = theme::motion::BASE;
+/// A resize of the window snaps for this long after the last change of the dock's width.
+const RESIZING: Duration = Duration::from_millis(250);
+
+impl Ease {
+    /// What the island is drawn at now.
+    fn current(&self, now: Instant) -> Option<f32> {
+        match self.going {
+            Some((from, to, at)) => {
+                let t = (now.saturating_duration_since(at).as_secs_f32() / EASE.as_secs_f32()).clamp(0., 1.);
+                Some(from + (to - from) * theme::motion::glide(t))
+            }
+            None => self.shown,
+        }
+    }
+
+    /// Takes the width the last paint measured (`natural`, the island's own) and the dock's width, and says what
+    /// width to hold the island at this frame: `None` leaves it to its content (the first frame, a window being
+    /// resized, reduce motion). While `Some` the island is pinned and clips what is wider, so new buttons never
+    /// show their full width before the island has grown to them.
+    fn step(&mut self, natural: Option<f32>, dock: f32, snap: bool, now: Instant) -> Option<f32> {
+        if (dock - self.dock).abs() > 0.5 {
+            self.dock = dock;
+            self.dock_moved = Some(now);
+        }
+        let resizing = self
+            .dock_moved
+            .is_some_and(|at| now.saturating_duration_since(at) < RESIZING);
+        let cur = self.current(now);
+        let Some(n) = natural else {
+            return cur;
+        };
+        let Some(cur) = cur.filter(|_| !snap && !resizing) else {
+            self.going = None;
+            self.shown = Some(n);
+            return None;
+        };
+        let target = self.going.map_or(self.shown.unwrap_or(n), |(_, to, _)| to);
+        if (target - n).abs() > 0.5 {
+            self.going = Some((cur, n, now));
+        }
+        if let Some((_, to, at)) = self.going {
+            if now.saturating_duration_since(at) >= EASE {
+                self.going = None;
+                self.shown = Some(to);
+            }
+        }
+        self.current(now)
+    }
+
+    /// A move is in flight (another frame is needed).
+    fn moving(&self) -> bool {
+        self.going.is_some()
+    }
+}
+
 fn divider(t: &Tokens) -> Div {
     div().mx(space(1.)).h(space(5.)).w(px(1.)).flex_none().bg(t.border)
 }
@@ -878,6 +990,7 @@ fn width_probe(cell: &Rc<Measured>, which: Width, fold: usize, signature: u64, i
                 Width::Bar => &measured.bar,
                 Width::Left => &measured.left,
                 Width::Right => &measured.right,
+                Width::Island => &measured.island,
             };
             let mut changed = (seen.get() - width).abs() > 0.5;
             seen.set(width);
@@ -901,6 +1014,7 @@ enum Width {
     Bar,
     Left,
     Right,
+    Island,
 }
 
 impl CommandBar {
@@ -913,7 +1027,8 @@ impl CommandBar {
             .child(anchor_probe(&self.anchors, name))
     }
 
-    /// The group at the start edge: New, the edits, the tools.
+    /// The group at the start edge: New, the edits, the tools. Each cluster is there only when something in it
+    /// can act here; the dividers go between the clusters that are.
     fn left_group(&self, fold: usize, t: &Tokens, cx: &mut Context<Self>) -> Stateful<Div> {
         let f = &self.facts;
         let labels = fold < 1;
@@ -966,9 +1081,12 @@ impl CommandBar {
                 )
                 .child(width_probe(&self.measured, Width::Left, fold, 0, cx.entity_id()));
         }
-        let new_off = !f.in_folder || f.find || f.read_only;
-        let mut group = group
-            .child(
+        let mut clusters: Vec<Vec<AnyElement>> = Vec::new();
+        // New: only where something can be made (not This PC, not a search's results); a read-only place keeps
+        // it greyed, and the island's note says why.
+        let mut new = Vec::new();
+        if f.can_make() {
+            new.push(
                 word(
                     cx,
                     t,
@@ -979,10 +1097,11 @@ impl CommandBar {
                     keyed("New folder ({0})", &[&actions::NewFolder]),
                     None,
                 )
-                .disabled(new_off)
-                .on_click(cx.listener(|this, _, window, cx| this.dispatch(Box::new(actions::NewFolder), window, cx))),
-            )
-            .child(
+                .disabled(f.read_only)
+                .on_click(cx.listener(|this, _, window, cx| this.dispatch(Box::new(actions::NewFolder), window, cx)))
+                .into_any_element(),
+            );
+            new.push(
                 self.anchored(
                     "new",
                     arrow(
@@ -991,18 +1110,20 @@ impl CommandBar {
                         "new-menu",
                         t!("New: a folder, a text document, or a kind of file your apps make (a Word document, a zip…)"),
                     )
-                    .disabled(new_off)
+                    .disabled(f.read_only)
                     // Tucked against New folder, as the TypeScript's -ms-1.
                     .ms(-1.)
                     .on_click(cx.listener(|this, _, window, cx| this.show_new(window, cx))),
-                ),
+                )
+                .into_any_element(),
             );
+        }
+        clusters.push(new);
         if fold < MOST {
-            group = group.child(divider(t));
-            group = self.edit_buttons(group, fold, t, cx);
-        } else {
-            group = group.child(
-                self.anchored(
+            clusters.push(self.edit_buttons(fold, t, cx));
+        } else if !menus::edits_menu(f).is_empty() {
+            clusters.push(vec![self
+                .anchored(
                     "edits",
                     tool(
                         cx,
@@ -1013,16 +1134,16 @@ impl CommandBar {
                         None,
                     )
                     .on_click(cx.listener(|this, _, window, cx| this.show_edits(window, cx))),
-                ),
-            );
+                )
+                .into_any_element()]);
         }
-        group = group.child(divider(t));
+        let mut tools = Vec::new();
         // In an archive, or a folder Windows keeps closed, where the tools would be (they're for folders on disk
         // you may read): why the rest is greyed out.
         if f.read_only {
-            group = group.child(self.read_only_note(labels, t, cx));
+            tools.push(self.read_only_note(labels, t, cx).into_any_element());
             if let Some(archive) = f.whole_archive.clone() {
-                group = group.child(
+                tools.push(
                     word(
                         cx,
                         t,
@@ -1036,11 +1157,12 @@ impl CommandBar {
                     .on_click(cx.listener(move |this, _, _, cx| {
                         let archive = archive.clone();
                         this.explorer.update(cx, |e, cx| e.extract_here(&archive, cx).detach());
-                    })),
+                    }))
+                    .into_any_element(),
                 );
             }
         } else {
-            group = group.child(
+            tools.push(
                 self.anchored(
                     "tools",
                     menu_word(
@@ -1053,11 +1175,14 @@ impl CommandBar {
                         t!("Tools: Terminal, File X-Ray, what's locking, recent changes, duplicate files"),
                     )
                     .on_click(cx.listener(|this, _, window, cx| this.show_tools(window, cx))),
-                ),
+                )
+                .into_any_element(),
             );
         }
         if !self.tasks.groups.is_empty() && f.can_run_tasks() {
-            group = group.child(
+            tools.push(fade(
+                "run-in",
+                0,
                 self.anchored(
                     "tasks",
                     menu_word(
@@ -1071,166 +1196,171 @@ impl CommandBar {
                     )
                     .on_click(cx.listener(|this, _, window, cx| this.show_tasks(window, cx))),
                 ),
-            );
+                cx,
+            ));
+        }
+        clusters.push(tools);
+        let mut group = group;
+        let mut first = true;
+        for cluster in clusters.into_iter().filter(|cluster| !cluster.is_empty()) {
+            if !first {
+                group = group.child(divider(t));
+            }
+            first = false;
+            group = group.children(cluster);
         }
         group.child(width_probe(&self.measured, Width::Left, fold, 0, cx.entity_id()))
     }
 
     /// Cut, Copy, Paste, the other pane's two, Compare, Rename and Delete. What acts on a selection is there
-    /// while there is one: with nothing selected the island holds Paste alone of these, so nothing greyed out
-    /// stands between New and the tools.
-    fn edit_buttons(&self, group: Stateful<Div>, fold: usize, t: &Tokens, cx: &mut Context<Self>) -> Stateful<Div> {
+    /// while there is one: with nothing selected the island holds Paste alone of these (and not even that where
+    /// nothing can be pasted), so nothing greyed out stands between New and the tools. What arrives with a
+    /// selection fades in.
+    fn edit_buttons(&self, fold: usize, t: &Tokens, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let f = &self.facts;
-        let none = f.selected == 0;
-        let paste = self.paste_button(fold, t, cx);
+        let paste = f.can_make().then(|| self.paste_button(fold, t, cx));
         let basket = self.basket_button(fold, t, cx);
-        if none {
-            return group.child(paste).children(basket);
+        if f.selected == 0 {
+            return paste.into_iter().chain(basket).collect();
         }
-        let mut group = group
-            .child(
+        let mut parts: Vec<AnyElement> = vec![
+            tool(
+                cx,
+                t,
+                "cut",
+                IconName::Scissors,
+                keyed("Cut ({0})", &[&actions::Cut]),
+                None,
+            )
+            .disabled(f.read_only)
+            .on_click(cx.listener(|this, _, window, cx| this.dispatch(Box::new(actions::Cut), window, cx)))
+            .into_any_element(),
+            tool(
+                cx,
+                t,
+                "copy",
+                IconName::Copy,
+                if f.read_only && !f.closed {
+                    keyed("Copy ({0}): extracted, to paste anywhere", &[&actions::Copy])
+                } else {
+                    keyed("Copy ({0})", &[&actions::Copy])
+                },
+                None,
+            )
+            .on_click(cx.listener(|this, _, window, cx| this.dispatch(Box::new(actions::Copy), window, cx)))
+            .into_any_element(),
+        ];
+        parts.extend(paste);
+        parts.extend(basket);
+        // The other pane's two: only where the other pane can take them.
+        if f.dual && f.other {
+            parts.push(
                 tool(
                     cx,
                     t,
-                    "cut",
-                    IconName::Scissors,
-                    keyed("Cut ({0})", &[&actions::Cut]),
+                    "copy-other",
+                    IconName::CopyPlus,
+                    t!("Copy to the other pane"),
+                    None,
+                )
+                .on_click(cx.listener(|this, _, window, cx| this.pick(Pick::CopyToOther, window, cx)))
+                .into_any_element(),
+            );
+            parts.push(
+                tool(
+                    cx,
+                    t,
+                    "move-other",
+                    IconName::FolderOutput,
+                    t!("Move to the other pane"),
                     None,
                 )
                 .disabled(f.read_only)
-                .on_click(cx.listener(|this, _, window, cx| this.dispatch(Box::new(actions::Cut), window, cx))),
-            )
-            .child(
-                tool(
-                    cx,
-                    t,
-                    "copy",
-                    IconName::Copy,
-                    if f.read_only && !f.closed {
-                        keyed("Copy ({0}): extracted, to paste anywhere", &[&actions::Copy])
-                    } else {
-                        keyed("Copy ({0})", &[&actions::Copy])
-                    },
-                    None,
-                )
-                .on_click(cx.listener(|this, _, window, cx| this.dispatch(Box::new(actions::Copy), window, cx))),
-            )
-            .child(paste)
-            .children(basket);
-        if f.dual {
-            group = group
-                .child(
-                    tool(
-                        cx,
-                        t,
-                        "copy-other",
-                        IconName::CopyPlus,
-                        t!("Copy to the other pane"),
-                        None,
-                    )
-                    .disabled(none || !f.other)
-                    .on_click(cx.listener(|this, _, window, cx| this.pick(Pick::CopyToOther, window, cx))),
-                )
-                .child(
-                    tool(
-                        cx,
-                        t,
-                        "move-other",
-                        IconName::FolderOutput,
-                        t!("Move to the other pane"),
-                        None,
-                    )
-                    .disabled(none || !f.other || f.read_only)
-                    .on_click(cx.listener(|this, _, window, cx| this.pick(Pick::MoveToOther, window, cx))),
-                );
+                .on_click(cx.listener(|this, _, window, cx| this.pick(Pick::MoveToOther, window, cx)))
+                .into_any_element(),
+            );
         }
-        if f.dual || f.pair.is_some() {
-            let tip = match &f.pair {
-                Some(pair) => keyed_with(
-                    "Compare “{a}” and “{b}” ({0})",
-                    &[&actions::CompareFiles],
-                    &[("a", pair.left_name.as_str()), ("b", pair.right_name.as_str())],
-                ),
-                None => keyed(
-                    "Compare files: select two files, or one file in each pane ({0})",
-                    &[&actions::CompareFiles],
-                ),
-            };
-            let pair = f.pair.clone();
-            group = group.child(
+        // Compare: only while there is a pair to compare.
+        if let Some(pair) = f.pair.clone() {
+            let tip = keyed_with(
+                "Compare “{a}” and “{b}” ({0})",
+                &[&actions::CompareFiles],
+                &[("a", pair.left_name.as_str()), ("b", pair.right_name.as_str())],
+            );
+            parts.push(
                 tool(cx, t, "compare", IconName::GitCompareArrows, tip, None)
-                    .disabled(f.pair.is_none())
                     .on_click(cx.listener(move |_, _, _, cx| {
-                        if let Some(pair) = &pair {
-                            cx.emit(CommandBarEvent::Menu(MenuEvent::Compare {
-                                left: pair.left.clone(),
-                                right: pair.right.clone(),
-                            }));
-                        }
-                    })),
+                        cx.emit(CommandBarEvent::Menu(MenuEvent::Compare {
+                            left: pair.left.clone(),
+                            right: pair.right.clone(),
+                        }));
+                    }))
+                    .into_any_element(),
             );
         }
-        let group = group
-            .child(
-                tool(
-                    cx,
-                    t,
-                    "rename",
-                    IconName::PenLine,
-                    if f.selected > 1 {
-                        keyed_with(
-                            "Rename {n} items ({0})",
-                            &[&actions::Rename],
-                            &[("n", &f.selected.to_string())],
-                        )
-                    } else {
-                        keyed(
-                            "Rename ({0}) · {1} renames many",
-                            &[&actions::Rename, &actions::BatchRename],
-                        )
-                    },
-                    None,
-                )
-                .disabled(none || f.read_only)
-                .on_click(cx.listener(|this, _, window, cx| this.dispatch(Box::new(actions::Rename), window, cx))),
-            )
-            .child(
-                tool(
-                    cx,
-                    t,
-                    "delete",
-                    IconName::Trash,
+        parts.push(
+            tool(
+                cx,
+                t,
+                "rename",
+                IconName::PenLine,
+                if f.selected > 1 {
+                    keyed_with(
+                        "Rename {n} items ({0})",
+                        &[&actions::Rename],
+                        &[("n", &f.selected.to_string())],
+                    )
+                } else {
                     keyed(
-                        "Delete ({0}) · {1} deletes permanently",
-                        &[&actions::Delete, &actions::DeletePermanently],
-                    ),
-                    None,
-                )
-                .disabled(none || f.read_only)
-                .on_click(cx.listener(|this, _, window, cx| this.dispatch(Box::new(actions::Delete), window, cx))),
-            );
-        let group = self.add_virtual_drag_chip(group, fold, t, cx);
-        match &self.step {
-            // The next step is what the island is for while something is selected: it keeps its word while
-            // every other button has lost its own, is a picture alone at the fifth fold, and goes only when
-            // the edits themselves go into their menu.
-            Some(step) if fold < MOST => group.child(divider(t)).child(self.step_button(step, fold, t, cx)),
-            _ => group,
+                        "Rename ({0}) · {1} renames many",
+                        &[&actions::Rename, &actions::BatchRename],
+                    )
+                },
+                None,
+            )
+            .disabled(f.read_only)
+            .on_click(cx.listener(|this, _, window, cx| this.dispatch(Box::new(actions::Rename), window, cx)))
+            .into_any_element(),
+        );
+        parts.push(
+            tool(
+                cx,
+                t,
+                "delete",
+                IconName::Trash,
+                keyed(
+                    "Delete ({0}) · {1} deletes permanently",
+                    &[&actions::Delete, &actions::DeletePermanently],
+                ),
+                None,
+            )
+            .disabled(f.read_only)
+            .on_click(cx.listener(|this, _, window, cx| this.dispatch(Box::new(actions::Delete), window, cx)))
+            .into_any_element(),
+        );
+        parts.extend(self.add_virtual_drag_chip(fold, t, cx));
+        let mut cluster = vec![fade(
+            "selection-in",
+            0,
+            row_start().flex_none().gap(space(0.5)).children(parts),
+            cx,
+        )];
+        // The next step is what the island is for while something is selected: it keeps its word while
+        // every other button has lost its own, is a picture alone at the fifth fold, and goes only when
+        // the edits themselves go into their menu.
+        if let Some(step) = &self.step {
+            cluster.push(divider(t).into_any_element());
+            cluster.push(fade("step-in", 0, self.step_button(step, fold, t, cx), cx));
         }
+        cluster
     }
 
     /// Adds a compact draggable transform chip (`Drag clean` or `Drag <10 MB`) when room permits and the
     /// selection consists of metadata-strippable images or a single sliceable/shrinkable video.
-    fn add_virtual_drag_chip(
-        &self,
-        group: Stateful<Div>,
-        fold: usize,
-        t: &Tokens,
-        cx: &mut Context<Self>,
-    ) -> Stateful<Div> {
+    fn add_virtual_drag_chip(&self, fold: usize, t: &Tokens, cx: &mut Context<Self>) -> Option<AnyElement> {
         let f = &self.facts;
         if fold >= 4 || f.selected == 0 || f.read_only || f.bin || glint_model::paths::is_remote_path(&f.path) {
-            return group;
+            return None;
         }
         let selected: Vec<String> = self
             .explorer
@@ -1239,7 +1369,7 @@ impl CommandBar {
             .map(|tab| tab.selection.iter().take(11).map(str::to_string).collect())
             .unwrap_or_default();
         if selected.is_empty() || selected.len() > 10 {
-            return group;
+            return None;
         }
         let ext_of = |p: &str| {
             std::path::Path::new(p)
@@ -1270,7 +1400,7 @@ impl CommandBar {
                 glint_core::virtual_drag::DragTransform::ShrinkUnderMb(10),
             )
         } else {
-            return group;
+            return None;
         };
 
         let press_paths = selected.clone();
@@ -1327,7 +1457,7 @@ impl CommandBar {
             )
             .child(icon(icon_name).small().text_color(t.primary))
             .child(div().whitespace_nowrap().child(label));
-        group.child(chip)
+        Some(chip.into_any_element())
     }
 
     /// The basket's pill, while it holds anything: "Basket 3", which opens what can be done with it. With nothing in
@@ -1348,7 +1478,9 @@ impl CommandBar {
             &[("n", &plural(self.basket, "item"))],
         );
         let open = self.drawer.read(cx).is_open();
-        Some(
+        Some(fade(
+            "basket-in",
+            0,
             self.anchored(
                 "basket",
                 menu_word(cx, t, "basket", IconName::Package, words, fold < 4, tip)
@@ -1364,9 +1496,9 @@ impl CommandBar {
             .on_mouse_down(
                 gpui_kit::MouseButton::Right,
                 cx.listener(|this, _, window, cx| this.show_basket(window, cx)),
-            )
-            .into_any_element(),
-        )
+            ),
+            cx,
+        ))
     }
 
     /// Paste. While files are on the clipboard and Paste can be used it says what it would paste ("Paste 3 files")
@@ -1502,7 +1634,6 @@ impl CommandBar {
         let f = &self.facts;
         // While the tab shows its disk usage map, neither is pressed and each goes back to the files.
         let mapped = f.mapped && !f.find;
-        let off = !f.in_folder && !f.find && !f.bin;
         let size_name = glint_model::grid::TILE_SIZES
             .iter()
             .find(|spec| spec.size == f.tile_size)
@@ -1547,17 +1678,16 @@ impl CommandBar {
                 let chosen = !mapped && f.view == view;
                 tool(cx, t, id, glyph, name, Some(chosen))
                     .small()
-                    .disabled(off)
                     .on_click(cx.listener(move |this, _, _, cx| this.choose_view(view, cx)))
             }))
-            .child(
+            // The tile sizes are the grid's: the arrow is there while the grid is the view.
+            .children((f.view == ViewMode::Grid && !mapped).then(|| {
                 self.anchored(
                     "sizes",
                     arrow(cx, t, "tile-sizes", sizes)
-                        .disabled(off)
                         .on_click(cx.listener(|this, _, window, cx| this.show_sizes(window, cx))),
-                ),
-            )
+                )
+            }))
     }
 
     /// The group at the end edge: the views, the map, sizes and text search, the palette and the toggles.
@@ -1565,13 +1695,15 @@ impl CommandBar {
         let f = &self.facts;
         let labels = fold < 1;
         let mut group = row_start().id("command-bar-end").relative().flex_none().gap(space(0.5));
-        if fold < 5 {
+        if fold < 5 && f.can_view() {
             group = group.child(self.view_switch(t, cx));
         }
-        if fold < 4 {
-            let off = !f.in_folder || f.find;
+        if fold < 4 && f.can_map() {
             group = group
-                .child(
+                .child(fade(
+                    "map-in",
+                    0,
+                    div().flex_none().child(
                     word(
                         cx,
                         t,
@@ -1586,10 +1718,17 @@ impl CommandBar {
                         },
                         Some(f.mapped),
                     )
-                    .disabled(off)
                     .on_click(cx.listener(|this, _, window, cx| this.dispatch(Box::new(actions::DiskUsage), window, cx))),
-                )
-                .child(
+                    ),
+                    cx,
+                ));
+        }
+        if fold < 4 && f.can_size(self.sizing) {
+            group = group
+                .child(fade(
+                    "sizes-in",
+                    0,
+                    div().flex_none().child(
                     word(
                         cx,
                         t,
@@ -1604,10 +1743,10 @@ impl CommandBar {
                         },
                         None,
                     )
-                    .disabled(off)
                     .on_click(cx.listener(|this, _, window, cx| this.pick(Pick::FolderSizes, window, cx))),
-                )
-                ;
+                    ),
+                    cx,
+                ));
         }
         if fold < 5 {
             group = group
@@ -1639,21 +1778,27 @@ impl CommandBar {
                     )
                     .on_click(cx.listener(|this, _, window, cx| this.pick(Pick::Hidden, window, cx))),
                 )
-                .child(
-                    tool(
-                        cx,
-                        t,
-                        "flat",
-                        IconName::Layers,
-                        keyed(
-                            "Flat view: every file in this folder and its subfolders as one list ({0})",
-                            &[&actions::FlatView],
+                .children((f.flat || f.can_flat).then(|| {
+                    fade(
+                        "flat-in",
+                        0,
+                        div().flex_none().child(
+                            tool(
+                                cx,
+                                t,
+                                "flat",
+                                IconName::Layers,
+                                keyed(
+                                    "Flat view: every file in this folder and its subfolders as one list ({0})",
+                                    &[&actions::FlatView],
+                                ),
+                                Some(f.flat),
+                            )
+                            .on_click(cx.listener(|this, _, window, cx| this.pick(Pick::Flat, window, cx))),
                         ),
-                        Some(f.flat),
+                        cx,
                     )
-                    .disabled(!(f.flat || f.can_flat))
-                    .on_click(cx.listener(|this, _, window, cx| this.pick(Pick::Flat, window, cx))),
-                )
+                }))
                 .child(
                     tool(
                         cx,
@@ -1739,6 +1884,20 @@ impl Render for CommandBar {
         let room = if dock > 0. { (dock - sides).max(1.) } else { 0. };
         let fold = self.folding.settle(signature, room, measured);
 
+        // The island's own width for the content last painted: its two groups, its padding, border and divider.
+        // Measured while the island sizes itself (its padding and divider are what it is wider than the groups by),
+        // so a different text size or theme can't leave the last button clipped.
+        if !self.was_pinned && m.island.get() > 0. && m.left.get() > 0. && m.right.get() > 0. {
+            self.overhead = (m.island.get() + 2. - m.left.get() - m.right.get()) / rem;
+        }
+        let natural =
+            (m.left.get() > 0. && m.right.get() > 0.).then(|| m.left.get() + m.right.get() + rem * self.overhead);
+        let pinned = self.ease.step(natural, dock, cx.reduce_motion(), Instant::now());
+        self.was_pinned = pinned.is_some();
+        if self.ease.moving() {
+            window.request_animation_frame();
+        }
+
         let left = self.left_group(fold, &t, cx);
         let right = self.right_group(fold, &t, cx);
         let id = cx.entity_id();
@@ -1788,6 +1947,8 @@ impl Render for CommandBar {
             .flex_none()
             .h(space(HEIGHT))
             .px(space(1.5))
+            // Held at the width it is easing to (a hair more, for rounding), clipping what hasn't been grown into.
+            .when_some(pinned, |island, width| island.w(px(width + 1.)).overflow_hidden())
             .rounded(theme::size::RADIUS_SHEET)
             .border_1()
             .border_color(t.stroke)
@@ -1796,6 +1957,7 @@ impl Render for CommandBar {
             .child(left)
             .child(divider(&t))
             .child(right)
+            .child(width_probe(&self.measured, Width::Island, fold, 0, id))
             .children(menu)
             .children(drawer)
             // Files dragged onto the dock go into the basket (the drag's words say so); nothing moves or copies.

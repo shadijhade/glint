@@ -23,7 +23,7 @@ use crate::{i18n, t};
 use glint_core::projects::TaskGroup;
 use glint_model::entries::FileEntry;
 use glint_model::grid::{zoom_tiles, TileSize, TILE_SIZES};
-use glint_model::paths::{base_name, is_remote_path};
+use glint_model::paths::base_name;
 use glint_model::store::ViewMode;
 
 // ---- Keys and tooltips -------------------------------------------------------------------------------------
@@ -204,39 +204,47 @@ pub fn new_menu(kinds: &[NewKind]) -> Vec<Node> {
 pub fn sizes_menu(tile: TileSize) -> Vec<Node> {
     let bigger = zoom_tiles(tile.as_str(), 1);
     let smaller = zoom_tiles(tile.as_str(), -1);
-    let mut nodes = vec![
-        Node::Item(
-            picked(
-                t!("Larger tiles"),
-                IconName::ZoomIn,
-                Pick::Larger,
-                Some(&crate::actions::GridLarger),
-            )
-            .disabled(bigger == tile),
-        ),
-        Node::Item(
-            picked(
-                t!("Smaller tiles"),
-                IconName::ZoomOut,
-                Pick::Smaller,
-                Some(&crate::actions::GridSmaller),
-            )
-            .disabled(smaller == tile),
-        ),
-        Node::Separator,
-    ];
-    nodes.extend(TILE_SIZES.iter().map(|spec| {
-        let mut entry = picked(
-            SharedString::from(glint_model::i18n::translate(i18n::language(), spec.label).to_string()),
-            IconName::Check,
-            Pick::Tiles(spec.size),
-            (spec.size == TileSize::Medium).then_some(&crate::actions::GridReset as &dyn Action),
-        )
-        .checked(spec.size == tile);
-        entry.icon = None;
-        Node::Item(entry)
-    }));
+    let mut nodes = Vec::new();
+    // A step that can't be taken is not offered.
+    if bigger != tile {
+        nodes.push(Node::Item(picked(
+            t!("Larger tiles"),
+            IconName::ZoomIn,
+            Pick::Larger,
+            Some(&crate::actions::GridLarger),
+        )));
+    }
+    if smaller != tile {
+        nodes.push(Node::Item(picked(
+            t!("Smaller tiles"),
+            IconName::ZoomOut,
+            Pick::Smaller,
+            Some(&crate::actions::GridSmaller),
+        )));
+    }
+    if !nodes.is_empty() {
+        nodes.push(Node::Separator);
+    }
+    nodes.extend(tile_rows(tile));
     nodes
+}
+
+/// One row for each tile size, the one in use checked.
+fn tile_rows(tile: TileSize) -> Vec<Node> {
+    TILE_SIZES
+        .iter()
+        .map(|spec| {
+            let mut entry = picked(
+                SharedString::from(glint_model::i18n::translate(i18n::language(), spec.label).to_string()),
+                IconName::Check,
+                Pick::Tiles(spec.size),
+                (spec.size == TileSize::Medium).then_some(&crate::actions::GridReset as &dyn Action),
+            )
+            .checked(spec.size == tile);
+            entry.icon = None;
+            Node::Item(entry)
+        })
+        .collect()
 }
 
 // ---- View -------------------------------------------------------------------------------------------------
@@ -244,9 +252,9 @@ pub fn sizes_menu(tile: TileSize) -> Vec<Node> {
 /// When even the icons don't fit, the view toggles in a menu (and narrower still, list or grid too)
 /// (`showToggles`).
 pub fn view_menu(f: &Facts, fold: usize) -> Vec<Node> {
-    let can_view = f.in_folder || f.find || f.bin || is_remote_path(&f.path);
     let mut nodes = Vec::new();
-    if fold >= 5 {
+    // Where views can't be chosen (This PC) they are not offered.
+    if fold >= 5 && f.can_view() {
         for (view, label, maker) in [
             (
                 ViewMode::List,
@@ -264,11 +272,19 @@ pub fn view_menu(f: &Facts, fold: usize) -> Vec<Node> {
                 Some(&crate::actions::ColumnsView as &dyn Action),
             ),
         ] {
-            let mut entry = picked(label, IconName::Check, Pick::View(view), maker)
-                .checked(!f.mapped && f.view == view)
-                .disabled(!can_view);
+            let mut entry =
+                picked(label, IconName::Check, Pick::View(view), maker).checked(!f.mapped && f.view == view);
             entry.icon = None;
             nodes.push(Node::Item(entry));
+        }
+        // The grid's sizes, which the arrow by the views holds while the bar is wider.
+        if f.view == ViewMode::Grid && !f.mapped {
+            nodes.push(Node::Menu {
+                label: t!("Tile size"),
+                icon: Some(IconName::LayoutGrid),
+                disabled: false,
+                items: tile_rows(f.tile_size),
+            });
         }
         nodes.push(Node::Separator);
     }
@@ -276,7 +292,7 @@ pub fn view_menu(f: &Facts, fold: usize) -> Vec<Node> {
     nodes
 }
 
-/// The five on/off rows: hidden items, the flat view, preview pane, dual pane, compare panes.
+/// The on/off rows: hidden items, the flat view (where it can be shown), preview pane, dual pane, compare panes.
 fn toggle_rows(f: &Facts) -> Vec<Node> {
     let rows = [
         (
@@ -306,10 +322,10 @@ fn toggle_rows(f: &Facts) -> Vec<Node> {
         ),
     ];
     rows.into_iter()
+        // The flat view is for a folder (and the way back out of it).
+        .filter(|(_, pick, _, _)| *pick != Pick::Flat || f.flat || f.can_flat)
         .map(|(label, pick, action, on)| {
-            // The flat view is for a folder (and the way back out of it); nothing else here depends on the place.
-            let off = pick == Pick::Flat && !(f.flat || f.can_flat);
-            let mut entry = picked(label, IconName::Check, pick, Some(action)).checked(on).disabled(off);
+            let mut entry = picked(label, IconName::Check, pick, Some(action)).checked(on);
             entry.icon = None;
             Node::Item(entry)
         })
@@ -318,49 +334,48 @@ fn toggle_rows(f: &Facts) -> Vec<Node> {
 
 // ---- Edits (narrowest) ------------------------------------------------------------------------------------
 
-/// The Compare row: "Compare “a” and “b”" when there is a pair, else the words that say what to select, greyed.
-fn compare_row(pair: Option<&Pair>, otherwise: SharedString) -> Node {
-    let keys = keys_of(&crate::actions::CompareFiles).map(SharedString::from);
-    let mut entry = match pair {
-        Some(pair) => Entry::ask(
-            t!(
-                "Compare “{a}” and “{b}”",
-                a = pair.left_name.as_str(),
-                b = pair.right_name.as_str()
-            ),
-            IconName::GitCompareArrows,
-            MenuEvent::Compare {
-                left: pair.left.clone(),
-                right: pair.right.clone(),
-            },
+/// The Compare row, for the pair that is chosen: none while there is no pair (it would only be greyed).
+fn compare_row(pair: Option<&Pair>) -> Option<Node> {
+    let pair = pair?;
+    let mut entry = Entry::ask(
+        t!(
+            "Compare “{a}” and “{b}”",
+            a = pair.left_name.as_str(),
+            b = pair.right_name.as_str()
         ),
-        None => Entry::note(otherwise, IconName::GitCompareArrows),
-    };
-    entry.hint = keys;
-    Node::Item(entry)
+        IconName::GitCompareArrows,
+        MenuEvent::Compare {
+            left: pair.left.clone(),
+            right: pair.right.clone(),
+        },
+    );
+    entry.hint = keys_of(&crate::actions::CompareFiles).map(SharedString::from);
+    Some(Node::Item(entry))
 }
 
-/// Narrowest: what is done to the selection, in a menu by New folder (`showEdits`).
+/// Narrowest: what is done to the selection, in a menu by New folder (`showEdits`). What can't apply here is not
+/// listed; a read-only place keeps its rows greyed (the note beside the island says why).
 pub fn edits_menu(f: &Facts) -> Vec<Node> {
-    let none = f.selected == 0;
-    let mut nodes = vec![
-        Node::Item(Entry::command(t!("Cut"), IconName::Scissors, Command::Cut).disabled(none || f.read_only)),
-        Node::Item(Entry::command(t!("Copy"), IconName::Copy, Command::Copy).disabled(none)),
-        Node::Item(
-            Entry::command(t!("Paste"), IconName::ClipboardPaste, Command::Paste)
-                .disabled(!f.in_folder || f.find || f.read_only),
-        ),
-    ];
-    if f.dual {
+    let some = f.selected > 0;
+    let mut nodes = Vec::new();
+    if some {
         nodes.push(Node::Item(
-            picked(
-                t!("Copy to the other pane"),
-                IconName::CopyPlus,
-                Pick::CopyToOther,
-                None,
-            )
-            .disabled(none || !f.other),
+            Entry::command(t!("Cut"), IconName::Scissors, Command::Cut).disabled(f.read_only),
         ));
+        nodes.push(Node::Item(Entry::command(t!("Copy"), IconName::Copy, Command::Copy)));
+    }
+    if f.can_make() {
+        nodes.push(Node::Item(
+            Entry::command(t!("Paste"), IconName::ClipboardPaste, Command::Paste).disabled(f.read_only),
+        ));
+    }
+    if f.dual && f.other && some {
+        nodes.push(Node::Item(picked(
+            t!("Copy to the other pane"),
+            IconName::CopyPlus,
+            Pick::CopyToOther,
+            None,
+        )));
         nodes.push(Node::Item(
             picked(
                 t!("Move to the other pane"),
@@ -368,30 +383,30 @@ pub fn edits_menu(f: &Facts) -> Vec<Node> {
                 Pick::MoveToOther,
                 None,
             )
-            .disabled(none || !f.other || f.read_only),
+            .disabled(f.read_only),
         ));
     }
-    if f.dual || f.pair.is_some() {
-        nodes.push(compare_row(f.pair.as_ref(), t!("Compare selected files")));
+    if some {
+        nodes.extend(compare_row(f.pair.as_ref()));
+        nodes.push(Node::Separator);
+        nodes.push(Node::Item(
+            Entry::command(
+                if f.selected > 1 {
+                    t!("Rename {n} items", n = f.selected)
+                } else {
+                    t!("Rename")
+                },
+                IconName::PenLine,
+                Command::Rename,
+            )
+            .disabled(f.read_only),
+        ));
+        nodes.push(Node::Item(
+            Entry::command(t!("Delete"), IconName::Trash, Command::Delete)
+                .danger(true)
+                .disabled(f.read_only),
+        ));
     }
-    nodes.push(Node::Separator);
-    nodes.push(Node::Item(
-        Entry::command(
-            if f.selected > 1 {
-                t!("Rename {n} items", n = f.selected)
-            } else {
-                t!("Rename")
-            },
-            IconName::PenLine,
-            Command::Rename,
-        )
-        .disabled(none || f.read_only),
-    ));
-    nodes.push(Node::Item(
-        Entry::command(t!("Delete"), IconName::Trash, Command::Delete)
-            .danger(true)
-            .disabled(none || f.read_only),
-    ));
     nodes
 }
 
@@ -412,8 +427,9 @@ pub fn tools_menu(f: &Facts, selected: &[FileEntry], fold: usize, sizing: bool) 
     } else {
         paths.clone()
     };
-    let ask = |label: SharedString, icon: IconName, event: MenuEvent, disabled: bool| {
-        Node::Item(Entry::ask(label, icon, event).disabled(disabled))
+    // A row that can't apply here is left out, not greyed.
+    let ask = |label: SharedString, icon: IconName, event: MenuEvent, applies: bool| {
+        applies.then(|| Node::Item(Entry::ask(label, icon, event)))
     };
     let mut nodes = Vec::new();
     if fold >= 5 {
@@ -427,8 +443,9 @@ pub fn tools_menu(f: &Facts, selected: &[FileEntry], fold: usize, sizing: bool) 
     }
     // Folded in from the bar, when it's that narrow.
     if fold >= 4 {
-        nodes.push(Node::Item(
-            picked(
+        let before = nodes.len();
+        if f.can_map() {
+            nodes.push(Node::Item(picked(
                 if f.mapped {
                     t!("Back to the file list")
                 } else {
@@ -437,11 +454,10 @@ pub fn tools_menu(f: &Facts, selected: &[FileEntry], fold: usize, sizing: bool) 
                 IconName::LayoutDashboard,
                 Pick::DiskUsage,
                 None,
-            )
-            .disabled(!in_folder || f.find),
-        ));
-        nodes.push(Node::Item(
-            picked(
+            )));
+        }
+        if f.can_size(sizing) {
+            nodes.push(Node::Item(picked(
                 if sizing {
                     t!("Stop calculating folder sizes")
                 } else {
@@ -450,10 +466,11 @@ pub fn tools_menu(f: &Facts, selected: &[FileEntry], fold: usize, sizing: bool) 
                 IconName::HardDrive,
                 Pick::FolderSizes,
                 None,
-            )
-            .disabled(!in_folder || f.find),
-        ));
-        nodes.push(Node::Separator);
+            )));
+        }
+        if nodes.len() > before {
+            nodes.push(Node::Separator);
+        }
     }
     nodes.push(Node::Item(picked(
         t!("Terminal here, under the files"),
@@ -461,25 +478,24 @@ pub fn tools_menu(f: &Facts, selected: &[FileEntry], fold: usize, sizing: bool) 
         Pick::TerminalPane,
         Some(&crate::actions::ToggleTerminal),
     )));
-    nodes.push(Node::Item(
-        Entry::new(
+    if in_folder {
+        nodes.push(Node::Item(Entry::new(
             t!("Open in Terminal"),
             IconName::SquareTerminal,
             Run::Do(Task::OpenTerminal(folder.clone())),
-        )
-        .disabled(!in_folder),
-    ));
+        )));
+    }
     nodes.push(Node::Heading(t!("Inspect")));
-    nodes.push(compare_row(f.pair.as_ref(), t!("Compare two files")));
-    nodes.push(ask(
+    nodes.extend(compare_row(f.pair.as_ref()));
+    nodes.extend(ask(
         t!("File X-Ray: hashes and hidden streams"),
         IconName::FingerprintPattern,
         MenuEvent::XRay {
             path: file.clone().unwrap_or_default(),
         },
-        file.is_none(),
+        file.is_some(),
     ));
-    nodes.push(ask(
+    nodes.extend(ask(
         if paths.is_empty() {
             t!("What's locking this folder?")
         } else {
@@ -489,49 +505,49 @@ pub fn tools_menu(f: &Facts, selected: &[FileEntry], fold: usize, sizing: bool) 
         MenuEvent::Locks {
             paths: paths_or_folder.clone(),
         },
-        !in_folder && paths.is_empty(),
+        in_folder || !paths.is_empty(),
     ));
-    nodes.push(ask(
+    nodes.extend(ask(
         t!("Recent changes in this folder"),
         IconName::FileClock,
         MenuEvent::Timeline { folder: folder.clone() },
-        !in_folder,
+        in_folder,
     ));
     // Everywhere: no folder.
-    nodes.push(ask(
+    nodes.extend(ask(
         t!("Moved and deleted: where did a file go?"),
         IconName::ClockArrowLeft,
         MenuEvent::History { folder: String::new() },
-        false,
+        true,
     ));
     nodes.push(Node::Heading(t!("Clean up")));
-    nodes.push(ask(
+    nodes.extend(ask(
         t!("Find duplicate files in this folder"),
         IconName::Files,
         MenuEvent::Duplicates { folder: folder.clone() },
-        !in_folder,
+        in_folder,
     ));
-    nodes.push(ask(
+    nodes.extend(ask(
         t!("Clean up this folder…"),
         IconName::BrushCleaning,
         MenuEvent::Cleanup { folder: folder.clone() },
-        !in_folder || read_only,
+        in_folder && !read_only,
     ));
     let pictures: Vec<String> = paths
         .iter()
         .filter(|path| crate::dialogs::convert::can_convert(path))
         .cloned()
         .collect();
-    nodes.push(ask(
+    nodes.extend(ask(
         t!("Convert the selected pictures…"),
         IconName::ImageDown,
         MenuEvent::ConvertPictures {
             paths: pictures.clone(),
         },
-        pictures.is_empty(),
+        !pictures.is_empty(),
     ));
     // An empty folder asks for the rules in general, not for this folder.
-    nodes.push(ask(
+    nodes.extend(ask(
         t!("Folder rules: sort out what comes in…"),
         IconName::WandSparkles,
         MenuEvent::Rule {
@@ -541,10 +557,10 @@ pub fn tools_menu(f: &Facts, selected: &[FileEntry], fold: usize, sizing: bool) 
                 String::new()
             },
         },
-        false,
+        true,
     ));
     nodes.push(Node::Heading(t!("Share")));
-    nodes.push(ask(
+    nodes.extend(ask(
         if paths.is_empty() {
             t!("Share this folder…")
         } else {
@@ -554,10 +570,10 @@ pub fn tools_menu(f: &Facts, selected: &[FileEntry], fold: usize, sizing: bool) 
         MenuEvent::Share {
             paths: paths_or_folder.clone(),
         },
-        f.bin || (paths.is_empty() && !in_folder),
+        !f.bin && (!paths.is_empty() || in_folder),
     ));
     nodes.push(Node::Heading(t!("Check")));
-    nodes.push(ask(
+    nodes.extend(ask(
         if paths.is_empty() {
             t!("Scan this folder with Microsoft Defender")
         } else {
@@ -565,9 +581,17 @@ pub fn tools_menu(f: &Facts, selected: &[FileEntry], fold: usize, sizing: bool) 
         },
         IconName::ShieldCheck,
         MenuEvent::Defender { paths: paths_or_folder },
-        read_only || (!in_folder && paths.is_empty()),
+        !read_only && (in_folder || !paths.is_empty()),
     ));
-    nodes
+    // A heading with nothing under it goes.
+    let mut kept: Vec<Node> = Vec::with_capacity(nodes.len());
+    for (i, node) in nodes.iter().enumerate() {
+        if matches!(node, Node::Heading(_)) && !matches!(nodes.get(i + 1), Some(Node::Item(_) | Node::Menu { .. })) {
+            continue;
+        }
+        kept.push(node.clone());
+    }
+    kept
 }
 
 // ---- Run --------------------------------------------------------------------------------------------------
@@ -618,18 +642,32 @@ pub fn basket_menu(items: &[String], f: &Facts) -> Vec<Node> {
     if items.is_empty() {
         return Vec::new();
     }
+    // Move and Copy need a folder that can take them.
     let can_drop_here = f.in_folder && !f.find && !f.read_only;
-    let mut nodes = vec![
-        Node::Item(Entry::ask(t!("Move here"), IconName::FolderInput, MenuEvent::BasketMove).disabled(!can_drop_here)),
-        Node::Item(Entry::ask(t!("Copy here"), IconName::Copy, MenuEvent::BasketCopy).disabled(!can_drop_here)),
-        Node::Item(Entry::ask(t!("Zip"), IconName::Package, MenuEvent::BasketZip)),
-        Node::Item(Entry::ask(
-            t!("Batch rename"),
-            IconName::PenLine,
-            MenuEvent::BasketRename,
-        )),
-        Node::Separator,
-    ];
+    let mut nodes = Vec::new();
+    if can_drop_here {
+        nodes.push(Node::Item(Entry::ask(
+            t!("Move here"),
+            IconName::FolderInput,
+            MenuEvent::BasketMove,
+        )));
+        nodes.push(Node::Item(Entry::ask(
+            t!("Copy here"),
+            IconName::Copy,
+            MenuEvent::BasketCopy,
+        )));
+    }
+    nodes.push(Node::Item(Entry::ask(
+        t!("Zip"),
+        IconName::Package,
+        MenuEvent::BasketZip,
+    )));
+    nodes.push(Node::Item(Entry::ask(
+        t!("Batch rename"),
+        IconName::PenLine,
+        MenuEvent::BasketRename,
+    )));
+    nodes.push(Node::Separator);
     let mut listed: Vec<Node> = items
         .iter()
         .take(BASKET_LISTED)
@@ -642,14 +680,7 @@ pub fn basket_menu(items: &[String], f: &Facts) -> Vec<Node> {
         })
         .collect();
     if items.len() > BASKET_LISTED {
-        listed.push(Node::Item(
-            Entry::ask(
-                t!("and {n} more", n = items.len() - BASKET_LISTED),
-                IconName::Ellipsis,
-                MenuEvent::BasketEmpty,
-            )
-            .disabled(true),
-        ));
+        listed.push(Node::Heading(t!("and {n} more", n = items.len() - BASKET_LISTED)));
     }
     nodes.push(Node::Menu {
         label: t!("What is in it ({n})", n = items.len()),

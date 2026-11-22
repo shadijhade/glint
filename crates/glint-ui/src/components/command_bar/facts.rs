@@ -51,6 +51,8 @@ pub struct Facts {
     pub in_folder: bool,
     /// At the top of an archive on disk, which can be extracted whole: the archive's file.
     pub whole_archive: Option<String>,
+    /// The folder shown holds at least one subfolder (Folder sizes has something to measure).
+    pub has_folders: bool,
     /// How many items are selected.
     pub selected: usize,
     /// The two files Ctrl+M would compare.
@@ -86,6 +88,7 @@ impl Facts {
             bin: false,
             in_folder: false,
             whole_archive: None,
+            has_folders: false,
             selected: 0,
             pair: None,
             dual: false,
@@ -122,6 +125,8 @@ impl Facts {
             whole_archive: archive
                 .filter(|a| same_path(&tab.path, &a.path) && same_path(&a.path, &a.outer))
                 .map(|a| a.outer.clone()),
+            // Stops at the first folder (they sort first); only a folder of nothing but files is read whole.
+            has_folders: tab.entries().iter().any(|e| e.dir),
             selected: tab.selection.len(),
             pair: compare_pair(explorer),
             dual: explorer.is_dual(),
@@ -140,6 +145,27 @@ impl Facts {
     /// place, not while searching.
     pub fn can_run_tasks(&self) -> bool {
         self.in_folder && !self.read_only && !self.find
+    }
+
+    /// Something can be made or pasted here (a folder, not This PC and not a search's results): New and Paste are
+    /// in the island. A read-only place keeps them, greyed.
+    pub fn can_make(&self) -> bool {
+        self.in_folder && !self.find
+    }
+
+    /// Disk usage's map and Folder sizes are for a folder on disk you may read.
+    pub fn can_map(&self) -> bool {
+        self.can_run_tasks() || (self.mapped && self.in_folder)
+    }
+
+    /// Folder sizes: a folder with folders in it (or sizes being measured, so they can be stopped).
+    pub fn can_size(&self, sizing: bool) -> bool {
+        self.can_run_tasks() && (self.has_folders || sizing)
+    }
+
+    /// The views can be chosen here.
+    pub fn can_view(&self) -> bool {
+        self.in_folder || self.find || self.bin
     }
 }
 
