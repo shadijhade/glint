@@ -56,7 +56,7 @@ pub fn small_kind(entry: &FileEntry) -> Option<SmallKind> {
     if entry.dir {
         return None;
     }
-    small_kind_of(&entry.ext)
+    small_kind_of(entry.ext())
 }
 
 // ---- vCard and iCalendar -----------------------------------------------------------------------------------

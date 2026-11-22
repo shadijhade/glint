@@ -400,7 +400,7 @@ pub fn kind_of(entry: &FileEntry) -> &'static Kind {
     if entry.dir {
         return &FOLDER;
     }
-    if let Some(kind) = BY_EXT.get(entry.ext.as_str()) {
+    if let Some(kind) = BY_EXT.get(entry.ext()) {
         return kind;
     }
     if TEXT_NAMES.contains(&entry.lower.as_str()) || entry.lower == ".env" {
@@ -424,12 +424,12 @@ pub fn push_type_label(entry: &FileEntry, out: &mut String) {
     let label = kind_of(entry).label;
     if !label.contains('%') {
         out.push_str(label);
-    } else if entry.ext.is_empty() {
+    } else if entry.ext().is_empty() {
         out.push_str("File");
     } else {
         for (n, part) in label.split('%').enumerate() {
             if n > 0 {
-                out.extend(entry.ext.chars().flat_map(char::to_uppercase));
+                out.extend(entry.ext().chars().flat_map(char::to_uppercase));
             }
             out.push_str(part);
         }
@@ -444,7 +444,7 @@ pub fn preview_kind(entry: &FileEntry) -> Option<PreviewKind> {
 
 /// Markdown, which the preview shows as it reads (or as written).
 pub fn is_markdown(entry: &FileEntry) -> bool {
-    !entry.dir && matches!(entry.ext.as_str(), "md" | "markdown" | "mdown" | "mkd" | "mkdn")
+    !entry.dir && matches!(entry.ext(), "md" | "markdown" | "mdown" | "mkd" | "mkdn")
 }
 
 /// JSON, YAML and TOML files, which the preview shows as a tree to run jq filters over.
@@ -452,7 +452,7 @@ pub fn data_format(entry: &FileEntry) -> Option<DataFormat> {
     if entry.dir {
         return None;
     }
-    match entry.ext.as_str() {
+    match entry.ext() {
         "json" | "geojson" | "webmanifest" | "har" => Some(DataFormat::Json),
         "yaml" | "yml" => Some(DataFormat::Yaml),
         "toml" => Some(DataFormat::Toml),

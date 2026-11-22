@@ -81,6 +81,18 @@ pub struct MediaFacts {
     pub album: Option<String>,
 }
 
+/// `FileEntry::ext_at` of an entry with no extension.
+pub const NO_EXT: u16 = u16::MAX;
+
+/// Where the extension of a lowercased name starts: after its last dot, unless the dot starts the name
+/// (".gitignore") or the entry is a folder. `NO_EXT` when there is none or the offset doesn't fit.
+pub fn ext_start(lower: &str, dir: bool) -> u16 {
+    match lower.rfind('.') {
+        Some(dot) if !dir && dot > 0 => u16::try_from(dot + 1).ok().filter(|&at| at != NO_EXT).unwrap_or(NO_EXT),
+        _ => NO_EXT,
+    }
+}
+
 /// One file or folder in a listing.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FileEntry {
@@ -94,10 +106,17 @@ pub struct FileEntry {
     pub attrs: u32,
     /// Lowercased name, for sorting and filtering.
     pub lower: String,
-    /// Lowercased extension without the dot; "" for folders and names without one.
-    pub ext: String,
+    /// Where the extension starts in `lower` (see `ext()`); `NO_EXT` for folders and names without one.
+    pub ext_at: u16,
     /// In the Recycle Bin: the folder it was deleted from (`modified` is when).
     pub origin: Option<String>,
+}
+
+impl FileEntry {
+    /// Lowercased extension without the dot; "" for folders and names without one. (A slice of `lower`.)
+    pub fn ext(&self) -> &str {
+        self.lower.get(usize::from(self.ext_at)..).unwrap_or("")
+    }
 }
 
 /// An entry as the backend sends it; listings leave out the path.
@@ -117,11 +136,8 @@ pub struct RawEntry {
 pub fn with_details(raw: RawEntry, dir: &str) -> FileEntry {
     let path = raw.path.unwrap_or_else(|| join_path(dir, &raw.name));
     let lower = raw.name.to_lowercase();
-    let ext = match lower.rfind('.') {
-        // A dot at 0 (".gitignore") starts the name, it doesn't start an extension.
-        Some(dot) if !raw.dir && dot > 0 => lower.get(dot + 1..).unwrap_or("").to_string(),
-        _ => String::new(),
-    };
+    // A dot at 0 (".gitignore") starts the name, it doesn't start an extension.
+    let ext_at = ext_start(&lower, raw.dir);
     FileEntry {
         name: raw.name,
         path,
@@ -130,7 +146,7 @@ pub fn with_details(raw: RawEntry, dir: &str) -> FileEntry {
         modified: raw.modified,
         attrs: raw.attrs,
         lower,
-        ext,
+        ext_at,
         origin: raw.origin,
     }
 }
@@ -154,13 +170,13 @@ pub struct InArchive {
 /// An archive file (on disk or in another archive) Enter opens like a folder: a zip, a 7z... (On a remote it's a
 /// file like any: Glint doesn't look inside archives there.)
 pub fn is_archive_file(e: &FileEntry) -> bool {
-    !e.dir && e.attrs & attr::REMOTE == 0 && is_browsed_ext(&e.ext)
+    !e.dir && e.attrs & attr::REMOTE == 0 && is_browsed_ext(e.ext())
 }
 
 /// A file that's an archive by another name (a .docx, a .jar...): Enter opens it in its app, "Open as archive"
 /// looks inside.
 pub fn is_browsable(e: &FileEntry) -> bool {
-    !e.dir && e.attrs & attr::REMOTE == 0 && is_on_request_ext(&e.ext)
+    !e.dir && e.attrs & attr::REMOTE == 0 && is_on_request_ext(e.ext())
 }
 
 /// Something inside an archive: read-only, and extracted to be opened or copied.
@@ -434,7 +450,7 @@ where
             SortKey::Taken => taken(a).cmp(&taken(b)),
             SortKey::Size => size(a).cmp(&size(b)),
             // Folders first, then by extension. (NOTE(port): extensions compare by code point.)
-            SortKey::Type => b.dir.cmp(&a.dir).then_with(|| a.ext.cmp(&b.ext)),
+            SortKey::Type => b.dir.cmp(&a.dir).then_with(|| a.ext().cmp(b.ext())),
             SortKey::Dimensions => pixels(a).cmp(&pixels(b)),
             // A NaN duration compared as "equal" in the TypeScript too (NaN is falsy there).
             SortKey::Duration => duration(a).partial_cmp(&duration(b)).unwrap_or(Ordering::Equal),
@@ -1263,12 +1279,60 @@ mod tests {
         let listing = [entry("b/"), entry("a.txt"), entry("c.md"), entry("B.txt")];
         let paths: Vec<&str> = listing.iter().map(|e| e.path.as_str()).collect();
         assert_eq!(paths, ["C:\\x\\b", "C:\\x\\a.txt", "C:\\x\\c.md", "C:\\x\\B.txt"]);
-        assert_eq!(listing[1].ext, "txt");
-        assert_eq!(listing[0].ext, "");
+        assert_eq!(listing[1].ext(), "txt");
+        assert_eq!(listing[0].ext(), "");
         assert_eq!(listing[3].lower, "b.txt");
-        assert_eq!(entry(".gitignore").ext, "");
-        assert_eq!(entry("archive.TAR.GZ").ext, "gz");
-        assert_eq!(entry("sub.d/").ext, "", "folders have no extension");
+        assert_eq!(entry(".gitignore").ext(), "");
+        assert_eq!(entry("archive.TAR.GZ").ext(), "gz");
+        assert_eq!(entry("sub.d/").ext(), "", "folders have no extension");
+    }
+
+    /// A 100,000-name listing's details cost: heap allocations (counted by construction: `path` and `lower`, and the old extension `String`) and time to fill in `path`, `lower` and the
+    /// extension, against the old way (the extension a `String` of its own). Prints the numbers.
+    #[test]
+    fn listing_details_cost_little() {
+        let raws = |n: usize| -> Vec<RawEntry> {
+            (0..n)
+                .map(|i| RawEntry {
+                    name: if i % 10 == 0 { format!("Folder {i}") } else { format!("Report_{i}.PDF") },
+                    dir: i % 10 == 0,
+                    ..Default::default()
+                })
+                .collect()
+        };
+                let (mut old_best, mut new_best) = (f64::MAX, f64::MAX);
+        let (mut old_allocs, mut new_allocs) = (0, 0);
+        for _ in 0..5 {
+            let input = raws(100_000);
+            let start = std::time::Instant::now();
+            let old: Vec<(FileEntry, String)> = input
+                .into_iter()
+                .map(|raw| {
+                    // What `with_details` did when `ext` was a String.
+                    let dir = raw.dir;
+                    let entry = with_details(raw, "C:/x");
+                    let ext = match entry.lower.rfind('.') {
+                        Some(dot) if !dir && dot > 0 => entry.lower.get(dot + 1..).unwrap_or("").to_string(),
+                        _ => String::new(),
+                    };
+                    (entry, ext)
+                })
+                .collect();
+            old_best = old_best.min(start.elapsed().as_secs_f64() * 1000.0);
+            old_allocs = old.iter().map(|(e, x)| 2 + usize::from(!x.is_empty()) + usize::from(e.origin.is_some())).sum::<usize>();
+            drop(old);
+            let input = raws(100_000);
+            let start = std::time::Instant::now();
+            let new: Vec<FileEntry> = input.into_iter().map(|raw| with_details(raw, "C:/x")).collect();
+            new_best = new_best.min(start.elapsed().as_secs_f64() * 1000.0);
+            new_allocs = new.iter().map(|e| 2 + usize::from(e.origin.is_some())).sum::<usize>();
+            assert_eq!(new[1].ext(), "pdf");
+        }
+        println!(
+            "100,000 entries: old way {old_allocs} allocations, {old_best:.1} ms; ext as an offset {new_allocs} allocations, {new_best:.1} ms (FileEntry is {} bytes)",
+            std::mem::size_of::<FileEntry>()
+        );
+        assert!(new_allocs < old_allocs);
     }
 
     fn the_listing() -> Vec<FileEntry> {
@@ -1837,7 +1901,8 @@ mod tests {
         assert!(!is_archive_file(&remote));
         let docx = FileEntry {
             name: "a.docx".into(),
-            ext: "docx".into(),
+            lower: "a.docx".into(),
+            ext_at: ext_start("a.docx", false),
             ..remote
         };
         assert!(!is_browsable(&docx));

@@ -748,11 +748,11 @@ mod tests {
         assert_eq!(
             (
                 mapped[3].name.as_str(),
-                mapped[3].ext.as_str(),
+                mapped[3].ext(),
                 mapped[3].attrs,
                 mapped[4].dir,
                 mapped[5].modified,
-                mapped[6].ext.as_str()
+                mapped[6].ext()
             ),
             ("pagefile.sys", "sys", 0x26, true, 1_700_000_000_000, "mkv")
         );

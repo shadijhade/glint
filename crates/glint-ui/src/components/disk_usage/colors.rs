@@ -292,8 +292,8 @@ impl MapColors {
     /// A file's tile color (`tileColor`): its group's, or for a file of a type nobody listed, a muted color of
     /// its own from its extension.
     pub fn tile(&self, entry: &FileEntry, group: &TypeGroup) -> Hsla {
-        if *group == TYPE_GROUPS.other && !entry.ext.is_empty() {
-            hsl(extension_hue(&entry.ext) as f32, 22., self.lightness)
+        if *group == TYPE_GROUPS.other && !entry.ext().is_empty() {
+            hsl(extension_hue(entry.ext()) as f32, 22., self.lightness)
         } else {
             self.band(group)
         }

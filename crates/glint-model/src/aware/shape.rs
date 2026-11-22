@@ -67,7 +67,7 @@ fn class_of(e: &FileEntry) -> One {
     if is_archive_file(e) {
         return One::Archive;
     }
-    match e.ext.as_str() {
+    match e.ext() {
         "iso" | "img" | "vhd" | "vhdx" => return One::DiskImage,
         "exe" | "com" | "scr" | "msc" => return One::Program,
         "msi" | "msix" | "msixbundle" | "appx" | "appxbundle" => return One::Installer,
@@ -191,10 +191,10 @@ impl Shape {
 /// The one extension every target has, lower case; None when they differ, there is none, or a folder is among them.
 pub fn shared_ext(targets: &[FileEntry]) -> Option<String> {
     let first = targets.first()?;
-    if first.ext.is_empty() || targets.iter().any(|e| e.dir || e.ext != first.ext) {
+    if first.ext().is_empty() || targets.iter().any(|e| e.dir || e.ext() != first.ext()) {
         return None;
     }
-    Some(first.ext.clone())
+    Some(first.ext().to_string())
 }
 
 /// A path that starts with a drive letter, a colon and a backslash (`C:\`).
@@ -225,9 +225,9 @@ pub fn want_for(entry: &FileEntry) -> Want {
         opens_with: true,
         signer: matches!(class, One::Program | One::Installer),
         media: matches!(class, One::Picture | One::Video | One::Song),
-        text: small_enough && (class == One::Code || (class == One::Data && entry.ext != "parquet")),
+        text: small_enough && (class == One::Code || (class == One::Data && entry.ext() != "parquet")),
         pages: class == One::Pdf,
-        target: entry.ext == "lnk",
+        target: entry.ext() == "lnk",
         extracted: class == One::Archive,
         twins: (1024..=256 * 1024 * 1024).contains(&entry.size),
         ..Want::default()
@@ -241,10 +241,7 @@ mod tests {
 
     fn file(name: &str, size: u64) -> FileEntry {
         let lower = name.to_lowercase();
-        let ext = match lower.rfind('.') {
-            Some(dot) if dot > 0 => lower[dot + 1..].to_string(),
-            _ => String::new(),
-        };
+        let ext_at = crate::entries::ext_start(&lower, false);
         FileEntry {
             name: name.to_string(),
             path: format!("C:\\x\\{name}"),
@@ -253,13 +250,13 @@ mod tests {
             modified: 0,
             attrs: 0,
             lower,
-            ext,
+            ext_at,
             origin: None,
         }
     }
 
     fn folder(name: &str) -> FileEntry {
-        FileEntry { dir: true, attrs: attr::DIRECTORY, ext: String::new(), ..file(name, 0) }
+        FileEntry { dir: true, attrs: attr::DIRECTORY, ext_at: crate::entries::NO_EXT, ..file(name, 0) }
     }
 
     fn shape_of_name(name: &str) -> Shape {

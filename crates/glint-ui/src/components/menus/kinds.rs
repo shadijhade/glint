@@ -92,27 +92,27 @@ fn ext_of(name: &str) -> String {
 
 /// A picture Convert can read (`canConvert`).
 pub fn can_convert(e: &FileEntry) -> bool {
-    !e.dir && has(CONVERTS, &e.ext) && readable(e)
+    !e.dir && has(CONVERTS, e.ext()) && readable(e)
 }
 
 /// A PDF on disk, there to be read (`isPdfFile`).
 pub fn is_pdf_file(e: &FileEntry) -> bool {
-    !e.dir && e.ext == "pdf" && readable(e)
+    !e.dir && e.ext() == "pdf" && readable(e)
 }
 
 /// A data file DuckDB reads (`isDataFile`).
 pub fn is_data_file(e: &FileEntry) -> bool {
-    !e.dir && has(DUCK_READS, &e.ext) && readable(e)
+    !e.dir && has(DUCK_READS, e.ext()) && readable(e)
 }
 
 /// A file whose personal info Glint can take out (`canClean`).
 pub fn can_clean(e: &FileEntry) -> bool {
-    !e.dir && readable(e) && (has(EXIFTOOL, &e.ext) || has(OFFICE, &e.ext))
+    !e.dir && readable(e) && (has(EXIFTOOL, e.ext()) || has(OFFICE, e.ext()))
 }
 
 /// A photo or video whose date taken can be set (`canRedate`).
 pub fn can_redate(e: &FileEntry) -> bool {
-    !e.dir && readable(e) && has(DATED, &e.ext)
+    !e.dir && readable(e) && has(DATED, e.ext())
 }
 
 /// A file Make smaller works on (`canShrink`).
@@ -147,22 +147,22 @@ pub fn can_back_up(e: &FileEntry) -> bool {
 
 /// A video FFmpeg reads, on disk (`isVideoFile`).
 pub fn is_video_file(e: &FileEntry) -> bool {
-    !e.dir && readable(e) && has(VIDEO, &e.ext)
+    !e.dir && readable(e) && has(VIDEO, e.ext())
 }
 
 /// A video or a recording FFmpeg reads, on disk (`isMediaFile`).
 pub fn is_media_file(e: &FileEntry) -> bool {
-    is_video_file(e) || (!e.dir && readable(e) && has(AUDIO, &e.ext))
+    is_video_file(e) || (!e.dir && readable(e) && has(AUDIO, e.ext()))
 }
 
 /// A picture Windows can set as the desktop background (`canWallpaper`).
 pub fn can_wallpaper(e: &FileEntry) -> bool {
-    !e.dir && on_disk(e) && has(WALLPAPER, &e.ext)
+    !e.dir && on_disk(e) && has(WALLPAPER, e.ext())
 }
 
 /// A picture Glint turns in place (`canRotate`).
 pub fn can_rotate(e: &FileEntry) -> bool {
-    !e.dir && on_disk(e) && has(ROTATE, &e.ext)
+    !e.dir && on_disk(e) && has(ROTATE, e.ext())
 }
 
 #[cfg(test)]

@@ -18,7 +18,7 @@ pub fn has_details(entry: &FileEntry) -> bool {
     !entry.dir
         && [PICTURES, VIDEOS, SONGS]
             .iter()
-            .any(|list| list.split(' ').any(|ext| ext == entry.ext))
+            .any(|list| list.split(' ').any(|ext| ext == entry.ext()))
 }
 
 /// One row: its label, and its value.

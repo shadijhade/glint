@@ -125,7 +125,7 @@ pub fn readable(entry: &FileEntry) -> bool {
 }
 
 fn one_of(entry: &FileEntry, list: &[&str]) -> bool {
-    !entry.dir && list.contains(&entry.ext.as_str())
+    !entry.dir && list.contains(&entry.ext())
 }
 
 /// Markdown that has a rendered view (a readable file).
@@ -142,13 +142,13 @@ fn data_kind(entry: &FileEntry) -> bool {
 
 /// A Jupyter notebook, to read as it reads (a readable file on disk).
 fn is_notebook(entry: &FileEntry) -> bool {
-    readable(entry) && !is_archived(entry) && entry.ext == "ipynb"
+    readable(entry) && !is_archived(entry) && entry.ext() == "ipynb"
 }
 
 /// A contact, calendar entry, message, design file or diagram source, read from disk.
 fn small_of(entry: &FileEntry) -> Option<SmallKind> {
     if readable(entry) && !is_archived(entry) {
-        small_kind_of(&entry.ext)
+        small_kind_of(entry.ext())
     } else {
         None
     }
@@ -161,7 +161,7 @@ fn is_sheet(entry: &FileEntry) -> bool {
 
 /// A workbook, which Windows' previewer shows too (Excel's, with Office installed), but not Parquet (`workbook`).
 fn is_workbook(entry: &FileEntry) -> bool {
-    is_sheet(entry) && entry.ext != "parquet"
+    is_sheet(entry) && entry.ext() != "parquet"
 }
 
 /// Tables and databases take SQL, from disk (`queryable`).
@@ -171,7 +171,7 @@ pub fn is_queryable(entry: &FileEntry) -> bool {
 
 /// Data files DuckDB describes column by column (`DUCK_READS`, except plain text).
 pub fn is_profilable(entry: &FileEntry) -> bool {
-    readable(entry) && !is_archived(entry) && entry.ext != "txt" && DUCK_READS.contains(&entry.ext.as_str())
+    readable(entry) && !is_archived(entry) && entry.ext() != "txt" && DUCK_READS.contains(&entry.ext())
 }
 
 /// The views the header offers (more than one shows the "Show" group): the file as it reads, as written, what

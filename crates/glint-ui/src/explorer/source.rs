@@ -1088,7 +1088,7 @@ mod tests {
         let names: Vec<(&str, &str, &str)> = shaped
             .entries
             .iter()
-            .map(|e| (e.path.as_str(), e.lower.as_str(), e.ext.as_str()))
+            .map(|e| (e.path.as_str(), e.lower.as_str(), e.ext()))
             .collect();
         assert_eq!(
             names,
@@ -1195,7 +1195,7 @@ mod tests {
                 ("ملاحظات.txt", "D:\\$Recycle.Bin\\S-1\\$R7A.txt", Some("D:\\Notes")),
             ]
         );
-        assert_eq!(shaped.entries[1].ext, "txt");
+        assert_eq!(shaped.entries[1].ext(), "txt");
     }
 
     #[test]
@@ -1206,7 +1206,7 @@ mod tests {
             ..entry("Note.MD", false, 9, 0)
         }]));
         let Found::Entries(rows) = found else { panic!("rows") };
-        assert_eq!((rows[0].path.as_str(), rows[0].ext.as_str()), ("C:\\z\\Note.MD", "md"));
+        assert_eq!((rows[0].path.as_str(), rows[0].ext()), ("C:\\z\\Note.MD", "md"));
         assert!(
             matches!(found_from(FindEvent::Started { engine: "index" }), Found::Started { engine } if engine == "index")
         );

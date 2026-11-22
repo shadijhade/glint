@@ -237,7 +237,7 @@ fn folder_entry(path: &str) -> FileEntry {
         size: 0,
         modified: 0,
         attrs: glint_model::entries::attr::DIRECTORY,
-        ext: String::new(),
+        ext_at: glint_model::entries::NO_EXT,
         origin: None,
     }
 }

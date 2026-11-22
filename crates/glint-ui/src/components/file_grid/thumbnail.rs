@@ -371,7 +371,7 @@ pub fn is_eligible(entry: &FileEntry) -> bool {
 /// Thumbnail.tsx). Unlike the web page, which would have fetched an online-only file through its placeholder (and so
 /// downloaded it), a cloud file that isn't on this PC is not drawn: it asks Windows' cache like any other file.
 pub fn is_vector(entry: &FileEntry) -> bool {
-    is_eligible(entry) && entry.ext == "svg" && !is_archived(entry) && !is_online_only(entry) && entry.size <= MAX_SVG
+    is_eligible(entry) && entry.ext() == "svg" && !is_archived(entry) && !is_online_only(entry) && entry.size <= MAX_SVG
 }
 
 /// Draws the SVG file at `path` crisp for a square of `step` device pixels: parsed once, then rasterized at the

@@ -276,7 +276,7 @@ pub fn folder_entry(path: &str) -> FileEntry {
         modified: 0,
         attrs: 0,
         lower: path.to_lowercase(),
-        ext: String::new(),
+        ext_at: glint_model::entries::NO_EXT,
         origin: None,
     }
 }

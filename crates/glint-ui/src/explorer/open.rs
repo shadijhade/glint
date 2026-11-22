@@ -24,7 +24,7 @@ pub fn is_disk_image(entry: &FileEntry) -> bool {
         && !is_archived(entry)
         && !is_remote(entry)
         && !is_recycled(entry)
-        && ["iso", "img", "vhd", "vhdx"].contains(&entry.ext.as_str())
+        && ["iso", "img", "vhd", "vhdx"].contains(&entry.ext())
 }
 
 impl Explorer {

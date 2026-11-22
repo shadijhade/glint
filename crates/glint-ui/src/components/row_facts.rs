@@ -112,7 +112,7 @@ fn listed(list: &str, ext: &str) -> bool {
 
 /// Photos and videos: the files that can say when they were taken (`canBeTaken`).
 pub fn can_be_taken(entry: &FileEntry) -> bool {
-    !entry.dir && (listed(PICTURES, &entry.ext) || listed(VIDEOS, &entry.ext))
+    !entry.dir && (listed(PICTURES, entry.ext()) || listed(VIDEOS, entry.ext()))
 }
 
 /// Photos, videos and songs: the files with details to read (`hasDetails`).

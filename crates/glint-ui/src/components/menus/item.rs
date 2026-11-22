@@ -725,7 +725,7 @@ pub fn item_menu(targets: &[FileEntry], c: &ItemCtx) -> Vec<Node> {
     }
     // Windows' own text recognition, on a picture that is on the disk.
     let readable_picture =
-        |e: &&FileEntry| !e.dir && on_disk(e) && !is_online_only(e) && TEXT_PICTURES.contains(&e.ext.as_str());
+        |e: &&FileEntry| !e.dir && on_disk(e) && !is_online_only(e) && TEXT_PICTURES.contains(&e.ext());
     if let Some(e) = one.filter(readable_picture) {
         m.push(
             Entry::ask(

@@ -133,7 +133,7 @@ impl Explorer {
             let shown = self.tabs.values().find_map(|tab| tab.rows.iter().find(|entry| entry.path == from));
             let kind = match shown {
                 Some(entry) if entry.dir => String::new(),
-                Some(entry) => entry.ext.clone(),
+                Some(entry) => entry.ext().to_string(),
                 None => {
                     let name = base_name(from);
                     let ext = name.rfind('.').filter(|dot| *dot > 0).and_then(|dot| name.get(dot + 1..));

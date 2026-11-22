@@ -200,11 +200,11 @@ impl PictureView {
     }
 
     fn rotatable(&self) -> bool {
-        self.local() && ROTATE_EXTS.contains(&self.entry.ext.as_str())
+        self.local() && ROTATE_EXTS.contains(&self.entry.ext())
     }
 
     fn can_be_wallpaper(&self) -> bool {
-        self.local() && WALLPAPER_EXTS.contains(&self.entry.ext.as_str())
+        self.local() && WALLPAPER_EXTS.contains(&self.entry.ext())
     }
 
     /// Reads and decodes the file in the background.
@@ -229,7 +229,7 @@ impl PictureView {
                 entry.path.clone()
             };
             let too_big = entry.size > MAX_BYTES;
-            let ext = entry.ext.clone();
+            let ext = entry.ext().to_string();
             let (read_path, read_renderer) = (path.clone(), renderer.clone());
             let decoded = cx
                 .background_executor()
