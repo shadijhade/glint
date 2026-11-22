@@ -49,19 +49,6 @@ impl Backend for CoreBackend {
     }
 }
 
-/// Shows `view` in the window's dialog layer as [`super::show`] does, except that Enter does not close it: the
-/// boxes in these dialogs answer Enter themselves (Save, Open, Encrypt…), and the dialog layer's own Enter
-/// would close the dialog on top of that, even when the answer was "not yet" (two passwords that differ).
-fn show<V: Render>(window: &mut Window, cx: &mut App, title: SharedString, width: Pixels, view: Entity<V>) {
-    window.open_dialog(cx, move |dialog, _window, _cx| {
-        dialog
-            .title(title.clone())
-            .w(width)
-            .on_ok(|_, _, _| false)
-            .child(view.clone())
-    });
-}
-
 // ---- What the app shares: the unlock count ----------------------------------------------------------------
 
 /// Said by [`unlocks`] when a password opened something: what failed for want of one is read again.
@@ -201,6 +188,7 @@ impl Render for PasswordForm {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme::tokens(cx).clone();
         let empty = self.input.read(cx).value().is_empty();
+        super::main_action(cx, !empty && !self.busy, |this, window, cx| this.submit(window, cx));
         col()
             .id("password-form")
             .w_full()
@@ -259,6 +247,15 @@ impl PasswordDialog {
 impl Render for PasswordDialog {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme::tokens(cx).clone();
+        // Enter outside the box is the form's Open.
+        let form = self.form.clone();
+        let can = {
+            let form = form.read(cx);
+            !form.input().read(cx).value().is_empty()
+        };
+        super::main_action(cx, can, move |_, window, cx| {
+            form.update(cx, |form, cx| form.submit(window, cx))
+        });
         col()
             .id("password-dialog")
             .role(Role::Group)
@@ -303,7 +300,7 @@ pub fn ask_archive_password(
         title: title.clone(),
         form,
     });
-    show(window, cx, title, px(384.), view);
+    super::show(window, cx, title, px(384.), view);
     input.update(cx, |input, cx| input.focus(window, cx));
 }
 
@@ -443,6 +440,7 @@ impl Render for CompressPasswordDialog {
         let again = self.again.read(cx).value();
         let mismatch = !again.is_empty() && again != self.password.read(cx).value();
         let ready = self.ready(cx);
+        super::main_action(cx, ready, |this, window, cx| this.submit(window, cx));
         col()
             .id("compress-password")
             .role(Role::Group)
@@ -529,7 +527,7 @@ pub fn ask_compress_password(
     let view = cx.new(|cx| CompressPasswordDialog::new(format, run, window, cx));
     let input = view.read(cx).password_input().clone();
     let title = t!("Compress {what} with a password", what = isolate(what));
-    show(window, cx, title, px(384.), view);
+    super::show(window, cx, title, px(384.), view);
     input.update(cx, |input, cx| input.focus(window, cx));
 }
 
@@ -723,7 +721,7 @@ mod tests {
                     cx,
                 )
             });
-            show(
+            crate::dialogs::show(
                 window,
                 cx,
                 t!("Compress {what} with a password", what = "3 items"),

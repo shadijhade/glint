@@ -1055,6 +1055,8 @@ impl XRayDialog {
 impl Render for XRayDialog {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme::tokens(cx).clone();
+        // Enter is the footer's one button.
+        super::main_action(cx, true, |_, window, cx| window.close_dialog(cx));
         let xray = self.xray.read(cx);
         let path = xray.path.clone();
         let load = xray.load.clone();
@@ -1247,7 +1249,7 @@ impl Render for XRayDialog {
                     .child(div().child(footer_note))
                     .child(
                         Button::new("xray-close")
-                            .outline()
+                            .primary()
                             .small()
                             .label(t!("Close"))
                             .on_click(|_, window, cx| window.close_dialog(cx)),
@@ -1271,9 +1273,7 @@ fn defender_button(path: &str) -> Option<AnyElement> {
             .icon(IconName::ShieldCheck)
             .label(t!("Scan with Defender"))
             .tooltip(t!("A custom scan of this file by Microsoft Defender"))
-            .on_click(move |_, window, cx| {
-                super::check::open(window, cx, vec![path.clone()])
-            })
+            .on_click(move |_, window, cx| super::check::open(window, cx, vec![path.clone()]))
             .into_any_element(),
     )
 }

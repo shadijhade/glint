@@ -893,6 +893,14 @@ impl Render for CompressInPlaceDialog {
         };
 
         let can_undo = matches!(&self.phase, Phase::Done { report, decompress: false } if report.undo.is_some() && report.done > 0);
+        // Enter is the footer's main button: Close once it is done, Compress before.
+        if finished {
+            super::main_action(cx, true, |_, window, cx| Self::close(window, cx));
+        } else {
+            super::main_action(cx, !running && self.can_compress(), |this, window, cx| {
+                this.run(false, window, cx)
+            });
+        }
         let footer = row_start()
             .justify_end()
             .gap(space(2.))

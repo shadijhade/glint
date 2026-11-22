@@ -388,6 +388,8 @@ fn render_row(ix: usize, row: &Row, t: &theme::Tokens) -> impl IntoElement {
 impl Render for CheckDialog {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme::tokens(cx).clone();
+        // Enter is the footer's one button.
+        super::main_action(cx, true, |_, window, cx| window.close_dialog(cx));
         let check = self.check.read(cx);
         let outcome = check.outcome().clone();
         let target = check.target();
@@ -571,7 +573,7 @@ impl Render for CheckDialog {
                     .child(
                         Button::new("check-close")
                             .small()
-                            .outline()
+                            .primary()
                             .label(t!("Close"))
                             .on_click(|_, window, cx| window.close_dialog(cx)),
                     ),

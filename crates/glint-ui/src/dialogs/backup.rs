@@ -890,6 +890,7 @@ impl BackupDialog {
 
 impl Render for BackupDialog {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        super::no_main(cx);
         let t = theme::tokens(cx).clone();
         let model = self.model.clone();
         let m = self.model.read(cx);
@@ -1088,6 +1089,13 @@ impl Render for BackupDialog {
                     );
                 }
                 if let Some(plan) = planned {
+                    {
+                        let id = plan.id.clone();
+                        super::main_action(cx, restic, move |this, _, cx| {
+                            let id = id.clone();
+                            this.model.update(cx, |m, cx| m.back_up(id, cx));
+                        });
+                    }
                     footer = footer.child(
                         Button::new("backup-now")
                             .primary()
@@ -1101,6 +1109,7 @@ impl Render for BackupDialog {
                             })),
                     );
                 } else if plan == PlanState::Unplanned && result.is_none() {
+                    super::main_action(cx, ready, |this, window, cx| this.submit(window, cx));
                     footer = footer.child(
                         Button::new("backup-set-up")
                             .primary()
@@ -1320,14 +1329,8 @@ fn open_backups(window: &mut Window, cx: &mut App, folder: String) {
 /// Shows the dialog in the window's dialog layer. Like [`super::show`], except that Escape, the close button
 /// and the backdrop do nothing while a backup runs (`!busy && close()`).
 fn show(window: &mut Window, cx: &mut App, title: SharedString, view: Entity<BackupDialog>, model: Entity<Backup>) {
-    window.open_dialog(cx, move |dialog, _window, _cx| {
-        let model = model.clone();
-        dialog
-            .title(title.clone())
-            .w(px(576.))
-            .on_ok(|_, _, _| false)
-            .on_cancel(move |_, _, cx| model.read(cx).busy.is_none())
-            .child(view.clone())
+    super::show_unless(window, cx, title, px(576.), view, move |cx| {
+        model.read(cx).busy.is_some()
     });
 }
 

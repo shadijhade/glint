@@ -1094,6 +1094,8 @@ impl TimelineDialog {
 impl Render for TimelineDialog {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme::tokens(cx).clone();
+        // Enter is the footer's one button.
+        super::main_action(cx, true, |_, window, cx| window.close_dialog(cx));
         let model = self.model.read(cx);
         let state = model.state().clone();
         let root = model.root().to_string();
@@ -1190,7 +1192,7 @@ impl Render for TimelineDialog {
             )
             .child(
                 Button::new("timeline-close")
-                    .outline()
+                    .primary()
                     .small()
                     .label(t!("Close"))
                     .on_click(|_, window, cx| window.close_dialog(cx)),

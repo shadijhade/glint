@@ -1029,6 +1029,8 @@ impl HistoryDialog {
 impl Render for HistoryDialog {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme::tokens(cx).clone();
+        // Enter is the footer's one button.
+        super::main_action(cx, true, |_, window, cx| window.close_dialog(cx));
         let now = now_ms();
         let history = self.history.read(cx);
         let span = history.span();
@@ -1149,7 +1151,7 @@ impl Render for HistoryDialog {
                     .child(div().flex_1().min_w_0().truncate().child(summary.unwrap_or_default()))
                     .child(
                         Button::new("history-close")
-                            .outline()
+                            .primary()
                             .small()
                             .label(t!("Close"))
                             .on_click(|_, window, cx| window.close_dialog(cx)),

@@ -3787,6 +3787,7 @@ fn ask(window: &mut Window, cx: &mut App, question: Question, on_ok: impl Fn(&mu
     } = question;
     window.open_dialog(cx, move |dialog, _window, _cx| {
         let on_ok = on_ok.clone();
+        let on_enter = on_ok.clone();
         let ok_button = Button::new("compare-ask-ok").label(ok.clone());
         let ok_button = if danger {
             ok_button.danger()
@@ -3796,6 +3797,11 @@ fn ask(window: &mut Window, cx: &mut App, question: Question, on_ok: impl Fn(&mu
         dialog
             .title(title.clone())
             .w(px(440.))
+            .on_ok(move |_, window, cx| {
+                window.close_dialog(cx);
+                on_enter(window, cx);
+                false
+            })
             .child(
                 div()
                     .id("compare-ask")

@@ -256,11 +256,16 @@ fn ask_sign_out(
         name = rclone
     );
     window.open_dialog(cx, move |dialog, _window, _cx| {
-        let (keep, out, escape) = (answer.clone(), answer.clone(), answer.clone());
+        let (keep, out, escape, enter) = (answer.clone(), answer.clone(), answer.clone(), answer.clone());
         dialog
             .title(t!("Sign out"))
             .w(px(440.))
-            .on_ok(|_, _, _| false)
+            // Enter is the main button, Sign out.
+            .on_ok(move |_, window, cx| {
+                window.close_dialog(cx);
+                enter(window, cx, true);
+                false
+            })
             .on_cancel(move |_, window, cx| {
                 escape(window, cx, false);
                 true
@@ -1339,6 +1344,10 @@ impl Render for RemoteDialog {
                     }),
             );
         }
+        // Enter outside a box is Save, as it is in one.
+        super::main_action(cx, ready && !saving, |this, _, cx| {
+            this.form.update(cx, |form, cx| form.save(cx))
+        });
         footer = footer
             .child(div().flex_1())
             .child(

@@ -298,19 +298,6 @@ pub fn set_tags(window: &mut Window, cx: &mut App, paths: Vec<String>, add: Vec<
         .detach();
 }
 
-/// Shows `view` in the window's dialog layer as [`super::show`] does, except that Enter does not close it: the
-/// boxes in these dialogs answer Enter themselves (Save, Open, Encrypt…), and the dialog layer's own Enter
-/// would close the dialog on top of that, even when the answer was "not yet" (two passwords that differ).
-fn show<V: Render>(window: &mut Window, cx: &mut App, title: SharedString, width: Pixels, view: Entity<V>) {
-    window.open_dialog(cx, move |dialog, _window, _cx| {
-        dialog
-            .title(title.clone())
-            .w(width)
-            .on_ok(|_, _, _| false)
-            .child(view.clone())
-    });
-}
-
 // ---- The dialog's model -----------------------------------------------------------------------------------
 
 /// Where reading the items' tags stands.
@@ -461,6 +448,7 @@ impl Render for TagsDialog {
         let typed = self.typed(cx);
         let state = self.model.read(cx).state().clone();
         let chips = offered(self.tags.read(cx).recent());
+        super::main_action(cx, state != State::Loading, |this, window, cx| this.save(window, cx));
 
         col()
             .id("tags-dialog")
@@ -579,7 +567,7 @@ pub fn open(window: &mut Window, cx: &mut App, paths: Vec<String>) {
     let model = cx.new(|cx| TagsEdit::new(paths, backend, cx));
     let view = cx.new(|cx| TagsDialog::new(model, tags, window, cx));
     let input = view.read(cx).input().clone();
-    show(window, cx, shown, px(448.), view);
+    super::show(window, cx, shown, px(448.), view);
     input.update(cx, |input, cx| input.focus(window, cx));
 }
 
@@ -727,7 +715,7 @@ mod tests {
             let model = cx.new(|cx| TagsEdit::new(paths, backend, cx));
             let view = cx.new(|cx| TagsDialog::new(model, tags, window, cx));
             DIALOG.with(|d| *d.borrow_mut() = Some(view.clone()));
-            show(window, cx, shown, px(448.), view);
+            crate::dialogs::show(window, cx, shown, px(448.), view);
         });
         cx.run_until_parked();
     }

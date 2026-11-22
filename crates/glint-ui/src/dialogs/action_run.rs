@@ -1309,6 +1309,16 @@ pub fn footer<V: 'static>(
     let running = run.running();
     let finished = run.finished();
     let id = |name: &str| SharedString::from(format!("{}-{name}", spec.prefix));
+    // Enter is the footer's main button: Close once it is done, the action before (when it can be pressed).
+    let on_start = std::rc::Rc::new(on_start);
+    if finished {
+        super::main_action(cx, true, |_, window, cx| window.close_dialog(cx));
+    } else {
+        let start = on_start.clone();
+        super::main_action(cx, !running && spec.can_start, move |this, window, cx| {
+            start(this, window, cx)
+        });
+    }
     row_start()
         .justify_end()
         .gap(space(2.))

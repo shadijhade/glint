@@ -1893,6 +1893,7 @@ impl Render for CloudSetup {
         match &phase {
             Phase::Settings { provider } => {
                 let oauth = provider.oauth;
+                super::main_action(cx, can_start, |this, _, cx| this.model.update(cx, |m, cx| m.start(cx)));
                 let button = Button::new("cloud-start")
                     .primary()
                     .small()
@@ -1905,6 +1906,7 @@ impl Render for CloudSetup {
                 });
             }
             Phase::Asking { .. } => {
+                super::main_action(cx, true, |this, _, cx| this.model.update(cx, |m, cx| m.reply(cx)));
                 footer = footer.child(
                     Button::new("cloud-continue")
                         .primary()
@@ -1915,6 +1917,9 @@ impl Render for CloudSetup {
                 );
             }
             Phase::Ready { connection, .. } => {
+                super::main_action(cx, !connection.name.trim().is_empty(), |this, _, cx| {
+                    this.model.update(cx, |m, cx| m.finish(cx))
+                });
                 footer = footer.child(
                     Button::new("cloud-add")
                         .primary()
@@ -1924,7 +1929,7 @@ impl Render for CloudSetup {
                         .on_click(cx.listener(|this, _, _, cx| this.model.update(cx, |m, cx| m.finish(cx)))),
                 );
             }
-            _ => {}
+            _ => super::main_action(cx, false, |_: &mut Self, _, _| {}),
         }
         col()
             .id("cloud-setup")
