@@ -6,14 +6,20 @@
 //! A frame costs what the camera changed: the photos are one shared set (`GeoSet`, positions worked out once),
 //! and the clusters of a camera are worked out once and shared with the paint closure ([`frame::ClusterCache`]).
 
+mod drawer;
 mod frame;
+mod pictures;
+mod pins;
 
+use crate::components::file_grid::thumbnail::{thumbnails, Thumbnails};
 use crate::explorer::{explorer, Explorer, ExplorerEvent, TabId};
 use crate::kit::prelude::*;
 use crate::{t, theme};
-use frame::ClusterCache;
+use frame::{ClusterCache, Frame};
 use glint_model::paths::{is_folder_path, is_gallery, same_path};
-use glint_model::world_map::{project, Clusters, GeoPhoto, GeoSet, MapCamera, LAND_POLYGONS};
+use glint_model::world_map::{project, GeoPhoto, GeoSet, MapCamera, PinCluster, LAND_POLYGONS};
+use pictures::Leads;
+use pins::{Colors, Ink};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -285,10 +291,20 @@ pub struct PhotoMapView {
     /// The person moved the camera since it was fitted: a scan that finishes doesn't take it back.
     touched: bool,
     clusters: ClusterCache,
+    thumbs: Entity<Thumbnails>,
+    leads: Leads,
+    /// The camera as the pictures were last asked for, whether it has rested since, and the timer that says so.
+    seen_camera: MapCamera,
+    settled: bool,
+    settle: Option<Task<()>>,
+    /// A fingerprint of what was last asked of the thumbnail service.
+    asked: u64,
+    /// One focus handle for each tile of the drawer.
+    tile_focus: Vec<FocusHandle>,
     drag: Option<DragState>,
     selected_cluster: Option<usize>,
     map_bounds: Rc<Cell<Bounds<Pixels>>>,
-    _subs: [Subscription; 2],
+    _subs: [Subscription; 3],
 }
 
 impl PhotoMapView {
@@ -300,6 +316,12 @@ impl PhotoMapView {
             cx.notify();
         });
         let sub_e = cx.observe_in(&explorer, window, |_, _, _, cx| cx.notify());
+        // A picture arriving from the thumbnail service redraws the map; a closed view lets go of what it asked for.
+        let thumbs = thumbnails(cx);
+        let sub_t = cx.observe(&thumbs, |_, _, cx| cx.notify());
+        let (released, id) = (thumbs.clone(), cx.entity_id());
+        cx.on_release(move |_, cx| released.update(cx, |thumbs, cx| thumbs.release(id, cx)))
+            .detach();
         Self {
             pane,
             explorer,
@@ -309,10 +331,17 @@ impl PhotoMapView {
             fitted_for: None,
             touched: false,
             clusters: ClusterCache::default(),
+            thumbs,
+            leads: Leads::default(),
+            seen_camera: MapCamera::default(),
+            settled: true,
+            settle: None,
+            asked: 0,
+            tile_focus: Vec::new(),
             drag: None,
             selected_cluster: None,
             map_bounds: Rc::new(Cell::new(Bounds::default())),
-            _subs: [sub_m, sub_e],
+            _subs: [sub_m, sub_e, sub_t],
         }
     }
 
@@ -334,8 +363,8 @@ impl PhotoMapView {
         }
     }
 
-    /// The clusters of the camera as it is, from the cache when nothing changed since the last frame.
-    fn clusters_now(&mut self, set: &GeoSet) -> Arc<Clusters> {
+    /// What the camera sees, from the cache when nothing changed since the last frame.
+    fn clusters_now(&mut self, set: &GeoSet) -> Arc<Frame> {
         let bounds = self.map_bounds.get();
         let (w, h) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
         if w > 2.0 && h > 2.0 {
@@ -382,15 +411,15 @@ impl PhotoMapView {
             return;
         }
         let (set, _, _) = self.current(cx);
-        let clusters = self.clusters_now(&set);
+        let frame = self.clusters_now(&set);
         let px_x = f32::from(pos.x - bounds.origin.x);
         let px_y = f32::from(pos.y - bounds.origin.y);
         let mut best: Option<(usize, f32)> = None;
-        for (i, cl) in clusters.pins.iter().enumerate() {
+        for (i, cl) in frame.clusters.pins.iter().enumerate() {
             let dx = cl.sx - px_x;
             let dy = cl.sy - px_y;
             let dist_sq = dx * dx + dy * dy;
-            let hit_r = if cl.count > 1 { 20.0 } else { 14.0 };
+            let hit_r = pins::hit_radius(cl.count, frame.top.binary_search(&(i as u32)).is_ok());
             if dist_sq <= hit_r * hit_r && best.is_none_or(|(_, d)| dist_sq < d) {
                 best = Some((i, dist_sq));
             }
@@ -434,6 +463,17 @@ impl PhotoMapView {
     }
 }
 
+/// What the drawer says it holds: how many photos, and near where.
+fn drawer_title(cl: &PinCluster) -> (SharedString, Option<SharedString>) {
+    let (lat, lon) = (format!("{:.3}", cl.lat), format!("{:.3}", cl.lon));
+    let title = if cl.count == 1 {
+        t!("1 photo near {lat}, {lon}", lat = lat, lon = lon)
+    } else {
+        t!("{n} photos near {lat}, {lon}", n = cl.count, lat = lat, lon = lon)
+    };
+    (title, None)
+}
+
 impl Render for PhotoMapView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tab = self.tab_id(cx);
@@ -451,10 +491,16 @@ impl Render for PhotoMapView {
             self.camera = self.fit_camera(&photos);
         }
 
-        let clusters = self.clusters_now(&photos);
-        let active_cluster = self.selected_cluster.and_then(|idx| clusters.pins.get(idx).copied());
+        let frame = self.clusters_now(&photos);
+        let active = self
+            .selected_cluster
+            .and_then(|idx| frame.clusters.pins.get(idx).copied());
+        let scale = window.scale_factor();
+        let members: &[u32] = active.as_ref().map_or(&[][..], |cl| frame.clusters.members_of(cl));
+        self.ask_for_pictures(&frame, members, &photos, scale, cx);
+        let pictures = self.pin_pictures(&frame, &photos, scale, cx);
 
-        let t = theme::tokens(cx);
+        let t = theme::tokens(cx).clone();
         let count_text = if loading && photos.is_empty() {
             t!("Scanning EXIF GPS…")
         } else if loading {
@@ -539,16 +585,18 @@ impl Render for PhotoMapView {
 
         let cam = self.camera;
         let selected_idx = self.selected_cluster;
-        let clusters_draw = clusters.clone();
+        let frame_draw = frame.clone();
         let bounds_cell = self.map_bounds.clone();
         let view_id = cx.entity_id();
         let ocean = t.background;
         let land_fill = t.muted;
         let grid_line = t.border.opacity(0.35);
-        let pin_fill = t.primary;
-        let pin_selected = t.destructive;
-        let pin_text = t.primary_foreground;
-        let pin_halo = t.background;
+        let colors = Colors {
+            pin: t.primary,
+            selected: t.destructive,
+            text: t.primary_foreground,
+            halo: t.background,
+        };
         let base_font = window.text_style().font();
 
         let map_canvas = canvas(
@@ -619,48 +667,16 @@ impl Render for PhotoMapView {
                     }
                 }
 
-                // Clustered pins
-                for (i, cl) in clusters_draw.pins.iter().enumerate() {
-                    let count = cl.count as usize;
-                    let radius = if count > 1 { 12.0 } else { 6.5 };
-                    let x = f32::from(bounds.origin.x) + cl.sx - radius;
-                    let y = f32::from(bounds.origin.y) + cl.sy - radius;
-                    let pin_bounds = Bounds::new(point(px(x), px(y)), size(px(radius * 2.0), px(radius * 2.0)));
-                    let fill_col = if Some(i) == selected_idx {
-                        pin_selected
-                    } else {
-                        pin_fill
-                    };
-                    window.paint_quad(quad(
-                        pin_bounds,
-                        radius,
-                        fill_col,
-                        Edges::all(px(1.5)),
-                        pin_halo,
-                        BorderStyle::Solid,
-                    ));
-
-                    if count > 1 {
-                        let label = count.to_string();
-                        let run = TextRun {
-                            len: label.len(),
-                            font: Font {
-                                weight: FontWeight::SEMIBOLD,
-                                ..base_font.clone()
-                            },
-                            color: pin_text,
-                            background_color: None,
-                            underline: None,
-                            strikethrough: None,
-                        };
-                        let shaped = window
-                            .text_system()
-                            .shape_line(SharedString::from(label), px(10.0), &[run], None);
-                        let tw = f32::from(shaped.width());
-                        let lx = f32::from(bounds.origin.x) + cl.sx - tw * 0.5;
-                        let ly = f32::from(bounds.origin.y) + cl.sy - 6.5;
-                        let _ = shaped.paint(point(px(lx), px(ly)), px(13.0), TextAlign::Left, None, window, cx);
-                    }
+                // Clustered pins, with the lead photo's picture in the ones that have it.
+                let ink = Ink {
+                    origin: bounds.origin,
+                    colors,
+                    font: &base_font,
+                };
+                let mut next_picture = pictures.iter().peekable();
+                for (i, pin) in frame_draw.clusters.pins.iter().enumerate() {
+                    let picture = next_picture.next_if(|p| p.pin as usize == i);
+                    pins::paint_pin(window, cx, ink, pin, Some(i) == selected_idx, picture);
                 }
             },
         )
@@ -670,10 +686,9 @@ impl Render for PhotoMapView {
             .id(("photo-map-canvas", self.pane))
             .role(Role::Image)
             .aria_label(t!("Interactive offline world map of geotagged photos"))
+            .test_support()
             .relative()
-            .flex_1()
-            .min_h_0()
-            .w_full()
+            .size_full()
             .overflow_hidden()
             .cursor_grab()
             .on_scroll(cx.listener(|this, ev: &ScrollEvent, _, cx| {
@@ -772,106 +787,19 @@ impl Render for PhotoMapView {
                 )
             });
 
-        let drawer = active_cluster.map(|cl| {
-            let pane_idx = self.pane;
-            let items: Vec<(usize, GeoPhoto)> = clusters
-                .members_of(&cl)
-                .iter()
-                .take(32)
-                .filter_map(|&idx| photos.get(idx as usize).cloned().map(|p| (idx as usize, p)))
-                .collect();
-            col()
-                .w_full()
-                .max_h(px(176.))
-                .bg(t.background)
-                .border_t_1()
-                .border_color(t.border)
-                .p(space(2.))
-                .gap(space(1.))
-                .child(
-                    row_start()
-                        .items_center()
-                        .justify_between()
-                        .px(space(1.))
-                        .child(
-                            div()
-                                .text_xs()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(t.foreground)
-                                .child(t!(
-                                    "{n} photos near {lat}, {lon}",
-                                    n = cl.count,
-                                    lat = format!("{:.3}", cl.lat),
-                                    lon = format!("{:.3}", cl.lon)
-                                )),
-                        )
-                        .child(
-                            Button::new(("pm-drawer-close", pane_idx))
-                                .compact()
-                                .ghost()
-                                .icon(Icon::new(IconName::X))
-                                .accessibility_label(t!("Close selection"))
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.selected_cluster = None;
-                                    cx.notify();
-                                })),
-                        ),
-                )
-                .child(
-                    div()
-                        .id(("pm-drawer-list", pane_idx))
-                        .flex_1()
-                        .min_h_0()
-                        .overflow_y_scroll()
-                        .child(col().gap(space(0.5)).children(items.into_iter().map(|(row_i, photo)| {
-                            let reveal_path = photo.path.to_string();
-                            let open_path = photo.path.to_string();
-                            row_start()
-                                .items_center()
-                                .justify_between()
-                                .gap(space(2.))
-                                .px(space(2.))
-                                .py(space(1.))
-                                .rounded(theme::size::RADIUS_SM)
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .truncate()
-                                        .text_xs()
-                                        .text_color(t.foreground)
-                                        .child(isolate(&photo.name)),
-                                )
-                                .child(
-                                    row_start()
-                                        .items_center()
-                                        .gap(space(1.))
-                                        .child(
-                                            Button::new(("pm-reveal", pane_idx * 10_000 + row_i))
-                                                .compact()
-                                                .ghost()
-                                                .label(t!("Reveal"))
-                                                .on_click(cx.listener(move |_, _, _, cx| {
-                                                    cx.emit(PhotoMapEvent::Reveal {
-                                                        path: reveal_path.clone(),
-                                                    });
-                                                })),
-                                        )
-                                        .child(
-                                            Button::new(("pm-open", pane_idx * 10_000 + row_i))
-                                                .compact()
-                                                .ghost()
-                                                .label(t!("Open"))
-                                                .on_click(cx.listener(move |_, _, _, cx| {
-                                                    cx.emit(PhotoMapEvent::Open {
-                                                        path: open_path.clone(),
-                                                    });
-                                                })),
-                                        ),
-                                )
-                        }))),
-                )
+        let drawer = active.map(|cl| {
+            let items = self.drawer_items(frame.clusters.members_of(&cl), &photos, scale, cx);
+            let (title, country) = drawer_title(&cl);
+            self.drawer(title, country, items, cx)
         });
+        // The drawer lies over the bottom of the map, so opening it moves no pin under the pointer.
+        let map_area = div()
+            .relative()
+            .flex_1()
+            .min_h_0()
+            .w_full()
+            .child(map_body)
+            .when_some(drawer, |area, drawer| area.child(drawer));
 
         col()
             .id(("photo-map-view", self.pane))
@@ -883,8 +811,7 @@ impl Render for PhotoMapView {
             .size_full()
             .bg(t.background)
             .child(header)
-            .child(map_body)
-            .when_some(drawer, |root, d| root.child(d))
+            .child(map_area)
             .into_any_element()
     }
 }
@@ -892,10 +819,12 @@ impl Render for PhotoMapView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::components::file_grid::thumbnail::{Ask, Fut, Origin, ThumbSource, Thumbnail};
     use crate::explorer::fake::{file, FakeDisk};
     use crate::explorer::NavOptions;
     use crate::testing;
     use gpui_kit::test::TestWindowExt as _;
+    use std::cell::RefCell;
 
     #[gpui_kit::test]
     fn renders_offline_world_map_pins_and_toggles_cleanly(cx: &mut gpui_kit::TestAppContext) {
@@ -999,5 +928,169 @@ mod tests {
         assert_eq!(state, Some((false, vec![9, 7, 5])));
         // The camera was fitted to them, not left on the world.
         visual.update(|window, cx| window.render_frame(cx));
+    }
+
+    /// A thumbnail source that makes every photo a small blue square, and remembers what it was asked for.
+    struct Solid(Rc<RefCell<Vec<Ask>>>);
+
+    impl ThumbSource for Solid {
+        fn thumbnail(&self, ask: Ask) -> Fut<Result<Thumbnail, String>> {
+            self.0.borrow_mut().push(ask);
+            Box::pin(async {
+                let pixels = glint_core::thumbs::Pixels {
+                    width: 8,
+                    height: 8,
+                    bgra: [30u8, 60, 200, 255].repeat(64),
+                };
+                Ok(Thumbnail {
+                    pixels: Some(Arc::new(pixels)),
+                    lasting: true,
+                    from: Origin::Made,
+                    ms: 1.0,
+                })
+            })
+        }
+
+        fn cancel(&self, _: &str, _: Option<Vec<String>>, _: u32) {}
+    }
+
+    fn photo(name: &str, lat: f64, lon: f64, taken: i64) -> GeoPhoto {
+        GeoPhoto {
+            path: format!("C:\\Trip\\{name}").into(),
+            name: name.into(),
+            lat,
+            lon,
+            taken,
+            size: 420,
+            modified: 5,
+        }
+    }
+
+    #[gpui_kit::test]
+    fn pins_hold_their_lead_photos_picture_and_the_drawer_shows_thumbnails(cx: &mut gpui_kit::TestAppContext) {
+        let _guard = testing::lock();
+        let disk = FakeDisk::new();
+        disk.folder("C:\\Trip", vec![file("C:\\Trip", "a.jpg", 420, 0)]);
+        // Two photos a few metres apart in Tokyo (one pin, the newer is its lead; the other has an Arabic name) and one
+        // in Paris.
+        let sample = vec![
+            photo("a.jpg", 35.660, 139.700, 3),
+            photo("صورة.jpg", 35.661, 139.701, 2),
+            photo("c.jpg", 48.858, 2.295, 1),
+        ];
+        let asked = Rc::new(RefCell::new(Vec::new()));
+        let source: Rc<dyn ThumbSource> = Rc::new(Solid(asked.clone()));
+        cx.update(|cx| {
+            testing::init(cx);
+            crate::explorer::init_with(cx, disk.source());
+            crate::components::file_grid::thumbnail::init_with(cx, source);
+            init_with(cx, loader_of(move |_| sample.clone()));
+        });
+        let (view, visual) = cx.add_window_view(|window, cx| PhotoMapView::new(0, window, cx));
+        visual.update(|_, cx| {
+            explorer(cx).update(cx, |e, cx| e.navigate("C:\\Trip", NavOptions::default(), cx));
+        });
+        visual.run_until_parked();
+        let tab = visual.update(|_, cx| explorer(cx).read(cx).active_tab_id());
+        visual.update(|_, cx| toggle(cx, tab));
+        visual.run_until_parked();
+        for _ in 0..2 {
+            visual.update(|window, cx| window.render_frame(cx));
+            visual.run_until_parked();
+        }
+        // The camera has just been fitted: nothing is asked while it may still be moving.
+        assert!(asked.borrow().is_empty(), "{:?}", asked.borrow());
+
+        // Once it has rested, the lead photo of each pin is asked for, once, at a small size.
+        visual.executor().advance_clock(Duration::from_millis(300));
+        let mut leads: Vec<String> = Vec::new();
+        for _ in 0..200 {
+            visual.run_until_parked();
+            visual.update(|window, cx| window.render_frame(cx));
+            leads = asked.borrow().iter().map(|a| a.path.clone()).collect();
+            if leads.len() >= 2 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        leads.sort();
+        assert_eq!(leads, ["C:\\Trip\\a.jpg", "C:\\Trip\\c.jpg"]);
+        assert!(asked.borrow().iter().all(|a| a.size <= 200 && a.lane == "photo-map-0"));
+
+        // Their pictures come, and the pins hold them.
+        let mut pictures = 0;
+        for _ in 0..200 {
+            visual.run_until_parked();
+            visual.update(|window, cx| window.render_frame(cx));
+            pictures = visual.update(|window, cx| {
+                view.update(cx, |v, cx| {
+                    let (set, _, _) = v.current(cx);
+                    let frame = v.clusters_now(&set);
+                    v.pin_pictures(&frame, &set, window.scale_factor(), cx).len()
+                })
+            });
+            if pictures == 2 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(pictures, 2);
+
+        // The Tokyo pin's drawer: a tile for each photo, named, and asked for too.
+        visual.update(|window, cx| {
+            view.update(cx, |v, cx| {
+                let (set, _, _) = v.current(cx);
+                let frame = v.clusters_now(&set);
+                v.selected_cluster = frame.clusters.pins.iter().position(|p| p.count == 2);
+                cx.notify();
+            });
+            window.render_frame(cx);
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| window.render_frame(cx));
+        let labels: Vec<Option<String>> = visual.update(|window, _| {
+            (0..3usize)
+                .map(|i| {
+                    window
+                        .try_find(("pm-tile", i))
+                        .and_then(|t| t.label().map(str::to_string))
+                })
+                .collect()
+        });
+        assert_eq!(labels, [Some("a.jpg".to_string()), Some("صورة.jpg".to_string()), None]);
+
+        // Pressing a tile, or Enter on it, opens that photo.
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let log = events.clone();
+        let _keep = visual.update(|_, cx| {
+            cx.subscribe(&view, move |_, event: &PhotoMapEvent, _| {
+                log.borrow_mut().push(event.clone())
+            })
+        });
+        visual.update(|window, cx| window.click(("pm-tile", 0usize), cx));
+        visual.update(|window, cx| {
+            let handle = view.read(cx).tile_focus[1].clone();
+            window.focus(&handle, cx);
+            window.press("enter", cx);
+        });
+        assert_eq!(
+            *events.borrow(),
+            [
+                PhotoMapEvent::Open {
+                    path: "C:\\Trip\\a.jpg".into()
+                },
+                PhotoMapEvent::Open {
+                    path: "C:\\Trip\\صورة.jpg".into()
+                },
+            ]
+        );
+        // Reveal is a button of its own under each tile.
+        visual.update(|window, cx| window.click(("pm-reveal", 1usize), cx));
+        assert_eq!(
+            events.borrow().last(),
+            Some(&PhotoMapEvent::Reveal {
+                path: "C:\\Trip\\صورة.jpg".into()
+            })
+        );
     }
 }
