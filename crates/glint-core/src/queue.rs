@@ -406,7 +406,9 @@ fn run(job: &Job) {
         v.state = "copying".into();
     });
     if let Some(free) = crate::archive::extract::free_space(&dest) {
-        if free < total {
+        // Where Windows clones blocks (ReFS, a Dev Drive) a copy within the volume takes no room: it isn't
+        // refused for the room it would take, and what truly can't be made fails file by file.
+        if free < total && !clones_blocks(&sources, &dest) {
             job.set(|v| v.errors.push(Failure { path: dest.to_string_lossy().into_owned(), error: format!("Not enough space there: it needs {}, and has {}", size_text(total), size_text(free)) }));
             return finish(job, "failed");
         }
@@ -636,6 +638,16 @@ fn run(job: &Job) {
     }
     let state = if job.view().errors.is_empty() || job.view().files_done > 0 { "done" } else { "failed" };
     finish(job, state);
+}
+
+/// Whether every source is on `dest`'s volume and that volume clones blocks (ReFS, a Dev Drive). CopyFileEx
+/// clones inside Windows itself there on current Windows 11 (the queue passes no flag but COPY_FILE_COPY_SYMLINK,
+/// so nothing turns that off), and a clone shares the original's space.
+fn clones_blocks(sources: &[String], dest: &Path) -> bool {
+    !sources.is_empty()
+        && sources
+            .iter()
+            .all(|s| reflink_copy::check_reflink_support(s, dest).is_ok_and(|support| support == reflink_copy::ReflinkSupport::Supported))
 }
 
 /// "1.5 GB", "320 KB": a size in words.
@@ -1006,5 +1018,22 @@ mod tests {
         assert_eq!(view.state, "done");
         assert_eq!(view.verified, 300);
         assert_eq!(view.files_done, 300);
+    }
+
+    #[test]
+    fn only_a_volume_that_clones_blocks_skips_the_room_check() {
+        let dir = std::env::temp_dir().join(format!("glint-queue-clone-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), "a").unwrap();
+        let source = dir.join("a.txt").to_string_lossy().into_owned();
+        assert!(!clones_blocks(&[], &dir), "nothing to copy");
+        assert!(!clones_blocks(&[r"Z:\no\such\file".into()], &dir), "a source that isn't there");
+        // The temp folder is NTFS on this PC: no block cloning, so a copy that doesn't fit is still refused.
+        if reflink_copy::check_reflink_support(&source, &dir).is_ok_and(|s| s == reflink_copy::ReflinkSupport::Supported) {
+            assert!(clones_blocks(&[source], &dir));
+        } else {
+            assert!(!clones_blocks(&[source], &dir));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
