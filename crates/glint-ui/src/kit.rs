@@ -30,7 +30,7 @@ use gpui_kit::component::{h_flex, v_flex};
 pub mod prelude {
     pub use super::{
         align_row, back_icon, capacity_bar, col, drive_icon, forward_icon, free_of, icon, isolate, kind_icon,
-        known_icon, loading_sweep, row, row_start, space, tooltip, tooltip_under, Logical, Placeholder,
+        known_icon, loading_sweep, menu_max_height, row, row_start, space, tooltip, tooltip_under, Logical, Placeholder,
     };
     pub use super::{h_resizable, resizable_panel};
     pub use super::{
@@ -75,6 +75,14 @@ impl gpui_kit::Render for NoTooltip {
     fn render(&mut self, _: &mut Window, _: &mut gpui_kit::Context<Self>) -> impl gpui_kit::IntoElement {
         gpui_kit::div()
     }
+}
+
+/// The tallest a menu, dropdown or popover may be: 70 % of the window's height and never more than 600 px, so no
+/// menu takes the whole window (what doesn't fit scrolls inside it). A very short window still gets 160 px.
+/// Every menu uses this one rule: the right-click menus, the dock's menus, the kit's popup menus, flyouts.
+pub fn menu_max_height(window: &Window) -> Pixels {
+    let height = window.viewport_size().height;
+    (height * 0.7).min(px(600.)).max(px(160.).min(height))
 }
 
 /// A known folder's icon, as the sidebar, This PC and the address bar draw it (`KNOWN_ICONS`).
@@ -245,7 +253,7 @@ pub use gpui_kit::component::{h_resizable, resizable_panel, ResizableState};
 pub use gpui_kit::component::{Disableable, Icon, Selectable, Sizable, TitleBar, WindowExt};
 
 use gpui_kit::prelude::*;
-use gpui_kit::{div, rems, App, Div, IntoElement, Rems, Role, SharedString, Window};
+use gpui_kit::{div, px, rems, App, Div, IntoElement, Pixels, Rems, Role, SharedString, Window};
 
 /// A horizontal flex row, children centred vertically (`flex items-center`).
 pub fn row() -> Div {
