@@ -235,6 +235,8 @@ pub struct Sidebar {
     /// The live portals mounted, as last read, and the menu of one while it is open.
     portals: Vec<PortalItem>,
     portal_menu: Option<crate::components::tab_strip::menu::Popup>,
+    /// Whether the list had more below its last row at the last frame: the edge fades while it has.
+    fade_below: bool,
     /// The Workspaces menu while it is open.
     workspace_menu: Option<crate::components::tab_strip::menu::Popup>,
     /// What the rows were last built from. The explorer, the saved state and the settings change far more often
@@ -311,6 +313,7 @@ impl Sidebar {
             portals: Vec::new(),
             portal_menu: None,
             workspace_menu: None,
+            fade_below: false,
             seen: None,
             #[cfg(test)]
             built: 0,
@@ -321,11 +324,28 @@ impl Sidebar {
             eject_focus: HashMap::new(),
             _subscriptions: subscriptions,
         };
+        // The bottom edge's fade follows the scroll: the view is drawn again only when it flips.
+        let weak = cx.entity().downgrade();
+        this.list.set_scroll_handler(move |_, _, cx| {
+            weak.update(cx, |this, cx| {
+                if this.more_below() != this.fade_below {
+                    cx.notify();
+                }
+            })
+            .ok();
+        });
         this.portals = (this.sources.portals)();
         this.watch_portals(cx);
         this.read_tags(cx);
         this.refresh(cx);
         this
+    }
+
+    /// Whether the list has rows below the ones in view (as of the last layout).
+    fn more_below(&self) -> bool {
+        let max = self.list.max_offset_for_scrollbar().y;
+        let at = -self.list.scroll_px_offset_for_scrollbar().y;
+        max - at > px(1.)
     }
 
     /// The rows now, top to bottom (for the window's tests).
@@ -1180,9 +1200,17 @@ impl Sidebar {
             Label::Fixed(text) => t!(*text),
             Label::Plain(text) => text.clone(),
         };
+        // A drive whose size isn't known this moment (a refresh in between) keeps the bar's place as an empty
+        // track, so the row doesn't shrink and grow back.
+        let holds_place = p.capacity.is_none()
+            && matches!(
+                p.glyph,
+                Glyph::Drive(crate::explorer::DriveKind::Fixed | crate::explorer::DriveKind::Removable)
+            );
         let bar = p
             .capacity
-            .and_then(|(total, free)| capacity_bar(total, free, space(1.), cx));
+            .and_then(|(total, free)| capacity_bar(total, free, space(1.), cx))
+            .or_else(|| holds_place.then(|| div().h(space(1.)).w_full().rounded_full().bg(t.pressed)));
         let text = col()
             .flex_1()
             .min_w_0()
@@ -1643,6 +1671,31 @@ impl Render for Sidebar {
             });
             Some(theme::kind_tone(kind_of(entry), cx))
         };
+        // More rows below the last in view: the edge fades into the rail, so a cut-off row reads as scrolling.
+        self.fade_below = self.more_below();
+        let fade = self.fade_below.then(|| {
+            let layer = div()
+                .id("places-fade")
+                .absolute()
+                .left_0()
+                .right_0()
+                .bottom_0()
+                .h(space(8.))
+                .bg(gpui_kit::linear_gradient(
+                    180.,
+                    gpui_kit::linear_color_stop(t.chrome.opacity(0.), 0.),
+                    gpui_kit::linear_color_stop(t.chrome, 1.),
+                ));
+            if cx.reduce_motion() {
+                layer.into_any_element()
+            } else {
+                layer
+                    .with_animation("places-fade-in", Animation::new(theme::motion::FAST), |layer, delta| {
+                        layer.opacity(delta)
+                    })
+                    .into_any_element()
+            }
+        });
         div()
             .id("places")
             .role(Role::Navigation)
@@ -1660,16 +1713,30 @@ impl Render for Sidebar {
             .text_color(t.foreground)
             .child(self.draw_workspaces(cx))
             .child(
-                list(
-                    self.list.clone(),
-                    cx.processor(|this, ix, window, cx| this.draw_row(ix, window, cx)),
-                )
-                .flex_1()
-                .min_h_0()
-                .w_full(),
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .child(
+                        list(
+                            self.list.clone(),
+                            cx.processor(|this, ix, window, cx| this.draw_row(ix, window, cx)),
+                        )
+                        .size_full(),
+                    )
+                    .children(fade),
             )
-            .children(self.portal_menu.as_ref().map(crate::components::tab_strip::menu::Popup::element))
-            .children(self.workspace_menu.as_ref().map(crate::components::tab_strip::menu::Popup::element))
+            .children(
+                self.portal_menu
+                    .as_ref()
+                    .map(crate::components::tab_strip::menu::Popup::element),
+            )
+            .children(
+                self.workspace_menu
+                    .as_ref()
+                    .map(crate::components::tab_strip::menu::Popup::element),
+            )
     }
 }
 

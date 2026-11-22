@@ -1584,3 +1584,45 @@ mod workspace_tests {
         assert!(matches!(&find("workspace-delete-ws-1").run, Run::Workspace(WorkspaceDo::Delete(id)) if id == "ws-1"));
     }
 }
+
+#[gpui_kit::test]
+fn the_rail_fades_at_its_bottom_edge_only_while_more_is_below(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut w = world(cx, "edge-fade");
+    // The test window is tall: everything fits, nothing fades.
+    w.frame();
+    w.frame();
+    assert!(!w.sidebar.read_with(&w.cx, |s, _| s.fade_below), "nothing is below");
+    w.cx.simulate_resize(size(px(300.), px(180.)));
+    w.frame();
+    w.frame();
+    assert!(
+        w.sidebar.read_with(&w.cx, |s, _| s.fade_below),
+        "rows run on below the window"
+    );
+    w.cx.simulate_resize(size(px(300.), px(900.)));
+    w.frame();
+    w.frame();
+    assert!(
+        !w.sidebar.read_with(&w.cx, |s, _| s.fade_below),
+        "and it goes when they fit"
+    );
+}
+
+#[gpui_kit::test]
+fn a_drive_without_a_known_size_keeps_the_bars_place_so_rows_do_not_jump(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut w = world(cx, "drive-bar-place");
+    let names = w.names();
+    // C: has a size, E: (a USB drive) doesn't know its own this moment.
+    let (c, e) = (
+        names.iter().find(|n| n.contains("C:")).expect("C:").clone(),
+        names.iter().find(|n| n.contains("E:")).expect("E:").clone(),
+    );
+    let (c_id, e_id) = (w.id_of(&c), w.id_of(&e));
+    let (c_box, e_box) = (w.bounds_of(c_id), w.bounds_of(e_id));
+    assert_eq!(
+        c_box.size.height, e_box.size.height,
+        "the same row height with and without a size"
+    );
+}
