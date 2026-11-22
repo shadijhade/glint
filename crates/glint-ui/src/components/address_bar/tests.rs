@@ -1322,3 +1322,90 @@ fn the_x_button_and_delete_forget_a_recent_search_and_what_is_saved(cx: &mut Tes
     assert!(saved_history(&mut rig).is_empty());
     assert!(!rig.has("Recent searches"));
 }
+
+// ---- Peek cards on parent folders ----------------------------------------------------------------------
+
+impl Rig {
+    fn card(&mut self) -> Option<(Option<Role>, String)> {
+        self.visual.update(|window, cx| {
+            window.render_frame(cx);
+            window
+                .try_find("peek-card")
+                .map(|card| (card.role(), card.label().unwrap_or_default().to_string()))
+        })
+    }
+
+    fn hover(&mut self, id: impl Into<ElementId>) {
+        let id = id.into();
+        self.visual.update(|window, cx| window.hover(id, cx));
+        self.visual.run_until_parked();
+    }
+
+    fn rest(&mut self, ms: u64) {
+        self.visual.executor().advance_clock(Duration::from_millis(ms));
+        self.visual.run_until_parked();
+        self.visual.update(|window, cx| window.render_frame(cx));
+    }
+}
+
+#[gpui_kit::test]
+fn the_pointer_resting_on_a_parent_crumb_shows_what_that_folder_holds_and_fills_in(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut rig = rig(cx, false, 900., "C:\\Users\\me\\Documents");
+    // Crumbs: C:\\ , Users, me, Documents. "Users" is a parent nobody shows: it is read ahead for the card.
+    rig.hover(("address-crumb", 1_usize));
+    rig.rest(300);
+    assert!(rig.card().is_none(), "not before the rest");
+    rig.rest(150);
+    let (role, label) = rig.card().expect("the crumb's card");
+    assert_eq!(role, Some(Role::Tooltip));
+    assert!(label.starts_with("Users, C:\\Users"), "{label}");
+    // What it holds arrives after, without anyone waiting: 2 folders, 2 files.
+    for _ in 0..100 {
+        rig.visual.run_until_parked();
+        let (_, label) = rig.card().expect("still there");
+        if label.contains("folders") {
+            assert!(label.contains("3 files"), "{label}");
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        rig.card().is_some_and(|(_, label)| label.contains("2 folders")),
+        "{:?}",
+        rig.card()
+    );
+    // Nothing was opened by looking.
+    assert_eq!(rig.path(), "C:\\Users\\me\\Documents");
+}
+
+#[gpui_kit::test]
+fn the_arrow_shows_the_same_card_and_the_folder_you_are_in_has_none(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut rig = rig(cx, false, 900., "C:\\Users\\me\\Documents");
+    rig.hover(("address-chevron", 1_usize));
+    rig.rest(450);
+    let (_, label) = rig.card().expect("the arrow's card");
+    assert!(label.starts_with("Users, C:\\Users"), "{label}");
+    assert!(label.ends_with("Subfolders of Users"), "{label}");
+    // Moving from the arrow onto its folder's crumb keeps the card.
+    rig.hover(("address-crumb", 1_usize));
+    rig.rest(300);
+    assert!(rig.card().is_some());
+    // The crumb of the folder shown (the last) says nothing more than the page does; its tooltip stays.
+    rig.hover(("address-crumb", 3_usize));
+    rig.rest(100);
+    assert!(rig.card().is_none(), "left the card's elements");
+    rig.rest(600);
+    assert!(rig.card().is_none());
+    // Escape closes a card, and a click on the crumb goes there.
+    rig.hover(("address-crumb", 2_usize));
+    rig.rest(450);
+    assert!(rig.card().is_some());
+    rig.visual.update(|window, cx| window.press("escape", cx));
+    rig.visual.run_until_parked();
+    assert!(rig.card().is_none());
+    rig.click(("address-crumb", 2_usize));
+    assert_eq!(rig.path(), "C:\\Users\\me");
+    assert!(rig.card().is_none());
+}

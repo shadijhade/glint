@@ -38,6 +38,7 @@ mod keys;
 mod search;
 
 use crate::components::git::{self, GitChip};
+use crate::components::peek_card::{self, PeekHost};
 use crate::core_bridge::Core;
 use crate::explorer::{
     self, CoreSource, Drive, DriveKind, Explorer, KnownFolder, NavOptions, Refresh, Source, TabId, Visit,
@@ -300,6 +301,8 @@ pub struct AddressBar {
     in_repository: bool,
     /// The branch chip of each tab, made when the tab first shows (a chip follows its tab's folder).
     chips: HashMap<TabId, Entity<GitChip>>,
+    /// The card a parent folder's crumb or arrow shows when the pointer rests on it: what the folder holds.
+    peek: Entity<PeekHost>,
     /// What the box's placeholder says now ("Search {folder}").
     placeholder: SharedString,
 
@@ -330,6 +333,10 @@ impl AddressBar {
     pub fn with_source(source: Rc<dyn Source>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         keys::ensure_bound(cx);
         let explorer = explorer::explorer(cx);
+        let peek = {
+            let explorer = explorer.clone();
+            cx.new(|cx| PeekHost::new(explorer, cx))
+        };
         let seen = Rc::new(Seen::of(explorer.read(cx)));
         let edit = cx.new(|cx| InputState::new(window, cx));
         let placeholder = t!("Search {folder}", folder = seen.folder_name);
@@ -374,6 +381,7 @@ impl AddressBar {
             drop_over: None,
             in_repository: false,
             chips: HashMap::new(),
+            peek,
             placeholder,
             _subscriptions: subscriptions,
         };
@@ -1478,6 +1486,7 @@ impl AddressBar {
             .overflow_hidden()
             .px(space(1.))
             .child(bar_probe)
+            .child(self.peek.clone())
             .children(this_pc)
             .children(roots_chevron)
             .children(dots)
@@ -1527,6 +1536,8 @@ impl AddressBar {
         };
         let (path, middle) = (crumb.path.clone(), crumb.path.clone());
         let name = crumb.name.clone();
+        // A parent folder says what it holds when the pointer rests on it (the one you are in is on the page).
+        let peek = (!last).then(|| self.crumb_peek(crumb, None)).flatten();
         // A folder on disk takes files, and can be dragged out: not an archive, a remote, This PC, the Recycle
         // Bin, Recent or the Gallery (`writableCrumb`).
         let writable = crumb_takes_files(crumb);
@@ -1550,7 +1561,19 @@ impl AddressBar {
             .hover(|s| s.bg(t.accent))
             .focus_visible(|s| s.bg(t.accent))
             .active(|s| s.bg(t.accent))
-            .tooltip(tip(title))
+            .when(peek.is_none(), |b| b.tooltip(tip(title)))
+            .when_some(peek, |b, target| {
+                b.on_hover(cx.listener(move |this, hovered: &bool, window, cx| {
+                    let target = target.clone();
+                    this.peek.update(cx, |peek, cx| {
+                        if *hovered {
+                            peek.enter(target, window, cx);
+                        } else {
+                            peek.leave(&target.element, cx);
+                        }
+                    });
+                }))
+            })
             .when(writable && self.drop_over == Some(i) && cx.has_active_drag(), |b| {
                 b.bg(t.primary.opacity(0.2))
                     .text_color(t.primary)
@@ -1591,7 +1614,10 @@ impl AddressBar {
                     .detach();
                 }))
             })
-            .on_click(cx.listener(move |this, _, window, cx| this.open(path.clone(), window, cx)))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.peek.update(cx, |peek, cx| peek.hide(cx));
+                this.open(path.clone(), window, cx)
+            }))
             .on_mouse_down(
                 MouseButton::Middle,
                 cx.listener(move |this, _, window, cx| {
@@ -1625,6 +1651,25 @@ impl AddressBar {
             .when(folded, |c| c.invisible())
             .child(button)
             .children(chevron)
+    }
+}
+
+impl AddressBar {
+    /// The card a crumb (or its arrow, with the `hint` that says what pressing it does) asks for: a folder on disk,
+    /// whose listing may be known already. Crumbs of places that are no folder, archives and remotes have none.
+    fn crumb_peek(&self, crumb: &CrumbView, hint: Option<SharedString>) -> Option<peek_card::Target> {
+        crumb_takes_files(crumb).then(|| peek_card::Target {
+            key: SharedString::from(format!("crumb-{}", crumb.path)),
+            element: SharedString::from(format!(
+                "{}-{}",
+                if hint.is_some() { "arrow" } else { "crumb" },
+                crumb.path
+            )),
+            path: crumb.path.clone(),
+            name: SharedString::from(crumb.name.clone()),
+            hint,
+            read_ahead: true,
+        })
     }
 }
 

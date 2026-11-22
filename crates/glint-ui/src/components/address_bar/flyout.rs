@@ -421,6 +421,15 @@ impl AddressBar {
     ) -> impl IntoElement {
         let open = self.flyout.as_ref().is_some_and(|f| f.at == at);
         let menu = self.flyout_menu(at, cx);
+        // The arrow after a parent folder shows the same card as the folder's crumb, with what pressing it does.
+        let peek = match at {
+            At::Crumb(i) if i + 1 < self.seen.crumbs.len() => self
+                .seen
+                .crumbs
+                .get(i)
+                .and_then(|crumb| self.crumb_peek(crumb, Some(t!("Subfolders of {name}", name = crumb.name)))),
+            _ => None,
+        };
         div()
             .relative()
             .flex_none()
@@ -441,8 +450,21 @@ impl AddressBar {
                     .cursor_pointer()
                     .hover(|s| s.bg(t.accent).text_color(t.foreground))
                     .focus_visible(|s| s.bg(t.accent))
-                    .tooltip(tip(label))
+                    .when(peek.is_none(), |b| b.tooltip(tip(label)))
+                    .when_some(peek, |b, target| {
+                        b.on_hover(cx.listener(move |this, hovered: &bool, window, cx| {
+                            let target = target.clone();
+                            this.peek.update(cx, |peek, cx| {
+                                if *hovered {
+                                    peek.enter(target, window, cx);
+                                } else {
+                                    peek.leave(&target.element, cx);
+                                }
+                            });
+                        }))
+                    })
                     .on_click(cx.listener(move |this, _, window, cx| {
+                        this.peek.update(cx, |peek, cx| peek.hide(cx));
                         this.open_flyout(at, folder.clone(), active_child.clone(), None, window, cx)
                     }))
                     // It points along the path: right in English, left in Arabic.
