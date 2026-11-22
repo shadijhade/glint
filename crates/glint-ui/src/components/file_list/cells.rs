@@ -493,6 +493,9 @@ impl FileList {
             name_cell = name_cell.child(div().flex_1().min_w_0()).child(peek_cell(i, peek, t));
         }
 
+        // A row selected just now eases its fill in (`calm::Eased`); one that was already selected, or dropped on, doesn't.
+        let easing =
+            !frame.fresh.is_empty() && selected && !dropping && !frame.inactive && frame.fresh.contains(&entry.path);
         // The row's highlight: a rounded fill inside the line (hover, selection, the folder files will drop into),
         // holding the cells. The line around it is what is clicked, named and measured.
         let mut fill = row_start()
@@ -508,6 +511,13 @@ impl FileList {
             .border_color(hsla(0., 0., 0., 0.))
             .text_size(theme::size::SM)
             .text_color(t.foreground)
+            .when(easing, |fill| {
+                fill.child(super::calm::easing_fill(
+                    ("file-row-select", (frame.fresh_turn << 24) | i),
+                    theme::selected_fill(cx, false),
+                    theme::size::RADIUS_ROW,
+                ))
+            })
             .child(name_cell);
         for track in &frame.tracks {
             fill = match *track {
@@ -579,9 +589,15 @@ impl FileList {
                 fill.bg(t.selected_inactive)
             } else {
                 let over = theme::selected_fill(cx, true);
-                fill.bg(theme::selected_fill(cx, false))
-                    .border_color(t.primary.opacity(0.22))
-                    .hover(move |style| style.bg(over))
+                if easing {
+                    // Just selected: its fill (drawn first, under the text) fades in rather than switching on.
+                    fill.border_color(t.primary.opacity(0.22))
+                        .hover(move |style| style.bg(over))
+                } else {
+                    fill.bg(theme::selected_fill(cx, false))
+                        .border_color(t.primary.opacity(0.22))
+                        .hover(move |style| style.bg(over))
+                }
             }
         } else {
             let over = t.accent;

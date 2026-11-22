@@ -36,6 +36,7 @@
 //! in the icon cell.
 
 mod cells;
+pub(crate) mod calm;
 pub mod diff;
 #[cfg(test)]
 pub(crate) mod fake_git;
@@ -290,6 +291,9 @@ pub(crate) struct Frame {
     /// How the items differ from the other pane's (compare panes): a pill after the name, the same ones dimmed.
     pub diffs: Option<Arc<Comparison>>,
     pub flashed: Arc<HashSet<String>>,
+    /// Rows selected just now, whose fill eases in, and the turn that animation belongs to.
+    pub fresh: Arc<HashSet<String>>,
+    pub fresh_turn: usize,
     pub now: i64,
     /// Items cut to the clipboard: dimmed until pasted (`cut`).
     pub cut: Arc<HashSet<String>>,
@@ -441,6 +445,12 @@ pub struct FileList {
     /// The width the list was last laid out at, measured by the canvas under it.
     width: Rc<Cell<f32>>,
     resizing: Option<Resize>,
+    /// Which rows were selected just now: their fill eases in.
+    eased: calm::Eased,
+    /// The header's right-click menu, while it is open.
+    header_menu: Option<header::HeaderOpen>,
+    /// When a press on the header closed that menu.
+    header_dismissed: Option<Instant>,
     rename: Option<RenameBox>,
     typeahead: TypeAhead,
     press: Option<Press>,
@@ -578,6 +588,8 @@ impl FileList {
                 git: None,
                 diffs: None,
                 flashed: Arc::new(HashSet::new()),
+                fresh: Arc::new(HashSet::new()),
+                fresh_turn: 0,
                 now: 0,
                 cut: Arc::new(HashSet::new()),
                 dragging: Arc::new(HashSet::new()),
@@ -597,6 +609,9 @@ impl FileList {
             }),
             width: Rc::new(Cell::new(0.)),
             resizing: None,
+            eased: calm::Eased::default(),
+            header_menu: None,
+            header_dismissed: None,
             rename: None,
             typeahead: TypeAhead::default(),
             press: None,
@@ -1515,6 +1530,7 @@ impl Render for FileList {
 
         // What this frame's lines are drawn from.
         let tracks = self.tracks(&view, window, cx);
+        let (fresh, fresh_turn) = self.eased.read(view.id, &view.selection, cx);
         let explorer = self.explorer.read(cx);
         let (cut, flashed) = (explorer.cut_paths().clone(), explorer.flashed().clone());
         let lines = layout_rows::line_count(&view.rows);
@@ -1560,6 +1576,8 @@ impl Render for FileList {
             git: view.git.clone(),
             diffs: view.diffs.clone(),
             flashed,
+            fresh,
+            fresh_turn,
             now: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX)),
@@ -1710,6 +1728,7 @@ impl Render for FileList {
             )
             .child(header)
             .child(area)
+            .children(self.header_menu_layer())
             // The folder shown takes the files: a dashed outline round the list.
             .when(folder_drop, |this| {
                 this.child(

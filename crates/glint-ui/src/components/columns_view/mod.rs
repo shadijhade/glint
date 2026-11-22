@@ -44,6 +44,7 @@
 mod tests;
 
 use crate::components::file_grid::thumbnail::{self, Thumbnails};
+use crate::components::file_list::calm;
 use crate::components::file_list::drop_path;
 use crate::components::file_list::pointer::{start_drag, DRAG_AFTER};
 use crate::components::menus::head::{head_of, Extras};
@@ -994,17 +995,16 @@ impl ColumnsView {
                     .size_full()
                     .child(header)
                     .when(empty, |column| {
+                        // The same look as the list's and the grid's message: a picture, one line, centred.
                         column.child(
-                            div()
-                                .id("columns-empty")
-                                .role(Role::Status)
-                                .aria_label(t!("It's empty"))
-                                .test_support()
-                                .px(space(2.))
-                                .py(space(3.))
-                                .text_size(theme::size::XS)
-                                .text_color(t.muted_foreground)
-                                .child(t!("It's empty")),
+                            div().flex_1().min_h_0().child(
+                                calm::centered(&t, "columns-empty")
+                                    .role(Role::Status)
+                                    .aria_label(t!("It's empty"))
+                                    .test_support()
+                                    .child(calm::faded(&t, IconName::Folder))
+                                    .child(calm::title(&t, t!("It's empty"))),
+                            ),
                         )
                     })
                     .when(!empty, |column| column.child(list))

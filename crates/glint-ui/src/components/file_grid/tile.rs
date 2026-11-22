@@ -38,6 +38,9 @@ pub(super) struct Frame {
     pub focus: Option<String>,
     /// In the pane the keyboard isn't acting on: the selection shows muted, as in an unfocused window.
     pub inactive: bool,
+    /// Tiles selected just now, whose fill eases in, and the turn that animation belongs to.
+    pub fresh: Arc<HashSet<String>>,
+    pub fresh_turn: usize,
     pub flashed: Arc<HashSet<String>>,
     /// Cut to the clipboard: dim until pasted.
     pub cut: Arc<HashSet<String>>,
@@ -314,7 +317,12 @@ fn tile(frame: &Rc<Frame>, i: usize, entry: &FileEntry, cx: &App) -> AnyElement 
     let thumb = frame.tile.thumb;
 
     let dropping = frame.drop_tile.as_deref() == Some(entry.path.as_str());
-    let background = if dropping {
+    // Selected just now: the fill fades in (drawn first, under the tile's contents) instead of switching on.
+    let easing =
+        !frame.fresh.is_empty() && selected && !dropping && !frame.inactive && frame.fresh.contains(&entry.path);
+    let background = if easing {
+        hsla(0., 0., 0., 0.)
+    } else if dropping {
         // `bg-primary/20 outline-primary`: the folder the files would go into.
         t.primary.opacity(0.20)
     } else if selected {
@@ -514,6 +522,13 @@ fn tile(frame: &Rc<Frame>, i: usize, entry: &FileEntry, cx: &App) -> AnyElement 
                 .border_1()
                 .border_color(border)
                 .bg(background)
+                .when(easing, |tile| {
+                    tile.relative().child(crate::components::file_list::calm::easing_fill(
+                        ("file-grid-select", (frame.fresh_turn << 24) | i),
+                        t.selected,
+                        theme::size::RADIUS_LG,
+                    ))
+                })
                 .text_center()
                 .when(!dropping && !(selected && frame.inactive), |tile| {
                     tile.hover(move |hover| hover.bg(over))

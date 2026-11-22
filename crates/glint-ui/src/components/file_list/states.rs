@@ -64,32 +64,7 @@ struct RecentKnown {
 
 impl Global for RecentKnown {}
 
-/// A centred message: an icon, a title, a few lines and buttons (`Centered`).
-fn centered(t: &Tokens, id: &'static str) -> Stateful<Div> {
-    col()
-        .id(id)
-        .size_full()
-        .items_center()
-        .justify_center()
-        .gap(space(2.))
-        .p(space(6.))
-        .text_size(theme::size::SM)
-        .text_color(t.muted_foreground)
-        .text_center()
-}
-
-/// The big faded icon over an empty place.
-fn faded(t: &Tokens, name: IconName) -> Icon {
-    icon(name).size(rems(2.)).text_color(t.muted_foreground.opacity(0.6))
-}
-
-fn title(t: &Tokens, text: SharedString) -> Div {
-    div()
-        .font_weight(FontWeight::MEDIUM)
-        .text_color(t.foreground)
-        .max_w(rems(28.))
-        .child(isolate(text))
-}
+use super::calm::{after_a_beat, centered, faded, title};
 
 impl FileList {
     /// The message over the list when there is nothing to list, or None when the rows speak for themselves.
@@ -126,7 +101,7 @@ impl FileList {
                 );
             }
             if find.running && view.rows.is_empty() {
-                return Some(self.busy(t, t!("Searching…"), "file-list-searching"));
+                return Some(self.busy(t, t!("Searching…"), "file-list-searching", cx));
             }
             if view.rows.is_empty() {
                 let mut hint = String::new();
@@ -151,7 +126,7 @@ impl FileList {
                     centered(t, "file-list-nothing-found")
                         .role(Role::Status)
                         .aria_label(nothing.clone())
-                        .child(icon(IconName::SearchX).size(rems(1.5)))
+                        .child(faded(t, IconName::SearchX))
                         .child(title(t, nothing))
                         .child(div().max_w(rems(24.)).child(hint))
                         .child(
@@ -231,7 +206,7 @@ impl FileList {
             // Nothing listed yet: the thin bar at the top says a folder is being read.
             LoadState::Idle | LoadState::Loading | LoadState::NoAccess(_) | LoadState::Ready(_) => {
                 if view.loading || matches!(view.load, LoadState::Loading) {
-                    Some(self.busy(t, t!("Loading…"), "file-list-loading"))
+                    Some(self.busy(t, t!("Loading…"), "file-list-loading", cx))
                 } else {
                     None
                 }
@@ -305,8 +280,10 @@ impl FileList {
     }
 
     /// A spinner and a word (`Searching…`).
-    fn busy(&self, t: &Tokens, text: SharedString, id: &'static str) -> AnyElement {
-        centered(t, id)
+    fn busy(&self, t: &Tokens, text: SharedString, id: &'static str, cx: &App) -> AnyElement {
+        // A folder that opens in a blink never shows it: it comes in after a beat, so there is no spinner flash
+        // between two folders.
+        let message = centered(t, id)
             .role(Role::Status)
             .aria_label(text.clone())
             .child(
@@ -315,8 +292,8 @@ impl FileList {
                     .child(Spinner::new().color(t.primary))
                     .child(text),
             )
-            .test_support()
-            .into_any_element()
+            .test_support();
+        after_a_beat(id, message, cx.reduce_motion())
     }
 
     /// An empty folder, an empty Recycle Bin, a filter that matches nothing, a folder of only hidden items.
@@ -331,8 +308,8 @@ impl FileList {
             return centered(t, "file-list-no-match")
                 .role(Role::Status)
                 .aria_label(text.clone())
-                .child(icon(IconName::SearchX).size(rems(1.5)))
-                .child(div().child(text))
+                .child(faded(t, IconName::SearchX))
+                .child(title(t, text))
                 .when(!view.recycled, |this| {
                     this.child(
                         Button::new("file-list-search-subfolders")
@@ -440,7 +417,8 @@ impl FileList {
             return centered(t, "file-list-only-hidden")
                 .role(Role::Status)
                 .aria_label(t!("This folder only has hidden items."))
-                .child(div().child(t!("This folder only has hidden items.")))
+                .child(faded(t, IconName::EyeOff))
+                .child(title(t, t!("This folder only has hidden items.")))
                 .child(
                     Button::new("file-list-show-hidden")
                         .outline()

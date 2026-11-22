@@ -240,6 +240,8 @@ impl GridLegoHover {
 pub struct FileGrid {
     pane: usize,
     explorer: Entity<Explorer>,
+    /// Which tiles were selected just now: their fill eases in.
+    eased: crate::components::file_list::calm::Eased,
     thumbs: Entity<Thumbnails>,
     focus: FocusHandle,
     scroll: UniformListScrollHandle,
@@ -354,6 +356,7 @@ impl FileGrid {
         Self {
             pane,
             explorer,
+            eased: Default::default(),
             thumbs,
             focus: cx.focus_handle(),
             scroll: UniformListScrollHandle::new(),
@@ -1704,6 +1707,7 @@ impl Render for FileGrid {
         // Files dragged over the grid light the folder tile they would go into, or the whole grid; a drag that has
         // ended (or left the window) lights nothing, whatever was last seen.
         let drop_over = self.drop_over.clone().filter(|_| cx.has_active_drag());
+        let (fresh, fresh_turn) = self.eased.read(tab_id, &selection, cx);
         let peeks = self.peeks.read(self.explorer.read(cx));
         // The tiles on their way from the list's rows: drawn again each frame until they are in.
         let morph = self.morph.take().and_then(|morph| {
@@ -1722,6 +1726,8 @@ impl Render for FileGrid {
             peeks,
             rows: rows.clone(),
             selection: selection.clone(),
+            fresh,
+            fresh_turn,
             focus,
             inactive,
             flashed,

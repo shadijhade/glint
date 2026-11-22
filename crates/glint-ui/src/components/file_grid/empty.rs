@@ -5,6 +5,7 @@
 //! copies, worded and ordered the same.
 
 use super::FileGrid;
+use crate::components::file_list::calm;
 use crate::explorer::{TabId, Wider};
 use crate::kit::prelude::*;
 use crate::platform::pickers::{self, Options};
@@ -170,12 +171,9 @@ impl Empty {
 /// not whichever pane is active.
 pub(super) fn view(empty: &Empty, tab: TabId, cx: &App) -> impl IntoElement {
     let t = theme::tokens(cx);
-    let strong = |text: SharedString| {
-        div()
-            .font_weight(FontWeight::MEDIUM)
-            .text_color(t.foreground)
-            .child(text)
-    };
+    // The list's own look (`file_list::calm`): one picture, one line, one action, centred.
+    let strong = |text: SharedString| calm::title(t, text);
+    let faded = |name: IconName| calm::faded(t, name);
     let note = |text: SharedString| div().text_size(theme::size::XS).child(text);
     let centered = col()
         .id("file-grid-empty")
@@ -279,7 +277,7 @@ pub(super) fn view(empty: &Empty, tab: TabId, cx: &App) -> impl IntoElement {
             centered
                 .aria_label(heading.clone())
                 .test_support()
-                .child(icon(IconName::SearchX).size_6())
+                .child(faded(IconName::SearchX))
                 .child(strong(heading))
                 .child(div().max_w(rems(24.)).child(hint))
                 .child(
@@ -346,8 +344,8 @@ pub(super) fn view(empty: &Empty, tab: TabId, cx: &App) -> impl IntoElement {
                     filter = filter
                 ))
                 .test_support()
-                .child(icon(IconName::SearchX).size_6())
-                .child(div().child(t!(
+                .child(faded(IconName::SearchX))
+                .child(strong(t!(
                     "Nothing in {place} matches “{filter}”.",
                     place = place,
                     filter = filter
@@ -412,7 +410,8 @@ pub(super) fn view(empty: &Empty, tab: TabId, cx: &App) -> impl IntoElement {
         Empty::OnlyHidden => centered
             .aria_label(t!("This folder only has hidden items."))
             .test_support()
-            .child(div().child(t!("This folder only has hidden items.")))
+            .child(faded(IconName::EyeOff))
+            .child(strong(t!("This folder only has hidden items.")))
             .child(
                 Button::new("file-grid-show-hidden")
                     .outline()

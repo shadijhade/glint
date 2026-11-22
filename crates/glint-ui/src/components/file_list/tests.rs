@@ -960,11 +960,50 @@ impl Ui {
             window.right_click("file-list-header", cx);
         });
         self.frame();
-        self.visual.update(|window, cx| {
-            window.within("popup-menu").click(n, cx);
+        // The menu is capped and scrolls, so a row far down isn't on screen to click: choose it as a click would.
+        let menu = self
+            .list
+            .read_with(&self.visual, |list, _| list.header_menu_view().cloned());
+        let menu = menu.expect("the header's menu opened");
+        let run = menu.read_with(&self.visual, |menu, _| match menu.nodes().get(n) {
+            Some(crate::components::menus::Node::Item(entry)) => entry.run.clone(),
+            other => panic!("item {n} of the header's menu is not a row: {other:?}"),
+        });
+        self.visual.update(|_, cx| {
+            menu.update(cx, |_, cx| cx.emit(crate::components::menus::MenuViewEvent::Chose(run)));
         });
         self.frame();
     }
+}
+
+#[gpui_kit::test]
+fn the_headers_menu_is_a_menu_view_that_closes_after_a_choice(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut ui = open(cx, &small_disk(), "C:\\x");
+    ui.visual.update(|window, cx| {
+        window.render_frame(cx);
+        window.right_click("file-list-header", cx);
+    });
+    ui.frame();
+    let open = ui
+        .list
+        .read_with(&ui.visual, |list, _| list.header_menu_view().cloned());
+    let menu = open.expect("the menu opened");
+    // Columns, then Group by, then Sort by: each a heading over its rows.
+    let nodes = menu.read_with(&ui.visual, |menu, _| menu.nodes().to_vec());
+    let headings: Vec<_> = nodes
+        .iter()
+        .filter_map(|n| match n {
+            crate::components::menus::Node::Heading(h) => Some(h.to_string()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(headings, vec!["Columns", "Group by", "Sort by"]);
+    ui.visual.update(|window, cx| window.click(("menu-row", 1usize), cx));
+    ui.frame();
+    assert!(ui
+        .list
+        .read_with(&ui.visual, |list, _| list.header_menu_view().is_none()));
 }
 
 #[gpui_kit::test]
@@ -2657,4 +2696,38 @@ fn file_lego_dwell_fills_a_ring_then_arms_with_the_cue_and_names_the_real_output
         },
     );
     assert_eq!(super::lego::SNAPS.with(|snaps| snaps.get()), 1);
+}
+
+#[gpui_kit::test]
+fn a_row_selected_just_now_eases_its_fill_in_until_it_has_eased(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut ui = open(cx, &small_disk(), "C:\\x");
+    ui.visual.update(|_, cx| cx.set_reduce_motion(false));
+    ui.frame();
+    // Nothing is selected: no row is easing in (what the folder opened with doesn't ease either).
+    assert!(ui.frame_of().fresh.is_empty());
+    ui.click(0);
+    ui.frame();
+    let frame = ui.frame_of();
+    let first = frame.rows.get(0).map(|entry| entry.path.clone()).expect("a row");
+    assert!(frame.fresh.contains(&first), "the row just clicked eases in");
+    assert_eq!(frame.fresh.len(), 1);
+    // The frame after, with the same selection, is the same set (nothing is worked out again).
+    let again = ui.frame_of();
+    assert!(Arc::ptr_eq(&frame.fresh, &again.fresh));
+    // Time passes: the overlay is gone, the row's own fill is the same colour.
+    ui.visual.executor().advance_clock(Duration::from_millis(400));
+    ui.frame();
+    assert!(ui.frame_of().fresh.is_empty());
+}
+
+#[gpui_kit::test]
+fn nothing_eases_in_under_reduced_motion(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut ui = open(cx, &small_disk(), "C:\\x");
+    ui.visual.update(|_, cx| cx.set_reduce_motion(true));
+    ui.frame();
+    ui.click(0);
+    ui.frame();
+    assert!(ui.frame_of().fresh.is_empty());
 }
