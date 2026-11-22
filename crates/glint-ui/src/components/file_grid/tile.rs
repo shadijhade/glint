@@ -47,6 +47,8 @@ pub(super) struct Frame {
     pub drop_tile: Option<String>,
     /// Active File Lego recipe badge `(target_path, summary)` shown over `drop_tile`.
     pub drop_pill: Option<(String, String)>,
+    /// A File Lego recipe that is arming on this tile's target `(target_path, turn)`: the ring filling around the badge.
+    pub lego_arming: Option<(String, u64)>,
     pub tile: GridTile,
     pub cols: usize,
     /// How many rows of tiles there are.
@@ -401,27 +403,32 @@ fn tile(frame: &Rc<Frame>, i: usize, entry: &FileEntry, cx: &App) -> AnyElement 
     if let Some((_, over)) = frame.scrub.as_ref().filter(|(path, _)| *path == entry.path) {
         square = square.child(over.clone());
     }
-    if let Some((path, summary)) = &frame.drop_pill {
-        if *path == entry.path {
-            square = square.child(
-                div()
-                    .absolute()
-                    .bottom(space(1.))
-                    .left(space(1.))
-                    .right(space(1.))
-                    .px(space(1.5))
-                    .py(space(0.5))
-                    .rounded(theme::size::RADIUS_SM)
-                    .bg(t.popover.opacity(0.94))
-                    .border_1()
-                    .border_color(t.primary)
-                    .text_size(theme::size::XXS)
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(t.primary)
-                    .truncate()
-                    .child(SharedString::from(summary.clone())),
-            );
+    // File Lego: the ring filling while the pointer dwells on this tile, then the pill saying what the drop does.
+    // Over the picture's bottom edge, so it never moves a name.
+    let badge = match (&frame.lego_arming, &frame.drop_pill) {
+        (Some((path, turn)), _) if *path == entry.path => {
+            Some(crate::components::file_list::lego::badge(("file-grid-lego-pill", i), *turn, None, t, cx))
         }
+        (_, Some((path, words))) if *path == entry.path => Some(crate::components::file_list::lego::badge(
+            ("file-grid-lego-pill", i),
+            0,
+            Some(SharedString::from(words.clone())),
+            t,
+            cx,
+        )),
+        _ => None,
+    };
+    if let Some(badge) = badge {
+        square = square.child(
+            div()
+                .absolute()
+                .bottom(space(1.))
+                .left(space(1.))
+                .right(space(1.))
+                .flex()
+                .justify_center()
+                .child(badge),
+        );
     }
 
     let location = if frame.located && !frame.gallery {

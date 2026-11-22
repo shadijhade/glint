@@ -36,6 +36,35 @@ pub(crate) fn mux_args(video: &Path, track: &Path, out: &Path, is_subtitles: boo
     args
 }
 
+/// Where the mux of `video` is written: beside it, as `<stem>_muxed.<ext>`, under a free name.
+fn mux_output_path(video: &Path) -> Result<PathBuf, String> {
+    let parent = video
+        .parent()
+        .ok_or_else(|| "Could not determine output folder".to_string())?;
+    let stem = video
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "video".to_string());
+    let ext = video
+        .extension()
+        .map(|e| e.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "mp4".to_string());
+    let candidate = parent.join(format!("{stem}_muxed.{ext}"));
+    // `free_name` numbers from (2) whatever the name is, so it is asked only when the plain one is taken.
+    Ok(if candidate.exists() {
+        crate::queue::free_name(&candidate)
+    } else {
+        candidate
+    })
+}
+
+/// The file name a mux of `video` will make (`clip_muxed.mp4`, or `clip_muxed (2).mp4` when that is taken), for
+/// the drop's pill. Looks at the disk: call it off the UI thread.
+pub fn mux_output_name(video: &str) -> Option<String> {
+    let out = mux_output_path(Path::new(video)).ok()?;
+    out.file_name().map(|n| n.to_string_lossy().into_owned())
+}
+
 /// Losslessly muxes `track` (subtitles or audio) into `video`, writing a sibling `<stem>_muxed.<ext>`
 /// file without overwriting existing files. Returns the created file path.
 pub async fn mux_track(video: String, track: String, is_subtitles: bool) -> Result<String, String> {
@@ -49,19 +78,7 @@ fn mux_track_sync(video: &Path, track: &Path, is_subtitles: bool) -> Result<Stri
     if !track.is_file() {
         return Err(format!("Track file not found: {}", track.display()));
     }
-    let parent = video
-        .parent()
-        .ok_or_else(|| "Could not determine output folder".to_string())?;
-    let stem = video
-        .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "video".to_string());
-    let ext = video
-        .extension()
-        .map(|e| e.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "mp4".to_string());
-    let candidate = parent.join(format!("{stem}_muxed.{ext}"));
-    let out = crate::queue::free_name(&candidate);
+    let out = mux_output_path(video)?;
 
     let mut command = crate::tools::command("ffmpeg")?;
     command.args(mux_args(video, track, &out, is_subtitles));
@@ -166,6 +183,22 @@ pub(crate) fn verify_single_sync(file: &Path, sums_file: &str) -> Result<SingleC
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_mux_names_its_output_beside_the_video_and_avoids_a_taken_name() {
+        let dir = std::env::temp_dir().join(format!("glint-mux-name-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let video = dir.join("clip.mp4");
+        assert_eq!(
+            mux_output_name(&video.to_string_lossy()).as_deref(),
+            Some("clip_muxed.mp4")
+        );
+        std::fs::write(dir.join("clip_muxed.mp4"), b"x").unwrap();
+        let next = mux_output_name(&video.to_string_lossy()).unwrap();
+        assert_ne!(next, "clip_muxed.mp4");
+        assert!(next.starts_with("clip_muxed") && next.ends_with(".mp4"), "{next}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn builds_mux_arguments_for_mp4_subtitles_and_mkv_audio() {

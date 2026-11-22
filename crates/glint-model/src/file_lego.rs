@@ -51,6 +51,28 @@ pub struct LegoRecipe {
     pub summary: String,
 }
 
+impl LegoRecipe {
+    /// The name of what dropping makes or fills, when the recipe makes one: a mux's new file (`found` is the free
+    /// name the disk gave it, else the one it would have if nothing stood in the way) and the archive a pack goes
+    /// into. Nothing for the recipes that open a window or only say a result.
+    pub fn makes(&self, found: Option<&str>) -> Option<String> {
+        match &self.action {
+            LegoAction::MuxMedia { video, .. } => Some(found.map_or_else(
+                || {
+                    let name = base_name(video);
+                    match name.rsplit_once('.') {
+                        Some((stem, ext)) if !stem.is_empty() => format!("{stem}_muxed.{ext}"),
+                        _ => format!("{name}_muxed.mp4"),
+                    }
+                },
+                str::to_string,
+            )),
+            LegoAction::PackArchive { target_archive, .. } => Some(base_name(target_archive).to_string()),
+            _ => None,
+        }
+    }
+}
+
 fn ext_lower(path: &str) -> String {
     let name = base_name(path);
     match name.rsplit_once('.') {
@@ -360,5 +382,22 @@ mod tests {
         assert!(classify_drop(&[r"C:\a\a.png".into()], r"C:\A\a.png", false).is_none());
         assert!(classify_drop(&[r"C:\a\a.png".into()], r"C:\a\folder", true).is_none());
         assert!(classify_drop(&[r"C:\a\a.png".into()], r"C:\a\pack.zip\b.png", false).is_none());
+    }
+
+    #[test]
+    fn a_mux_and_a_pack_name_what_they_make() {
+        let mux = classify_drop(&[r"C:\v\subs.srt".into()], r"C:\v\clip.mp4", false).unwrap();
+        assert_eq!(mux.makes(None).as_deref(), Some("clip_muxed.mp4"));
+        assert_eq!(
+            mux.makes(Some("clip_muxed (2).mp4")).as_deref(),
+            Some("clip_muxed (2).mp4")
+        );
+        let pack = classify_drop(&[r"C:\a\notes.txt".into()], r"C:\a\bundle.zip", false).unwrap();
+        assert_eq!(pack.makes(None).as_deref(), Some("bundle.zip"));
+        let compare = classify_drop(&[r"C:\a\v2.rs".into()], r"C:\a\v1.rs", false).unwrap();
+        assert_eq!(compare.makes(None), None);
+        // Arabic names keep their letters.
+        let arabic = classify_drop(&[r"C:\v\ترجمة.srt".into()], r"C:\v\فيلم.mkv", false).unwrap();
+        assert_eq!(arabic.makes(None).as_deref(), Some("فيلم_muxed.mkv"));
     }
 }

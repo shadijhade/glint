@@ -73,6 +73,7 @@ pub mod thumbnail;
 mod tests;
 
 use crate::actions::{GridLarger, GridReset, GridSmaller, OpenInNewTab, OpenItem, SelectAll, ShowItemMenu};
+use crate::components::file_list::lego;
 use crate::components::row_facts::{self, RowFacts};
 use crate::explorer::{self, Explorer, ExplorerEvent, Rows, Selection, TabId};
 use crate::kit::prelude::*;
@@ -213,7 +214,19 @@ struct GridLegoHover {
     recipe: glint_model::file_lego::LegoRecipe,
     started: Instant,
     ready: bool,
+    /// Keys the badge's ring for this dwell.
+    turn: u64,
+    /// The name the disk gave what the recipe makes (a mux's new file).
+    output: Option<String>,
     _timer: Task<()>,
+    _lookup: Option<Task<()>>,
+}
+
+impl GridLegoHover {
+    /// What the pill says now.
+    fn words(&self) -> SharedString {
+        lego::pill_text(&self.recipe, self.output.as_deref())
+    }
 }
 
 /// The tiles of one pane's active tab.
@@ -1179,6 +1192,14 @@ impl FileGrid {
         }
     }
 
+    /// What the pill says for the recipe on `path`: the real output name where the dwell has found it.
+    fn lego_words(&self, path: &str, recipe: &glint_model::file_lego::LegoRecipe) -> SharedString {
+        match self.lego_hover.as_ref().filter(|h| h.path.eq_ignore_ascii_case(path)) {
+            Some(hover) => lego::pill_text(recipe, hover.output.as_deref()),
+            None => lego::pill_text(recipe, None),
+        }
+    }
+
     /// Files dragged over the grid moved (every grid hears every move): answer what a drop at the pointer would
     /// do, and light the place it would go.
     fn files_over(&mut self, event: &DragMoveEvent<ExternalPaths>, cx: &mut Context<Self>) {
@@ -1209,20 +1230,25 @@ impl FileGrid {
         if let Some(entry) = hovered_file {
             if let Some(recipe) = glint_model::file_lego::classify_drop(&dragged, &entry.path, false) {
                 let now = cx.background_executor().now();
-                let dwell = Duration::from_millis(250);
+                let dwell = lego::DWELL;
                 let same = self
                     .lego_hover
                     .as_ref()
                     .is_some_and(|h| h.path.eq_ignore_ascii_case(&entry.path));
                 if same {
+                    let mut armed_now = false;
                     if let Some(hover) = self.lego_hover.as_mut() {
                         hover.recipe = recipe.clone();
                         if !hover.ready && now.saturating_duration_since(hover.started) >= dwell {
                             hover.ready = true;
+                            armed_now = true;
                         }
                         if hover.ready {
                             active_lego = Some((hover.path.clone(), hover.name.clone(), hover.recipe.clone()));
                         }
+                    }
+                    if armed_now {
+                        lego::snap(cx);
                     }
                 } else {
                     let target_path = entry.path.clone();
@@ -1234,17 +1260,17 @@ impl FileGrid {
                             let Some(hover) = this.lego_hover.as_mut() else {
                                 return;
                             };
-                            if !hover.path.eq_ignore_ascii_case(&timer_path) {
+                            if !hover.path.eq_ignore_ascii_case(&timer_path) || hover.ready {
                                 return;
                             }
                             hover.ready = true;
-                            let summary = hover.recipe.summary.clone();
+                            let words = hover.words().to_string();
                             drops::answer(
                                 cx,
                                 Answer::Accept(Under {
                                     name: hover.name.clone(),
-                                    copy: summary.clone(),
-                                    moves: summary,
+                                    copy: words.clone(),
+                                    moves: words,
                                     always_move: false,
                                 }),
                             );
@@ -1252,8 +1278,23 @@ impl FileGrid {
                                 path: hover.path.clone(),
                                 recipe: hover.recipe.clone(),
                             });
+                            // The ring is full as the recipe arms: the cue is felt now.
+                            lego::snap(cx);
                             cx.notify();
                         });
+                    });
+                    let lookup_path = target_path.clone();
+                    let lookup = lego::lookup_output(&recipe, cx, move |grid: &mut Self, name, cx| {
+                        if let Some(hover) = grid
+                            .lego_hover
+                            .as_mut()
+                            .filter(|h| h.path.eq_ignore_ascii_case(&lookup_path))
+                        {
+                            if hover.output != name {
+                                hover.output = name;
+                                cx.notify();
+                            }
+                        }
                     });
                     self.lego_hover = Some(GridLegoHover {
                         path: target_path,
@@ -1261,8 +1302,13 @@ impl FileGrid {
                         recipe,
                         started: now,
                         ready: false,
+                        turn: lego::next_turn(),
+                        output: None,
                         _timer: timer,
+                        _lookup: lookup,
                     });
+                    // The ring starts filling now.
+                    cx.notify();
                 }
             } else {
                 self.lego_hover = None;
@@ -1272,12 +1318,13 @@ impl FileGrid {
         }
 
         if let Some((path, name, recipe)) = active_lego {
+            let words = self.lego_words(&path, &recipe).to_string();
             drops::answer(
                 cx,
                 Answer::Accept(Under {
                     name,
-                    copy: recipe.summary.clone(),
-                    moves: recipe.summary.clone(),
+                    copy: words.clone(),
+                    moves: words,
                     always_move: false,
                 }),
             );
@@ -1664,9 +1711,14 @@ impl Render for FileGrid {
                 _ => None,
             },
             drop_pill: match &drop_over {
-                Some(DropOver::Lego { path, recipe }) => Some((path.clone(), recipe.summary.clone())),
+                Some(DropOver::Lego { path, recipe }) => Some((path.clone(), self.lego_words(path, recipe).to_string())),
                 _ => None,
             },
+            lego_arming: self
+                .lego_hover
+                .as_ref()
+                .filter(|hover| !hover.ready && cx.has_active_drag())
+                .map(|hover| (hover.path.clone(), hover.turn)),
             tile,
             cols,
             lines: line_count,

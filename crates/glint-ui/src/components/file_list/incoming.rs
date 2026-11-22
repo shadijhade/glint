@@ -12,6 +12,7 @@
 //! then said it is read-only, and so are Recent and the Gallery, which are searches and not folders.
 
 use super::cells::drop_path;
+use super::lego;
 use super::pointer::layout_rows;
 use super::{FileList, FileListEvent, ROW_HEIGHT};
 use crate::drops;
@@ -45,7 +46,41 @@ pub(super) struct LegoHover {
     pub recipe: LegoRecipe,
     pub started: Instant,
     pub ready: bool,
+    /// Keys the badge's ring for this dwell.
+    pub turn: u64,
+    /// The name the disk gave what the recipe makes (a mux's new file), asked while the pointer dwells.
+    pub output: Option<String>,
     pub _timer: gpui_kit::Task<()>,
+    pub _lookup: Option<gpui_kit::Task<()>>,
+}
+
+impl LegoHover {
+    /// What the pill says now.
+    pub fn words(&self) -> SharedString {
+        lego::pill_text(&self.recipe, self.output.as_deref())
+    }
+}
+
+/// Looks up the real output name for the dwell on `path`, and keeps it on that dwell when it arrives.
+fn incoming_lookup(recipe: &LegoRecipe, path: String, cx: &mut Context<FileList>) -> Option<gpui_kit::Task<()>> {
+    lego::lookup_output(recipe, cx, move |list, name, cx| {
+        if let Some(hover) = list.lego_hover.as_mut().filter(|h| h.path.eq_ignore_ascii_case(&path)) {
+            if hover.output != name {
+                hover.output = name;
+                cx.notify();
+            }
+        }
+    })
+}
+
+impl FileList {
+    /// What the pill says for the recipe on `path`: the real output name where the dwell has found it.
+    pub(super) fn lego_words(&self, path: &str, recipe: &LegoRecipe) -> SharedString {
+        match self.lego_hover.as_ref().filter(|h| h.path.eq_ignore_ascii_case(path)) {
+            Some(hover) => lego::pill_text(recipe, hover.output.as_deref()),
+            None => lego::pill_text(recipe, None),
+        }
+    }
 }
 
 impl FileList {
@@ -153,14 +188,19 @@ impl FileList {
                     .as_ref()
                     .is_some_and(|h| h.path.eq_ignore_ascii_case(&entry.path));
                 if same {
+                    let mut armed_now = false;
                     if let Some(hover) = self.lego_hover.as_mut() {
                         hover.recipe = recipe.clone();
                         if !hover.ready && now.saturating_duration_since(hover.started) >= LEGO_DWELL {
                             hover.ready = true;
+                            armed_now = true;
                         }
                         if hover.ready {
                             active_lego = Some((hover.path.clone(), hover.name.clone(), hover.recipe.clone()));
                         }
+                    }
+                    if armed_now {
+                        lego::snap(cx);
                     }
                 } else {
                     let target_path = entry.path.clone();
@@ -172,17 +212,17 @@ impl FileList {
                             let Some(hover) = this.lego_hover.as_mut() else {
                                 return;
                             };
-                            if !hover.path.eq_ignore_ascii_case(&timer_path) {
+                            if !hover.path.eq_ignore_ascii_case(&timer_path) || hover.ready {
                                 return;
                             }
                             hover.ready = true;
-                            let summary = hover.recipe.summary.clone();
+                            let words = hover.words().to_string();
                             drops::answer(
                                 cx,
                                 Answer::Accept(Under {
                                     name: hover.name.clone(),
-                                    copy: summary.clone(),
-                                    moves: summary,
+                                    copy: words.clone(),
+                                    moves: words,
                                     always_move: false,
                                 }),
                             );
@@ -190,17 +230,26 @@ impl FileList {
                                 path: hover.path.clone(),
                                 recipe: hover.recipe.clone(),
                             });
+                            // The ring is full as the recipe arms: the cue is felt now.
+                            lego::snap(cx);
                             cx.notify();
                         });
                     });
+                    let lookup_path = target_path.clone();
+                    let lookup = incoming_lookup(&recipe, lookup_path, cx);
                     self.lego_hover = Some(LegoHover {
                         path: target_path,
                         name: target_name,
                         recipe,
                         started: now,
                         ready: false,
+                        turn: lego::next_turn(),
+                        output: None,
                         _timer: timer,
+                        _lookup: lookup,
                     });
+                    // The ring starts filling now.
+                    cx.notify();
                 }
             } else {
                 self.lego_hover = None;
@@ -210,12 +259,13 @@ impl FileList {
         }
 
         if let Some((path, name, recipe)) = active_lego {
+            let words = self.lego_words(&path, &recipe).to_string();
             drops::answer(
                 cx,
                 Answer::Accept(Under {
                     name,
-                    copy: recipe.summary.clone(),
-                    moves: recipe.summary.clone(),
+                    copy: words.clone(),
+                    moves: words,
                     always_move: false,
                 }),
             );

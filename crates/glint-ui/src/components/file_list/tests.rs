@@ -484,15 +484,29 @@ fn space_in_the_rename_box_types_a_space_not_quick_look(cx: &mut TestAppContext)
         ui.visual.update(|window, cx| {
             let stack = window.context_stack();
             let keystroke = gpui_kit::Keystroke::parse(key).unwrap();
-            cx.key_bindings().borrow().bindings_for_input(&[keystroke], &stack).0.into_vec()
+            cx.key_bindings()
+                .borrow()
+                .bindings_for_input(&[keystroke], &stack)
+                .0
+                .into_vec()
         })
     };
-    let quick_look = |bindings: &[gpui_kit::KeyBinding]| bindings.iter().any(|b| b.action().as_any().is::<crate::actions::QuickLook>());
+    let quick_look = |bindings: &[gpui_kit::KeyBinding]| {
+        bindings
+            .iter()
+            .any(|b| b.action().as_any().is::<crate::actions::QuickLook>())
+    };
     ui.click(0);
     assert!(quick_look(&bound(&mut ui, "space")), "in the list, Space is Quick Look");
     ui.rename(Some("C:\\x\\alpha.txt"));
-    assert!(!quick_look(&bound(&mut ui, "space")), "in the rename box, Space is typing");
-    assert!(bound(&mut ui, "shift-delete").is_empty(), "Shift+Delete in the rename box deletes nothing");
+    assert!(
+        !quick_look(&bound(&mut ui, "space")),
+        "in the rename box, Space is typing"
+    );
+    assert!(
+        bound(&mut ui, "shift-delete").is_empty(),
+        "Shift+Delete in the rename box deletes nothing"
+    );
     // "alpha" is selected: typing replaces it, with a space in the middle.
     ui.visual.update(|window, cx| window.input("my", cx));
     ui.press("space");
@@ -2584,4 +2598,63 @@ fn file_lego_hover_dwell_lights_target_and_emits_merge_pdf(cx: &mut TestAppConte
         ev,
         FileListEvent::FileLego(r) if r.verb == "Merge PDFs"
     )));
+}
+
+#[gpui_kit::test]
+fn file_lego_dwell_fills_a_ring_then_arms_with_the_cue_and_names_the_real_output(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let disk = FakeDisk::new();
+    disk.folder(
+        r"C:\clips",
+        vec![
+            file(r"C:\clips", "clip.mp4", 10, 0),
+            file(r"C:\clips", "subs.srt", 20, 0),
+        ],
+    );
+    let mut ui = open(cx, &disk, r"C:\clips");
+    let answers = DropAnswers::default();
+    let video = ui.row_at(0).center();
+    let dragged = [r"C:\clips\subs.srt"];
+    super::lego::SNAPS.with(|snaps| snaps.set(0));
+
+    // The pointer comes to rest on the video: the ring starts filling around the badge, and nothing is armed.
+    assert_eq!(ui.over(&answers, &dragged, video, DropEffect::Copy), Answer::Refuse);
+    let arming = ui.frame_of().lego_arming.clone();
+    assert_eq!(
+        arming.as_ref().map(|(path, _)| path.as_str()),
+        Some(r"C:\clips\clip.mp4")
+    );
+    assert_eq!(ui.frame_of().drop_pill, None);
+    assert_eq!(super::lego::SNAPS.with(|snaps| snaps.get()), 0);
+    // A move within the dwell doesn't restart it, nor arm it early.
+    ui.visual.background_executor.advance_clock(Duration::from_millis(100));
+    assert_eq!(ui.over(&answers, &dragged, video, DropEffect::Copy), Answer::Refuse);
+    assert_eq!(ui.frame_of().lego_arming, arming);
+    assert_eq!(super::lego::SNAPS.with(|snaps| snaps.get()), 0);
+
+    // After the dwell: armed, the cue fires once, and the pill names the file the mux will make.
+    ui.visual.background_executor.advance_clock(Duration::from_millis(200));
+    ui.frame();
+    assert_eq!(super::lego::SNAPS.with(|snaps| snaps.get()), 1);
+    assert_eq!(ui.frame_of().lego_arming, None);
+    let words = "Mux subtitles → clip_muxed.mp4";
+    assert_eq!(
+        ui.frame_of().drop_pill,
+        Some((r"C:\clips\clip.mp4".to_string(), words.to_string()))
+    );
+    assert!(
+        matches!(&answers.get(), Answer::Accept(u) if u.copy == words),
+        "{:?}",
+        answers.get()
+    );
+    // Moving on over the same file keeps it armed without firing the cue again.
+    ui.dispatch(
+        &answers,
+        DropEvent::Over {
+            x: f32::from(video.x) + 1.,
+            y: f32::from(video.y),
+            effect: DropEffect::Copy,
+        },
+    );
+    assert_eq!(super::lego::SNAPS.with(|snaps| snaps.get()), 1);
 }

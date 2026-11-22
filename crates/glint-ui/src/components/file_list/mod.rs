@@ -42,6 +42,7 @@ pub(crate) mod fake_git;
 mod header;
 mod incoming;
 mod layout;
+pub(crate) mod lego;
 pub(crate) mod pointer;
 mod rename;
 mod states;
@@ -298,6 +299,9 @@ pub(crate) struct Frame {
     pub drop_row: Option<String>,
     /// Active File Lego recipe badge `(target_path, summary)` drawn over `drop_row`.
     pub drop_pill: Option<(String, String)>,
+    /// A File Lego recipe that is arming (the pointer is dwelling on a file): its target and the dwell's turn, for the
+    /// ring that fills around the badge until the recipe is ready.
+    pub lego_arming: Option<(String, u64)>,
     /// How many lines the list has (rows, a header per group, and the lines under rows).
     pub lines: usize,
     /// The tab shown, and what its search found inside files (the header of that part says it).
@@ -579,6 +583,7 @@ impl FileList {
                 dragging: Arc::new(HashSet::new()),
                 drop_row: None,
                 drop_pill: None,
+                lego_arming: None,
                 lines: 0,
                 tab: TabId(0),
                 inside: InsideInfo::default(),
@@ -1565,9 +1570,14 @@ impl Render for FileList {
                 _ => None,
             },
             drop_pill: match &drop_at {
-                Some(DropAt::Lego { path, recipe }) => Some((path.clone(), recipe.summary.clone())),
+                Some(DropAt::Lego { path, recipe }) => Some((path.clone(), self.lego_words(path, recipe).to_string())),
                 _ => None,
             },
+            lego_arming: self
+                .lego_hover
+                .as_ref()
+                .filter(|hover| !hover.ready && cx.has_active_drag())
+                .map(|hover| (hover.path.clone(), hover.turn)),
             lines,
             tab: view.id,
             inside: view.find.as_ref().map(|find| find.inside.clone()).unwrap_or_default(),
