@@ -95,6 +95,8 @@ pub(super) struct Frame {
     pub peeks: Rc<Vec<crate::components::file_list::Peek>>,
     /// The window's rem, pixels.
     pub rem: f32,
+    /// While the Color Wheel is open: what a photo's tile needs to show its palette dots.
+    pub dots: Option<crate::components::color_wheel::Dots>,
     /// The list has just given way to the grid: each tile is on its way from its row, this far along.
     pub morph: Option<(crate::stage::Morph, f32)>,
 }
@@ -400,6 +402,14 @@ fn tile(frame: &Rc<Frame>, i: usize, entry: &FileEntry, cx: &App) -> AnyElement 
         });
     }
 
+    // While the Color Wheel is open, a photo's dominant colors from the palettes already known: dots that show under
+    // the pointer, and that set the wheel on their exact color.
+    if let Some(dots) = frame.dots.as_ref().filter(|_| !entry.dir) {
+        if let Some(row) = palette_dots(i, dots, entry, shown_focus, t) {
+            square = square.child(row);
+        }
+    }
+
     if let Some((_, over)) = frame.scrub.as_ref().filter(|(path, _)| *path == entry.path) {
         square = square.child(over.clone());
     }
@@ -609,6 +619,83 @@ fn tile(frame: &Rc<Frame>, i: usize, entry: &FileEntry, cx: &App) -> AnyElement 
         None => cell.into_any_element(),
     }
 }
+
+/// The palette dots of a photo's tile: its dominant colors (the ones that are more than a sliver of it), small
+/// circles in a pill at the end corner of the picture, shown while the pointer is on the tile (or the keyboard is on
+/// it). Pressing one sets the Color Wheel on that exact color. `None` when no palette is known for the photo: a
+/// tile never makes one.
+pub(super) fn palette_dots(
+    i: usize,
+    dots: &crate::components::color_wheel::Dots,
+    entry: &FileEntry,
+    always: bool,
+    t: &theme::Tokens,
+) -> Option<AnyElement> {
+    let palette = crate::components::color_wheel::palette_for(&dots.palettes, &entry.path)?;
+    let tab = dots.tab;
+    let colors = palette
+        .colors
+        .iter()
+        .zip(palette.weights)
+        .enumerate()
+        .filter(|(_, (_, weight))| *weight >= DOT_MIN_WEIGHT)
+        .map(|(k, (color, _))| {
+            let color = *color;
+            let rgb = glint_model::oklab::oklab_to_srgb(color);
+            let hex = format!("{:02X}{:02X}{:02X}", rgb[0], rgb[1], rgb[2]);
+            div()
+                .id(("file-grid-dot", i * 3 + k))
+                .role(Role::Button)
+                .aria_label(t!("Use #{hex} from {name}", hex = hex, name = entry.name.clone()))
+                .test_support()
+                .size(space(3.))
+                .flex_none()
+                .rounded_full()
+                .border_1()
+                .border_color(gpui_kit::white().opacity(0.9))
+                .bg(crate::components::color_wheel::srgb_hsla(rgb))
+                .cursor_pointer()
+                // A press on a dot is not a press on the tile: it doesn't select it or begin a drag.
+                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                    cx.stop_propagation();
+                    crate::components::color_wheel::pick(cx, tab, color);
+                })
+        })
+        .collect::<Vec<_>>();
+    if colors.is_empty() {
+        return None;
+    }
+    let pill = div()
+        .id(("file-grid-dots", i))
+        .absolute()
+        .bottom(space(0.5))
+        .flex()
+        .items_center()
+        .gap(space(1.))
+        .px(space(1.))
+        .py(space(0.5))
+        .rounded_full()
+        .bg(t.popover.opacity(0.88))
+        .border_1()
+        .border_color(t.stroke)
+        .children(colors);
+    // At the reading direction's end, opposite the tags' dots.
+    let pill = if i18n::is_rtl() {
+        pill.left(space(0.5))
+    } else {
+        pill.right(space(0.5))
+    };
+    Some(if always {
+        pill.into_any_element()
+    } else {
+        pill.opacity(0.)
+            .group_hover(TILE_GROUP, |style| style.opacity(1.))
+            .into_any_element()
+    })
+}
+
+/// A palette color that covers less than this share of the photo gets no dot.
+const DOT_MIN_WEIGHT: f32 = 0.04;
 
 /// How far below its cell's top a tile's picture starts, in pixels: the cell's inset, the tile's border and its
 /// padding.
@@ -827,5 +914,137 @@ mod tests {
         assert_eq!(size_text(&other, false, Some(&measured), true), "…");
         assert_eq!(size_text(&other, false, Some(&measured), false), "");
         assert_eq!(size_text(&file("C:\\x", "a", 1024, 1), false, None, true), "1.0 KB");
+    }
+
+    /// A tile's palette dots on their own, over a photo whose palette is known.
+    struct DotsProbe {
+        dots: crate::components::color_wheel::Dots,
+        entry: FileEntry,
+        always: bool,
+    }
+
+    impl Render for DotsProbe {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let t = theme::tokens(cx).clone();
+            div()
+                .relative()
+                .size(px(200.))
+                .children(palette_dots(0, &self.dots, &self.entry, self.always, &t))
+        }
+    }
+
+    #[gpui_kit::test]
+    fn a_photos_dots_name_their_colors_and_press_one_to_set_the_wheel_on_it(cx: &mut gpui_kit::TestAppContext) {
+        use crate::components::color_wheel::{self, Dots};
+        use crate::explorer::{explorer, NavOptions};
+        use crate::testing;
+        use glint_model::oklab::{oklab_to_srgb, srgb_to_oklab, ColorFilter, Palette3};
+        use gpui_kit::test::{TestQueryExt as _, TestWindowExt as _};
+        let _guard = testing::lock();
+        let disk = crate::explorer::fake::FakeDisk::new();
+        // An Arabic name too: file names often are.
+        disk.folder(
+            "C:\\Photos",
+            vec![
+                file("C:\\Photos", "sky.jpg", 1, 1),
+                file("C:\\Photos", "\u{0635}\u{0648}\u{0631}\u{0629}.jpg", 1, 1),
+            ],
+        );
+        cx.update(|cx| {
+            testing::init(cx);
+            crate::explorer::init_with(cx, disk.source());
+        });
+        cx.update(|cx| {
+            explorer(cx).update(cx, |e, cx| e.navigate("C:\\Photos", NavOptions::default(), cx));
+        });
+        cx.run_until_parked();
+        let tab = cx.update(|cx| explorer(cx).read(cx).active_tab_id());
+        assert!(
+            cx.update(|cx| color_wheel::dots_of(cx, tab)).is_none(),
+            "no dots while the wheel is closed"
+        );
+
+        let (sky, dusk, haze) = (
+            srgb_to_oklab(60, 140, 230),
+            srgb_to_oklab(250, 120, 60),
+            srgb_to_oklab(200, 200, 200),
+        );
+        let mut palettes = std::collections::HashMap::new();
+        for name in [
+            "c:\\photos\\sky.jpg",
+            "c:\\photos\\\u{0635}\u{0648}\u{0631}\u{0629}.jpg",
+        ] {
+            palettes.insert(
+                name.to_string(),
+                Palette3 {
+                    colors: [sky, dusk, haze],
+                    // The third is a sliver: no dot.
+                    weights: [0.6, 0.38, 0.02],
+                },
+            );
+        }
+        let dots = Dots {
+            tab,
+            palettes: Arc::new(palettes),
+        };
+        for (name, rtl) in [("sky.jpg", false), ("\u{0635}\u{0648}\u{0631}\u{0629}.jpg", true)] {
+            testing::set_rtl(rtl);
+            let entry = file("C:\\Photos", name, 1, 1);
+            let (mut visual, _) = testing::open_window(cx, |_, cx| {
+                cx.new(|_| DotsProbe {
+                    dots: dots.clone(),
+                    entry: entry.clone(),
+                    always: false,
+                })
+            });
+            let hex = |c| {
+                let rgb = oklab_to_srgb(c);
+                format!("{:02X}{:02X}{:02X}", rgb[0], rgb[1], rgb[2])
+            };
+            let label = |c| format!("Use #{} from {name}", hex(c));
+            let found = |visual: &mut gpui_kit::VisualTestContext, text: &str| {
+                visual.update(|window, cx| {
+                    window.render_frame(cx);
+                    window.try_find_by_label(text).and_then(|e| e.role())
+                })
+            };
+            assert_eq!(found(&mut visual, &label(sky)), Some(Role::Button));
+            assert_eq!(found(&mut visual, &label(dusk)), Some(Role::Button));
+            assert_eq!(found(&mut visual, &label(haze)), None, "a sliver gets no dot");
+
+            // With nothing picked, a dot makes the filter on its exact color.
+            visual.update(|_, cx| explorer(cx).update(cx, |e, cx| e.set_color_filter(None, Some(tab), cx)));
+            let at = visual.update(|window, cx| {
+                window.render_frame(cx);
+                window.find(("file-grid-dot", 1usize)).bounds().center()
+            });
+            visual.simulate_mouse_down(at, MouseButton::Left, gpui_kit::Modifiers::default());
+            visual.simulate_mouse_up(at, MouseButton::Left, gpui_kit::Modifiers::default());
+            let filter = visual.update(|_, cx| explorer(cx).read(cx).tab(tab).and_then(|t| t.color_filter));
+            assert_eq!(
+                filter.map(|f| f.target),
+                Some(dusk),
+                "the exact color, not a wheel point near it"
+            );
+
+            // With a chord, it sets the color the wheel is on and leaves the others.
+            let chord = ColorFilter::new(haze).with_added(sky);
+            visual.update(|_, cx| {
+                explorer(cx).update(cx, |e, cx| e.set_color_filter(Some(chord), Some(tab), cx));
+                color_wheel::shared(cx).update(cx, |m, cx| m.select(tab, 1, cx));
+            });
+            let at = visual.update(|window, cx| {
+                window.render_frame(cx);
+                window.find(("file-grid-dot", 1usize)).bounds().center()
+            });
+            visual.simulate_mouse_down(at, MouseButton::Left, gpui_kit::Modifiers::default());
+            visual.simulate_mouse_up(at, MouseButton::Left, gpui_kit::Modifiers::default());
+            let picked = visual
+                .update(|_, cx| explorer(cx).read(cx).tab(tab).and_then(|t| t.color_filter))
+                .expect("a filter");
+            assert_eq!((picked.target, picked.target_at(1)), (haze, Some(dusk)));
+            visual.update(|_, cx| color_wheel::shared(cx).update(cx, |m, cx| m.select(tab, 0, cx)));
+        }
+        testing::set_rtl(false);
     }
 }

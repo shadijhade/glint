@@ -6,6 +6,7 @@
 use crate::explorer::{explorer, Explorer, ExplorerEvent, TabId};
 use crate::kit::prelude::*;
 use crate::{i18n, t, theme};
+use glint_model::oklab::Palette3;
 use glint_model::oklab::{
     oklab_to_srgb, wheel_point_to_oklab, wheel_raster_bgra, ChordMode, ColorFilter, Oklab, WHEEL_MAX_CHROMA,
 };
@@ -125,7 +126,11 @@ pub fn toggle(cx: &mut App, tab: TabId) {
     if next {
         exp.update(cx, |e, cx| e.warm_color_palettes(tab, cx));
     } else {
-        exp.update(cx, |e, cx| e.set_color_filter(None, Some(tab), cx));
+        exp.update(cx, |e, cx| {
+            e.set_color_filter(None, Some(tab), cx);
+            // The grid's tiles drop their palette dots with the wheel, whether or not a filter was set.
+            cx.notify();
+        });
     }
 }
 
@@ -140,6 +145,44 @@ pub fn open_with(cx: &mut App, tab: TabId, target: Oklab) {
     });
 }
 
+/// What the tiles of `tab`'s grid need to show their palette dots: set while the Color Wheel is open on the tab and
+/// some photos' palettes are known. The dots only ever read palettes that are already there; nothing is decoded
+/// for a tile the pointer passes over.
+#[derive(Clone)]
+pub struct Dots {
+    pub tab: TabId,
+    pub palettes: Arc<HashMap<String, Palette3>>,
+}
+
+/// The dots' context for `tab`, if its Color Wheel is open and has palettes.
+pub fn dots_of(cx: &App, tab: TabId) -> Option<Dots> {
+    if !is_shown(cx, tab) {
+        return None;
+    }
+    let palettes = explorer(cx).read(cx).tab(tab)?.color_palettes.clone();
+    (!palettes.is_empty()).then_some(Dots { tab, palettes })
+}
+
+/// The palette of the photo at `path`, if it is in `palettes` (keyed by lowercase path).
+pub fn palette_for<'a>(palettes: &'a HashMap<String, Palette3>, path: &str) -> Option<&'a Palette3> {
+    thread_local! {
+        static KEY: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+    }
+    KEY.with(|key| palettes.get(crate::explorer::palette_key(path, &mut key.borrow_mut())))
+}
+
+/// Sets the wheel's color on `tab` to exactly `color` (a palette dot on a tile was pressed): the color of the chord
+/// the wheel is set on, or a new filter when nothing was picked yet.
+pub fn pick(cx: &mut App, tab: TabId, color: Oklab) {
+    let exp = explorer(cx);
+    let selected = shared(cx).read(cx).selected(tab);
+    let next = match exp.read(cx).tab(tab).and_then(|t| t.color_filter) {
+        Some(filter) => filter.with_target_at(selected.min(filter.count() - 1), color),
+        None => ColorFilter::new(color),
+    };
+    exp.update(cx, |e, cx| e.set_color_filter(Some(next), Some(tab), cx));
+}
+
 /// Closes the Color Wheel bar when closing a tab.
 pub fn close_tab(cx: &mut App, tab: TabId) {
     if let Some(state) = cx.try_global::<GlobalState>() {
@@ -149,7 +192,7 @@ pub fn close_tab(cx: &mut App, tab: TabId) {
 }
 
 #[inline]
-fn srgb_hsla(rgb: [u8; 3]) -> Hsla {
+pub(crate) fn srgb_hsla(rgb: [u8; 3]) -> Hsla {
     gpui_kit::Rgba {
         r: f32::from(rgb[0]) / 255.0,
         g: f32::from(rgb[1]) / 255.0,

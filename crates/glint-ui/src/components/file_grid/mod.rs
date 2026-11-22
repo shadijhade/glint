@@ -1714,9 +1714,11 @@ impl Render for FileGrid {
             self.morph = Some(flying.clone());
             window.request_animation_frame();
         }
+        let dots = crate::components::color_wheel::dots_of(cx, tab_id);
         let frame = Rc::new(tile::Frame {
             morph,
             rem,
+            dots,
             peeks,
             rows: rows.clone(),
             selection: selection.clone(),

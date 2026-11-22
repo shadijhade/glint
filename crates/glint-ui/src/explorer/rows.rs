@@ -406,7 +406,7 @@ impl Rows {
 
 /// The key a photo's palette is stored under: its path in lower case (`color_index`'s keys). Built in `buf`, which is
 /// reused, so a pass over a listing allocates once; non-ASCII paths take `to_lowercase`'s own rules.
-fn palette_key<'a>(path: &str, buf: &'a mut String) -> &'a str {
+pub(crate) fn palette_key<'a>(path: &str, buf: &'a mut String) -> &'a str {
     buf.clear();
     if path.is_ascii() {
         buf.push_str(path);
