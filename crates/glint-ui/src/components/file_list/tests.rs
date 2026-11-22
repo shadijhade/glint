@@ -953,8 +953,8 @@ fn in_the_columns_view_left_goes_up_and_right_goes_into_the_focused_folder(cx: &
 }
 
 impl Ui {
-    /// Right-clicks the header and clicks the menu's item `n` (counting every item, headings included).
-    fn header_menu(&mut self, n: usize) {
+    /// Right-clicks the header and chooses the menu's row named by `path` (a submenu's name, then the row's).
+    fn header_menu(&mut self, path: &[&str]) {
         self.visual.update(|window, cx| {
             window.render_frame(cx);
             window.right_click("file-list-header", cx);
@@ -965,9 +965,26 @@ impl Ui {
             .list
             .read_with(&self.visual, |list, _| list.header_menu_view().cloned());
         let menu = menu.expect("the header's menu opened");
-        let run = menu.read_with(&self.visual, |menu, _| match menu.nodes().get(n) {
-            Some(crate::components::menus::Node::Item(entry)) => entry.run.clone(),
-            other => panic!("item {n} of the header's menu is not a row: {other:?}"),
+        let run = menu.read_with(&self.visual, |menu, _| {
+            use crate::components::menus::Node;
+            let mut nodes = menu.nodes().to_vec();
+            for name in &path[..path.len() - 1] {
+                nodes = nodes
+                    .into_iter()
+                    .find_map(|node| match node {
+                        Node::Menu { label, items, .. } if label == *name => Some(items),
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| panic!("no submenu {name}"));
+            }
+            let last = path[path.len() - 1];
+            nodes
+                .into_iter()
+                .find_map(|node| match node {
+                    Node::Item(entry) if entry.label == last => Some(entry.run),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("no row {last}"))
         });
         self.visual.update(|_, cx| {
             menu.update(cx, |_, cx| cx.emit(crate::components::menus::MenuViewEvent::Chose(run)));
@@ -989,16 +1006,18 @@ fn the_headers_menu_is_a_menu_view_that_closes_after_a_choice(cx: &mut TestAppCo
         .list
         .read_with(&ui.visual, |list, _| list.header_menu_view().cloned());
     let menu = open.expect("the menu opened");
-    // Columns, then Group by, then Sort by: each a heading over its rows.
+    // The columns inline under their heading, then Sort by and Group by as submenus: a short list.
     let nodes = menu.read_with(&ui.visual, |menu, _| menu.nodes().to_vec());
-    let headings: Vec<_> = nodes
+    let shape: Vec<_> = nodes
         .iter()
         .filter_map(|n| match n {
-            crate::components::menus::Node::Heading(h) => Some(h.to_string()),
+            crate::components::menus::Node::Heading(h) => Some(format!("heading {h}")),
+            crate::components::menus::Node::Menu { label, .. } => Some(format!("submenu {label}")),
             _ => None,
         })
         .collect();
-    assert_eq!(headings, vec!["Columns", "Group by", "Sort by"]);
+    assert_eq!(shape, vec!["heading Columns", "submenu Sort by", "submenu Group by"]);
+    assert!(nodes.len() <= 12, "{} rows", nodes.len());
     ui.visual.update(|window, cx| window.click(("menu-row", 1usize), cx));
     ui.frame();
     assert!(ui
@@ -1012,7 +1031,7 @@ fn the_headers_menu_chooses_columns_group_by_and_what_to_sort_by(cx: &mut TestAp
     let mut ui = open(cx, &small_disk(), "C:\\x");
     // The columns come first, a check by those shown. Date modified is item 1: taking it out asks for the
     // folder's columns without it.
-    ui.header_menu(1);
+    ui.header_menu(&["Date modified"]);
     assert_eq!(
         ui.events().last(),
         Some(&FileListEvent::SetColumns {
@@ -1020,7 +1039,7 @@ fn the_headers_menu_chooses_columns_group_by_and_what_to_sort_by(cx: &mut TestAp
         })
     );
     // Date taken (item 2) isn't shown: choosing it adds it, in its place in the order.
-    ui.header_menu(2);
+    ui.header_menu(&["Date taken"]);
     assert_eq!(
         ui.events().last(),
         Some(&FileListEvent::SetColumns {
@@ -1028,13 +1047,13 @@ fn the_headers_menu_chooses_columns_group_by_and_what_to_sort_by(cx: &mut TestAp
         })
     );
     // Group by Kind (item 11).
-    ui.header_menu(11);
+    ui.header_menu(&["Group by", "Kind"]);
     let group = ui
         .explorer
         .read_with(&ui.visual, |e, _| e.active_tab().map(|t| t.group));
     assert_eq!(group, Some(GroupBy::Kind));
     // Sort by Type (item 20), which isn't a column of the descending kind.
-    ui.header_menu(20);
+    ui.header_menu(&["Sort by", "Type"]);
     let sort = ui.explorer.read_with(&ui.visual, |e, _| e.active_tab().map(|t| t.sort));
     assert_eq!(sort.map(|s| (s.key, s.desc)), Some((SortKey::Type, false)));
 }

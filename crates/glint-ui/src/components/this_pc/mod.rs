@@ -54,7 +54,6 @@ use crate::platform::dragdrop::{Answer, DropEffect};
 use crate::{drops, i18n, t, theme};
 use glint_core::drivehealth::DriveHealth;
 use glint_model::format::format_size;
-use gpui_kit::rems;
 use model::Step;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -588,7 +587,14 @@ impl ThisPc {
 
     /// A folder tile: a click opens it, a middle click opens it in a new tab, a right click asks for the menu.
     /// Files dragged over it light it, and a drop copies them into it.
-    fn render_folder(&self, index: usize, tile: &KnownTile, t: &theme::Tokens, cx: &Context<Self>) -> impl IntoElement {
+    fn render_folder(
+        &self,
+        index: usize,
+        tile: &KnownTile,
+        card: Pixels,
+        t: &theme::Tokens,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
         let open_path = tile.path.clone();
         let middle_path = tile.path.clone();
         let menu_path = tile.path.clone();
@@ -613,7 +619,7 @@ impl ThisPc {
             .flex()
             .items_center()
             .gap(space(3.))
-            .w(rems(model::FOLDER_TILE_REM))
+            .w(card)
             .min_w_0()
             .flex_grow(0.)
             .flex_shrink(1.)
@@ -681,6 +687,7 @@ impl ThisPc {
         &self,
         index: usize,
         tile: &DriveTile,
+        card: Pixels,
         t: &theme::Tokens,
         window: &Window,
         cx: &Context<Self>,
@@ -808,7 +815,7 @@ impl ThisPc {
             .flex()
             .items_start()
             .gap(space(3.))
-            .w(rems(model::DRIVE_TILE_REM))
+            .w(card)
             .min_w_0()
             .flex_grow(0.)
             .flex_shrink(1.)
@@ -1001,13 +1008,21 @@ impl Render for ThisPc {
             .w_full()
             .h(space(0.));
 
+        // Every card of a section is as wide as the row allows: as many columns as fit the minimum width, the row
+        // shared out between them, the last row's cards the same width (left-aligned).
+        let rem = f32::from(window.rem_size());
+        let row = f32::from(self.width.get());
+        let card_of = |min: f32, gap: f32| px(model::card_width(row, min * rem, gap * rem).unwrap_or(min * rem));
+        let folder_card = card_of(model::FOLDER_TILE_REM, model::FOLDER_GAP_REM);
+        let drive_card = card_of(model::DRIVE_TILE_REM, model::DRIVE_GAP_REM);
+
         // Each grid records where its tiles were painted, for the arrow keys' scroll and the drops.
         let folder_places = Rc::clone(&self.folder_bounds);
         let folders = self
             .known
             .iter()
             .enumerate()
-            .map(|(i, tile)| self.render_folder(i, tile, &t, cx));
+            .map(|(i, tile)| self.render_folder(i, tile, folder_card, &t, cx));
         let folder_grid = row_start()
             .on_children_prepainted(move |places, _, _| *folder_places.borrow_mut() = places)
             .id("this-pc-folders")
@@ -1077,7 +1092,7 @@ impl Render for ThisPc {
             .drives
             .iter()
             .enumerate()
-            .map(|(i, tile)| self.render_drive(known + i, tile, &t, &*window, cx));
+            .map(|(i, tile)| self.render_drive(known + i, tile, drive_card, &t, &*window, cx));
         let drive_grid = row_start()
             .on_children_prepainted(move |places, _, _| *drive_places.borrow_mut() = places)
             .id("this-pc-drives")

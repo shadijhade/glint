@@ -8,13 +8,14 @@ use crate::components::status_bar::index::{Index, State};
 use crate::explorer::{Drive, DriveKind};
 use glint_model::paths::{droppable, in_archive_path, is_remote_path};
 
-/// The folders' tiles are 10.5rem wide, with the same gap between them as the drives' (every card the same size,
-/// the last row left where it falls instead of stretched wide).
+/// The folders' cards are at least 10.5rem wide, with the same gap between them as the drives' (every card of a
+/// section the same width, the row shared out between them, the last row left-aligned: see [`card_width`]).
 pub const FOLDER_TILE_REM: f32 = 10.5;
 /// See [`FOLDER_TILE_REM`].
 pub const FOLDER_GAP_REM: f32 = 0.75;
-/// The drives' tiles are 17.5rem wide with `gap-3` between them.
-pub const DRIVE_TILE_REM: f32 = 17.5;
+/// The drives' cards are at least 21rem wide (room for a name, NTFS, the temperature and the percent on one line)
+/// with `gap-3` between them.
+pub const DRIVE_TILE_REM: f32 = 21.;
 /// See [`DRIVE_TILE_REM`].
 pub const DRIVE_GAP_REM: f32 = 0.75;
 
@@ -119,6 +120,16 @@ pub fn grid_columns(width: f32, min: f32, gap: f32) -> usize {
     let columns = ((width + gap) / (min + gap)).floor();
     // The clamp keeps the cast in range; a window can't have more columns than this.
     columns.clamp(1., 10_000.) as usize
+}
+
+/// The width of one card in a grid of cards at least `min` wide with `gap` between them, in a row `width` wide:
+/// the row shared out between as many columns as fit. None until the row has been measured.
+pub fn card_width(width: f32, min: f32, gap: f32) -> Option<f32> {
+    if width.is_nan() || width <= 0. {
+        return None;
+    }
+    let columns = grid_columns(width, min, gap) as f32;
+    Some(((width - gap * (columns - 1.)) / columns).max(0.))
 }
 
 /// The tile a step from `index` lands on. The folders are tiles `0..known` and the drives follow them; each
@@ -321,6 +332,15 @@ mod tests {
         // Not measured yet: one column, not a division by zero.
         assert_eq!(grid_columns(0., 168., 8.), 1);
         assert_eq!(grid_columns(f32::NAN, 168., 8.), 1);
+    }
+
+    #[test]
+    fn cards_share_the_row_out_and_wait_for_a_measure() {
+        // 952 px, 168 px minimum, 8 px gaps: five columns of (952 - 32) / 5.
+        assert_eq!(card_width(952., 168., 8.), Some(184.));
+        // Narrower than one card: the one column is the whole row.
+        assert_eq!(card_width(100., 168., 8.), Some(100.));
+        assert_eq!(card_width(0., 168., 8.), None);
     }
 
     #[test]

@@ -519,17 +519,18 @@ impl HeaderMenu {
                 HeaderPick::LikeOthers,
             );
         }
-        nodes.push(Node::Heading(t!("Group by")));
+        // Sort by and Group by are submenus: the columns are what a right-click on the header is for.
+        let mut grouping = Vec::new();
         for option in GROUP_BYS {
             row(
-                &mut nodes,
+                &mut grouping,
                 i18n::translate(option.label),
                 IconName::Check,
                 Some(self.group == option.by),
                 HeaderPick::Group(option.by),
             );
         }
-        nodes.push(Node::Heading(t!("Sort by")));
+        let mut sorting = Vec::new();
         let mut keys: Vec<(SortKey, SharedString, Option<ColumnId>)> = vec![(SortKey::Name, t!("Name"), None)];
         keys.extend(
             COLUMN_ORDER
@@ -539,13 +540,21 @@ impl HeaderMenu {
         );
         for (key, label, column) in keys {
             row(
-                &mut nodes,
+                &mut sorting,
                 label,
                 IconName::Check,
                 Some(self.sort.key == key),
                 HeaderPick::Sort { key, column },
             );
         }
+        let submenu = |label: SharedString, icon: IconName, items: Vec<Node>| Node::Menu {
+            label,
+            icon: Some(icon),
+            disabled: false,
+            items,
+        };
+        nodes.push(submenu(t!("Sort by"), IconName::ArrowUpDown, sorting));
+        nodes.push(submenu(t!("Group by"), IconName::Layers, grouping));
         (nodes, picks)
     }
 }
