@@ -24,7 +24,7 @@ impl PhotoMapView {
         country: Option<SharedString>,
         items: Vec<Item>,
         cx: &mut Context<Self>,
-    ) -> Stateful<Div> {
+    ) -> impl IntoElement {
         let t = theme::tokens(cx).clone();
         let pane = self.pane;
         while self.tile_focus.len() < items.len() {
@@ -109,6 +109,7 @@ impl PhotoMapView {
             .id(("pm-drawer", pane))
             .role(Role::Group)
             .aria_label(title.clone())
+            .test_support()
             .occlude()
             .absolute()
             .left_0()

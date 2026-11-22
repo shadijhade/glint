@@ -1,6 +1,7 @@
 //! What one camera's view of the photos costs, paid once: the clusters, kept until the camera, the size of the
 //! map or the photos change, and shared with the paint closure as one `Arc`.
 
+use glint_model::places::{gazetteer, Label};
 use glint_model::world_map::{cluster_set, Clusters, GeoSet, MapCamera};
 use std::sync::Arc;
 
@@ -17,6 +18,8 @@ pub(super) struct Frame {
     pub clusters: Clusters,
     /// The pins that get a picture (indices into `clusters.pins`, in order): the biggest [`MAX_PICTURES`].
     pub top: Vec<u32>,
+    /// The cities to name, once the zoom is deep enough for them (none when the map shows the world).
+    pub labels: Vec<Label>,
 }
 
 impl Frame {
@@ -35,7 +38,11 @@ impl Frame {
             top.truncate(MAX_PICTURES);
         }
         top.sort_unstable();
-        Self { clusters, top }
+        Self {
+            clusters,
+            top,
+            labels: gazetteer().labels(camera, width, height),
+        }
     }
 }
 

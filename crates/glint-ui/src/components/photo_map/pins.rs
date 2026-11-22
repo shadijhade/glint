@@ -2,6 +2,7 @@
 //! calls these once per frame; they allocate nothing but what the text system shapes.
 
 use crate::kit::prelude::*;
+use glint_model::places::Label;
 use glint_model::world_map::{MapCamera, PinCluster, Stop};
 use std::sync::Arc;
 
@@ -12,6 +13,7 @@ pub(super) struct Colors {
     pub selected: Hsla,
     pub text: Hsla,
     pub halo: Hsla,
+    pub name: Hsla,
     pub arc: Hsla,
 }
 
@@ -144,6 +146,35 @@ impl Colors {
         } else {
             self.pin
         }
+    }
+}
+
+/// The names of cities, each by a small dot at the city.
+pub(super) fn paint_names(window: &mut Window, cx: &mut App, ink: Ink, labels: &[Label]) {
+    let Ink { origin, colors, font } = ink;
+    for label in labels {
+        let x = f32::from(origin.x) + label.sx;
+        let y = f32::from(origin.y) + label.sy;
+        disc(window, x, y, 1.8, colors.name, colors.name, 0.0);
+        let run = TextRun {
+            len: label.name.len(),
+            font: font.clone(),
+            color: colors.name,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let shaped = window
+            .text_system()
+            .shape_line(SharedString::from(label.name), px(11.0), &[run], None);
+        let _ = shaped.paint(
+            point(px(x + 5.0), px(y - 7.0)),
+            px(14.0),
+            TextAlign::Left,
+            None,
+            window,
+            cx,
+        );
     }
 }
 

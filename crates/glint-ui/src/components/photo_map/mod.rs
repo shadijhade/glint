@@ -18,6 +18,7 @@ use crate::kit::prelude::*;
 use crate::{t, theme};
 use frame::{ClusterCache, Frame};
 use glint_model::paths::{is_folder_path, is_gallery, same_path};
+use glint_model::places::gazetteer;
 use glint_model::world_map::{
     project, travel_stops, GeoPhoto, GeoSet, MapCamera, PinCluster, Stop, Timeline, LAND_POLYGONS,
 };
@@ -609,8 +610,17 @@ impl PhotoMapView {
     }
 }
 
-/// What the drawer says it holds: how many photos, and near where.
+/// What the drawer says it holds: how many photos, and near where: the nearest city of the offline table (and its
+/// country beside it), else the coordinates.
 fn drawer_title(cl: &PinCluster) -> (SharedString, Option<SharedString>) {
+    if let Some((city, country)) = gazetteer().near(cl.lat, cl.lon) {
+        let title = if cl.count == 1 {
+            t!("1 photo near {place}", place = city)
+        } else {
+            t!("{n} photos near {place}", n = cl.count, place = city)
+        };
+        return (title, Some(country.into()));
+    }
     let (lat, lon) = (format!("{:.3}", cl.lat), format!("{:.3}", cl.lon));
     let title = if cl.count == 1 {
         t!("1 photo near {lat}, {lon}", lat = lat, lon = lon)
@@ -769,6 +779,7 @@ impl Render for PhotoMapView {
             selected: t.destructive,
             text: t.primary_foreground,
             halo: t.background,
+            name: t.muted_foreground,
             arc: t.primary.opacity(0.7),
         };
         let stops = self.arcs.then(|| self.stops_of(&photos));
@@ -842,17 +853,20 @@ impl Render for PhotoMapView {
                     }
                 }
 
+                let ink = Ink {
+                    origin: bounds.origin,
+                    colors,
+                    font: &base_font,
+                };
+                // The names of cities, once the zoom is deep enough for them.
+                pins::paint_names(window, cx, ink, &frame_draw.labels);
+
                 // The trip, as dashed arcs under the pins.
                 if let Some(stops) = &stops {
                     pins::paint_arcs(window, bounds, &cam, stops, colors.arc);
                 }
 
                 // Clustered pins, with the lead photo's picture in the ones that have it.
-                let ink = Ink {
-                    origin: bounds.origin,
-                    colors,
-                    font: &base_font,
-                };
                 let mut next_picture = pictures.iter().peekable();
                 for (i, pin) in frame_draw.clusters.pins.iter().enumerate() {
                     let picture = next_picture.next_if(|p| p.pin as usize == i);
@@ -1247,6 +1261,9 @@ mod tests {
                 .collect()
         });
         assert_eq!(labels, [Some("a.jpg".to_string()), Some("صورة.jpg".to_string()), None]);
+        // The drawer says where, in the words of the offline table: the city, not its coordinates.
+        let title = visual.update(|window, _| window.find(("pm-drawer", 0usize)).label().map(str::to_string));
+        assert_eq!(title.as_deref(), Some("2 photos near Tokyo"));
 
         // Pressing a tile, or Enter on it, opens that photo.
         let events = Rc::new(RefCell::new(Vec::new()));

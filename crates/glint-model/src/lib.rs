@@ -31,6 +31,7 @@ pub mod markdown;
 pub mod natural;
 pub mod oklab;
 pub mod paths;
+pub mod places;
 pub mod plain;
 pub mod rank;
 pub mod small_kinds;
