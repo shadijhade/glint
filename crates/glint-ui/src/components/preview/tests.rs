@@ -1169,6 +1169,7 @@ fn an_e_book_is_left_to_windows_previewer(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn a_picture_is_drawn_here_and_says_its_size(cx: &mut TestAppContext) {
     let _guard = testing::lock();
+    super::picture::force_inline(Some(2));
     let mut env = setup(cx);
     env.select("photo.bmp");
     assert_eq!(env.body(), Some(Body::Picture));
@@ -1192,6 +1193,7 @@ fn a_picture_is_drawn_here_and_says_its_size(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn a_see_through_picture_has_a_backdrop_and_a_jpeg_never_does(cx: &mut TestAppContext) {
     let _guard = testing::lock();
+    super::picture::force_inline(Some(2));
     let mut env = setup(cx);
     env.select("photo.bmp");
     let picture = env.picture();
@@ -1211,6 +1213,7 @@ fn a_see_through_picture_has_a_backdrop_and_a_jpeg_never_does(cx: &mut TestAppCo
 #[gpui_kit::test]
 fn zoom_backdrop_and_windows_tools_work_on_a_picture(cx: &mut TestAppContext) {
     let _guard = testing::lock();
+    super::picture::force_inline(Some(2));
     let mut env = setup(cx);
     env.select("photo.bmp");
     let picture = env.picture();
@@ -1256,6 +1259,7 @@ fn zoom_backdrop_and_windows_tools_work_on_a_picture(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn copy_text_puts_the_text_on_the_clipboard(cx: &mut TestAppContext) {
     let _guard = testing::lock();
+    super::picture::force_inline(Some(2));
     let mut env = setup(cx);
     *env.fake.lines.borrow_mut() = vec!["Invoice".into(), "2026-10-24".into()];
     env.select("photo.bmp");
@@ -1800,4 +1804,21 @@ fn a_picture_is_see_through_when_any_pixel_is_not_opaque() {
     assert!(!super::picture::has_alpha(&[1, 2, 3, 255, 4, 5, 6, 255]));
     assert!(super::picture::has_alpha(&[1, 2, 3, 255, 4, 5, 6, 254]));
     assert!(!super::picture::has_alpha(&[]));
+}
+
+#[gpui_kit::test]
+fn the_chips_that_fit_the_pane_stay_in_the_row_and_the_rest_go_under_the_dots(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut env = setup(cx);
+    env.select("photo.bmp");
+    let picture = env.picture();
+    env.until("the picture decodes", |env| {
+        picture.read_with(&env.visual, |p, _| p.dimensions().is_some())
+    });
+    let fits = |env: &mut Env, width: f32| picture.update(&mut env.visual, |p, _| p.chips_fitting(width));
+    // A 280 px pane (248 inside its padding): the size, one chip and the dots; never a second line.
+    assert_eq!(fits(&mut env, 248.), 1);
+    // Wider: three of the four; very narrow: none, everything under the dots.
+    assert_eq!(fits(&mut env, 400.), 3);
+    assert_eq!(fits(&mut env, 120.), 0);
 }

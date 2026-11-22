@@ -227,6 +227,18 @@ impl PictureView {
         })
     }
 
+    /// How many chips would stay in the row at this width (logical px), for tests.
+    #[cfg(test)]
+    pub fn chips_fitting(&self, width: f32) -> usize {
+        self.area.set(Size {
+            width: px(width),
+            height: px(200.),
+        });
+        force_inline(None);
+        let alpha = matches!(&self.load, Load::Ready(r) if r.alpha);
+        self.inline_count(&self.tool_order(alpha), "640 × 420 px".chars().count())
+    }
+
     /// What shows through it.
     pub fn backdrop(&self) -> Backdrop {
         self.backdrop
@@ -858,6 +870,18 @@ fn loupe_view(loupe: &Loupe, t: &theme::Tokens, window: &Window) -> impl IntoEle
         )
 }
 
+#[cfg(test)]
+thread_local! {
+    /// A test that is about the menu, not the width, fixes how many chips stay in the row.
+    static FORCE_INLINE: Cell<Option<usize>> = const { Cell::new(None) };
+}
+
+/// Fixes how many chips stay in the row (tests).
+#[cfg(test)]
+pub(super) fn force_inline(count: Option<usize>) {
+    FORCE_INLINE.with(|f| f.set(count));
+}
+
 /// A chip under the picture.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Tool {
@@ -947,7 +971,7 @@ impl PictureView {
                 .on_click(cx.listener(|this, _, _, cx| this.reset_zoom(cx)))
         });
         let order = self.tool_order(ready.alpha);
-        let inline = order.len().min(INLINE_TOOLS);
+        let inline = self.inline_count(&order, dims.chars().count());
         let chips: Vec<Button> = order[..inline]
             .iter()
             .map(|tool| self.chip(*tool, &small, cx))
@@ -967,7 +991,7 @@ impl PictureView {
         });
         row_start()
             .flex_none()
-            .flex_wrap()
+            .overflow_hidden()
             .justify_center()
             .gap(space(1.5))
             .child(
@@ -1006,6 +1030,38 @@ impl PictureView {
             tools.sort_by_key(|tool| *tool != Tool::Colors);
         }
         tools
+    }
+
+    /// How many chips fit in the row beside the size (`dims_chars` long), the zoom chip and the "..." button, by the
+    /// width the picture's area was measured at: the row never wraps, what doesn't fit is under "...". Before the
+    /// first measure it is [`INLINE_TOOLS`].
+    fn inline_count(&self, order: &[Tool], dims_chars: usize) -> usize {
+        #[cfg(test)]
+        if let Some(count) = FORCE_INLINE.with(Cell::get) {
+            return order.len().min(count);
+        }
+        let width = f32::from(self.area.get().width);
+        if width <= 0. {
+            return order.len().min(INLINE_TOOLS);
+        }
+        // Logical pixels, as the small buttons are drawn: a character about 7, an icon and the padding 30, a gap 6.
+        let gap = 6.;
+        let mut left = width - dims_chars as f32 * 6.5 - 8.;
+        if self.zoom > 1. {
+            left -= 44. + gap;
+        }
+        let more = 28. + gap;
+        let mut fit = 0;
+        for (i, tool) in order.iter().enumerate() {
+            let cost = tool.look(false).2.chars().count() as f32 * 7. + 30. + gap;
+            let rest = if i + 1 < order.len() { more } else { 0. };
+            if left - cost < rest {
+                break;
+            }
+            left -= cost;
+            fit += 1;
+        }
+        fit
     }
 
     fn busy(&self, tool: Tool) -> bool {
@@ -1062,7 +1118,9 @@ impl PictureView {
     fn open_tools(&mut self, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
         let Load::Ready(ready) = &self.load else { return };
         let order = self.tool_order(ready.alpha);
-        let spare = order.get(INLINE_TOOLS..).unwrap_or_default().to_vec();
+        let dims = format!("{} × {} px", ready.width, ready.height);
+        let inline = self.inline_count(&order, dims.chars().count());
+        let spare = order.get(inline..).unwrap_or_default().to_vec();
         let nodes: Vec<Node> = spare
             .iter()
             .map(|tool| {
