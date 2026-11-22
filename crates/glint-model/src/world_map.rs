@@ -4,7 +4,7 @@
 //! deterministic Web Mercator camera math and screen-space cluster bucketing.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Maximum latitude representable in standard Web Mercator (~85.0511°).
 const MAX_MERCATOR_LAT: f64 = 85.051_128_78;
@@ -429,13 +429,83 @@ pub const LAND_POLYGONS: &[&[(f32, f32)]] = &[
 ];
 
 /// A single photo or video carrying EXIF GPS coordinates.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct GeoPhoto {
     pub path: String,
     pub name: String,
     pub lat: f64,
     pub lon: f64,
+    /// When it was taken, ms since 1970 (when it was modified, if it doesn't say).
     pub taken: i64,
+}
+
+/// The photos a map shows, and where each lies on the world map: worked out once when the set is made, so
+/// clustering a camera's view never calls `ln` or `sin` again, and cloning the set costs two reference counts.
+#[derive(Clone, Debug)]
+pub struct GeoSet {
+    photos: Arc<[GeoPhoto]>,
+    world: Arc<[(f64, f64)]>,
+}
+
+impl Default for GeoSet {
+    fn default() -> Self {
+        Self::new(Vec::new())
+    }
+}
+
+impl std::ops::Deref for GeoSet {
+    type Target = [GeoPhoto];
+
+    fn deref(&self) -> &[GeoPhoto] {
+        &self.photos
+    }
+}
+
+impl GeoSet {
+    /// A set of `photos`, in the order given.
+    pub fn new(photos: Vec<GeoPhoto>) -> Self {
+        let world: Vec<(f64, f64)> = photos.iter().map(|p| project(p.lat, p.lon)).collect();
+        Self {
+            photos: photos.into(),
+            world: world.into(),
+        }
+    }
+
+    /// Who this set is: two clones of a set have the same id, two sets made apart never do (while both live).
+    pub fn id(&self) -> usize {
+        self.photos.as_ptr() as usize ^ self.photos.len().rotate_left(48)
+    }
+
+    /// The earliest and the latest time anything in the set was taken.
+    pub fn time_range(&self) -> Option<(i64, i64)> {
+        let first = self.photos.first()?.taken;
+        Some(
+            self.photos
+                .iter()
+                .fold((first, first), |(lo, hi), p| (lo.min(p.taken), hi.max(p.taken))),
+        )
+    }
+
+    /// The photos taken from `from` to `to` (both included), in the same order, as a set of their own.
+    pub fn taken_between(&self, from: i64, to: i64) -> Self {
+        let mut photos = Vec::new();
+        let mut world = Vec::new();
+        for (p, w) in self.photos.iter().zip(self.world.iter()) {
+            if p.taken >= from && p.taken <= to {
+                photos.push(p.clone());
+                world.push(*w);
+            }
+        }
+        Self {
+            photos: photos.into(),
+            world: world.into(),
+        }
+    }
+
+    /// The world coordinates `(wx, wy)` of photo `i`.
+    pub fn world_of(&self, i: usize) -> Option<(f64, f64)> {
+        self.world.get(i).copied()
+    }
 }
 
 /// Normalized Web Mercator viewport camera (`cx`, `cy` in `[0, 1]`, `zoom >= 1.0`).
@@ -456,14 +526,39 @@ impl Default for MapCamera {
     }
 }
 
-/// A screen-space cluster of 1 or more nearby [`GeoPhoto`] items.
-#[derive(Clone, Debug, PartialEq)]
+/// A screen-space cluster of one or more nearby photos: where it is drawn, where its photos are on the globe, and
+/// which they are (a range of [`Clusters::members_of`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PinCluster {
     pub sx: f32,
     pub sy: f32,
     pub lat: f64,
     pub lon: f64,
-    pub indices: Vec<usize>,
+    /// Where its photos start in [`Clusters::members`], and how many there are.
+    pub first: u32,
+    pub count: u32,
+}
+
+/// One camera's view of a set: its pins, and the photos in each (indices into the set). Built once per camera,
+/// shared by the render and the paint closure as one `Arc`.
+#[derive(Debug, Default, PartialEq)]
+pub struct Clusters {
+    pub pins: Vec<PinCluster>,
+    members: Vec<u32>,
+}
+
+impl Clusters {
+    /// The photos in `pin`: indices into the set, in the set's order (so the first is the set's first of them).
+    pub fn members_of(&self, pin: &PinCluster) -> &[u32] {
+        let from = (pin.first as usize).min(self.members.len());
+        let to = (from + pin.count as usize).min(self.members.len());
+        &self.members[from..to]
+    }
+
+    /// The photo that stands for `pin`: the first of its members.
+    pub fn lead_of(&self, pin: &PinCluster) -> Option<usize> {
+        self.members.get(pin.first as usize).map(|&i| i as usize)
+    }
 }
 
 /// Converts `(lat_deg, lon_deg)` to normalized Web Mercator world coordinates `(wx, wy)` in `[0, 1]`.
@@ -531,24 +626,32 @@ impl MapCamera {
 
     /// Computes a camera framed neatly around `(lat, lon)` photo locations.
     pub fn fit_points(points: &[(f64, f64)], aspect_wh: f64) -> Self {
-        if points.is_empty() {
-            return Self::default();
-        }
-        let mut min_x = f64::INFINITY;
-        let mut max_x = f64::NEG_INFINITY;
-        let mut min_y = f64::INFINITY;
-        let mut max_y = f64::NEG_INFINITY;
+        let mut bounds = WorldBounds::default();
         for &(lat, lon) in points {
             let (wx, wy) = project(lat, lon);
-            min_x = min_x.min(wx);
-            max_x = max_x.max(wx);
-            min_y = min_y.min(wy);
-            max_y = max_y.max(wy);
+            bounds.add(wx, wy);
         }
-        let cx = (min_x + max_x) * 0.5;
-        let cy = (min_y + max_y) * 0.5;
-        let span_x = (max_x - min_x).max(0.002);
-        let span_y = (max_y - min_y).max(0.002);
+        Self::fit_bounds(&bounds, aspect_wh)
+    }
+
+    /// A camera framed around all of a set.
+    pub fn fit_set(set: &GeoSet, aspect_wh: f64) -> Self {
+        let mut bounds = WorldBounds::default();
+        for &(wx, wy) in set.world.iter() {
+            bounds.add(wx, wy);
+        }
+        Self::fit_bounds(&bounds, aspect_wh)
+    }
+
+    /// A camera framed neatly around `bounds`; the default one when nothing was added to them.
+    pub fn fit_bounds(bounds: &WorldBounds, aspect_wh: f64) -> Self {
+        if bounds.is_empty() {
+            return Self::default();
+        }
+        let cx = (bounds.min_x + bounds.max_x) * 0.5;
+        let cy = (bounds.min_y + bounds.max_y) * 0.5;
+        let span_x = (bounds.max_x - bounds.min_x).max(0.002);
+        let span_y = (bounds.max_y - bounds.min_y).max(0.002);
         let aspect = aspect_wh.clamp(0.3, 4.0);
         let zoom_x = 0.72 / span_x;
         let zoom_y = 0.72 / (span_y * aspect);
@@ -562,56 +665,135 @@ impl MapCamera {
     }
 }
 
-/// Groups geotagged photos visible within `[0..width, 0..height]` into `cell_px` grid clusters in O(N).
-pub fn cluster_pins(photos: &[GeoPhoto], cam: &MapCamera, width: f32, height: f32, cell_px: f32) -> Vec<PinCluster> {
-    type ClusterBucket = Vec<(usize, f32, f32)>;
+/// The corners of a box on the world map.
+#[derive(Clone, Copy, Debug)]
+pub struct WorldBounds {
+    pub min_x: f64,
+    pub max_x: f64,
+    pub min_y: f64,
+    pub max_y: f64,
+}
 
-    if photos.is_empty() || width <= 1.0 || height <= 1.0 {
-        return Vec::new();
+impl Default for WorldBounds {
+    fn default() -> Self {
+        Self {
+            min_x: f64::INFINITY,
+            max_x: f64::NEG_INFINITY,
+            min_y: f64::INFINITY,
+            max_y: f64::NEG_INFINITY,
+        }
+    }
+}
+
+impl WorldBounds {
+    /// Grows the box to hold the point.
+    pub fn add(&mut self, wx: f64, wy: f64) {
+        self.min_x = self.min_x.min(wx);
+        self.max_x = self.max_x.max(wx);
+        self.min_y = self.min_y.min(wy);
+        self.max_y = self.max_y.max(wy);
+    }
+
+    /// Nothing was added.
+    pub fn is_empty(&self) -> bool {
+        self.min_x > self.max_x
+    }
+}
+
+thread_local! {
+    /// What [`cluster_set`] counts into: sized to the largest view asked for, kept between calls, so a frame
+    /// allocates nothing for its working.
+    static SCRATCH: std::cell::RefCell<Scratch> = std::cell::RefCell::new(Scratch::default());
+}
+
+#[derive(Default)]
+struct Scratch {
+    /// The cell each photo falls in (`NO_CELL` when it is off the view).
+    cells: Vec<u32>,
+    /// Per cell: how many photos, then (after the prefix sum) where its members start.
+    counts: Vec<u32>,
+    sums: Vec<[f64; 4]>,
+}
+
+const NO_CELL: u32 = u32::MAX;
+
+/// Groups the photos visible within `[0..width, 0..height]` into `cell_px` squares of screen, in two passes over
+/// the set and one over the cells (a counting sort: no comparing, no hashing). Pins come out row by row, left to
+/// right; a pin's photos keep the set's order.
+pub fn cluster_set(set: &GeoSet, cam: &MapCamera, width: f32, height: f32, cell_px: f32) -> Clusters {
+    if set.is_empty() || width <= 1.0 || height <= 1.0 {
+        return Clusters::default();
     }
     let cell = cell_px.max(8.0);
     let pad = cell;
-    let mut buckets: HashMap<(i32, i32), ClusterBucket> = HashMap::new();
+    // Cells cover -pad..width+pad: one more than the view's cells on each side.
+    let cols = (width / cell).ceil() as i32 + 3;
+    let rows = (height / cell).ceil() as i32 + 3;
+    let total = (cols * rows) as usize;
+    let scale = cam.zoom * f64::from(width.max(1.0));
+    let (half_w, half_h) = (width * 0.5, height * 0.5);
 
-    for (idx, photo) in photos.iter().enumerate() {
-        let (wx, wy) = project(photo.lat, photo.lon);
-        let (sx, sy) = cam.to_screen(wx, wy, width, height);
-        if sx < -pad || sy < -pad || sx > width + pad || sy > height + pad {
-            continue;
+    SCRATCH.with_borrow_mut(|scratch| {
+        let Scratch { cells, counts, sums } = scratch;
+        cells.clear();
+        cells.resize(set.len(), NO_CELL);
+        counts.clear();
+        counts.resize(total + 1, 0);
+        sums.clear();
+        sums.resize(total, [0.0; 4]);
+        let mut visible = 0u32;
+        for (i, &(wx, wy)) in set.world.iter().enumerate() {
+            let sx = ((wx - cam.cx) * scale) as f32 + half_w;
+            let sy = ((wy - cam.cy) * scale) as f32 + half_h;
+            if sx < -pad || sy < -pad || sx > width + pad || sy > height + pad {
+                continue;
+            }
+            let gx = (sx / cell).floor() as i32 + 1;
+            let gy = (sy / cell).floor() as i32 + 1;
+            if gx < 0 || gy < 0 || gx >= cols || gy >= rows {
+                continue;
+            }
+            let c = (gy * cols + gx) as usize;
+            cells[i] = c as u32;
+            counts[c] += 1;
+            let s = &mut sums[c];
+            s[0] += f64::from(sx);
+            s[1] += f64::from(sy);
+            s[2] += set.photos[i].lat;
+            s[3] += set.photos[i].lon;
+            visible += 1;
         }
-        let gx = (sx / cell).floor() as i32;
-        let gy = (sy / cell).floor() as i32;
-        buckets.entry((gx, gy)).or_default().push((idx, sx, sy));
-    }
-
-    let mut cells: Vec<((i32, i32), ClusterBucket)> = buckets.into_iter().collect();
-    cells.sort_by_key(|(k, _)| (k.1, k.0));
-
-    cells
-        .into_iter()
-        .map(|(_, members)| {
-            let n = members.len() as f64;
-            let mut sum_sx = 0.0f64;
-            let mut sum_sy = 0.0f64;
-            let mut sum_lat = 0.0f64;
-            let mut sum_lon = 0.0f64;
-            let mut indices = Vec::with_capacity(members.len());
-            for (idx, sx, sy) in members {
-                sum_sx += f64::from(sx);
-                sum_sy += f64::from(sy);
-                sum_lat += photos[idx].lat;
-                sum_lon += photos[idx].lon;
-                indices.push(idx);
+        // The pins, and where each cell's members will start.
+        let mut pins = Vec::new();
+        let mut at = 0u32;
+        for c in 0..total {
+            let n = counts[c];
+            counts[c] = at;
+            if n > 0 {
+                let s = &sums[c];
+                let nf = f64::from(n);
+                pins.push(PinCluster {
+                    sx: (s[0] / nf) as f32,
+                    sy: (s[1] / nf) as f32,
+                    lat: s[2] / nf,
+                    lon: s[3] / nf,
+                    first: at,
+                    count: n,
+                });
             }
-            PinCluster {
-                sx: (sum_sx / n) as f32,
-                sy: (sum_sy / n) as f32,
-                lat: sum_lat / n,
-                lon: sum_lon / n,
-                indices,
+            at += n;
+        }
+        // Members, in the set's order within each cell (`counts[c]` walks from the cell's start to its end).
+        let mut members = vec![0u32; visible as usize];
+        for (i, &c) in cells.iter().enumerate() {
+            if c != NO_CELL {
+                let slot = &mut counts[c as usize];
+                members[*slot as usize] = i as u32;
+                *slot += 1;
             }
-        })
-        .collect()
+        }
+        Clusters { pins, members }
+    })
 }
 
 #[cfg(test)]
@@ -647,35 +829,35 @@ mod tests {
         assert!((wy_before - wy_after).abs() < 1e-5);
     }
 
+    fn photo(path: &str, lat: f64, lon: f64, taken: i64) -> GeoPhoto {
+        GeoPhoto {
+            path: path.into(),
+            name: path.into(),
+            lat,
+            lon,
+            taken,
+        }
+    }
+
     #[test]
-    fn cluster_pins_merges_at_low_zoom_and_splits_at_high_zoom() {
-        let photos = vec![
-            GeoPhoto {
-                path: "a.jpg".into(),
-                name: "a.jpg".into(),
-                lat: 48.8566,
-                lon: 2.3522,
-                taken: 1,
-            },
-            GeoPhoto {
-                path: "b.jpg".into(),
-                name: "b.jpg".into(),
-                lat: 48.8600,
-                lon: 2.3600,
-                taken: 2,
-            },
-            GeoPhoto {
-                path: "c.jpg".into(),
-                name: "c.jpg".into(),
-                lat: 35.6762,
-                lon: 139.6503,
-                taken: 3,
-            },
-        ];
+    fn cluster_set_merges_at_low_zoom_and_splits_at_high_zoom() {
+        let set = GeoSet::new(vec![
+            photo("a.jpg", 48.8566, 2.3522, 1),
+            photo("b.jpg", 48.8600, 2.3600, 2),
+            photo("c.jpg", 35.6762, 139.6503, 3),
+        ]);
 
         let low = MapCamera::default();
-        let clusters_low = cluster_pins(&photos, &low, 1000.0, 600.0, 40.0);
-        assert_eq!(clusters_low.len(), 2, "Paris pair merges vs Tokyo");
+        let clusters_low = cluster_set(&set, &low, 1000.0, 600.0, 40.0);
+        assert_eq!(clusters_low.pins.len(), 2, "Paris pair merges vs Tokyo");
+        let paris = clusters_low.pins.iter().find(|p| p.count == 2).expect("the Paris pin");
+        assert_eq!(
+            clusters_low.members_of(paris),
+            &[0, 1],
+            "a pin's photos keep the set's order"
+        );
+        assert_eq!(clusters_low.lead_of(paris), Some(0));
+        assert!((paris.lat - 48.8583).abs() < 1e-3 && (paris.lon - 2.3561).abs() < 1e-3);
 
         let (px, py) = project(48.858, 2.356);
         let high = MapCamera {
@@ -683,7 +865,81 @@ mod tests {
             cy: py,
             zoom: 1024.0,
         };
-        let clusters_high = cluster_pins(&photos, &high, 1000.0, 600.0, 20.0);
-        assert_eq!(clusters_high.len(), 2, "Paris pair splits and Tokyo is off-screen");
+        let clusters_high = cluster_set(&set, &high, 1000.0, 600.0, 20.0);
+        assert_eq!(clusters_high.pins.len(), 2, "Paris pair splits and Tokyo is off-screen");
+        assert!(clusters_high.pins.iter().all(|p| p.count == 1));
+    }
+
+    #[test]
+    fn cluster_set_agrees_with_a_plain_grouping_of_every_photo() {
+        // 3,000 photos on a spiral; every photo on screen is in exactly one pin, off-screen ones in none.
+        let photos: Vec<GeoPhoto> = (0..3_000)
+            .map(|i| {
+                let a = f64::from(i) * 0.37;
+                photo(
+                    "x",
+                    40.0 + a.sin() * 30.0,
+                    10.0 + a.cos() * 60.0 + f64::from(i) * 0.01,
+                    i64::from(i),
+                )
+            })
+            .collect();
+        let set = GeoSet::new(photos);
+        let cam = MapCamera {
+            cx: 0.55,
+            cy: 0.35,
+            zoom: 3.0,
+        };
+        let (w, h, cell) = (900.0f32, 500.0f32, 36.0f32);
+        let clusters = cluster_set(&set, &cam, w, h, cell);
+        let mut seen = vec![0u32; set.len()];
+        for pin in &clusters.pins {
+            assert_eq!(clusters.members_of(pin).len(), pin.count as usize);
+            let mut last = None;
+            for &i in clusters.members_of(pin) {
+                seen[i as usize] += 1;
+                assert!(last.is_none_or(|l| l < i), "in the set's order");
+                last = Some(i);
+            }
+        }
+        for (i, &(wx, wy)) in set.world.iter().enumerate() {
+            let (sx, sy) = cam.to_screen(wx, wy, w, h);
+            let on = !(sx < -cell || sy < -cell || sx > w + cell || sy > h + cell);
+            assert_eq!(seen[i], u32::from(on), "photo {i} at {sx},{sy}");
+        }
+        // Pins come row by row.
+        let rows: Vec<i32> = clusters.pins.iter().map(|p| (p.sy / cell).floor() as i32).collect();
+        assert!(rows.windows(2).all(|r| r[0] <= r[1] + 1));
+        // Nothing to show: nothing, whatever the box.
+        assert!(cluster_set(&GeoSet::default(), &cam, w, h, cell).pins.is_empty());
+        assert!(cluster_set(&set, &cam, 1.0, 1.0, cell).pins.is_empty());
+    }
+
+    #[test]
+    fn a_set_is_the_same_photos_when_cloned_and_others_when_made_again() {
+        let a = GeoSet::new(vec![photo("a", 1.0, 2.0, 5), photo("b", 3.0, 4.0, 9)]);
+        assert_eq!(a.id(), a.clone().id());
+        assert_ne!(
+            a.id(),
+            GeoSet::new(vec![photo("a", 1.0, 2.0, 5), photo("b", 3.0, 4.0, 9)]).id()
+        );
+        assert_eq!(a.time_range(), Some((5, 9)));
+        assert_eq!(GeoSet::default().time_range(), None);
+        let only_b = a.taken_between(6, 10);
+        assert_eq!((only_b.len(), only_b[0].path.as_str()), (1, "b"));
+        assert_eq!(only_b.world_of(0), a.world_of(1));
+    }
+
+    #[test]
+    fn fitting_a_set_frames_all_of_it() {
+        let set = GeoSet::new(vec![photo("a", 48.8, 2.3, 1), photo("b", 35.7, 139.6, 2)]);
+        let cam = MapCamera::fit_set(&set, 1.6);
+        for i in 0..set.len() {
+            let (wx, wy) = set.world_of(i).expect("a photo");
+            let (sx, sy) = cam.to_screen(wx, wy, 800.0, 500.0);
+            assert!((0.0..=800.0).contains(&sx) && (0.0..=500.0).contains(&sy), "{sx},{sy}");
+        }
+        assert_eq!(MapCamera::fit_set(&GeoSet::default(), 1.6), MapCamera::default());
+        assert_eq!(MapCamera::fit_points(&[(48.8, 2.3), (35.7, 139.6)], 1.6), cam);
     }
 }

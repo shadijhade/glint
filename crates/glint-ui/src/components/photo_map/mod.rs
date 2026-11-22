@@ -2,20 +2,27 @@
 //!
 //! Renders embedded continent polygons via GPUI `PathBuilder`, O(N) screen-space pin clustering,
 //! smooth cursor-anchored zoom/pan, and a cluster drawer to reveal or open geotagged photos.
+//!
+//! A frame costs what the camera changed: the photos are one shared set (`GeoSet`, positions worked out once),
+//! and the clusters of a camera are worked out once and shared with the paint closure ([`frame::ClusterCache`]).
+
+mod frame;
 
 use crate::explorer::{explorer, Explorer, ExplorerEvent, TabId};
 use crate::kit::prelude::*;
 use crate::{t, theme};
+use frame::ClusterCache;
 use glint_model::paths::{is_folder_path, is_gallery, same_path};
-use glint_model::world_map::{cluster_pins, project, GeoPhoto, MapCamera, PinCluster, LAND_POLYGONS};
+use glint_model::world_map::{project, Clusters, GeoPhoto, GeoSet, MapCamera, LAND_POLYGONS};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use std::sync::Arc;
 
 #[derive(Clone, Debug, Default)]
 pub struct TabMapState {
     pub folder: String,
-    pub photos: Vec<GeoPhoto>,
+    pub photos: GeoSet,
     pub loading: bool,
     pub serial: u64,
 }
@@ -107,7 +114,7 @@ impl PhotoMapModel {
             tab,
             TabMapState {
                 folder: folder.clone(),
-                photos: Vec::new(),
+                photos: GeoSet::default(),
                 loading: true,
                 serial,
             },
@@ -115,7 +122,10 @@ impl PhotoMapModel {
         cx.notify();
 
         let loader = self.loader.clone();
-        let photos_task = cx.background_executor().spawn(async move { (loader)(folder) });
+        // The set's positions are worked out here, off the UI thread.
+        let photos_task = cx
+            .background_executor()
+            .spawn(async move { GeoSet::new((loader)(folder)) });
         cx.spawn(async move |this, cx| {
             let photos = photos_task.await;
             let _ = this.update(cx, |this, cx| {
@@ -210,7 +220,9 @@ pub struct PhotoMapView {
     model: Entity<PhotoMapModel>,
     focus: FocusHandle,
     camera: MapCamera,
-    fitted_for: Option<(String, usize)>,
+    /// The load (its serial) and how many photos the camera was last fitted to.
+    fitted_for: Option<(u64, usize)>,
+    clusters: ClusterCache,
     drag: Option<DragState>,
     selected_cluster: Option<usize>,
     map_bounds: Rc<Cell<Bounds<Pixels>>>,
@@ -233,6 +245,7 @@ impl PhotoMapView {
             focus: cx.focus_handle(),
             camera: MapCamera::default(),
             fitted_for: None,
+            clusters: ClusterCache::default(),
             drag: None,
             selected_cluster: None,
             map_bounds: Rc::new(Cell::new(Bounds::default())),
@@ -248,28 +261,43 @@ impl PhotoMapView {
         self.explorer.read(cx).pane_tab_id(self.pane)
     }
 
-    fn current_photos(&self, cx: &App) -> (String, Vec<GeoPhoto>, bool) {
+    /// The photos of this pane's tab (a cheap clone of the shared set), whether they are still coming, and which
+    /// load they belong to.
+    fn current(&self, cx: &App) -> (GeoSet, bool, u64) {
         let tab = self.tab_id(cx);
-        let guard = self.model.read(cx);
-        if let Some(st) = guard.state_of(tab) {
-            (st.folder.clone(), st.photos.clone(), st.loading)
-        } else {
-            (String::new(), Vec::new(), false)
+        match self.model.read(cx).state_of(tab) {
+            Some(st) => (st.photos.clone(), st.loading, st.serial),
+            None => (GeoSet::default(), false, 0),
         }
     }
 
-    fn fit_all(&mut self, photos: &[GeoPhoto], cx: &mut Context<Self>) {
-        if photos.is_empty() {
-            self.camera = MapCamera::default();
+    /// The clusters of the camera as it is, from the cache when nothing changed since the last frame.
+    fn clusters_now(&mut self, set: &GeoSet) -> Arc<Clusters> {
+        let bounds = self.map_bounds.get();
+        let (w, h) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
+        if w > 2.0 && h > 2.0 {
+            self.clusters.get(set, &self.camera, w, h)
         } else {
-            let bounds = self.map_bounds.get();
-            let w = f32::from(bounds.size.width).max(800.0);
-            let h = f32::from(bounds.size.height).max(480.0);
-            let pts: Vec<(f64, f64)> = photos.iter().map(|p| (p.lat, p.lon)).collect();
-            self.camera = MapCamera::fit_points(&pts, f64::from(w) / f64::from(h));
+            Arc::default()
         }
+    }
+
+    fn fit_all(&mut self, cx: &mut Context<Self>) {
+        let (set, _, _) = self.current(cx);
+        self.camera = self.fit_camera(&set);
         self.selected_cluster = None;
         cx.notify();
+    }
+
+    /// The camera that frames all of `set` in the map's box (the default one for no photos).
+    fn fit_camera(&self, set: &GeoSet) -> MapCamera {
+        if set.is_empty() {
+            return MapCamera::default();
+        }
+        let bounds = self.map_bounds.get();
+        let w = f32::from(bounds.size.width).max(800.0);
+        let h = f32::from(bounds.size.height).max(480.0);
+        MapCamera::fit_set(set, f64::from(w) / f64::from(h))
     }
 
     fn zoom_center(&mut self, factor: f64, cx: &mut Context<Self>) {
@@ -288,16 +316,16 @@ impl PhotoMapView {
         if w <= 1.0 || h <= 1.0 {
             return;
         }
-        let (_, photos, _) = self.current_photos(cx);
-        let clusters = cluster_pins(&photos, &self.camera, w, h, 36.0);
+        let (set, _, _) = self.current(cx);
+        let clusters = self.clusters_now(&set);
         let px_x = f32::from(pos.x - bounds.origin.x);
         let px_y = f32::from(pos.y - bounds.origin.y);
         let mut best: Option<(usize, f32)> = None;
-        for (i, cl) in clusters.iter().enumerate() {
+        for (i, cl) in clusters.pins.iter().enumerate() {
             let dx = cl.sx - px_x;
             let dy = cl.sy - px_y;
             let dist_sq = dx * dx + dy * dy;
-            let hit_r = if cl.indices.len() > 1 { 20.0 } else { 14.0 };
+            let hit_r = if cl.count > 1 { 20.0 } else { 14.0 };
             if dist_sq <= hit_r * hit_r && best.is_none_or(|(_, d)| dist_sq < d) {
                 best = Some((i, dist_sq));
             }
@@ -343,28 +371,17 @@ impl PhotoMapView {
 impl Render for PhotoMapView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tab = self.tab_id(cx);
-        let (folder, photos, loading) = self.current_photos(cx);
+        let (photos, loading, serial) = self.current(cx);
         if !loading && !photos.is_empty() {
-            let key = (folder.clone(), photos.len());
-            if self.fitted_for.as_ref() != Some(&key) {
+            let key = (serial, photos.len());
+            if self.fitted_for != Some(key) {
                 self.fitted_for = Some(key);
-                let pts: Vec<(f64, f64)> = photos.iter().map(|p| (p.lat, p.lon)).collect();
-                let bounds = self.map_bounds.get();
-                let w = f32::from(bounds.size.width).max(800.0);
-                let h = f32::from(bounds.size.height).max(480.0);
-                self.camera = MapCamera::fit_points(&pts, f64::from(w) / f64::from(h));
+                self.camera = self.fit_camera(&photos);
             }
         }
 
-        let bounds_now = self.map_bounds.get();
-        let bw = f32::from(bounds_now.size.width).max(1.0);
-        let bh = f32::from(bounds_now.size.height).max(1.0);
-        let clusters: Vec<PinCluster> = if bw > 2.0 && bh > 2.0 {
-            cluster_pins(&photos, &self.camera, bw, bh, 36.0)
-        } else {
-            Vec::new()
-        };
-        let active_cluster = self.selected_cluster.and_then(|idx| clusters.get(idx).cloned());
+        let clusters = self.clusters_now(&photos);
+        let active_cluster = self.selected_cluster.and_then(|idx| clusters.pins.get(idx).copied());
 
         let t = theme::tokens(cx);
         let count_text = if loading {
@@ -373,7 +390,6 @@ impl Render for PhotoMapView {
             t!("{n} geotagged photos", n = photos.len())
         };
 
-        let photos_for_fit = photos.clone();
         let header = row_start()
             .w_full()
             .items_center()
@@ -408,9 +424,7 @@ impl Render for PhotoMapView {
                             .ghost()
                             .label(t!("Fit"))
                             .tooltip(t!("Fit all photos"))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.fit_all(&photos_for_fit, cx);
-                            })),
+                            .on_click(cx.listener(|this, _, _, cx| this.fit_all(cx))),
                     )
                     .child(
                         Button::new(("pm-zoom-in", self.pane))
@@ -451,7 +465,7 @@ impl Render for PhotoMapView {
 
         let cam = self.camera;
         let selected_idx = self.selected_cluster;
-        let photos_draw = photos.clone();
+        let clusters_draw = clusters.clone();
         let bounds_cell = self.map_bounds.clone();
         let view_id = cx.entity_id();
         let ocean = t.background;
@@ -532,9 +546,8 @@ impl Render for PhotoMapView {
                 }
 
                 // Clustered pins
-                let clusters_draw = cluster_pins(&photos_draw, &cam, w, h, 36.0);
-                for (i, cl) in clusters_draw.iter().enumerate() {
-                    let count = cl.indices.len();
+                for (i, cl) in clusters_draw.pins.iter().enumerate() {
+                    let count = cl.count as usize;
                     let radius = if count > 1 { 12.0 } else { 6.5 };
                     let x = f32::from(bounds.origin.x) + cl.sx - radius;
                     let y = f32::from(bounds.origin.y) + cl.sy - radius;
@@ -685,11 +698,11 @@ impl Render for PhotoMapView {
 
         let drawer = active_cluster.map(|cl| {
             let pane_idx = self.pane;
-            let items: Vec<(usize, GeoPhoto)> = cl
-                .indices
+            let items: Vec<(usize, GeoPhoto)> = clusters
+                .members_of(&cl)
                 .iter()
                 .take(32)
-                .filter_map(|&idx| photos.get(idx).cloned().map(|p| (idx, p)))
+                .filter_map(|&idx| photos.get(idx as usize).cloned().map(|p| (idx as usize, p)))
                 .collect();
             col()
                 .w_full()
@@ -711,7 +724,7 @@ impl Render for PhotoMapView {
                                 .text_color(t.foreground)
                                 .child(t!(
                                     "{n} photos near {lat}, {lon}",
-                                    n = cl.indices.len(),
+                                    n = cl.count,
                                     lat = format!("{:.3}", cl.lat),
                                     lon = format!("{:.3}", cl.lon)
                                 )),
