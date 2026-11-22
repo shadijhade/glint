@@ -717,6 +717,20 @@ fn tab_leaves_the_keyboard_in_the_box_and_nothing_matching_says_so(cx: &mut Test
 }
 
 #[gpui_kit::test]
+fn the_list_is_never_taller_than_a_menu_may_be(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut w = world(cx, "cap");
+    w.cx.simulate_resize(gpui_kit::size(gpui_kit::px(900.), gpui_kit::px(420.)));
+    w.open();
+    w.cx.update(|window, cx| {
+        window.render_frame(cx);
+        let list = window.find("palette-list").bounds().size.height;
+        let cap = menu_max_height(window);
+        assert!(list <= cap, "the palette's list is {list:?}, a menu may be {cap:?}");
+    });
+}
+
+#[gpui_kit::test]
 fn a_change_without_an_action_is_made(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let mut w = world(cx, "change");

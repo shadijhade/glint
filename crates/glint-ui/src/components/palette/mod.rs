@@ -305,7 +305,7 @@ impl Palette {
                 .h(ROW)
                 .flex()
                 .items_end()
-                .px(space(2.5))
+                .px(space(2.))
                 .pb(space(1.))
                 .text_size(theme::size::XS)
                 .font_weight(FontWeight::SEMIBOLD)
@@ -353,8 +353,8 @@ impl Palette {
                     .test_support()
                     .h(ROW)
                     .w_full()
-                    .px(space(2.5))
-                    .gap(space(3.))
+                    .px(space(2.))
+                    .gap(space(2.))
                     .rounded(theme::size::RADIUS)
                     .text_size(theme::size::SM)
                     .cursor_pointer()
@@ -409,8 +409,12 @@ impl Palette {
     }
 }
 
+/// What the box at the top of the palette and the list's padding take of the cap (a line of text and its border,
+/// the list's padding above and below).
+const INPUT_BAND: Pixels = px(72.);
+
 /// A row's height: the heading rows are the same, so the list is uniform and scrolls cheaply.
-const ROW: Rems = space_const(9.);
+const ROW: Rems = space_const(8.);
 
 /// [`space`] as a constant.
 const fn space_const(n: f32) -> Rems {
@@ -463,6 +467,13 @@ impl Render for Palette {
         let rows = self.rows.len();
         let typed = self.query.trim().to_string();
 
+        // As tall as its rows, at most the most rows and never taller than a menu may be: what doesn't fit
+        // scrolls inside.
+        let list_height = {
+            let row = ROW.to_pixels(window.rem_size());
+            let cap = (menu_max_height(window) - INPUT_BAND).max(row);
+            (row * rows.min(MOST_ROWS) as f32).min(cap)
+        };
         let list = if self.results.is_empty() {
             div()
                 .id("palette-empty")
@@ -489,10 +500,9 @@ impl Render for Palette {
                 }),
             )
             .track_scroll(&self.scroll)
-            .h(ROW * rows.min(MOST_ROWS) as f32)
+            .h(list_height)
             .into_any_element()
         };
-        let _ = window;
 
         col()
             .id("palette")
