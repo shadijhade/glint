@@ -48,6 +48,8 @@ actions!(
         ToggleTerminal,
         // Navigation and search
         CommandPalette,
+        // Alt+J: badges of letters on everything in sight, typed to jump there.
+        HopMode,
         SearchHere,
         FocusAddress,
         Back,
@@ -242,6 +244,12 @@ pub static BINDINGS: &[Binding] = &[
     bind!("alt-enter", "FileList", Properties, "Properties"),
     bind!("ctrl-h", "Workspace", ToggleHidden, "Hidden items"),
     bind!("alt-p", "Workspace", TogglePreview, "Preview pane"),
+    bind!(
+        "alt-j",
+        "Workspace",
+        HopMode,
+        "Hop: letters on everything in sight, type them to jump there"
+    ),
     bind!(
         "ctrl-b",
         "Workspace",

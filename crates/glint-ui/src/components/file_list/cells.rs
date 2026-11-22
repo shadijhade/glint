@@ -678,6 +678,22 @@ impl FileList {
                 });
             }
         }));
+        // Hop mode (Alt+J): the row is a target, and a hint on it acts as a click on it.
+        let line = crate::components::hop::mark(line, || {
+            let (list, path) = (cx.entity().downgrade(), entry.path.clone());
+            crate::components::hop::Mark::new(
+                crate::components::hop::Kind::Row,
+                cx.entity_id().as_u64(),
+                entry.name.clone(),
+                move |window, cx| {
+                    list.update(cx, |this, cx| {
+                        this.row_down(i, &crate::components::hop::click(Point::default()), window, cx);
+                        this.explorer.update(cx, |e, cx| e.select_only(Some(&path), cx));
+                    })
+                    .ok();
+                },
+            )
+        });
         line.test_support().into_any_element()
     }
 }

@@ -686,6 +686,21 @@ impl Sidebar {
         cx.notify();
     }
 
+    /// Hop mode (Alt+J): row `ix` is a target on show, and a hint on it is a click on it.
+    fn hop<E: ParentElement>(&self, el: E, ix: usize, name: impl Into<SharedString>, cx: &mut Context<Self>) -> E {
+        crate::components::hop::mark(el, || {
+            let me = cx.entity().downgrade();
+            crate::components::hop::Mark::new(
+                crate::components::hop::Kind::Place,
+                cx.entity_id().as_u64(),
+                name,
+                move |window, cx| {
+                    me.update(cx, |this, cx| this.click(ix, window, cx)).ok();
+                },
+            )
+        })
+    }
+
     /// Middle-click on a folder: a new tab for it, as in a browser (`middleClickOpens`).
     fn open_in_new_tab(&mut self, ix: usize, cx: &mut Context<Self>) {
         if let Some(target) = self
@@ -1225,6 +1240,7 @@ impl Sidebar {
             .when(active, |d| d.child(Self::pill(t, space(4.))))
             .child(self.glyph_art(&p.glyph, theme::rem_size(cx) * 1.25, t, cx))
             .child(text);
+        let button = self.hop(button, ix, label.clone(), cx);
 
         let mut cell = div().group("row").relative().w_full().pb(space(0.25)).child(button);
         if let Some(opens) = p.tree {
@@ -1330,6 +1346,7 @@ impl Sidebar {
             .when(active, |d| d.child(Self::pill(t, space(3.5))))
             .child(crate::art::folder(theme::rem_size(cx), self.folder_color(t), None, cx))
             .child(div().flex_1().min_w_0().truncate().child(isolate(f.name.clone())));
+        let button = self.hop(button, ix, f.name.clone(), cx);
 
         let mut cell = div().group("row").relative().w_full().pb(space(0.25)).child(button);
         if f.has != Some(false) {
@@ -1457,6 +1474,7 @@ impl Sidebar {
                     .on_click(cx.listener(move |this, _, _, cx| this.remove_search(ix, cx)))
                     .child(icon(IconName::X).size_3p5()),
             );
+        let button = self.hop(button, ix, query.clone(), cx);
         div()
             .group("row")
             .relative()
@@ -1512,6 +1530,7 @@ impl Sidebar {
                     .text_color(t.muted_foreground)
                     .child(SharedString::from(count.to_string()))
             }));
+        let button = self.hop(button, ix, tag.name.clone(), cx);
         div().w_full().pb(space(0.25)).child(button).into_any_element()
     }
 

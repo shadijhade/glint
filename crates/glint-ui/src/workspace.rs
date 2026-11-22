@@ -32,6 +32,7 @@ use crate::components::file_list::DragFromArchive;
 use crate::components::file_list::{FileList, FileListEvent};
 use crate::components::frequent_folders::{self, FrequentFolders, FrequentFoldersEvent};
 use crate::components::gallery_months::GalleryMonths;
+use crate::components::hop::{self, HopOverlay};
 use crate::components::git::{self, GitEvent, ReadmeCard};
 use crate::components::menus::{self, MenuEvent, MenuHost};
 use crate::components::pane_bars::PaneBars;
@@ -167,6 +168,8 @@ pub struct Workspace {
     strip: Entity<crate::components::transform_strip::TransformStrip>,
     /// The item, background and folder menus, drawn over everything when one is open.
     menus: Entity<MenuHost>,
+    /// Hop mode's layer (Alt+J), drawn over everything.
+    hop: Entity<HopOverlay>,
     /// The open Settings view's events, while it is open.
     settings_events: Option<Subscription>,
     /// The preview pane at the end edge, while the setting shows it: dropped while hidden, since Windows'
@@ -229,6 +232,7 @@ impl Workspace {
         let queue = cx.new(|cx| CopyQueue::new(window, cx));
         let strip = cx.new(crate::components::transform_strip::TransformStrip::new);
         let menus = cx.new(MenuHost::new);
+        let hop = cx.new(|cx| HopOverlay::new(window, cx));
         let (first, first_subscriptions) = Self::build_pane(0, window, cx);
         subscriptions.extend(first_subscriptions);
         let command_bar = cx.new(|cx| CommandBar::new(window, cx));
@@ -340,6 +344,7 @@ impl Workspace {
             queue,
             strip,
             menus,
+            hop,
             settings_events: None,
             preview: None,
             panes: [Some(first), None],
@@ -2631,7 +2636,8 @@ impl Render for Workspace {
             .on_action(cx.listener(|_, _: &actions::NewWindow, _, cx| {
                 Self::explorer(cx, |e, cx| e.open_in_new_window(None, cx))
             }))
-            .on_action(cx.listener(|_, _: &actions::CommandPalette, window, cx| palette::toggle(window, cx)));
+            .on_action(cx.listener(|_, _: &actions::CommandPalette, window, cx| palette::toggle(window, cx)))
+            .on_action(cx.listener(|this, _: &actions::HopMode, window, cx| hop::toggle(&this.hop, window, cx)));
         root
             // The mouse's side buttons anywhere outside a pane (the panes answer for themselves).
             .on_mouse_up(MouseButton::Navigate(NavigationDirection::Back), |_, _, cx| {
@@ -2811,6 +2817,8 @@ impl Render for Workspace {
             .child(self.queue.clone())
             .child(self.strip.clone())
             .child(self.menus.clone())
+            // Above all of it: hop mode's badges, while the mode is on.
+            .child(self.hop.clone())
     }
 }
 
@@ -3752,4 +3760,66 @@ mod tests {
         assert_ne!(now, island, "the island is another width");
         assert_eq!(told, left, "the ends were told the new room");
     }
+
+    #[gpui_kit::test]
+    fn hop_mode_jumps_to_a_row_of_the_second_pane_a_place_and_a_tab_with_their_hints(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let (mut visual, workspace) = open_workspace(cx, false);
+        focus_window(&mut visual, &workspace);
+        // Two panes: the keyboard's on the first, which shows C:\Work; the second shows C:\Work\src.
+        visual.update(|_, cx| {
+            explorer::explorer(cx).update(cx, |e, cx| {
+                e.toggle_dual(cx);
+                e.focus_pane(1, cx);
+                e.navigate("C:\\Work\\src", Default::default(), cx);
+            })
+        });
+        settle(&mut visual);
+        visual.update(|_, cx| explorer::explorer(cx).update(cx, |e, cx| e.focus_pane(0, cx)));
+        settle(&mut visual);
+        focus_window(&mut visual, &workspace);
+        let shown = |visual: &mut VisualTestContext| {
+            visual.update(|_, cx| {
+                let e = explorer::explorer(cx).read(cx);
+                (
+                    e.active_pane(),
+                    e.pane_tab(1).map(|tab| tab.selection.to_vec()).unwrap_or_default(),
+                    e.pane_tab(0).map(|tab| tab.selection.to_vec()).unwrap_or_default(),
+                )
+            })
+        };
+        assert_eq!(shown(&mut visual).0, 0);
+
+        // Alt+J; the frame after the first has the targets frozen (the app's next-frame step, done by hand).
+        visual.update(|window, cx| window.press("alt-j", cx));
+        visual.update(|window, cx| {
+            window.render_frame(cx);
+            let hop = workspace.read(cx).hop.clone();
+            hop.update(cx, |hop, cx| hop.freeze(window, cx));
+            window.render_frame(cx);
+        });
+        let offered = hop::offered(&mut visual);
+        let hint_of = |kind: hop::Kind, name: &str| {
+            offered
+                .iter()
+                .find(|(_, k, n)| *k == kind && n == name)
+                .map(|(hint, _, _)| hint.clone())
+                .unwrap_or_else(|| panic!("{name} is offered: {offered:?}"))
+        };
+        assert!(offered.iter().any(|(_, kind, _)| *kind == hop::Kind::Tab), "the tab is offered: {offered:?}");
+        assert!(offered.iter().any(|(_, kind, _)| *kind == hop::Kind::Crumb), "the breadcrumbs are offered");
+        assert!(offered.iter().any(|(_, kind, _)| *kind == hop::Kind::Place), "the places are offered");
+        let main = hint_of(hop::Kind::Row, "main.rs");
+        // The hint's letters, then the keyboard is in the second pane with the file selected.
+        for key in main.chars() {
+            visual.update(|window, cx| window.press(&key.to_string(), cx));
+        }
+        visual.run_until_parked();
+        let (active, second, first) = shown(&mut visual);
+        assert_eq!(active, 1, "the second pane has the keyboard");
+        assert_eq!(second, vec!["C:\\Work\\src\\main.rs".to_string()], "the file is selected there");
+        assert!(first.is_empty(), "the first pane's selection is as it was");
+        assert!(!hop::active(), "the mode ended");
+    }
 }
+

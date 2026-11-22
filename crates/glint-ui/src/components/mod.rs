@@ -28,6 +28,8 @@ pub mod frequent_folders;
 pub mod gallery_months;
 /// Git: the branch chip, the README card, the Changes view, the marks in rows (GitChip.tsx, ReadmeCard.tsx, ChangesView.tsx).
 pub mod git;
+/// Hop mode (Alt+J): badges of letters on everything in sight that can be jumped to, typed to go there.
+pub mod hop;
 /// The item, background and folder menus, and Windows' own menu (Explorer.tsx's menus, Menu.tsx, ActionParts.tsx).
 pub mod menus;
 /// Ctrl+K: commands, folders by frecency, the calculator (CommandPalette.tsx, History.tsx).

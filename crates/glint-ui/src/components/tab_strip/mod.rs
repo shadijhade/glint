@@ -932,6 +932,18 @@ impl TabStrip {
                         },
                     ),
             )
+            // Hop mode (Alt+J): a tab is a target, and a hint on it shows it, as a press does.
+            .map(|tab| {
+                crate::components::hop::mark(tab, || {
+                    let explorer = self.explorer.clone();
+                    crate::components::hop::Mark::new(
+                        crate::components::hop::Kind::Tab,
+                        pane as u64,
+                        d.name.clone(),
+                        move |_, cx| explorer.update(cx, |e, cx| e.activate_tab(id, cx)),
+                    )
+                })
+            })
             .track_focus(&self.focus[&id])
             .tab_stop(true)
             .focus_visible(move |s| s.border_1().border_color(ring))

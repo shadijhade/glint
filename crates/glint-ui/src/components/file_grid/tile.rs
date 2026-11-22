@@ -581,6 +581,20 @@ fn tile(frame: &Rc<Frame>, i: usize, entry: &FileEntry, cx: &App) -> AnyElement 
                     }
                 }),
         );
+    // Hop mode (Alt+J): the tile is a target, and a hint on it acts as a click on it.
+    let cell = crate::components::hop::mark(cell, || {
+        let (on_down, path) = (frame.on_down.clone(), entry.path.clone());
+        crate::components::hop::Mark::new(
+            crate::components::hop::Kind::Tile,
+            frame.viewer.as_u64(),
+            entry.name.clone(),
+            move |window, cx| {
+                on_down(&(i, crate::components::hop::click(Point::default())), window, cx);
+                // The pane is the keyboard's now; the item is the selection even if it was one of several.
+                crate::explorer::explorer(cx).update(cx, |e, cx| e.select_only(Some(&path), cx));
+            },
+        )
+    });
     // The list has just given way to the grid: the tile is on its way from its row, its picture out of the
     // row's.
     let flying = frame

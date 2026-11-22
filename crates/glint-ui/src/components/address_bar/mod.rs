@@ -1630,6 +1630,23 @@ impl AddressBar {
                 b.child(icon(IconName::Cloud).size_3p5().flex_none().text_color(t.primary))
             })
             .child(div().min_w_0().truncate().child(isolate(name)));
+        // Hop mode (Alt+J): a crumb on show is a target, and a hint on it opens its folder, as a click does (the
+        // keyboard goes back to where it was).
+        let button = if folded {
+            button
+        } else {
+            crate::components::hop::mark(button, || {
+                let (explorer, path) = (self.explorer.clone(), crumb.path.clone());
+                crate::components::hop::Mark::new(
+                    crate::components::hop::Kind::Crumb,
+                    cx.entity_id().as_u64(),
+                    crumb.name.clone(),
+                    move |_, cx| {
+                        explorer.update(cx, |e, cx| e.navigate(path.clone(), NavOptions::default(), cx));
+                    },
+                )
+            })
+        };
         // What's in the Recycle Bin, Recent or the Gallery isn't a folder to go into.
         let chevron = (!crumb.place).then(|| {
             self.chevron(
