@@ -171,8 +171,8 @@ Alt+J hop mode, Alt+B the basket's drawer, Ctrl+Alt+F Freeze order.
 
 After the polish: `cargo test --workspace --no-fail-fast` (core 386, model 348, ui 2,630, index 103) and `cargo
 clippy --workspace --all-targets -- -D warnings` clean at `16ebac1`. The polish adds no Windows API calls and no
-dependencies (the release build's import check wasn't run again). e2e not run yet (its `smart-menu` check follows the
-new order, `16ebac1`).
+dependencies (the release build's import check wasn't run again). e2e 21/21 with the debug build of `f55dfa4` (its
+`smart-menu` check follows the new order, `16ebac1`).
 
 ## 0.15.1: updates that finish, and Space while renaming
 
