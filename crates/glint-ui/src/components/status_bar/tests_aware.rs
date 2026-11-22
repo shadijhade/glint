@@ -328,6 +328,7 @@ struct Win {
     explorer: Entity<Explorer>,
     senders: Senders,
     events: Rc<RefCell<Vec<StatusBarEvent>>>,
+    disk: FakeDisk,
 }
 
 struct Frame {
@@ -361,7 +362,10 @@ fn a_quiet_index() -> Source {
 fn window(cx: &mut TestAppContext) -> Win {
     cx.update(testing::init);
     let disk = FakeDisk::new();
-    disk.folder("C:\\", vec![folder("C:\\", "a"), folder("C:\\", "big")]);
+    disk.folder(
+        "C:\\",
+        vec![folder("C:\\", "a"), folder("C:\\", "big"), folder("C:\\", "busy")],
+    );
     disk.folder(
         "C:\\a",
         vec![
@@ -371,6 +375,18 @@ fn window(cx: &mut TestAppContext) -> Win {
         ],
     );
     disk.folder("C:\\a\\sub", vec![file("C:\\a\\sub", "deep.txt", 1, 1)]);
+    // A folder with files written just now (`old.txt` a minute ago) and one written a moment ago.
+    let now = super::activity::now_ms();
+    disk.folder(
+        "C:\\busy",
+        vec![
+            folder("C:\\busy", "sub"),
+            file("C:\\busy", "old.txt", 70, now - 60_000),
+            file("C:\\busy", "build.bin", 2_000, now - 5_000),
+            file("C:\\busy", "log.txt", 500, now - 100),
+            file("C:\\busy", "تقرير.pdf", 9_000, now - 3_000),
+        ],
+    );
     disk.folder(
         "C:\\big",
         (0..100).map(|n| file("C:\\big", &format!("f{n:03}.txt"), 10, 5)).collect(),
@@ -412,6 +428,7 @@ fn window(cx: &mut TestAppContext) -> Win {
         explorer,
         senders,
         events,
+        disk,
     }
 }
 
@@ -511,11 +528,20 @@ fn the_chip_says_changing_now_when_the_folder_is_written_to_and_pressing_it_tell
         window.click("status-insight", cx);
     });
     win.visual.run_until_parked();
+    assert!(has(&mut win, "Files being written") || has(&mut win, "Nothing is being written right now"));
+    assert!(win.events.borrow().is_empty(), "pressing the chip opens the list, it doesn't leave the folder");
+    // The popover's own button is the way to the window's Recent changes.
+    win.visual.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("activity-recent", cx);
+    });
+    win.visual.run_until_parked();
     let events = win.events.borrow().clone();
     assert!(
         matches!(events.as_slice(), [StatusBarEvent::Insight(Insight::Changing(_))]),
         "{events:?}"
     );
+    assert!(!has(&mut win, "Nothing is being written right now"), "the popover closed");
 }
 
 #[gpui_kit::test]
@@ -620,4 +646,196 @@ fn beside_the_island_the_words_fold_to_two_lines_then_to_none_and_the_chip_to_it
     let counts = bounds(&mut win, "status-counts");
     assert!(counts.is_none_or(|counts| counts.size.width == px(0.)), "{counts:?}");
     assert!(bounds(&mut win, "status-insight").is_none(), "no chip without room");
+}
+
+// ---- The activity popover and Freeze order ---------------------------------------------------------------------
+
+/// The folder is written to: three notices, so the chip says "Changing now".
+fn change(win: &mut Win, folder: &str) {
+    for _ in 0..3 {
+        let folder = folder.to_string();
+        win.visual
+            .update(|_, cx| core_bridge::emit(cx, CoreEvent::DirChanged(folder)));
+    }
+    win.visual.run_until_parked();
+}
+
+fn press_chip(win: &mut Win) {
+    win.visual.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("status-insight", cx);
+    });
+    win.visual.run_until_parked();
+}
+
+fn listed(win: &mut Win) -> Vec<(String, u64)> {
+    win.bar
+        .read_with(&win.visual, |bar, _| bar.feed.items.iter().map(|w| (w.name.clone(), w.size)).collect())
+}
+
+#[gpui_kit::test]
+fn the_popover_lists_the_files_written_now_newest_first_with_their_size_and_how_long_ago(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut win = window(cx);
+    go(&mut win, "C:\\busy");
+    change(&mut win, "C:\\busy");
+    assert!(has(&mut win, "Changing now"));
+    assert!(win.bar.read_with(&win.visual, |bar, _| !bar.feed.open), "closed until it is pressed");
+    press_chip(&mut win);
+    assert!(win.bar.read_with(&win.visual, |bar, _| bar.feed.open));
+    assert_eq!(
+        listed(&mut win),
+        vec![
+            ("log.txt".to_string(), 500),
+            ("تقرير.pdf".to_string(), 9_000),
+            ("build.bin".to_string(), 2_000),
+        ],
+        "newest first; a folder and a file written a minute ago are not being written"
+    );
+    assert!(has(&mut win, "3 files being written"));
+    assert!(has(&mut win, &format!("build.bin: {}, 5 s ago", format_size(2_000))) || has(&mut win, &format!("build.bin: {}, 6 s ago", format_size(2_000))));
+    // Pressing the chip again, or Escape, closes it.
+    press(&mut win, "escape");
+    assert!(win.bar.read_with(&win.visual, |bar, _| !bar.feed.open), "Escape closes it");
+    assert!(!has(&mut win, "Files being written"));
+}
+
+fn press(win: &mut Win, key: &str) {
+    win.visual.update(|window, cx| {
+        window.render_frame(cx);
+        window.press(key, cx);
+    });
+    win.visual.run_until_parked();
+}
+
+#[gpui_kit::test]
+fn the_popover_looks_again_while_it_is_open_and_shows_what_windows_says_of_a_growing_file(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut win = window(cx);
+    go(&mut win, "C:\\busy");
+    change(&mut win, "C:\\busy");
+    // Windows says the log has grown since the folder was read.
+    let now = super::activity::now_ms();
+    win.bar.update(&mut win.visual, |bar, _| {
+        bar.stat_with(Arc::new(move |path| path.ends_with("log.txt").then_some((8_000, now))))
+    });
+    press_chip(&mut win);
+    assert_eq!(listed(&mut win)[0], ("log.txt".to_string(), 500));
+    wait(&mut win, 500);
+    assert_eq!(listed(&mut win)[0], ("log.txt".to_string(), 8_000), "the size as it grows");
+    assert!(win.bar.read_with(&win.visual, |bar, _| bar.feed.items[0].growing));
+    assert!(has(&mut win, &format!("log.txt: {}, just now", format_size(8_000))));
+    // Closed, nothing looks any more.
+    press(&mut win, "escape");
+    assert!(win.bar.read_with(&win.visual, |bar, _| bar.feed.poll.is_none()));
+}
+
+#[gpui_kit::test]
+fn pressing_a_file_in_the_popover_selects_it_and_closes_the_popover(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut win = window(cx);
+    go(&mut win, "C:\\busy");
+    change(&mut win, "C:\\busy");
+    press_chip(&mut win);
+    win.visual.update(|window, cx| {
+        window.render_frame(cx);
+        window.click(("activity-file", 1usize), cx);
+    });
+    win.visual.run_until_parked();
+    let selected = win.explorer.read_with(&win.visual, |e, _| {
+        e.active_tab().map(|tab| tab.selection.to_vec()).unwrap_or_default()
+    });
+    assert_eq!(selected, vec!["C:\\busy\\تقرير.pdf".to_string()]);
+    assert!(win.bar.read_with(&win.visual, |bar, _| !bar.feed.open));
+}
+
+#[gpui_kit::test]
+fn the_switch_in_the_popover_freezes_the_folders_order_and_a_chip_says_so_until_it_is_pressed(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut win = window(cx);
+    go(&mut win, "C:\\busy");
+    change(&mut win, "C:\\busy");
+    assert!(!has(&mut win, "Order frozen"), "not frozen unless asked");
+    press_chip(&mut win);
+    win.visual.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("activity-freeze", cx);
+    });
+    win.visual.run_until_parked();
+    let frozen = |win: &mut Win| {
+        win.explorer
+            .read_with(&win.visual, |e, _| e.is_frozen(e.active_tab_id()))
+    };
+    assert!(frozen(&mut win));
+    assert!(has(&mut win, "Order frozen"), "the chip says so");
+
+    // A file arrives: the chip counts it, and the rows keep their order, the new file last.
+    let mut entries = vec![
+        folder("C:\\busy", "sub"),
+        file("C:\\busy", "old.txt", 70, 1),
+        file("C:\\busy", "build.bin", 2_000, 1),
+        file("C:\\busy", "log.txt", 500, 1),
+        file("C:\\busy", "تقرير.pdf", 9_000, 1),
+    ];
+    entries.push(file("C:\\busy", "aaa-new.txt", 1, 1));
+    win.disk.folder("C:\\busy", entries);
+    with_explorer(&mut win, |e, cx| e.reload(None, cx).detach());
+    let names: Vec<String> = win.explorer.read_with(&win.visual, |e, _| {
+        e.active_tab()
+            .map(|tab| tab.rows.iter().map(|row| row.name.clone()).collect())
+            .unwrap_or_default()
+    });
+    assert_eq!(names.last().map(String::as_str), Some("aaa-new.txt"), "{names:?}");
+    assert!(has(&mut win, "Order frozen · 1 new"));
+
+    // Pressing the chip sorts once and the chip goes.
+    win.visual.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("status-frozen", cx);
+    });
+    win.visual.run_until_parked();
+    assert!(!frozen(&mut win));
+    assert!(!has(&mut win, "Order frozen · 1 new"));
+    let names: Vec<String> = win.explorer.read_with(&win.visual, |e, _| {
+        e.active_tab()
+            .map(|tab| tab.rows.iter().map(|row| row.name.clone()).collect())
+            .unwrap_or_default()
+    });
+    assert_eq!(names.first().map(String::as_str), Some("sub"), "folders first");
+    assert_eq!(names.get(1).map(String::as_str), Some("aaa-new.txt"), "sorted by name again: {names:?}");
+}
+
+#[gpui_kit::test]
+fn the_frozen_chip_and_the_popover_draw_mirrored_with_arabic_names(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut win = window(cx);
+    go(&mut win, "C:\\busy");
+    change(&mut win, "C:\\busy");
+    with_explorer(&mut win, |e, cx| e.set_frozen(None, true, cx));
+    testing::set_rtl(true);
+    press_chip(&mut win);
+    let drawn = has(&mut win, "Order frozen")
+        && win
+            .bar
+            .read_with(&win.visual, |bar, _| bar.feed.items.iter().any(|w| w.name == "تقرير.pdf"));
+    testing::set_rtl(false);
+    assert!(drawn);
+}
+
+#[gpui_kit::test]
+fn the_chip_for_a_frozen_list_folds_like_the_dock_does(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut win = window(cx);
+    go(&mut win, "C:\\busy");
+    with_explorer(&mut win, |e, cx| e.set_frozen(None, true, cx));
+    beside(&mut win, 400.);
+    assert!(has(&mut win, "Order frozen"));
+    let whole = bounds(&mut win, "status-frozen").expect("the chip").size.width;
+    beside(&mut win, 100.);
+    let short = bounds(&mut win, "status-frozen").expect("the chip").size.width;
+    assert!(short < whole, "fewer words: {short:?} < {whole:?}");
+    beside(&mut win, 60.);
+    let picture = bounds(&mut win, "status-frozen").expect("the chip").size.width;
+    assert!(picture < short, "{picture:?} < {short:?}");
+    assert!(has(&mut win, "Order frozen"), "a screen reader is told the same");
 }

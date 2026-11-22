@@ -34,6 +34,8 @@
 //! first. GPUI has none, so the bar reads the window's width in rems instead: the same breakpoints, measured on the
 //! window rather than on the bar (the bar spans the window's full width).
 
+/// The popover of "Changing now": the files being written, and Freeze order.
+mod activity;
 /// What the dock's end notices about the folder shown.
 pub mod chips;
 pub mod index;
@@ -130,6 +132,10 @@ pub struct StatusBar {
     dirty: bool,
     /// The "What's in this folder" popover is open.
     details_open: bool,
+    /// The popover of "Changing now" (`activity.rs`).
+    feed: activity::Feed,
+    /// The "Order frozen" chip is a tab stop.
+    frozen_focus: FocusHandle,
     /// Where the last press outside the popover landed. The click that follows that press, on the same spot, is
     /// the press closing the popover, so it doesn't open it again.
     dismissed_at: Option<Point<Pixels>>,
@@ -210,6 +216,8 @@ impl StatusBar {
             counted: summary::SelectedCount::default(),
             dirty: true,
             details_open: false,
+            feed: activity::Feed::new(cx),
+            frozen_focus: cx.focus_handle().tab_stop(true),
             dismissed_at: None,
             details_focus: cx.focus_handle(),
             enabling: false,
@@ -231,6 +239,7 @@ impl StatusBar {
         };
         if summary.tab != self.summary.tab {
             self.details_open = false;
+            self.feed.close();
         }
         // The entries the words look into, and the folder the chip may speak of.
         (self.selected, self.folder) = match self.explorer.read(cx).active_tab() {
@@ -572,6 +581,8 @@ impl Render for StatusBar {
         });
         let popover = (s.has_listing && !s.this_pc && s.find.is_none() && self.details_open)
             .then(|| self.details(s, thumbs.as_ref(), &t, cx));
+        let activity = (s.has_listing && !s.this_pc && s.find.is_none() && self.feed.open)
+            .then(|| self.activity_popover(&t, cx));
 
         row_start()
             .id("status-bar")
@@ -593,6 +604,7 @@ impl Render for StatusBar {
             .child(left)
             .children(right)
             .children(popover)
+            .children(activity)
     }
 }
 
@@ -798,18 +810,22 @@ impl StatusBar {
         };
 
         // What is happening to the folder, before the work line, where there is room for it.
+        let room = if !wide.docked || wide.medium {
+            ChipRoom::Whole
+        } else if wide.two_xs {
+            ChipRoom::Short
+        } else {
+            ChipRoom::Picture
+        };
         let chip = insight
             .filter(|_| !s.this_pc && s.find.is_none())
-            .map(|insight| {
-                let room = if !wide.docked || wide.medium {
-                    ChipRoom::Whole
-                } else if wide.two_xs {
-                    ChipRoom::Short
-                } else {
-                    ChipRoom::Picture
-                };
-                self.insight_chip(insight, room, t, cx)
-            });
+            .map(|insight| self.insight_chip(insight, room, t, cx));
+        // The list is not sorting itself while the folder changes; the chip says so and ends it.
+        let frozen = s
+            .tab
+            .and_then(|tab| self.explorer.read(cx).frozen_info(tab))
+            .filter(|_| !s.this_pc && s.find.is_none())
+            .map(|info| self.frozen_chip(info, room, t, cx));
         Some(
             row_start()
                 .flex_1()
@@ -821,7 +837,8 @@ impl StatusBar {
                 .whitespace_nowrap()
                 // With little room the chip stands in for how the folder was read: what is happening now
                 // matters more than how long the listing took.
-                .children((chip.is_none() || wide.large).then_some(content))
+                .children(((chip.is_none() && frozen.is_none()) || wide.large).then_some(content))
+                .children(frozen)
                 .children(chip)
                 .into_any_element(),
         )
@@ -907,7 +924,9 @@ impl StatusBar {
             ),
         };
         let pressed = insight.clone();
-        let keyed = insight;
+        let keyed = insight.clone();
+        // "Changing now" opens the list of what is being written; the other chip tells the window.
+        let changing = matches!(insight, Insight::Changing(_));
         div()
             .id("status-insight")
             .role(Role::Button)
@@ -930,10 +949,20 @@ impl StatusBar {
             .hover(move |style| style.bg(hover))
             .cursor_pointer()
             .tooltip(move |window, cx| crate::kit::tooltip(tip.clone(), window, cx))
-            .on_click(cx.listener(move |_, _, _, cx| cx.emit(StatusBarEvent::Insight(pressed.clone()))))
-            .on_key_down(cx.listener(move |_, event: &KeyDownEvent, _, cx| {
+            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                if changing {
+                    this.toggle_activity(Some(event.position()), window, cx);
+                } else {
+                    cx.emit(StatusBarEvent::Insight(pressed.clone()));
+                }
+            }))
+            .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
                 if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                    cx.emit(StatusBarEvent::Insight(keyed.clone()));
+                    if changing {
+                        this.toggle_activity(None, window, cx);
+                    } else {
+                        cx.emit(StatusBarEvent::Insight(keyed.clone()));
+                    }
                     cx.stop_propagation();
                 }
             }))
@@ -944,6 +973,71 @@ impl StatusBar {
                 ChipRoom::Picture => None,
             })
             .into_any_element()
+    }
+
+    /// The pill that says the folder's list is frozen ("Order frozen · 3 new"). Pressing it (or Enter or Space)
+    /// lets the list sort again, once.
+    fn frozen_chip(
+        &self,
+        info: crate::explorer::FrozenInfo,
+        room: ChipRoom,
+        t: &theme::Tokens,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let words = if info.arrived > 0 {
+            t!("Order frozen · {count} new", count = info.arrived)
+        } else {
+            t!("Order frozen")
+        };
+        let short = if info.arrived > 0 {
+            t!("Frozen · {count} new", count = info.arrived)
+        } else {
+            t!("Frozen")
+        };
+        let tip = t!("The list keeps its order while the folder changes. Press to sort it again.");
+        div()
+            .id("status-frozen")
+            .role(Role::Button)
+            .aria_label(words.clone())
+            .aria_description(tip.clone())
+            .test_support()
+            .track_focus(&self.frozen_focus)
+            .focus(|style| style.bg(t.ring))
+            .flex_none()
+            .h(px(22.))
+            .px(if room == ChipRoom::Picture { space(1.5) } else { space(2.5) })
+            .rounded_full()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(space(1.5))
+            .text_size(theme::size::XXS)
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(t.primary)
+            .bg(tint(t.primary, 0.12))
+            .hover(|style| style.bg(tint(t.primary, 0.22)))
+            .cursor_pointer()
+            .tooltip(move |window, cx| crate::kit::tooltip(tip.clone(), window, cx))
+            .on_click(cx.listener(|this, _, _, cx| this.unfreeze(cx)))
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                    this.unfreeze(cx);
+                    cx.stop_propagation();
+                }
+            }))
+            .child(icon(IconName::Lock).size_3().flex_none())
+            .children(match room {
+                ChipRoom::Whole => Some(words),
+                ChipRoom::Short => Some(short),
+                ChipRoom::Picture => None,
+            })
+            .into_any_element()
+    }
+
+    /// The "Order frozen" chip was pressed: the active tab's list sorts again.
+    fn unfreeze(&mut self, cx: &mut Context<Self>) {
+        self.explorer.update(cx, |explorer, cx| explorer.set_frozen(None, false, cx));
+        cx.notify();
     }
 
     /// How the active tab's disk usage map was made ("index · mapped 12 GB in 3.2 ms"), while the tab shows it.
