@@ -92,6 +92,33 @@ pub struct Search {
     pub count: Option<String>,
 }
 
+/// What a live portal shows: its icon and the words of its tooltip.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PortalKind {
+    /// An archive's files, read in place.
+    Archive,
+    /// What a search finds.
+    Search,
+    /// A folder as a Git commit had it.
+    Git,
+    /// A folder as a backup snapshot had it.
+    Backup,
+}
+
+/// A live portal mounted under `%USERPROFILE%\Glint portals`, in the sidebar: a click opens its folder.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PortalItem {
+    pub id: String,
+    pub name: String,
+    /// The folder it is mounted at.
+    pub path: String,
+    pub kind: PortalKind,
+    /// What it shows, in a few words: the archive, the search, the commit, the snapshot.
+    pub what: String,
+    /// The folder shown is this one, or inside it.
+    pub active: bool,
+}
+
 /// A tag, in the sidebar: a click finds what has it on every drive.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Tag {
@@ -156,6 +183,8 @@ pub enum Row {
     Search(Search),
     /// A tag.
     Tag(Tag),
+    /// A live portal.
+    Portal(PortalItem),
     /// "Add a connection".
     AddConnection,
 }
@@ -179,6 +208,7 @@ impl Row {
             Row::Note { depth, .. } => format!("n:{depth}"),
             Row::Search(s) => format!("s:{}\n{}", s.folder, s.query),
             Row::Tag(t) => format!("t:{}", t.name),
+            Row::Portal(p) => format!("o:{}", p.id),
             Row::AddConnection => "add".to_string(),
         }
     }
@@ -212,6 +242,7 @@ impl Row {
             Row::Place(p) => Some(&p.path),
             Row::Folder(f) => Some(&f.path),
             Row::Heading { link: Some(l), .. } => Some(l),
+            Row::Portal(p) => Some(&p.path),
             _ => None,
         }
     }
@@ -229,6 +260,8 @@ pub struct Inputs<'a> {
     pub pinned: &'a [String],
     pub saved: &'a [SavedSearch],
     pub remotes: &'a [RemoteConnection],
+    /// The live portals mounted now.
+    pub portals: &'a [PortalItem],
     /// The tags to list ([`shown_tags`]).
     pub tags: &'a [Tag],
     /// The "Folder tree" setting.
@@ -442,6 +475,18 @@ pub fn build_rows(i: &Inputs) -> Vec<Row> {
         }
     }
 
+    // Live portals: archives, searches, commits and backups mounted as folders. Like Searches, only when there
+    // are some.
+    if !i.portals.is_empty() {
+        rows.push(heading("Portals"));
+        for p in i.portals {
+            rows.push(Row::Portal(PortalItem {
+                active: i.path != THIS_PC && is_inside(&p.path, i.path),
+                ..p.clone()
+            }));
+        }
+    }
+
     // This PC: its title opens it; the drives; the Recycle Bin.
     rows.push(Row::Heading {
         title: "This PC",
@@ -510,6 +555,16 @@ pub fn build_rows(i: &Inputs) -> Vec<Row> {
     }
     rows.push(Row::AddConnection);
     rows
+}
+
+/// Whether `path` is `folder` or somewhere below it.
+fn is_inside(folder: &str, path: &str) -> bool {
+    if same_path(folder, path) {
+        return true;
+    }
+    let folder = folder.trim_end_matches('\\').to_lowercase();
+    let path = path.to_lowercase().replace('/', "\\");
+    path.strip_prefix(&folder).is_some_and(|rest| rest.starts_with('\\'))
 }
 
 fn heading(title: &'static str) -> Row {
@@ -591,6 +646,7 @@ mod tests {
         pinned: Vec<String>,
         saved: Vec<SavedSearch>,
         remotes: Vec<RemoteConnection>,
+        portals: Vec<PortalItem>,
         tags: Vec<Tag>,
         tree: Tree,
         spaces: HashMap<String, Space>,
@@ -615,6 +671,7 @@ mod tests {
                     folder: THIS_PC.into(),
                 }],
                 remotes: vec![remote("nas", "My NAS", RemoteKind::Sftp)],
+                portals: Vec::new(),
                 tags: Vec::new(),
                 tree: Tree::default(),
                 spaces: HashMap::new(),
@@ -630,6 +687,7 @@ mod tests {
                 pinned: &self.pinned,
                 saved: &self.saved,
                 remotes: &self.remotes,
+                portals: &self.portals,
                 tags: &self.tags,
                 folder_tree,
                 tree: &self.tree,
@@ -651,6 +709,7 @@ mod tests {
                 Row::Note { reason, .. } => format!("! {reason}"),
                 Row::Search(s) => format!("? {}", s.query),
                 Row::Tag(t) => format!("# {}", t.name),
+                Row::Portal(p) => format!("@ {}", p.name),
                 Row::AddConnection => "+ add".to_string(),
             })
             .collect()
@@ -687,6 +746,68 @@ mod tests {
         bare.saved.clear();
         let text = describe(&bare.rows("", true));
         assert!(!text.contains(&"# Pinned".to_string()) && !text.contains(&"# Searches".to_string()));
+    }
+
+    fn portal(id: &str, name: &str, path: &str, kind: PortalKind) -> PortalItem {
+        PortalItem {
+            id: id.into(),
+            name: name.into(),
+            path: path.into(),
+            kind,
+            what: "what".into(),
+            active: false,
+        }
+    }
+
+    #[test]
+    fn portals_come_after_searches_and_only_when_something_is_mounted() {
+        let mut world = World::new();
+        let none = describe(&world.rows("", true));
+        assert!(!none.contains(&"# Portals".to_string()));
+        world.portals = vec![
+            portal(
+                "a",
+                "pack.zip",
+                "C:\\Users\\me\\Glint portals\\pack.zip",
+                PortalKind::Archive,
+            ),
+            portal(
+                "b",
+                "تقارير",
+                "C:\\Users\\me\\Glint portals\\تقارير",
+                PortalKind::Search,
+            ),
+        ];
+        let text = describe(&world.rows("", true));
+        let at = |what: &str| text.iter().position(|t| t == what).unwrap();
+        assert_eq!(
+            &text[at("# Portals")..at("# Portals") + 3],
+            ["# Portals", "@ pack.zip", "@ تقارير"]
+        );
+        assert!(at("# Searches") < at("# Portals") && at("# Portals") < at("# This PC"));
+    }
+
+    #[test]
+    fn a_portal_row_is_current_while_its_folder_or_one_inside_it_is_shown() {
+        let mut world = World::new();
+        let mount = "C:\\Users\\me\\Glint portals\\Repo";
+        world.portals = vec![portal("g", "Repo", mount, PortalKind::Git)];
+        let active = |path: &str| {
+            world
+                .rows(path, true)
+                .iter()
+                .any(|r| matches!(r, Row::Portal(p) if p.active))
+        };
+        assert!(active(mount));
+        assert!(active(&format!("{mount}\\src")));
+        assert!(active(&mount.to_uppercase()));
+        assert!(!active("C:\\Users\\me\\Glint portals\\Repo2"));
+        assert!(!active(""));
+        let rows = world.rows("", true);
+        let row = rows.iter().find(|r| matches!(r, Row::Portal(_))).unwrap();
+        assert!(row.focusable());
+        assert_eq!(row.target(), Some(mount));
+        assert_eq!(row.key(), "o:g");
     }
 
     #[test]

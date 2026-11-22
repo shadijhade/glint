@@ -54,6 +54,28 @@ pub(crate) struct PortalEntry {
 
 static PORTALS: LazyLock<Mutex<HashMap<String, Portal>>> = LazyLock::new(|| Mutex::new(load_map()));
 
+/// Who wants to hear that a portal was mounted or unmounted: each returns whether it still wants to.
+type Listener = Box<dyn Fn() -> bool + Send + Sync>;
+
+static LISTENERS: Mutex<Vec<Listener>> = Mutex::new(Vec::new());
+
+/// Calls `listener` (from whatever thread did it) after a portal is mounted or unmounted, until it returns
+/// `false`. The sidebar's Portals section keeps itself up to date with this instead of looking on a timer.
+pub fn on_change(listener: impl Fn() -> bool + Send + Sync + 'static) {
+    LISTENERS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(Box::new(listener));
+}
+
+/// Tells the listeners the list of portals changed. Never called with the portals' lock held.
+fn changed() {
+    LISTENERS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .retain(|listener| listener());
+}
+
 fn portals_file() -> Option<PathBuf> {
     crate::tools::data_dir().map(|d| d.join("portals.json"))
 }
@@ -253,9 +275,12 @@ fn mount_sync(name: &str, source: PortalSource) -> Result<Portal, String> {
     };
     #[cfg(windows)]
     win::mount_and_connect(&portal)?;
-    let mut map = PORTALS.lock().unwrap_or_else(|e| e.into_inner());
-    map.insert(id, portal.clone());
-    save_map(&map);
+    {
+        let mut map = PORTALS.lock().unwrap_or_else(|e| e.into_inner());
+        map.insert(id, portal.clone());
+        save_map(&map);
+    }
+    changed();
     Ok(portal)
 }
 
@@ -273,7 +298,18 @@ fn unmount_sync(id: &str) -> Result<(), String> {
     };
     #[cfg(windows)]
     win::unmount(&portal);
+    changed();
     Ok(())
+}
+
+/// Whether `mount_path` is a folder Glint made for a portal: a direct child of the portals folder. Unmounting
+/// deletes the folder, and the path comes from `portals.json`, which anything can edit: a path anywhere else
+/// is left alone.
+fn is_portal_folder(mount_path: &str, root: &Path) -> bool {
+    let path = Path::new(mount_path);
+    let same = |a: &Path, b: &Path| a.to_string_lossy().eq_ignore_ascii_case(&b.to_string_lossy());
+    path.parent().is_some_and(|parent| same(parent, root))
+        && path.file_name().is_some_and(|name| name != "." && name != "..")
 }
 
 /// `Glint.exe portals remove`, which the setup's and Scoop's uninstallers run (not their updates): every
@@ -941,7 +977,9 @@ mod win {
             }
         }
         SOURCES.lock().unwrap_or_else(|e| e.into_inner()).remove(&portal.id);
-        let _ = fs::remove_dir_all(&portal.mount_path);
+        if super::portals_root().is_some_and(|root| super::is_portal_folder(&portal.mount_path, &root)) {
+            let _ = fs::remove_dir_all(&portal.mount_path);
+        }
     }
 }
 
@@ -950,6 +988,34 @@ mod tests {
     use super::*;
     use std::io::Write;
     use std::process::Command;
+
+    #[test]
+    fn only_a_folder_made_for_a_portal_is_ever_deleted_on_unmount() {
+        let root = Path::new("C:\\Users\\me\\Glint portals");
+        assert!(is_portal_folder("C:\\Users\\me\\Glint portals\\Repo", root));
+        assert!(is_portal_folder("c:\\users\\ME\\glint portals\\تقارير", root));
+        // A hand-edited portals.json must not turn Unmount into "delete my documents".
+        assert!(!is_portal_folder("C:\\Users\\me\\Documents", root));
+        assert!(!is_portal_folder("C:\\Users\\me\\Glint portals", root));
+        assert!(!is_portal_folder("C:\\Users\\me\\Glint portals\\a\\b", root));
+        assert!(!is_portal_folder("C:\\Users\\me\\Glint portals\\..", root));
+        assert!(!is_portal_folder("C:\\", root));
+        assert!(!is_portal_folder("", root));
+    }
+
+    #[test]
+    fn listeners_hear_changes_until_they_say_they_are_done() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        let heard = Arc::new(AtomicUsize::new(0));
+        let counter = heard.clone();
+        on_change(move || counter.fetch_add(1, Ordering::SeqCst) < 1);
+        changed();
+        changed();
+        changed();
+        // The first call said "keep going", the second said "done", and nothing called it after that.
+        assert_eq!(heard.load(Ordering::SeqCst), 2);
+    }
 
     #[test]
     fn portal_json_and_name_sanitization_round_trip() {

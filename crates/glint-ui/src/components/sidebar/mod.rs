@@ -30,6 +30,7 @@
 //! GPUI workspace resizes the sidebar between fixed limits instead.
 
 mod drop;
+mod portals;
 mod rows;
 mod tree;
 
@@ -45,7 +46,10 @@ use glint_model::entries::{with_details, FileEntry, RawEntry};
 use glint_model::file_types::kind_of;
 use glint_model::paths::{same_path, RECYCLE_BIN, THIS_PC};
 use glint_model::store::{RemoteConnection, RemoteKind, SavedSearch};
-use rows::{build_rows, count_key, reads_files, shown_tags, tag_search, Glyph, Inputs, Label, Place, Row, Space};
+use portals::{PortalChanges, PortalWork, PortalsSource};
+use rows::{
+    build_rows, count_key, reads_files, shown_tags, tag_search, Glyph, Inputs, Label, Place, PortalItem, Row, Space,
+};
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
@@ -124,12 +128,25 @@ pub struct Sources {
     pub saved_count: SavedCountSource,
     /// The tags on the drives instant search covers.
     pub tags: TagsSource,
+    /// The live portals mounted now.
+    pub portals: PortalsSource,
+    /// Told whenever one is mounted or unmounted.
+    pub portal_changes: PortalChanges,
+    /// Reads a portal's source again (by its id).
+    pub portal_refresh: PortalWork,
+    /// Unmounts a portal (by its id).
+    pub portal_unmount: PortalWork,
 }
 
 impl Sources {
     /// glint-core.
     pub fn core() -> Sources {
+        let (portals, portal_changes, portal_refresh, portal_unmount) = Sources::core_portals();
         Sources {
+            portals,
+            portal_changes,
+            portal_refresh,
+            portal_unmount,
             subfolders: core_subfolders(),
             cloud_space: Arc::new(|remote, root| {
                 Box::pin(async move {
@@ -173,6 +190,7 @@ struct Seen {
     pinned: Vec<String>,
     saved: Vec<SavedSearch>,
     remotes: Vec<RemoteConnection>,
+    portals: Vec<PortalItem>,
 }
 
 /// The active tab's listing, when it is a folder the tree can hold (not in an archive, not on a remote).
@@ -209,6 +227,9 @@ pub struct Sidebar {
     last_listing: Option<Arc<[FileEntry]>>,
     last_saved: Vec<SavedSearch>,
     last_drives: Option<Arc<[crate::explorer::Drive]>>,
+    /// The live portals mounted, as last read, and the menu of one while it is open.
+    portals: Vec<PortalItem>,
+    portal_menu: Option<portals::OpenMenu>,
     /// What the rows were last built from. The explorer, the saved state and the settings change far more often
     /// than anything the sidebar shows (a selection, a scroll, a sort, a visit): such a change rebuilds nothing.
     seen: Option<Seen>,
@@ -280,6 +301,8 @@ impl Sidebar {
             last_listing: None,
             last_saved: Vec::new(),
             last_drives: None,
+            portals: Vec::new(),
+            portal_menu: None,
             seen: None,
             #[cfg(test)]
             built: 0,
@@ -290,6 +313,8 @@ impl Sidebar {
             eject_focus: HashMap::new(),
             _subscriptions: subscriptions,
         };
+        this.portals = (this.sources.portals)();
+        this.watch_portals(cx);
         this.read_tags(cx);
         this.refresh(cx);
         this
@@ -386,6 +411,7 @@ impl Sidebar {
             pinned: &pinned,
             saved: &saved,
             remotes: &remotes,
+            portals: &self.portals,
             tags: &shown,
             folder_tree,
             tree: &self.tree,
@@ -408,6 +434,7 @@ impl Sidebar {
             pinned,
             saved,
             remotes,
+            portals: self.portals.clone(),
         });
     }
 
@@ -433,7 +460,8 @@ impl Sidebar {
             (None, None) => true,
             _ => false,
         };
-        kept && same_listing
+        kept && seen.portals == self.portals
+            && same_listing
             && seen.path == e.current_path()
             && Arc::ptr_eq(&seen.known, e.known_folders())
             && Arc::ptr_eq(&seen.drives, e.drives())
@@ -634,6 +662,9 @@ impl Sidebar {
             })),
             Row::Tag(tag) => cx.emit(SidebarEvent::RunSavedSearch(tag_search(&tag.name))),
             Row::AddConnection => cx.emit(SidebarEvent::AddConnection),
+            Row::Portal(p) => self
+                .explorer
+                .update(cx, |e, cx| e.navigate(p.path, NavOptions::default(), cx)),
             Row::Heading { .. } | Row::Note { .. } => {}
         }
         let _ = window;
@@ -652,7 +683,7 @@ impl Sidebar {
         if let Some(target) = self
             .rows
             .get(ix)
-            .filter(|r| matches!(r, Row::Place(_) | Row::Folder(_)))
+            .filter(|r| matches!(r, Row::Place(_) | Row::Folder(_) | Row::Portal(_)))
             .and_then(Row::target)
         {
             let target = target.to_string();
@@ -696,7 +727,10 @@ impl Sidebar {
     // ---- Menus and drops --------------------------------------------------------------------------------
 
     /// Asks for the shared folder menu on row `ix` (a place or a tree folder) at `position`.
-    fn open_menu(&mut self, ix: usize, position: Point<Pixels>, cx: &mut Context<Self>) {
+    fn open_menu(&mut self, ix: usize, position: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        if self.open_portal_menu(ix, position, window, cx) {
+            return;
+        }
         if let Some(path) = self
             .rows
             .get(ix)
@@ -714,12 +748,12 @@ impl Sidebar {
     fn right_click(&mut self, ix: usize, position: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
         self.cursor = Some(ix);
         window.focus(&self.focus, cx);
-        self.open_menu(ix, position, cx);
+        self.open_menu(ix, position, window, cx);
         cx.notify();
     }
 
     /// The menu key or Shift+F10 on the row the keyboard is on: the menu opens at the row's bottom-start corner.
-    fn keyboard_menu(&mut self, cx: &mut Context<Self>) -> bool {
+    fn keyboard_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let Some(ix) = self.cursor else {
             return false;
         };
@@ -732,7 +766,7 @@ impl Sidebar {
         } else {
             bounds.left()
         };
-        self.open_menu(ix, point(x, bounds.bottom()), cx);
+        self.open_menu(ix, point(x, bounds.bottom()), window, cx);
         true
     }
 
@@ -821,8 +855,8 @@ impl Sidebar {
                 }
                 None => false,
             },
-            "menu" => self.keyboard_menu(cx),
-            "f10" if m.shift => self.keyboard_menu(cx),
+            "menu" => self.keyboard_menu(window, cx),
+            "f10" if m.shift => self.keyboard_menu(window, cx),
             "delete" => match self.cursor {
                 Some(ix) if matches!(self.rows.get(ix), Some(Row::Search(_))) => {
                     self.remove_search(ix, cx);
@@ -945,6 +979,7 @@ impl Sidebar {
             Row::Note { depth, reason } => self.draw_note(*depth, reason, &t),
             Row::Search(s) => self.draw_search(ix, s, &t, focused, cx),
             Row::Tag(tag) => self.draw_tag(ix, tag, &t, focused, cx),
+            Row::Portal(portal) => self.draw_portal(ix, portal, &t, focused, cx),
             Row::AddConnection => self.draw_add(ix, &t, focused, cx),
         }
     }
@@ -1605,6 +1640,7 @@ impl Render for Sidebar {
                 .min_h_0()
                 .w_full(),
             )
+            .children(self.portal_menu.as_ref().map(portals::OpenMenu::element))
     }
 }
 

@@ -1,6 +1,7 @@
 //! Headless tests of the sidebar: on a fake disk and fake sources, what is drawn (labels, roles), that clicks and
 //! keys change the explorer the way the TypeScript's did, an Arabic folder name, and the mirrored layout.
 
+use super::rows::PortalKind;
 use super::*;
 use crate::explorer::fake::{file, folder, FakeDisk};
 use crate::explorer::{init_with, Drive, DriveKind, KnownFolder, KnownId};
@@ -25,6 +26,10 @@ struct Fakes {
     /// The tags instant search lists (an error where it is off), and how many times it was asked.
     tags: Mutex<Result<Vec<(String, u64)>, String>>,
     tags_asked: Mutex<usize>,
+    /// The portals mounted, what was done to them ("refresh:id", "unmount:id"), and where core's change notice goes.
+    portals: Mutex<Vec<PortalItem>>,
+    portal_log: Mutex<Vec<String>>,
+    portal_tx: Mutex<Option<async_channel::Sender<()>>>,
 }
 
 impl Default for Fakes {
@@ -36,6 +41,9 @@ impl Default for Fakes {
             count: Mutex::default(),
             tags: Mutex::new(Err("Instant search is off".to_string())),
             tags_asked: Mutex::default(),
+            portals: Mutex::default(),
+            portal_log: Mutex::default(),
+            portal_tx: Mutex::default(),
         }
     }
 }
@@ -56,7 +64,30 @@ impl tags::Backend for NoTags {
 impl Fakes {
     fn sources(self: &Arc<Self>) -> Sources {
         let (a, b, c, d) = (self.clone(), self.clone(), self.clone(), self.clone());
+        let (e, f, g, h) = (self.clone(), self.clone(), self.clone(), self.clone());
         Sources {
+            portals: Arc::new(move || e.portals.lock().unwrap().clone()),
+            portal_changes: Arc::new(move || {
+                let (tx, rx) = async_channel::unbounded();
+                *f.portal_tx.lock().unwrap() = Some(tx);
+                Some(rx)
+            }),
+            portal_refresh: Arc::new(move |id| {
+                let g = g.clone();
+                Box::pin(async move {
+                    g.portal_log.lock().unwrap().push(format!("refresh:{id}"));
+                    Ok(())
+                })
+            }),
+            portal_unmount: Arc::new(move |id| {
+                let h = h.clone();
+                Box::pin(async move {
+                    h.portal_log.lock().unwrap().push(format!("unmount:{id}"));
+                    h.portals.lock().unwrap().retain(|p| p.id != id);
+                    h.tell_portals();
+                    Ok(())
+                })
+            }),
             subfolders: Arc::new(move |path, hidden| {
                 let a = a.clone();
                 Box::pin(async move {
@@ -83,6 +114,25 @@ impl Fakes {
                 })
             }),
         }
+    }
+
+    /// What core's change notice does: tells the sidebar to read the portals again.
+    fn tell_portals(&self) {
+        if let Some(tx) = self.portal_tx.lock().unwrap().as_ref() {
+            let _ = tx.try_send(());
+        }
+    }
+
+    fn mount(&self, id: &str, name: &str, kind: PortalKind) {
+        self.portals.lock().unwrap().push(PortalItem {
+            id: id.into(),
+            name: name.into(),
+            path: format!("C:\\Users\\me\\Glint portals\\{name}"),
+            kind,
+            what: "what it shows".into(),
+            active: false,
+        });
+        self.tell_portals();
     }
 
     fn set(&self, path: &str, kids: &[(&str, Option<bool>)]) {
@@ -261,6 +311,7 @@ impl World {
                 Row::Note { .. } => "!".to_string(),
                 Row::Search(s) => format!("? {}", s.query),
                 Row::Tag(t) => format!("# {}", t.name),
+                Row::Portal(p) => format!("@ {}", p.name),
                 Row::AddConnection => "+ add".to_string(),
             })
             .collect()
@@ -1103,8 +1154,200 @@ fn the_icons_the_sidebar_draws_are_in_the_embedded_assets(_cx: &mut TestAppConte
         IconName::TextSearch,
         IconName::PlugZap,
         IconName::PencilOff,
+        IconName::Archive,
+        IconName::GitBranch,
+        IconName::DatabaseBackup,
+        IconName::RefreshCw,
+        IconName::Copy,
     ] {
         let path = name.path();
         assert!(matches!(AllAssets.load(&path), Ok(Some(_))), "{path} is not embedded");
     }
+}
+
+// ---- Portals ------------------------------------------------------------------------------------------
+
+/// A portal's folder on the fake disk, so opening it lands there.
+fn portal_folder(w: &World, name: &str) -> String {
+    let path = format!("C:\\Users\\me\\Glint portals\\{name}");
+    w.disk.folder(&path, vec![file(&path, "inside.txt", 5, 1)]);
+    path
+}
+
+#[gpui_kit::test]
+fn mounted_portals_get_a_section_that_follows_mounting_and_unmounting(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut w = world(cx, "portals-section");
+    assert!(
+        !w.names().contains(&"# Portals".to_string()),
+        "nothing mounted, no section"
+    );
+    let before_rebuilds = w.sidebar.read_with(&w.cx, |s, _| s.built);
+
+    portal_folder(&w, "pack.zip");
+    portal_folder(&w, "تقارير");
+    w.fakes.mount("a", "pack.zip", PortalKind::Archive);
+    w.fakes.mount("b", "تقارير", PortalKind::Search);
+    w.settle(|w| w.names().contains(&"@ تقارير".to_string()));
+    let names = w.names();
+    let at = |what: &str| names.iter().position(|n| n == what).unwrap();
+    assert_eq!(
+        &names[at("# Portals")..at("# Portals") + 3],
+        ["# Portals", "@ pack.zip", "@ تقارير"]
+    );
+    assert!(at("# Portals") < at("# This PC"));
+    assert!(w.sidebar.read_with(&w.cx, |s, _| s.built) > before_rebuilds);
+
+    // Drawn as buttons with their names.
+    assert_eq!(w.role_of("pack.zip"), Some(Role::Button));
+    assert_eq!(w.role_of("تقارير"), Some(Role::Button));
+
+    // Unmounted from anywhere else (the palette, a menu): the row goes with no one asking.
+    w.fakes.portals.lock().unwrap().retain(|p| p.id != "a");
+    w.fakes.tell_portals();
+    w.settle(|w| !w.names().contains(&"@ pack.zip".to_string()));
+    w.fakes.portals.lock().unwrap().clear();
+    w.fakes.tell_portals();
+    w.settle(|w| !w.names().contains(&"# Portals".to_string()));
+}
+
+#[gpui_kit::test]
+fn a_click_opens_the_portal_and_the_row_is_current_while_it_is_shown(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut w = world(cx, "portals-open");
+    let path = portal_folder(&w, "Repo");
+    w.fakes.mount("g", "Repo", PortalKind::Git);
+    w.settle(|w| w.names().contains(&"@ Repo".to_string()));
+    w.click("Repo");
+    w.settle(|w| w.path() == path && !w.tab_loading());
+    assert_eq!(w.selected("Repo"), Some(true));
+    w.click("Home");
+    w.settle(|w| w.path() == HOME && !w.tab_loading());
+    assert_eq!(w.selected("Repo"), Some(false));
+}
+
+#[gpui_kit::test]
+fn the_portals_menu_opens_from_the_pointer_and_the_keyboard_and_does_its_four_things(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut w = world(cx, "portals-menu");
+    let path = portal_folder(&w, "Repo");
+    w.fakes.mount("g", "Repo", PortalKind::Git);
+    w.settle(|w| w.names().contains(&"@ Repo".to_string()));
+    let rows_before = w.rows();
+
+    // The keyboard: the row, then the menu key.
+    w.focus();
+    let ix = w.row_of("o:g".to_string());
+    w.sidebar.update(&mut w.cx, |s, cx| s.set_cursor(Some(ix), cx));
+    w.press("menu");
+    w.frame();
+    for item in ["Open", "Copy path", "Refresh", "Unmount"] {
+        assert!(w.has(item), "{item} is in the portal's menu");
+    }
+    // The menu is the portal's: the shared folder menu was not asked for.
+    assert!(w.requests.borrow().is_empty());
+
+    // Refresh reads its source again and changes no row.
+    w.click("Refresh");
+    w.settle(|w| w.fakes.portal_log.lock().unwrap().contains(&"refresh:g".to_string()));
+    assert!(!w.has("Unmount"), "the menu closed");
+    assert_eq!(w.rows(), rows_before);
+
+    // Copy path puts the folder on the clipboard.
+    w.press("shift-f10");
+    w.frame();
+    w.click("Copy path");
+    w.cx.update(|_, cx| {
+        assert_eq!(cx.read_from_clipboard().and_then(|c| c.text()), Some(path.clone()));
+    });
+
+    // Open goes there.
+    let id = w.id_of("Repo");
+    w.cx.update(|window, cx| window.right_click(id, cx));
+    w.frame();
+    w.click("Open");
+    w.settle(|w| w.path() == path && !w.tab_loading());
+
+    // Unmount asks nothing, and the row is gone once core says so.
+    let id = w.id_of("Repo");
+    w.cx.update(|window, cx| window.right_click(id, cx));
+    w.frame();
+    w.click("Unmount");
+    w.settle(|w| !w.names().contains(&"@ Repo".to_string()));
+    assert_eq!(
+        w.fakes.portal_log.lock().unwrap().last().map(String::as_str),
+        Some("unmount:g")
+    );
+}
+
+#[gpui_kit::test]
+fn the_arrows_reach_portals_and_enter_opens_one_and_the_mirrored_row_fills_the_sidebar(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut w = world(cx, "portals-keys");
+    let path = portal_folder(&w, "تقارير");
+    w.fakes.mount("b", "تقارير", PortalKind::Backup);
+    w.settle(|w| w.names().contains(&"@ تقارير".to_string()));
+    w.focus();
+    let ix = w.row_of("o:b".to_string());
+    w.sidebar.update(&mut w.cx, |s, cx| s.set_cursor(Some(ix), cx));
+    w.press("down");
+    assert_eq!(w.cursor_row().as_deref(), Some("h:This PC"));
+    w.press("up");
+    assert_eq!(w.cursor_row().as_deref(), Some("o:b"));
+    w.press("enter");
+    w.settle(|w| w.path() == path && !w.tab_loading());
+
+    testing::set_rtl(true);
+    w.frame();
+    let sidebar = w.bounds_of("places");
+    let row = w.bounds_of(("portal", ix));
+    assert!(row.size.width > sidebar.size.width * 0.8, "the row fills the sidebar");
+    testing::set_rtl(false);
+}
+
+#[test]
+fn a_portal_is_told_by_its_source() {
+    use glint_core::portals::{Portal, PortalSource};
+    let portal = |source| Portal {
+        id: "p".into(),
+        name: "n".into(),
+        mount_path: "C:\\m".into(),
+        source,
+    };
+    let items: Vec<_> = [
+        PortalSource::Archive {
+            archive_path: "C:\\a.zip".into(),
+        },
+        PortalSource::SavedSearch {
+            query: "invoice".into(),
+            root: "C:\\Docs".into(),
+        },
+        PortalSource::GitCommit {
+            repo_root: "C:\\repo".into(),
+            rev: "0123456789abcdef".into(),
+            subfolder: String::new(),
+        },
+        PortalSource::ResticSnapshot {
+            plan_id: "plan".into(),
+            snapshot_id: "fedcba9876543210".into(),
+            subfolder: String::new(),
+        },
+    ]
+    .into_iter()
+    .map(|source| portals::item_of(&portal(source)))
+    .collect();
+    assert_eq!(
+        items.iter().map(|k| k.kind).collect::<Vec<_>>(),
+        [
+            PortalKind::Archive,
+            PortalKind::Search,
+            PortalKind::Git,
+            PortalKind::Backup
+        ]
+    );
+    assert_eq!(items[0].what, "C:\\a.zip");
+    assert_eq!(items[1].what, "invoice · C:\\Docs");
+    assert_eq!(items[2].what, "01234567 · C:\\repo");
+    assert_eq!(items[3].what, "fedcba98");
+    assert!(items.iter().all(|k| k.path == "C:\\m" && k.id == "p"));
 }
