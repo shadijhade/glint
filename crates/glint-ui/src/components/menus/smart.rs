@@ -13,7 +13,7 @@ use glint_model::format::format_size;
 use glint_model::paths::base_name;
 
 /// How many rows Suggested holds at most.
-const MOST: usize = 3;
+pub const MOST: usize = 2;
 
 impl Run {
     /// The stable key of what choosing this does ("do:extract-here"): what habits are kept under. None for a
@@ -47,6 +47,13 @@ fn command_key(command: Command) -> &'static str {
         Command::NewFolder => "cmd:new-folder",
         Command::Properties => "cmd:properties",
         Command::CompareFiles => "cmd:compare-files",
+        Command::ListView => "cmd:list-view",
+        Command::GridView => "cmd:grid-view",
+        Command::ColumnsView => "cmd:columns-view",
+        Command::ToggleHidden => "cmd:toggle-hidden",
+        Command::TogglePreview => "cmd:toggle-preview",
+        Command::GridLarger => "cmd:grid-larger",
+        Command::GridSmaller => "cmd:grid-smaller",
     }
 }
 
@@ -67,6 +74,16 @@ fn task_key(task: &Task) -> String {
         Task::OpenIn { opener, .. } => return format!("task:open-in:{opener}"),
         Task::OpenInFileExplorer(_) => "task:open-in-file-explorer",
         Task::OpenExtracted(_) => "do:open-extracted",
+        Task::SortBy(key) => return format!("task:sort-by:{}", format!("{key:?}").to_lowercase()),
+        Task::SortOrder { desc } => {
+            if *desc {
+                "task:sort-descending"
+            } else {
+                "task:sort-ascending"
+            }
+        }
+        Task::GroupBy(by) => return format!("task:group-by:{}", format!("{by:?}").to_lowercase()),
+        Task::TileSize(size) => return format!("task:tile-size:{}", size.as_str()),
     };
     key.to_string()
 }
@@ -268,10 +285,10 @@ pub fn row_for(nodes: &[Node], key: &str) -> Option<Entry> {
             return true;
         }
         let mut row = entry.clone();
-        // "Inspect & check" and "Clean up & share" are shelves: what is on them says what it does by itself
-        // ("Scan with Microsoft Defender"). A row of any other submenu needs its menu's name ("Compress to ›
-        // Zip file").
-        let shelves = [t!("Inspect & check"), t!("Clean up & share")];
+        // "More", "Inspect & check", "Clean up" and the kinds' "More … tools" are shelves: what is on them says
+        // what it does by itself ("Scan with Microsoft Defender"). A row of any other submenu needs its menu's
+        // name ("Compress to › Zip file").
+        let shelves = shelves();
         let named: Vec<&str> = menus
             .iter()
             .copied()
@@ -287,6 +304,39 @@ pub fn row_for(nodes: &[Node], key: &str) -> Option<Entry> {
         false
     });
     result
+}
+
+/// The submenus that only shelve rows away, whose names a copy of their rows doesn't repeat.
+fn shelves() -> Vec<SharedString> {
+    let mut all = vec![
+        t!("More"),
+        t!("Inspect & check"),
+        t!("Clean up"),
+        t!("Clean up & share"),
+    ];
+    all.extend(super::item::kind_shelves());
+    all
+}
+
+/// How many rows a menu's top level has: rows and submenus (not the strip's buttons, headings or lines).
+pub fn top_rows(nodes: &[Node]) -> usize {
+    nodes
+        .iter()
+        .filter(|node| matches!(node, Node::Item(_) | Node::Menu { .. }))
+        .count()
+}
+
+/// The keys of the rows a menu leads with: what follows its strip up to its first line or heading.
+fn primary_keys(nodes: &[Node]) -> Vec<String> {
+    nodes
+        .iter()
+        .skip_while(|node| matches!(node, Node::Strip(_) | Node::Head(_)))
+        .take_while(|node| !matches!(node, Node::Separator | Node::Heading(_)))
+        .filter_map(|node| match node {
+            Node::Item(entry) => entry.run.key(),
+            _ => None,
+        })
+        .collect()
 }
 
 /// The words under a suggested row, when the reason isn't obvious.
@@ -325,14 +375,24 @@ fn usual(shape: Shape) -> SharedString {
     }
 }
 
-/// The Suggested section: its heading and at most three rows (`picks`' rows, then `extra`). Empty with no row.
+/// The Suggested section: its heading and at most `most` rows (`picks`' rows, then `extra`). Empty with no row.
 pub fn zone(nodes: &[Node], picks: &[Pick], shape: Shape, extra: Vec<Node>) -> Vec<Node> {
-    let extra: Vec<Node> = extra.into_iter().take(MOST).collect();
-    let room = MOST - extra.len();
+    zone_of(nodes, picks, shape, extra, MOST)
+}
+
+/// [`zone`] with room for `most` rows.
+pub fn zone_of(nodes: &[Node], picks: &[Pick], shape: Shape, extra: Vec<Node>, most: usize) -> Vec<Node> {
+    let extra: Vec<Node> = extra.into_iter().take(most).collect();
+    let room = most - extra.len();
     let mut rows: Vec<Node> = Vec::new();
+    // What the menu leads with is already in reach: it isn't suggested again.
+    let primary = primary_keys(nodes);
     for pick in picks {
         if rows.len() >= room {
             break;
+        }
+        if primary.contains(&pick.key) {
+            continue;
         }
         if let Some(mut row) = row_for(nodes, &pick.key) {
             row.reason = reason(&pick.why, shape);
@@ -351,11 +411,30 @@ pub fn zone(nodes: &[Node], picks: &[Pick], shape: Shape, extra: Vec<Node>) -> V
 
 /// The menu with its head first and Suggested after its strip. The menu's own rows are never moved or changed.
 pub fn dress(nodes: Vec<Node>, head: Head, picks: &[Pick], shape: Shape, extra: Vec<Node>) -> Vec<Node> {
-    let section = zone(&nodes, picks, shape, extra);
+    dress_with(nodes, head, picks, shape, extra, MOST)
+}
+
+/// [`dress`] with room for `most` suggested rows.
+pub fn dress_with(
+    nodes: Vec<Node>,
+    head: Head,
+    picks: &[Pick],
+    shape: Shape,
+    extra: Vec<Node>,
+    most: usize,
+) -> Vec<Node> {
+    let section = zone_of(&nodes, picks, shape, extra, most);
     let mut dressed = Vec::with_capacity(nodes.len() + section.len() + 2);
     dressed.push(Node::Head(head));
     let mut rest = nodes.into_iter().peekable();
     if matches!(rest.peek(), Some(Node::Strip(_))) {
+        dressed.extend(rest.next());
+    }
+    // The rows the menu leads with come first; Suggested is under them.
+    while rest
+        .peek()
+        .is_some_and(|node| !matches!(node, Node::Separator | Node::Heading(_)))
+    {
         dressed.extend(rest.next());
     }
     let has_section = !section.is_empty();

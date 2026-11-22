@@ -197,6 +197,8 @@ fn a_reason_is_said_in_the_words_of_the_table() {
 
 fn menu_with_rows() -> Vec<Node> {
     vec![
+        plain_item("Open", Run::Command(Command::Open)),
+        Node::Separator,
         plain_item("Extract here", extract()),
         plain_item("Mount", Run::Ask(MenuEvent::Mount { path: "C:\\x".into() })),
         plain_item("Refresh", Run::Do(Task::RefreshDrives)),
@@ -232,20 +234,20 @@ fn a_zone_is_a_heading_and_the_picks_rows_with_their_reasons_and_skips_a_pick_wi
 }
 
 #[test]
-fn a_zone_holds_three_rows_at_most_and_the_extra_row_takes_a_place() {
+fn a_zone_holds_two_rows_at_most_and_the_extra_row_takes_a_place() {
     let _guard = english();
     let nodes = menu_with_rows();
     let four: Vec<Pick> = ["do:extract-here", "do:mount", "task:refresh-drives", "task:open-terminal"]
         .iter()
         .map(|key| pick(key, Why::Plain))
         .collect();
-    assert_eq!(zone(&nodes, &four, Shape::File, Vec::new()).len(), 4, "a heading and three rows");
+    assert_eq!(zone(&nodes, &four, Shape::File, Vec::new()).len(), 3, "a heading and two rows");
     let extra = vec![plain_item("Move to Invoices", Run::Do(Task::RefreshDrives))];
     let section = zone(&nodes, &four[..3], Shape::File, extra);
-    assert_eq!(
-        row_labels(&section),
-        ["# Suggested", "Extract here", "Mount", "Move to Invoices"]
-    );
+    assert_eq!(row_labels(&section), ["# Suggested", "Extract here", "Move to Invoices"]);
+    // A row the menu leads with is not suggested again: the next best takes its place.
+    let open = [pick("cmd:open", Why::Plain), pick("do:mount", Why::Plain)];
+    assert_eq!(row_labels(&zone(&nodes, &open, Shape::File, Vec::new())), ["# Suggested", "Mount"]);
 }
 
 // ---- dress ----------------------------------------------------------------------------------------------
@@ -260,11 +262,16 @@ fn a_dressed_menu_has_its_head_then_its_strip_then_suggested_and_keeps_its_own_r
     let shown = labels(&dressed);
     assert_eq!(shown[0], "<pack.zip>");
     assert!(shown[1].starts_with('['), "{shown:?}");
-    assert_eq!(&shown[2..5], ["# Suggested", "Extract here", "Compress to › Zip file"]);
-    assert_eq!(shown[5], "-");
-    assert_eq!(shown[6..], labels(&menu)[1..], "the menu's own rows follow, none moved");
-    let Node::Item(zip) = &dressed[4] else { panic!("a row") };
+    // The rows the menu leads with come first; Suggested is under them, and Extract here isn't in it twice.
+    let at = shown.iter().position(|l| l == "# Suggested").expect("Suggested");
+    assert_eq!(shown[2], "Open");
+    assert_eq!(shown[3], "Extract here");
+    assert_eq!(&shown[at..at + 2], ["# Suggested", "Compress to › Zip file"]);
+    let Node::Item(zip) = &dressed[at + 1] else { panic!("a row") };
     assert_eq!(zip.reason.as_deref(), Some("You often do this with archives"));
+    let mut without = shown.clone();
+    without.drain(at..at + 2);
+    assert_eq!(without[1..], labels(&menu)[..], "the menu's own rows follow, none moved");
 }
 
 #[test]

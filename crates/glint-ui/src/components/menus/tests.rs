@@ -46,15 +46,16 @@ pub(super) fn find<'a>(nodes: &'a [Node], label: &str) -> Option<&'a Entry> {
     })
 }
 
-/// The items of the submenu called `label`.
+/// The items of the submenu called `label`, at any depth (More holds most of them).
 pub(super) fn submenu<'a>(nodes: &'a [Node], label: &str) -> &'a [Node] {
-    nodes
-        .iter()
-        .find_map(|node| match node {
+    fn deep<'a>(nodes: &'a [Node], label: &str) -> Option<&'a [Node]> {
+        nodes.iter().find_map(|node| match node {
             Node::Menu { label: l, items, .. } if l == label => Some(items.as_slice()),
+            Node::Menu { items, .. } => deep(items, label),
             _ => None,
         })
-        .unwrap_or_else(|| panic!("no submenu {label:?} in {:?}", labels(nodes)))
+    }
+    deep(nodes, label).unwrap_or_else(|| panic!("no submenu {label:?} in {:?}", labels(nodes)))
 }
 
 /// Asserts that `wanted` appear in `got` in that order (other lines may lie between).
@@ -108,22 +109,14 @@ fn a_file_gets_the_typescripts_items_in_its_order() {
     assert_eq!(
         labels(&menu),
         [
-            "[Cut|Copy|Rename|Copy path|Delete]",
+            "[Cut|Copy|Rename|Copy path|Share…|Delete]",
             "Open",
-            "Quick Look",
             "Open with…",
-            "Run in Windows Sandbox",
-            "Previous versions…",
-            "Scripts>",
-            "Show in File Explorer",
+            "Quick Look",
             "-",
             "Move or copy to>",
-            "Tags>",
             "Compress to>",
-            "Rename items in this folder…",
-            "-",
-            "Inspect & check>",
-            "Clean up & share>",
+            "More>",
             "-",
             "Properties",
             "Show more options",
@@ -164,7 +157,21 @@ fn a_file_gets_the_typescripts_items_in_its_order() {
             "With a password…"
         ]
     );
-    assert_eq!(labels(submenu(&menu, "Clean up & share")), ["Copy permalink", "Share…"]);
+    assert_eq!(labels(submenu(&menu, "Clean up")), ["Copy permalink"]);
+    assert_eq!(
+        labels(submenu(&menu, "More")),
+        [
+            "Show in File Explorer",
+            "Previous versions…",
+            "-",
+            "Scripts>",
+            "Tags>",
+            "Rename items in this folder…",
+            "-",
+            "Inspect & check>",
+            "Clean up>",
+        ]
+    );
 }
 
 #[test]
@@ -175,7 +182,7 @@ fn a_folder_can_be_pasted_into_pinned_opened_beside_and_in_a_terminal() {
     let all = labels(&menu);
     assert_eq!(
         all[0],
-        "[Cut|Copy|Paste into folder|Rename|Copy path|Pin to sidebar|Delete]"
+        "[Cut|Copy|Paste into folder|Rename|Copy path|Share…|Pin to sidebar|Delete]"
     );
     in_order(
         &all,
@@ -183,15 +190,24 @@ fn a_folder_can_be_pasted_into_pinned_opened_beside_and_in_a_terminal() {
             "Open",
             "Open in new tab",
             "Open side by side",
-            "Quick Look",
             "Open in Terminal",
+            "Move or copy to>",
+            "Compress to>",
+            "More>",
+            "Properties",
+        ],
+    );
+    let more = labels(submenu(&menu, "More"));
+    in_order(
+        &more,
+        &[
+            "Quick Look",
             "Open in new window",
-            "Scripts>",
             "Show in File Explorer",
+            "Scripts>",
             "Back up…",
             "Search here",
             "Inspect & check>",
-            "Properties",
         ],
     );
     assert_eq!(
@@ -224,7 +240,7 @@ fn several_items_get_plural_labels_and_only_what_works_on_many() {
     let more = folder("C:\\x", "more");
     let menu = item_menu(&[docs.clone(), more], &ctx());
     let all = labels(&menu);
-    assert_eq!(all[0], "[Cut|Copy|Rename 2 items…|Copy paths|Delete]");
+    assert_eq!(all[0], "[Cut|Copy|Rename 2 items…|Copy paths|Share…|Delete]");
     assert!(all.contains(&"Open 2 folders in new tabs".to_string()), "{all:?}");
     assert!(find(&menu, "Quick Look").is_none() && find(&menu, "Properties").is_none());
     assert!(find(&menu, "Rename items in this folder…").is_none());
@@ -256,35 +272,39 @@ fn files_get_the_tools_that_read_them() {
     let _guard = english();
     let pdf = item_menu(&[text("a.pdf"), text("b.pdf")], &ctx());
     assert_eq!(
-        labels(submenu(&pdf, "PDF tools")),
+        labels(&pdf)
+            .into_iter()
+            .skip_while(|l| l != "# PDF")
+            .skip(1)
+            .take_while(|l| l != "-")
+            .collect::<Vec<_>>(),
         [
             "Merge 2 PDFs…",
             "Split…",
             "Keep or take out pages…",
-            "Turn pages…",
             "Make smaller",
+            "More PDF tools>",
+        ]
+    );
+    assert_eq!(
+        labels(submenu(&pdf, "More PDF tools")),
+        [
+            "Turn pages…",
             "Save its pictures…",
+            "Make smaller…",
             "-",
             "Add a password…",
             "Take the password off…",
             "Stamp…",
         ]
     );
-    assert!(find(&pdf, "Make smaller…").is_some(), "Make smaller works on PDFs too");
     let video = item_menu(&[text("a.mp4")], &ctx());
     assert_eq!(
-        labels(submenu(&video, "Media")),
-        [
-            "Convert or shrink…",
-            "Take the sound out…",
-            "Make a GIF…",
-            "Make subtitles…",
-            "Even out the volume…",
-        ]
+        labels(submenu(&video, "More video tools")),
+        ["Make subtitles…", "Even out the volume…", "Make smaller…"]
     );
     let song = item_menu(&[text("a.mp3")], &ctx());
-    let media = labels(submenu(&song, "Media"));
-    assert!(!media.contains(&"Make a GIF…".to_string()) && media.contains(&"Edit song details…".to_string()));
+    assert!(find(&song, "Make a GIF…").is_none() && find(&song, "Edit song details…").is_some());
     let picture = item_menu(&[text("a.jpg")], &ctx());
     for want in [
         "Convert picture…",
@@ -699,19 +719,36 @@ fn the_folder_shown_has_paste_undo_new_and_the_folders_tools() {
             "[Paste|Undo|Copy path|Pin to sidebar|Refresh]",
             "New folder",
             "New>",
-            "Paste with the copy queue",
             "Select all",
             "-",
-            "Folder sizes",
-            "Search here",
-            "Inspect & check>",
-            "Clean up & share>",
+            "View>",
+            "Sort by>",
+            "Group by>",
             "-",
-            "Open in File Explorer",
             "Open in Terminal",
-            "Scripts>",
+            "Search here",
+            "Folder sizes",
+            "-",
+            "More>",
             "-",
             "Properties",
+        ]
+    );
+    assert_eq!(
+        labels(submenu(&menu, "More")),
+        [
+            "Open in File Explorer",
+            "-",
+            "Scripts>",
+            "-",
+            "Paste with the copy queue",
+            "-",
+            "Time Machine scrubber",
+            "Moved and deleted here",
+            "Previous versions of this folder",
+            "-",
+            "Inspect & check>",
+            "Clean up & share>",
         ]
     );
     assert_eq!(find(&menu, "Paste").and_then(|e| e.hint.as_deref()), Some("Ctrl+V"));
@@ -749,9 +786,6 @@ fn the_folder_shown_has_paste_undo_new_and_the_folders_tools() {
         labels(submenu(&menu, "Inspect & check")),
         [
             "Recent changes",
-            "Time Machine scrubber",
-            "Moved and deleted here",
-            "Previous versions of this folder",
             "What's locking this?",
             "-",
             "Scan with Microsoft Defender",
@@ -791,8 +825,9 @@ fn a_place_or_tile_opens_pastes_into_and_pins_but_has_no_new_or_select_all() {
         &[
             "Open",
             "Open in new tab",
+            "Open in Terminal",
             "Search here",
-            "Open in File Explorer",
+            "More>",
             "Properties",
         ],
     );
@@ -1370,7 +1405,7 @@ fn the_menu_key_opens_the_selections_menu_and_the_arrows_enter_and_escape_work_i
     assert!(ui.is_open());
     assert_eq!(ui.selected().as_deref(), Some("Open"), "the first row past the strip");
     ui.press("down");
-    assert_eq!(ui.selected().as_deref(), Some("Quick Look"));
+    assert_eq!(ui.selected().as_deref(), Some("Open with…"));
     ui.press("up");
     ui.press("up");
     assert_eq!(
@@ -1381,7 +1416,7 @@ fn the_menu_key_opens_the_selections_menu_and_the_arrows_enter_and_escape_work_i
     ui.press("left");
     assert_eq!(
         ui.selected().as_deref(),
-        Some("Copy path"),
+        Some("Share…"),
         "the arrows move along the strip"
     );
     ui.press("right");
@@ -1390,11 +1425,9 @@ fn the_menu_key_opens_the_selections_menu_and_the_arrows_enter_and_escape_work_i
     assert_eq!(ui.selected().as_deref(), Some("Show more options"));
     ui.press("home");
     assert_eq!(ui.selected().as_deref(), Some("Cut"));
-    ui.press("down");
-    ui.press("down");
-    ui.press("down");
-    ui.press("down");
-    ui.press("down");
+    for _ in 0..6 {
+        ui.press("down");
+    }
     assert_eq!(ui.selected().as_deref(), Some("Open"));
     ui.press("enter");
     assert!(!ui.is_open());
@@ -1427,12 +1460,15 @@ fn a_menu_not_on_the_selected_item_is_for_that_item_alone(cx: &mut TestAppContex
     ui.open_menu(Some(DOCS), Some(at(100., 10.)), false);
     assert_eq!(
         labels(&ui.nodes())[0],
-        "[Cut|Copy|Paste into folder|Rename|Copy path|Pin to sidebar|Delete]"
+        "[Cut|Copy|Paste into folder|Rename|Copy path|Share…|Pin to sidebar|Delete]"
     );
     ui.press("escape");
     // On one of several selected, it is for all of them.
     ui.open_menu(Some(ALPHA), Some(at(100., 10.)), false);
-    assert_eq!(labels(&ui.nodes())[0], "[Cut|Copy|Rename 2 items…|Copy paths|Delete]");
+    assert_eq!(
+        labels(&ui.nodes())[0],
+        "[Cut|Copy|Rename 2 items…|Copy paths|Share…|Delete]"
+    );
 }
 
 #[gpui_kit::test]
@@ -1470,7 +1506,14 @@ fn a_submenu_replaces_the_menu_with_a_back_row_and_choosing_in_it_tells_the_wind
     let mut ui = open(cx, &disk(), "C:\\x");
     ui.select(&[ALPHA]);
     ui.open_menu(Some(ALPHA), Some(at(100., 10.)), false);
-    ui.click("Compress to");
+    // Down to the row from the keyboard, then in: the pointer isn't over the new menu's rows.
+    for _ in 0..30 {
+        if ui.selected().as_deref() == Some("Compress to") {
+            break;
+        }
+        ui.press("down");
+    }
+    ui.press("right");
     assert_eq!(ui.depth(), 2);
     assert_eq!(labels(&ui.nodes())[0], "Zip file");
     assert_eq!(ui.selected().as_deref(), Some("Zip file"), "the first row, not Back");
@@ -1555,8 +1598,10 @@ fn the_folder_shown_dispatches_new_folder_and_select_all_and_tells_the_window_th
     ui.open_background(at(100., 10.));
     ui.click("Folder sizes");
     ui.open_background(at(100., 10.));
+    ui.click("More");
     ui.click("Paste with the copy queue");
     ui.open_background(at(100., 10.));
+    ui.click("More");
     ui.click("Clean up & share");
     ui.click("Find duplicate files");
     assert_eq!(
@@ -1643,7 +1688,7 @@ fn the_arabic_menu_opens_toward_the_start_and_mirrors_its_rows(cx: &mut TestAppC
     // The rows are in Arabic, and keys work as they do in English: toward the end is Left.
     assert_eq!(ui.selected().as_deref(), Some("Open"));
     ui.press("down");
-    assert_eq!(ui.selected().as_deref(), Some(t!("Quick Look").as_ref()));
+    assert_eq!(ui.selected().as_deref(), Some(t!("Open with…").as_ref()));
     ui.visual.update(|window, _| {
         assert!(window.try_find_by_label("Open").is_some());
     });

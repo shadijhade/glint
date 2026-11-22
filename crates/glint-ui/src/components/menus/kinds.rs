@@ -130,6 +130,11 @@ pub fn can_convert_doc(e: &FileEntry) -> bool {
     readable(e) && !e.dir && has(DOC_READS, &ext_of(&e.name))
 }
 
+/// An Office file (Word, Excel, PowerPoint) on disk, there to be read.
+pub fn is_office_file(e: &FileEntry) -> bool {
+    !e.dir && readable(e) && has(OFFICE, e.ext())
+}
+
 /// A song whose details Glint edits (`isSong`).
 pub fn is_song(e: &FileEntry) -> bool {
     !e.dir && readable(e) && has(SONGS, &ext_of(&e.name))

@@ -285,6 +285,13 @@ pub enum Command {
     NewFolder,
     Properties,
     CompareFiles,
+    ListView,
+    GridView,
+    ColumnsView,
+    ToggleHidden,
+    TogglePreview,
+    GridLarger,
+    GridSmaller,
 }
 
 impl Command {
@@ -308,6 +315,13 @@ impl Command {
             Command::NewFolder => Box::new(actions::NewFolder),
             Command::Properties => Box::new(actions::Properties),
             Command::CompareFiles => Box::new(actions::CompareFiles),
+            Command::ListView => Box::new(actions::ListView),
+            Command::GridView => Box::new(actions::GridView),
+            Command::ColumnsView => Box::new(actions::ColumnsView),
+            Command::ToggleHidden => Box::new(actions::ToggleHidden),
+            Command::TogglePreview => Box::new(actions::TogglePreview),
+            Command::GridLarger => Box::new(actions::GridLarger),
+            Command::GridSmaller => Box::new(actions::GridSmaller),
         }
     }
 
@@ -392,6 +406,15 @@ pub enum Task {
     /// Opens the folder an archive was extracted to, in the active tab: as [`Task::Navigate`], and a row of its
     /// own for Suggested to put forward.
     OpenExtracted(String),
+    /// Sorts the list by this column, the way a click on its header does: the biggest, longest or newest first
+    /// where that is wanted. Nothing when it already is.
+    SortBy(glint_model::entries::SortKey),
+    /// Turns the list's order round to this one, keeping the column.
+    SortOrder { desc: bool },
+    /// Groups the list (Group by).
+    GroupBy(glint_model::groups::GroupBy),
+    /// Shows the grid with tiles of this size.
+    TileSize(glint_model::grid::TileSize),
 }
 
 /// `visibleItems` (Menu.tsx): the items a menu shows. Strips left with no button, submenus left with nothing,

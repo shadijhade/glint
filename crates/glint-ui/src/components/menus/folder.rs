@@ -13,9 +13,12 @@ use super::kinds::on_a_drive;
 use super::spec::{is_this_pc, separator, visible_items, when, Command, Entry, Node, Task};
 use crate::explorer::{NoAccess, TabId};
 use crate::kit::prelude::*;
-use crate::t;
-use glint_model::entries::InArchive;
+use crate::{i18n, t};
+use glint_model::entries::{InArchive, Sort, SortKey};
+use glint_model::grid::{TileSize, TILE_SIZES};
+use glint_model::groups::{GroupBy, GROUP_BYS};
 use glint_model::paths::{in_archive_path, is_folder_path, is_recycle_bin, is_remote_path};
+use glint_model::store::ViewMode;
 
 /// What is known of the folder when it is the one open in a pane (the TypeScript's `view`).
 #[derive(Clone, Debug, Default)]
@@ -32,6 +35,35 @@ pub struct FolderView {
     pub tab: Option<TabId>,
     /// In the Recycle Bin: "Restore all items" or "Restore the N items shown", and the paths it restores.
     pub restore_shown: Option<(SharedString, Vec<String>)>,
+    /// How the folder is shown now: what View, Sort by and Group by tick.
+    pub look: Look,
+}
+
+/// How a pane shows its folder.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Look {
+    pub view: ViewMode,
+    pub sort: Sort,
+    pub group: GroupBy,
+    pub hidden: bool,
+    pub preview: bool,
+    pub tile: TileSize,
+}
+
+impl Default for Look {
+    fn default() -> Self {
+        Look {
+            view: ViewMode::List,
+            sort: Sort {
+                key: SortKey::Name,
+                desc: false,
+            },
+            group: GroupBy::None,
+            hidden: false,
+            preview: true,
+            tile: TileSize::Medium,
+        }
+    }
 }
 
 /// A remote connection whose top folder the menu is for (`remoteOfPath`).
@@ -234,6 +266,7 @@ pub fn folder_menu(folder: &str, current: bool, c: &FolderCtx) -> Vec<Node> {
         disabled: find || archive.is_some() || shut,
         items: new_items(&c.data),
     });
+    let look = view.map(|v| v.look.clone());
 
     let mut m: Vec<Option<Node>> = vec![
         Some(Node::Strip(strip)),
@@ -256,47 +289,116 @@ pub fn folder_menu(folder: &str, current: bool, c: &FolderCtx) -> Vec<Node> {
             )
         }),
         new_menu,
-        when(current, || {
+        when(current && c.files_on_clipboard, || {
             Node::Item(
-                Entry::ask(
-                    t!("Paste with the copy queue"),
-                    IconName::ClipboardPaste,
-                    MenuEvent::PasteQueued { folder: owned.clone() },
-                )
-                .disabled_because(find || in_archive || shut, &why_not(in_archive, shut, find)),
-            )
-        }),
-        when(c.files_on_clipboard, || {
-            Node::Item(
-                Entry::ask(
-                    t!("Paste as link"),
-                    IconName::Link,
-                    MenuEvent::PasteAsLink { folder: owned.clone() },
-                )
-                .disabled_because(
-                    (current && find) || in_archive || shut,
-                    &why_not(in_archive, shut, current && find),
-                ),
+                Entry::command(t!("Paste"), IconName::ClipboardPaste, Command::Paste)
+                    .disabled_because(find || in_archive || shut, &why_not(in_archive, shut, find)),
             )
         }),
         when(current && view.is_some(), || Node::Item(select_all(unlisted))),
         separator(),
-        when(current, || {
-            Node::Item(
-                Entry::ask(t!("Folder sizes"), IconName::HardDrive, MenuEvent::FolderSizes)
-                    .disabled_because(find || unlisted, &why_not(false, unlisted, find)),
-            )
-        }),
-        when(reads, || {
-            Node::Item(Entry::ask(
-                t!("Search here"),
-                IconName::Search,
-                MenuEvent::SearchText { folder: owned.clone() },
-            ))
-        }),
     ];
+    // How the folder is shown, sorted and grouped: the dock's and the header's choices, by the same actions.
+    if let Some(look) = &look {
+        m.push(Some(view_menu(look)));
+        m.push(Some(sort_menu(&look.sort)));
+        m.push(Some(group_menu(look.group)));
+        m.push(separator());
+    }
+    m.push(when(reads, || {
+        Node::Item(Entry::task(
+            t!("Open in Terminal"),
+            IconName::SquareTerminal,
+            Task::OpenTerminal(owned.clone()),
+        ))
+    }));
+    m.push(when(reads, || {
+        Node::Item(Entry::ask(
+            t!("Search here"),
+            IconName::Search,
+            MenuEvent::SearchText { folder: owned.clone() },
+        ))
+    }));
+    m.push(when(current, || {
+        Node::Item(
+            Entry::ask(t!("Folder sizes"), IconName::HardDrive, MenuEvent::FolderSizes)
+                .disabled_because(find || unlisted, &why_not(false, unlisted, find)),
+        )
+    }));
+    m.push(separator());
 
-    m.push(Some(Node::menu(
+    let mut more: Vec<Option<Node>> = vec![
+        match &archive {
+            Some(archive) => Entry::ask(
+                t!("Show the archive in File Explorer"),
+                IconName::FolderSearch,
+                MenuEvent::RevealArchive {
+                    archive: archive.outer.clone(),
+                },
+            ),
+            None => Entry::task(
+                t!("Open in File Explorer"),
+                IconName::FolderSearch,
+                Task::OpenInFileExplorer(owned.clone()),
+            ),
+        }
+        .node(),
+        separator(),
+    ];
+    more.push(when(reads && !c.data.openers.is_empty(), || {
+        open_in_menu(folder, &c.data)
+    }));
+    more.push(when(reads && folder_path, || {
+        scripts_menu(folder, std::slice::from_ref(&owned), &c.data)
+    }));
+    more.push(separator());
+    more.push(when(current, || {
+        Node::Item(
+            Entry::ask(
+                t!("Paste with the copy queue"),
+                IconName::ClipboardPaste,
+                MenuEvent::PasteQueued { folder: owned.clone() },
+            )
+            .disabled_because(find || in_archive || shut, &why_not(in_archive, shut, find)),
+        )
+    }));
+    more.push(when(c.files_on_clipboard, || {
+        Node::Item(
+            Entry::ask(
+                t!("Paste as link"),
+                IconName::Link,
+                MenuEvent::PasteAsLink { folder: owned.clone() },
+            )
+            .disabled_because(
+                (current && find) || in_archive || shut,
+                &why_not(in_archive, shut, current && find),
+            ),
+        )
+    }));
+    more.push(separator());
+    more.push(when(reads && folder_path, || {
+        Node::Item(Entry::ask(
+            t!("Time Machine scrubber"),
+            IconName::RotateCcwClock,
+            MenuEvent::OpenTimeMachine { folder: owned.clone() },
+        ))
+    }));
+    more.push(when(reads, || {
+        Node::Item(Entry::ask(
+            t!("Moved and deleted here"),
+            IconName::ClockArrowLeft,
+            MenuEvent::History { folder: owned.clone() },
+        ))
+    }));
+    more.push(when(reads && on_a_drive(folder), || {
+        Node::Item(Entry::ask(
+            t!("Previous versions of this folder"),
+            IconName::ArchiveRestore,
+            MenuEvent::PreviousVersions { path: owned.clone() },
+        ))
+    }));
+    more.push(separator());
+    more.push(Some(Node::menu(
         t!("Inspect & check"),
         IconName::ScanSearch,
         vec![
@@ -305,27 +407,6 @@ pub fn folder_menu(folder: &str, current: bool, c: &FolderCtx) -> Vec<Node> {
                     t!("Recent changes"),
                     IconName::FileClock,
                     MenuEvent::Timeline { folder: owned.clone() },
-                ))
-            }),
-            when(reads && folder_path, || {
-                Node::Item(Entry::ask(
-                    t!("Time Machine scrubber"),
-                    IconName::RotateCcwClock,
-                    MenuEvent::OpenTimeMachine { folder: owned.clone() },
-                ))
-            }),
-            when(reads, || {
-                Node::Item(Entry::ask(
-                    t!("Moved and deleted here"),
-                    IconName::ClockArrowLeft,
-                    MenuEvent::History { folder: owned.clone() },
-                ))
-            }),
-            when(reads && on_a_drive(folder), || {
-                Node::Item(Entry::ask(
-                    t!("Previous versions of this folder"),
-                    IconName::ArchiveRestore,
-                    MenuEvent::PreviousVersions { path: owned.clone() },
                 ))
             }),
             when(!in_archive, || {
@@ -349,7 +430,7 @@ pub fn folder_menu(folder: &str, current: bool, c: &FolderCtx) -> Vec<Node> {
             }),
         ],
     )));
-    m.push(Some(Node::menu(
+    more.push(Some(Node::menu(
         t!("Clean up & share"),
         IconName::BrushCleaning,
         vec![
@@ -397,37 +478,7 @@ pub fn folder_menu(folder: &str, current: bool, c: &FolderCtx) -> Vec<Node> {
             }),
         ],
     )));
-    m.push(separator());
-    m.push(
-        match &archive {
-            Some(archive) => Entry::ask(
-                t!("Show the archive in File Explorer"),
-                IconName::FolderSearch,
-                MenuEvent::RevealArchive {
-                    archive: archive.outer.clone(),
-                },
-            ),
-            None => Entry::task(
-                t!("Open in File Explorer"),
-                IconName::FolderSearch,
-                Task::OpenInFileExplorer(owned.clone()),
-            ),
-        }
-        .node(),
-    );
-    m.push(when(reads, || {
-        Node::Item(Entry::task(
-            t!("Open in Terminal"),
-            IconName::SquareTerminal,
-            Task::OpenTerminal(owned.clone()),
-        ))
-    }));
-    m.push(when(reads && !c.data.openers.is_empty(), || {
-        open_in_menu(folder, &c.data)
-    }));
-    m.push(when(reads && folder_path, || {
-        scripts_menu(folder, std::slice::from_ref(&owned), &c.data)
-    }));
+    m.push(Some(Node::menu(t!("More"), IconName::Ellipsis, more)));
     m.push(separator());
     m.push(
         match &archive {
@@ -458,6 +509,90 @@ pub fn folder_menu(folder: &str, current: bool, c: &FolderCtx) -> Vec<Node> {
         m.push(closed_note());
     }
     visible_items(m.into_iter().flatten().collect())
+}
+
+/// View: how the folder is shown, and what is shown of it. The dock's choices, by the same commands.
+fn view_menu(look: &Look) -> Node {
+    let choice = |label: SharedString, command: Command, on: bool| {
+        let mut entry = Entry::command(label, IconName::Check, command).checked(on);
+        entry.icon = None;
+        Some(Node::Item(entry))
+    };
+    let grid = look.view == ViewMode::Grid;
+    let mut items: Vec<Option<Node>> = vec![
+        choice(t!("List"), Command::ListView, look.view == ViewMode::List),
+        choice(t!("Grid, with thumbnails"), Command::GridView, grid),
+        choice(t!("Columns"), Command::ColumnsView, look.view == ViewMode::Columns),
+    ];
+    // Tile sizes are for the grid.
+    if grid {
+        items.push(Some(Node::Heading(t!("Tile size"))));
+        items.push(Some(Node::Item(Entry::command(
+            t!("Larger tiles"),
+            IconName::ZoomIn,
+            Command::GridLarger,
+        ))));
+        items.push(Some(Node::Item(Entry::command(
+            t!("Smaller tiles"),
+            IconName::ZoomOut,
+            Command::GridSmaller,
+        ))));
+        for spec in TILE_SIZES {
+            let mut entry = Entry::task(
+                SharedString::from(glint_model::i18n::translate(i18n::language(), spec.label).to_string()),
+                IconName::Check,
+                Task::TileSize(spec.size),
+            )
+            .checked(spec.size == look.tile);
+            entry.icon = None;
+            items.push(Some(Node::Item(entry)));
+        }
+    }
+    items.push(separator());
+    items.push(choice(t!("Show hidden files"), Command::ToggleHidden, look.hidden));
+    items.push(choice(t!("Preview pane"), Command::TogglePreview, look.preview));
+    Node::menu(t!("View"), IconName::LayoutGrid, items)
+}
+
+/// Sort by: the columns the list's header sorts by, then which way.
+fn sort_menu(sort: &Sort) -> Node {
+    let mut items: Vec<Option<Node>> = Vec::new();
+    for (key, label) in [
+        (SortKey::Name, t!("Name")),
+        (SortKey::Modified, t!("Date modified")),
+        (SortKey::Type, t!("Type")),
+        (SortKey::Size, t!("Size")),
+        (SortKey::Taken, t!("Date taken")),
+    ] {
+        let mut entry = Entry::task(label, IconName::Check, Task::SortBy(key)).checked(sort.key == key);
+        entry.icon = None;
+        items.push(Some(Node::Item(entry)));
+    }
+    items.push(separator());
+    for (desc, label) in [(false, t!("Ascending")), (true, t!("Descending"))] {
+        let mut entry = Entry::task(label, IconName::Check, Task::SortOrder { desc }).checked(sort.desc == desc);
+        entry.icon = None;
+        items.push(Some(Node::Item(entry)));
+    }
+    Node::menu(t!("Sort by"), IconName::ArrowUpDown, items)
+}
+
+/// Group by: what the list's headers divide it by.
+fn group_menu(group: GroupBy) -> Node {
+    let items = GROUP_BYS
+        .iter()
+        .map(|spec| {
+            let mut entry = Entry::task(
+                SharedString::from(glint_model::i18n::translate(i18n::language(), spec.label).to_string()),
+                IconName::Check,
+                Task::GroupBy(spec.by),
+            )
+            .checked(group == spec.by);
+            entry.icon = None;
+            Some(Node::Item(entry))
+        })
+        .collect();
+    Node::menu(t!("Group by"), IconName::ListTree, items)
 }
 
 /// Why a row of the folder's menu is greyed out: the first cause that holds (inside an archive, a folder

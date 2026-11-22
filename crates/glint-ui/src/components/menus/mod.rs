@@ -71,6 +71,8 @@ mod spec;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod tests_content;
+#[cfg(test)]
 mod tests_host;
 #[cfg(test)]
 mod tests_send_to;
@@ -319,9 +321,12 @@ impl MenuHost {
         if aware::try_shared(cx).is_none() || nodes.len() < 4 {
             return nodes;
         }
-        let picks = Self::picks(&nodes, facts, probed, 3, cx);
+        // Suggested fills what the top level leaves of 14 rows, at most two.
+        let room = 14usize.saturating_sub(smart::top_rows(&nodes)).min(smart::MOST);
+        let picks = Self::picks(&nodes, facts, probed, smart::MOST + 4, cx);
+        let picks = &picks[..];
         // `extra` is what isn't a copy of a row but is worth putting forward: the usual place.
-        smart::dress(nodes, head(), &picks, facts.shape, extra)
+        smart::dress_with(nodes, head(), picks, facts.shape, extra, room)
     }
 
     /// What the head needs besides the items and the answers: the time, and Git's word for the one item.
@@ -696,6 +701,7 @@ impl MenuHost {
         let Some(explorer) = try_explorer(cx) else { return };
         let (folder, view, title, rows, tab_id) = {
             let ex = explorer.read(cx);
+            let settings = state::settings(cx);
             let Some(tab) = ex.pane_tab(pane) else { return };
             let restore_shown = (tab.is_recycle_bin() && !tab.rows.is_empty()).then(|| {
                 let label = if tab.rows.len() == tab.entries().len() {
@@ -708,6 +714,14 @@ impl MenuHost {
                 };
                 (label, tab.rows.iter().map(|e| e.path.clone()).collect())
             });
+            let look = folder::Look {
+                view: tab.view,
+                sort: tab.sort,
+                group: settings.group_by,
+                hidden: settings.show_hidden,
+                preview: settings.show_preview_pane,
+                tile: settings.tile_size,
+            };
             (
                 tab.path.clone(),
                 FolderView {
@@ -717,6 +731,7 @@ impl MenuHost {
                     from_index: tab.listing.as_ref().is_some_and(|l| l.from_index),
                     tab: Some(tab.id),
                     restore_shown,
+                    look,
                 },
                 Self::folder_title(&tab.path, cx),
                 tab.rows.len(),
@@ -1093,6 +1108,38 @@ impl MenuHost {
             Task::OpenIn { opener, name, path } => {
                 let work = glint_core::openers::open_in(opener, path);
                 Self::report(t!("Couldn't open it in {name}", name = name), work, window, cx);
+            }
+            Task::SortBy(key) => {
+                if let Some(explorer) = explorer {
+                    explorer.update(cx, |e, cx| {
+                        let Some(current) = e.active_tab().map(|tab| tab.sort) else { return };
+                        if current.key != key {
+                            let desc = glint_model::columns::DESCENDING.contains(&key);
+                            e.set_sort(glint_model::entries::Sort { key, desc }, cx);
+                        }
+                    });
+                }
+            }
+            Task::SortOrder { desc } => {
+                if let Some(explorer) = explorer {
+                    explorer.update(cx, |e, cx| {
+                        let Some(current) = e.active_tab().map(|tab| tab.sort) else { return };
+                        if current.desc != desc {
+                            e.set_sort(glint_model::entries::Sort { key: current.key, desc }, cx);
+                        }
+                    });
+                }
+            }
+            Task::GroupBy(by) => {
+                if let Some(explorer) = explorer {
+                    explorer.update(cx, |e, cx| e.set_group(by, cx));
+                }
+            }
+            Task::TileSize(size) => {
+                state::update(cx, |settings| settings.tile_size = size);
+                if let Some(explorer) = explorer {
+                    explorer.update(cx, |e, cx| e.set_view(glint_model::store::ViewMode::Grid, None, cx));
+                }
             }
             Task::OpenInFileExplorer(path) => {
                 // Shown by File Explorer's own "open" verb, which can take a moment: off the UI thread.

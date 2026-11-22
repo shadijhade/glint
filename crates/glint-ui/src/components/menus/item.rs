@@ -145,8 +145,13 @@ pub fn item_menu(targets: &[FileEntry], c: &ItemCtx) -> Vec<Node> {
 
     let pinned = one.is_some_and(|e| c.pinned.iter().any(|p| p == &e.path));
     let n = targets.len();
+    let blocked = c
+        .probed
+        .as_ref()
+        .and_then(|p| p.origin.as_ref())
+        .is_some_and(|o| o.blocked);
 
-    // Quick-action icon bar at the top.
+    // Quick-action icon bar at the top, in Windows 11's order.
     let mut strip: Vec<Entry> = vec![
         Entry::command(t!("Cut"), IconName::Scissors, Command::Cut).disabled_because(fixed, &why_fixed),
         Entry::command(t!("Copy"), IconName::Copy, Command::Copy),
@@ -174,6 +179,13 @@ pub fn item_menu(targets: &[FileEntry], c: &ItemCtx) -> Vec<Node> {
         IconName::ClipboardCopy,
         Command::CopyPath,
     ));
+    if !fixed {
+        strip.push(Entry::ask(
+            t!("Share…"),
+            IconName::Share2,
+            MenuEvent::Share { paths: paths.clone() },
+        ));
+    }
     if let Some(e) = one.filter(|e| e.dir) {
         strip.push(
             Entry::task(
@@ -194,8 +206,12 @@ pub fn item_menu(targets: &[FileEntry], c: &ItemCtx) -> Vec<Node> {
             .disabled_because(fixed, &why_fixed),
     );
 
+    let archive_file = one.filter(|e| is_archive_file(e));
+    let folder_one = one.filter(|e| e.dir);
     let mut m: Vec<Option<Node>> = Vec::new();
     m.push(Some(Node::Strip(strip)));
+
+    // ---- The rows the menu leads with ----------------------------------------------------------------------
     m.push(
         Entry::command(
             if browses || n == 1 {
@@ -216,218 +232,7 @@ pub fn item_menu(targets: &[FileEntry], c: &ItemCtx) -> Vec<Node> {
         )
         .node(),
     );
-    // A .docx or .jar is a zip too: Enter opens it in its app, this looks inside.
-    if let Some(e) = one.filter(|e| is_browsable(e) && !closed) {
-        m.push(
-            Entry::task(
-                t!("Open as archive"),
-                IconName::FileArchive,
-                Task::Navigate(e.path.clone()),
-            )
-            .node(),
-        );
-    }
-    // An archive that was extracted before: its folder is a click away, ahead of extracting it again.
-    if let Some(folder) = one
-        .filter(|e| is_archive_file(e) && !fixed)
-        .and(c.probed.as_ref())
-        .and_then(|probed| probed.extracted.clone().flatten())
-    {
-        m.push(
-            Entry::task(
-                t!("Open extracted folder"),
-                IconName::FolderOpen,
-                Task::OpenExtracted(folder),
-            )
-            .node(),
-        );
-    }
-    if let Some(e) = one.filter(|e| (is_archive_file(e) || is_browsable(e)) && !fixed) {
-        m.push(
-            Entry::ask(
-                t!("Extract here"),
-                IconName::ArchiveRestore,
-                MenuEvent::ExtractHere { path: e.path.clone() },
-            )
-            .node(),
-        );
-    }
-    if let Some(e) = one.filter(|e| is_archive_file(e) && !fixed && !remote) {
-        m.push(
-            Entry::ask(
-                t!("Mount as live folder"),
-                IconName::Pin,
-                MenuEvent::PinPortal {
-                    name: e.name.clone(),
-                    source: glint_core::portals::PortalSource::Archive {
-                        archive_path: e.path.clone(),
-                    },
-                },
-            )
-            .node(),
-        );
-    }
-    if let Some(e) = one.filter(|e| is_disk_image(e) && !fixed) {
-        m.push(Entry::ask(t!("Mount"), IconName::Disc3, MenuEvent::Mount { path: e.path.clone() }).node());
-    }
-    if !folders.is_empty() {
-        m.push(
-            Entry::task(
-                if folders.len() > 1 {
-                    t!("Open {n} folders in new tabs", n = folders.len())
-                } else {
-                    t!("Open in new tab")
-                },
-                IconName::SquarePlus,
-                Task::OpenInNewTabs(folders.iter().map(|f| f.path.clone()).collect()),
-            )
-            .hint_of(Command::OpenInNewTab)
-            .node(),
-        );
-    }
-    if let Some(e) = one.filter(|e| e.dir && !closed && !is_recycled(e)) {
-        m.push(
-            Entry::task(
-                if c.dual {
-                    t!("Open in the other pane")
-                } else {
-                    t!("Open side by side")
-                },
-                IconName::Columns2,
-                Task::OpenInOtherPane {
-                    path: e.path.clone(),
-                    from: c.pane,
-                },
-            )
-            .node(),
-        );
-    }
-    if one.is_some() {
-        m.push(Entry::command(t!("Quick Look"), IconName::Eye, Command::QuickLook).node());
-    }
-    if let Some(e) = one.filter(|e| is_archive_file(e) && !closed) {
-        m.push(
-            Entry::ask(
-                t!("Open with its app"),
-                IconName::AppWindow,
-                MenuEvent::OpenWithItsApp {
-                    path: e.path.clone(),
-                    extract_first: archived.is_some(),
-                },
-            )
-            .node(),
-        );
-    }
-    if let Some(e) = one.filter(|e| !e.dir && !closed && !c.editor_name.is_empty()) {
-        m.push(
-            Entry::ask(
-                t!("Open with {editor}", editor = c.editor_name),
-                IconName::Code,
-                MenuEvent::OpenWithEditor {
-                    path: e.path.clone(),
-                    editor: c.editor_path.trim().to_string(),
-                    extract_first: archived.is_some() || remote,
-                },
-            )
-            .node(),
-        );
-    }
-    if let Some(e) = one.filter(|e| !e.dir && !closed) {
-        let run = if archived.is_some() || remote {
-            Entry::ask(
-                t!("Open with…"),
-                IconName::AppWindow,
-                MenuEvent::OpenWithPicker { path: e.path.clone() },
-            )
-        } else {
-            Entry::task(t!("Open with…"), IconName::AppWindow, Task::OpenWith(e.path.clone()))
-        };
-        m.push(run.node());
-    }
-    // Programs and scripts, as File Explorer offers it: Windows asks for administrator approval.
-    let loose = |e: &&FileEntry| !e.dir && !closed && archived.is_none() && !remote && !is_recycle_bin(&c.folder);
-    if let Some(e) = one.filter(|e| loose(e) && is_program(&e.name)) {
-        m.push(
-            Entry::task(
-                t!("Run as administrator"),
-                IconName::ShieldCheck,
-                Task::RunAsAdmin(e.path.clone()),
-            )
-            .node(),
-        );
-    }
-    // A program, an installer, a script or a document from somewhere it's not trusted, tried out in a throwaway Windows.
-    if let Some(e) = one.filter(loose) {
-        m.push(
-            Entry::ask(
-                t!("Run in Windows Sandbox"),
-                IconName::Box,
-                MenuEvent::RunInSandbox { path: e.path.clone() },
-            )
-            .node(),
-        );
-    }
-    // Windows marked it as downloaded from the internet: one press takes the mark off.
-    let blocked = c
-        .probed
-        .as_ref()
-        .and_then(|p| p.origin.as_ref())
-        .is_some_and(|o| o.blocked);
-    if let Some(e) = one.filter(|e| blocked && !e.dir && !fixed) {
-        m.push(
-            Entry::ask(
-                t!("Unblock"),
-                IconName::LockOpen,
-                MenuEvent::Unblock {
-                    paths: vec![e.path.clone()],
-                },
-            )
-            .node(),
-        );
-    }
-    // As File Explorer's Previous Versions: what Windows' restore points and backups kept of it.
-    if let Some(e) = one.filter(|e| !closed && archived.is_none() && !remote && on_a_drive(&e.path)) {
-        m.push(
-            Entry::ask(
-                t!("Previous versions…"),
-                IconName::ArchiveRestore,
-                MenuEvent::PreviousVersions { path: e.path.clone() },
-            )
-            .node(),
-        );
-    }
-    if let Some(e) = one.filter(|e| e.dir && !fixed) {
-        m.push(
-            Entry::task(
-                t!("Open in Terminal"),
-                IconName::SquareTerminal,
-                Task::OpenTerminal(e.path.clone()),
-            )
-            .node(),
-        );
-    }
-    if let Some(e) = one.filter(|e| e.dir && archived.is_none() && !remote && !closed) {
-        m.push(
-            Entry::ask(
-                t!("Open in new window"),
-                IconName::AppWindow,
-                MenuEvent::OpenInNewWindow { path: e.path.clone() },
-            )
-            .hinted("Ctrl+N")
-            .node(),
-        );
-    }
-    if let Some(e) = one.filter(|_| !fixed && !c.data.openers.is_empty()) {
-        m.push(Some(open_in_menu(&e.path, &c.data)));
-    }
-    if !fixed {
-        let cwd = if is_folder_path(&c.folder) {
-            c.folder.clone()
-        } else {
-            paths.first().map(|p| parent_path(p)).unwrap_or_default()
-        };
-        m.push(Some(scripts_menu(&cwd, &paths, &c.data)));
-    }
+    // Search results, Recent and the Gallery show files from everywhere: the way to the folder is next to Open.
     if let Some(e) = one.filter(|_| c.find || is_recent(&c.folder) || is_gallery(&c.folder)) {
         m.push(
             Entry::ask(
@@ -448,27 +253,471 @@ pub fn item_menu(targets: &[FileEntry], c: &ItemCtx) -> Vec<Node> {
             .node(),
         );
     }
-    if !remote {
+    // An archive that was extracted before: its folder is a click away, ahead of extracting it again.
+    if let Some(folder) = archive_file
+        .filter(|_| !fixed)
+        .and(c.probed.as_ref())
+        .and_then(|probed| probed.extracted.clone().flatten())
+    {
         m.push(
-            match &archived {
-                Some(archive) => Entry::ask(
-                    t!("Show the archive in File Explorer"),
-                    IconName::FolderSearch,
-                    MenuEvent::RevealArchive {
-                        archive: archive.outer.clone(),
-                    },
-                ),
-                None => Entry::ask(
-                    t!("Show in File Explorer"),
-                    IconName::FolderSearch,
-                    MenuEvent::RevealInFileExplorer { paths: paths.clone() },
-                ),
-            }
+            Entry::task(
+                t!("Open extracted folder"),
+                IconName::FolderOpen,
+                Task::OpenExtracted(folder),
+            )
             .node(),
         );
     }
+    if let Some(e) = archive_file.filter(|_| !fixed) {
+        m.push(
+            Entry::ask(
+                t!("Extract here"),
+                IconName::ArchiveRestore,
+                MenuEvent::ExtractHere { path: e.path.clone() },
+            )
+            .node(),
+        );
+    }
+    if let Some(e) = archive_file.filter(|_| !closed) {
+        m.push(
+            Entry::ask(
+                t!("Open with its app"),
+                IconName::AppWindow,
+                MenuEvent::OpenWithItsApp {
+                    path: e.path.clone(),
+                    extract_first: archived.is_some(),
+                },
+            )
+            .node(),
+        );
+    }
+    // Several folders open in tabs; one folder in a tab, beside this pane, or in a terminal.
+    if one.is_none() && !folders.is_empty() {
+        m.push(
+            Entry::task(
+                if folders.len() > 1 {
+                    t!("Open {n} folders in new tabs", n = folders.len())
+                } else {
+                    t!("Open in new tab")
+                },
+                IconName::SquarePlus,
+                Task::OpenInNewTabs(folders.iter().map(|f| f.path.clone()).collect()),
+            )
+            .hint_of(Command::OpenInNewTab)
+            .node(),
+        );
+    }
+    if let Some(e) = folder_one {
+        m.push(
+            Entry::task(
+                t!("Open in new tab"),
+                IconName::SquarePlus,
+                Task::OpenInNewTabs(vec![e.path.clone()]),
+            )
+            .hint_of(Command::OpenInNewTab)
+            .node(),
+        );
+    }
+    if let Some(e) = folder_one.filter(|e| !closed && !is_recycled(e)) {
+        m.push(
+            Entry::task(
+                if c.dual {
+                    t!("Open in the other pane")
+                } else {
+                    t!("Open side by side")
+                },
+                IconName::Columns2,
+                Task::OpenInOtherPane {
+                    path: e.path.clone(),
+                    from: c.pane,
+                },
+            )
+            .node(),
+        );
+    }
+    if let Some(e) = folder_one.filter(|_| !fixed) {
+        m.push(
+            Entry::task(
+                t!("Open in Terminal"),
+                IconName::SquareTerminal,
+                Task::OpenTerminal(e.path.clone()),
+            )
+            .node(),
+        );
+    }
+    // A file: choose the app, or the editor Settings names, then a look at it.
+    if let Some(e) = one.filter(|e| !e.dir && !closed && !is_archive_file(e)) {
+        let run = if archived.is_some() || remote {
+            Entry::ask(
+                t!("Open with…"),
+                IconName::AppWindow,
+                MenuEvent::OpenWithPicker { path: e.path.clone() },
+            )
+        } else {
+            Entry::task(t!("Open with…"), IconName::AppWindow, Task::OpenWith(e.path.clone()))
+        };
+        m.push(run.node());
+    }
+    if let Some(e) = one.filter(|e| !e.dir && !closed && !c.editor_name.is_empty()) {
+        m.push(
+            Entry::ask(
+                t!("Open with {editor}", editor = c.editor_name),
+                IconName::Code,
+                MenuEvent::OpenWithEditor {
+                    path: e.path.clone(),
+                    editor: c.editor_path.trim().to_string(),
+                    extract_first: archived.is_some() || remote,
+                },
+            )
+            .node(),
+        );
+    }
+    if one.is_some_and(|e| !e.dir) {
+        m.push(Entry::command(t!("Quick Look"), IconName::Eye, Command::QuickLook).node());
+    }
+
+    // ---- What kind of thing it is -----------------------------------------------------------------------------
+    // A section is a heading, the kind's most used rows, and "More … tools" with the rest. A mixed selection
+    // gets each kind's section; what can't apply to anything chosen isn't there.
+    let readable_picture =
+        |e: &&FileEntry| !e.dir && on_disk(e) && !is_online_only(e) && TEXT_PICTURES.contains(&e.ext());
+    let pic_count = targets
+        .iter()
+        .filter(|e| can_convert(e) || can_rotate(e) || can_wallpaper(e) || readable_picture(e))
+        .count();
+    let any_picture = pic_count > 0;
+    let doc_count = targets
+        .iter()
+        .filter(|e| !fixed && (can_convert_doc(e) || is_office_file(e)))
+        .count();
+    let any_document = doc_count > 0;
+    let any_video = !videos.is_empty();
+    let any_pdf = !pdfs.is_empty();
+    // Make smaller works on pictures, videos, PDFs and Office files: it lives with the first of them there.
+    let shrinks = !fixed && targets.iter().any(can_shrink);
+    let shrink_home = if any_picture {
+        Some("picture")
+    } else if any_video {
+        Some("video")
+    } else if any_pdf {
+        Some("pdf")
+    } else if any_document {
+        Some("document")
+    } else {
+        None
+    };
+    let smaller_for = |home: &str| -> Option<Node> {
+        if shrinks && shrink_home == Some(home) {
+            Entry::ask(
+                t!("Make smaller…"),
+                IconName::Minimize2,
+                MenuEvent::MakeSmaller { paths: paths.clone() },
+            )
+            .node()
+        } else {
+            None
+        }
+    };
+    // Personal info and the date taken belong with pictures; for anything else they are under Clean up.
+    let personal_rows = || -> Vec<Option<Node>> {
+        vec![
+            when(!fixed && targets.iter().any(can_clean), || {
+                entry_node(Entry::ask(
+                    t!("Remove personal info…"),
+                    IconName::EyeOff,
+                    MenuEvent::RemovePersonalInfo { paths: paths.clone() },
+                ))
+            }),
+            when(!fixed && targets.iter().any(can_redate), || {
+                entry_node(Entry::ask(
+                    t!("Change when it was taken…"),
+                    IconName::CalendarClock,
+                    MenuEvent::ChangeDateTaken { paths: paths.clone() },
+                ))
+            }),
+        ]
+    };
+    let mut sections: Vec<Option<Node>> = Vec::new();
+
+    if any_picture {
+        sections.push(Some(Node::Heading(if pic_count > 1 {
+            t!("Pictures")
+        } else {
+            t!("Picture")
+        })));
+        let rotate_paths: Vec<String> = rotatable.iter().map(|e| e.path.clone()).collect();
+        sections.push(when(!rotatable.is_empty(), || {
+            entry_node(Entry::ask(
+                t!("Rotate right"),
+                IconName::RotateCwSquare,
+                MenuEvent::Rotate {
+                    paths: rotate_paths.clone(),
+                    clockwise: true,
+                },
+            ))
+        }));
+        if let Some(e) = one.filter(|e| can_wallpaper(e)) {
+            sections.push(
+                Entry::ask(
+                    t!("Set as desktop background"),
+                    IconName::Wallpaper,
+                    MenuEvent::SetWallpaper { path: e.path.clone() },
+                )
+                .node(),
+            );
+        }
+        if !pictures.is_empty() {
+            sections.push(
+                Entry::ask(
+                    if pictures.len() > 1 {
+                        t!("Convert {n} pictures…", n = pictures.len())
+                    } else {
+                        t!("Convert picture…")
+                    },
+                    IconName::ImageDown,
+                    MenuEvent::ConvertPictures {
+                        paths: pictures.iter().map(|e| e.path.clone()).collect(),
+                    },
+                )
+                .node(),
+            );
+        }
+        let mut more: Vec<Option<Node>> = vec![
+            when(!rotatable.is_empty(), || {
+                entry_node(Entry::ask(
+                    t!("Rotate left"),
+                    IconName::RotateCcwSquare,
+                    MenuEvent::Rotate {
+                        paths: rotate_paths.clone(),
+                        clockwise: false,
+                    },
+                ))
+            }),
+            one.filter(readable_picture).and_then(|e| {
+                Entry::ask(
+                    t!("Copy the text in it"),
+                    IconName::ScanText,
+                    MenuEvent::CopyTextIn { path: e.path.clone() },
+                )
+                .node()
+            }),
+            smaller_for("picture"),
+            one.filter(|e| can_convert(e)).and_then(|e| {
+                Entry::ask(
+                    t!("Find similar colors"),
+                    IconName::Pipette,
+                    MenuEvent::MatchColor { path: e.path.clone() },
+                )
+                .node()
+            }),
+        ];
+        more.extend(personal_rows());
+        sections.push(Some(Node::menu(more_picture_label(), IconName::Image, more)));
+    }
+
+    if any_video || media.iter().any(|e| !is_video_file(e)) {
+        let media_paths: Vec<String> = media.iter().map(|e| e.path.clone()).collect();
+        let tool = |label: SharedString, icon, tool| {
+            Entry::ask(
+                label,
+                icon,
+                MenuEvent::Media {
+                    paths: media_paths.clone(),
+                    tool,
+                },
+            )
+            .node()
+        };
+        let song_row = when(targets.iter().any(is_song), || {
+            entry_node(Entry::ask(
+                t!("Edit song details…"),
+                IconName::Music,
+                MenuEvent::EditSongs { paths: paths.clone() },
+            ))
+        });
+        if any_video {
+            sections.push(Some(Node::Heading(if videos.len() > 1 {
+                t!("Videos")
+            } else {
+                t!("Video")
+            })));
+            sections.push(
+                Entry::ask(
+                    if videos.len() > 1 {
+                        t!("Convert or shrink {n} videos…", n = videos.len())
+                    } else {
+                        t!("Convert or shrink…")
+                    },
+                    IconName::Film,
+                    MenuEvent::Media {
+                        paths: media_paths.clone(),
+                        tool: MediaTool::Convert,
+                    },
+                )
+                .node(),
+            );
+            sections.push(tool(t!("Make a GIF…"), IconName::Clapperboard, MediaTool::Gif));
+            sections.push(tool(t!("Take the sound out…"), IconName::AudioLines, MediaTool::Audio));
+            sections.push(song_row);
+            sections.push(Some(Node::menu(
+                more_video_label(),
+                IconName::Film,
+                vec![
+                    tool(t!("Make subtitles…"), IconName::Captions, MediaTool::Subtitles),
+                    tool(t!("Even out the volume…"), IconName::Volume2, MediaTool::Volume),
+                    smaller_for("video"),
+                ],
+            )));
+        } else {
+            sections.push(Some(Node::Heading(t!("Audio"))));
+            sections.push(song_row);
+            sections.push(tool(t!("Even out the volume…"), IconName::Volume2, MediaTool::Volume));
+            sections.push(Some(Node::menu(
+                more_audio_label(),
+                IconName::AudioLines,
+                vec![tool(t!("Make subtitles…"), IconName::Captions, MediaTool::Subtitles)],
+            )));
+        }
+    }
+
+    if any_pdf {
+        sections.push(Some(Node::Heading(t!("PDF"))));
+        sections.extend(pdf_section(&pdfs, smaller_for("pdf")));
+    }
+
+    if any_document {
+        sections.push(Some(Node::Heading(if doc_count > 1 {
+            t!("Documents")
+        } else {
+            t!("Document")
+        })));
+        sections.push(when(!fixed && targets.iter().any(can_convert_doc), || {
+            entry_node(Entry::ask(
+                t!("Convert document…"),
+                IconName::FileType,
+                MenuEvent::ConvertDocument { paths: paths.clone() },
+            ))
+        }));
+        sections.push(smaller_for("document"));
+    }
+
+    if !data_files.is_empty() {
+        sections.push(Some(Node::Heading(t!("Data"))));
+        sections.push(
+            Entry::ask(
+                t!("Convert data…"),
+                IconName::FileCog,
+                MenuEvent::ConvertData {
+                    paths: data_files.iter().map(|e| e.path.clone()).collect(),
+                },
+            )
+            .node(),
+        );
+        if data_files.len() > 1 {
+            sections.push(
+                Entry::ask(
+                    t!("Query {n} files together…", n = data_files.len()),
+                    IconName::Sigma,
+                    MenuEvent::QueryTogether {
+                        paths: data_files.iter().map(|e| e.path.clone()).collect(),
+                    },
+                )
+                .node(),
+            );
+        }
+    }
+
+    // Programs, scripts and installers: Windows asks for administrator approval, or a throwaway Windows tries it.
+    let loose = |e: &&FileEntry| !e.dir && !closed && archived.is_none() && !remote && !is_recycle_bin(&c.folder);
+    let program_rows: Vec<Option<Node>> = vec![
+        one.filter(|e| loose(e) && is_program(&e.name)).and_then(|e| {
+            Entry::task(
+                t!("Run as administrator"),
+                IconName::ShieldCheck,
+                Task::RunAsAdmin(e.path.clone()),
+            )
+            .node()
+        }),
+        one.filter(|e| loose(e) && runs_in_sandbox(e, blocked)).and_then(|e| {
+            Entry::ask(
+                t!("Run in Windows Sandbox"),
+                IconName::Box,
+                MenuEvent::RunInSandbox { path: e.path.clone() },
+            )
+            .node()
+        }),
+        // Windows marked it as downloaded from the internet: one press takes the mark off.
+        one.filter(|e| blocked && !e.dir && !fixed).and_then(|e| {
+            Entry::ask(
+                t!("Unblock"),
+                IconName::LockOpen,
+                MenuEvent::Unblock {
+                    paths: vec![e.path.clone()],
+                },
+            )
+            .node()
+        }),
+    ];
+    if program_rows.iter().any(Option::is_some) {
+        sections.push(Some(Node::Heading(t!("Program"))));
+        sections.extend(program_rows);
+    }
+
+    if let Some(e) = archive_file.filter(|_| !fixed && !remote) {
+        sections.push(Some(Node::Heading(t!("Archive"))));
+        sections.push(
+            Entry::ask(
+                t!("Mount as live folder"),
+                IconName::Pin,
+                MenuEvent::PinPortal {
+                    name: e.name.clone(),
+                    source: glint_core::portals::PortalSource::Archive {
+                        archive_path: e.path.clone(),
+                    },
+                },
+            )
+            .node(),
+        );
+    }
+    if let Some(e) = one.filter(|e| is_disk_image(e) && !fixed) {
+        sections.push(Some(Node::Heading(t!("Disk image"))));
+        sections.push(Entry::ask(t!("Mount"), IconName::Disc3, MenuEvent::Mount { path: e.path.clone() }).node());
+    }
+    if cloud {
+        sections.push(Some(Node::Heading(t!("Cloud file"))));
+        sections.push(
+            Entry::ask(
+                t!("Always keep on this device"),
+                IconName::CloudDownload,
+                MenuEvent::CloudPin {
+                    paths: paths.clone(),
+                    state: if kept { CloudPin::Auto } else { CloudPin::Keep },
+                },
+            )
+            .checked(kept)
+            .node(),
+        );
+        sections.push(
+            Entry::ask(
+                t!("Free up space"),
+                IconName::CloudOff,
+                MenuEvent::CloudPin {
+                    paths: paths.clone(),
+                    state: CloudPin::Free,
+                },
+            )
+            .disabled_because(freed, &Some(t!("It is online only already")))
+            .node(),
+        );
+    }
+    m.extend(sections);
     m.push(separator());
 
+    // ---- Organize -------------------------------------------------------------------------------------------------
+    // Not in the Recycle Bin's menu (it has its own), and not for what can't be moved or copied from here.
+    if !fixed {
+        m.push(Some(send_to::menu(&paths, &c.places, &c.folder)));
+    }
     if c.dual {
         let name = c.other_folder.clone();
         m.push(
@@ -502,9 +751,41 @@ pub fn item_menu(targets: &[FileEntry], c: &ItemCtx) -> Vec<Node> {
             .node(),
         );
     }
-    // Not in the Recycle Bin's menu (it has its own), and not for what can't be moved or copied from here.
     if !fixed {
-        m.push(Some(send_to::menu(&paths, &c.places, &c.folder)));
+        let compress = |label: SharedString, format| {
+            Entry::ask(
+                label,
+                IconName::FileArchive,
+                MenuEvent::Compress {
+                    paths: paths.clone(),
+                    format,
+                },
+            )
+            .node()
+        };
+        m.push(Some(Node::menu(
+            t!("Compress to"),
+            IconName::FileArchive,
+            vec![
+                compress(t!("Zip file"), CompressFormat::Zip),
+                compress(t!("7z file"), CompressFormat::SevenZ),
+                compress(t!("tar.zst file"), CompressFormat::TarZst),
+                when(targets.iter().all(can_compress_in_place), || {
+                    entry_node(Entry::ask(
+                        t!("In place (still opens normally)…"),
+                        IconName::Shrink,
+                        MenuEvent::CompressInPlace { paths: paths.clone() },
+                    ))
+                }),
+                separator(),
+                Entry::ask(
+                    t!("With a password…"),
+                    IconName::KeyRound,
+                    MenuEvent::CompressWithPassword { paths: paths.clone() },
+                )
+                .node(),
+            ],
+        )));
     }
     if let Some((a, b)) = pair {
         m.push(
@@ -557,258 +838,120 @@ pub fn item_menu(targets: &[FileEntry], c: &ItemCtx) -> Vec<Node> {
             .node(),
         );
     }
-    if !fixed {
-        m.push(Some(tags_menu(&paths, &c.data)));
-    }
-    if !fixed {
-        let compress = |label: SharedString, format| {
-            Entry::ask(
-                label,
-                IconName::FileArchive,
-                MenuEvent::Compress {
-                    paths: paths.clone(),
-                    format,
-                },
-            )
-            .node()
-        };
-        m.push(Some(Node::menu(
-            t!("Compress to"),
-            IconName::FileArchive,
-            vec![
-                compress(t!("Zip file"), CompressFormat::Zip),
-                compress(t!("7z file"), CompressFormat::SevenZ),
-                compress(t!("tar.zst file"), CompressFormat::TarZst),
-                when(targets.iter().all(can_compress_in_place), || {
-                    entry_node(Entry::ask(
-                        t!("In place (still opens normally)…"),
-                        IconName::Shrink,
-                        MenuEvent::CompressInPlace { paths: paths.clone() },
-                    ))
-                }),
-                separator(),
-                Entry::ask(
-                    t!("With a password…"),
-                    IconName::KeyRound,
-                    MenuEvent::CompressWithPassword { paths: paths.clone() },
-                )
+    if one.is_none() && !fixed {
+        m.push(
+            Entry::command(t!("Rename {n} items…", n = n), IconName::PenLine, Command::BatchRename)
+                .hinted("F2")
                 .node(),
-            ],
-        )));
+        );
     }
-    if !fixed && targets.iter().any(can_shrink) {
-        m.push(
-            Entry::ask(
-                t!("Make smaller…"),
-                IconName::Minimize2,
-                MenuEvent::MakeSmaller { paths: paths.clone() },
+
+    // ---- More -----------------------------------------------------------------------------------------------------
+    let mut more: Vec<Option<Node>> = Vec::new();
+    // What isn't one of the first rows for this kind of item, but is still its own.
+    if let Some(e) = archive_file.filter(|_| !closed) {
+        more.push(
+            Entry::task(
+                t!("Open in new tab"),
+                IconName::SquarePlus,
+                Task::OpenInNewTabs(vec![e.path.clone()]),
+            )
+            .hint_of(Command::OpenInNewTab)
+            .node(),
+        );
+        more.push(
+            if archived.is_some() || remote {
+                Entry::ask(
+                    t!("Open with…"),
+                    IconName::AppWindow,
+                    MenuEvent::OpenWithPicker { path: e.path.clone() },
+                )
+            } else {
+                Entry::task(t!("Open with…"), IconName::AppWindow, Task::OpenWith(e.path.clone()))
+            }
+            .node(),
+        );
+    }
+    // A .docx or .jar is a zip too: Enter opens it in its app, this looks inside.
+    if let Some(e) = one.filter(|e| is_browsable(e) && !closed) {
+        more.push(
+            Entry::task(
+                t!("Open as archive"),
+                IconName::FileArchive,
+                Task::Navigate(e.path.clone()),
             )
             .node(),
         );
     }
-    if let Some(e) = one.filter(|e| can_back_up(e)) {
-        m.push(
+    if let Some(e) = one.filter(|e| is_browsable(e) && !is_archive_file(e) && !fixed) {
+        more.push(
             Entry::ask(
-                t!("Back up…"),
-                IconName::DatabaseBackup,
-                MenuEvent::BackUp { folder: e.path.clone() },
+                t!("Extract here"),
+                IconName::ArchiveRestore,
+                MenuEvent::ExtractHere { path: e.path.clone() },
             )
             .node(),
         );
     }
-    if !pictures.is_empty() {
-        m.push(
+    if folder_one.is_some() {
+        more.push(Entry::command(t!("Quick Look"), IconName::Eye, Command::QuickLook).node());
+    }
+    if let Some(e) = folder_one.filter(|e| archived.is_none() && !remote && !closed && !is_recycled(e)) {
+        more.push(
             Entry::ask(
-                if pictures.len() > 1 {
-                    t!("Convert {n} pictures…", n = pictures.len())
-                } else {
-                    t!("Convert picture…")
-                },
-                IconName::ImageDown,
-                MenuEvent::ConvertPictures {
-                    paths: pictures.iter().map(|e| e.path.clone()).collect(),
-                },
+                t!("Open in new window"),
+                IconName::AppWindow,
+                MenuEvent::OpenInNewWindow { path: e.path.clone() },
+            )
+            .hinted("Ctrl+N")
+            .node(),
+        );
+    }
+    if !remote {
+        more.push(
+            match &archived {
+                Some(archive) => Entry::ask(
+                    t!("Show the archive in File Explorer"),
+                    IconName::FolderSearch,
+                    MenuEvent::RevealArchive {
+                        archive: archive.outer.clone(),
+                    },
+                ),
+                None => Entry::ask(
+                    t!("Show in File Explorer"),
+                    IconName::FolderSearch,
+                    MenuEvent::RevealInFileExplorer { paths: paths.clone() },
+                ),
+            }
+            .node(),
+        );
+    }
+    // As File Explorer's Previous Versions: what Windows' restore points and backups kept of it.
+    if let Some(e) = one.filter(|e| !closed && archived.is_none() && !remote && on_a_drive(&e.path)) {
+        more.push(
+            Entry::ask(
+                t!("Previous versions…"),
+                IconName::ArchiveRestore,
+                MenuEvent::PreviousVersions { path: e.path.clone() },
             )
             .node(),
         );
     }
-    if !media.is_empty() {
-        let media_paths: Vec<String> = media.iter().map(|e| e.path.clone()).collect();
-        let tool = |label: SharedString, icon, tool| {
-            Entry::ask(
-                label,
-                icon,
-                MenuEvent::Media {
-                    paths: media_paths.clone(),
-                    tool,
-                },
-            )
-            .node()
+    more.push(separator());
+    if let Some(e) = one.filter(|_| !fixed && !c.data.openers.is_empty()) {
+        more.push(Some(open_in_menu(&e.path, &c.data)));
+    }
+    if !fixed {
+        let cwd = if is_folder_path(&c.folder) {
+            c.folder.clone()
+        } else {
+            paths.first().map(|p| parent_path(p)).unwrap_or_default()
         };
-        m.push(Some(Node::menu(
-            t!("Media"),
-            IconName::Film,
-            vec![
-                when(!videos.is_empty(), || {
-                    entry_node(Entry::ask(
-                        if videos.len() > 1 {
-                            t!("Convert or shrink {n} videos…", n = videos.len())
-                        } else {
-                            t!("Convert or shrink…")
-                        },
-                        IconName::Film,
-                        MenuEvent::Media {
-                            paths: media_paths.clone(),
-                            tool: MediaTool::Convert,
-                        },
-                    ))
-                }),
-                tool(t!("Take the sound out…"), IconName::AudioLines, MediaTool::Audio),
-                when(!videos.is_empty(), || {
-                    entry_node(Entry::ask(
-                        t!("Make a GIF…"),
-                        IconName::Clapperboard,
-                        MenuEvent::Media {
-                            paths: media_paths.clone(),
-                            tool: MediaTool::Gif,
-                        },
-                    ))
-                }),
-                tool(t!("Make subtitles…"), IconName::Captions, MediaTool::Subtitles),
-                tool(t!("Even out the volume…"), IconName::Volume2, MediaTool::Volume),
-                when(targets.iter().any(is_song), || {
-                    entry_node(Entry::ask(
-                        t!("Edit song details…"),
-                        IconName::Music,
-                        MenuEvent::EditSongs { paths: paths.clone() },
-                    ))
-                }),
-            ],
-        )));
-    }
-    if !fixed && targets.iter().any(can_convert_doc) {
-        m.push(
-            Entry::ask(
-                t!("Convert document…"),
-                IconName::FileType,
-                MenuEvent::ConvertDocument { paths: paths.clone() },
-            )
-            .node(),
-        );
-    }
-    if data_files.len() > 1 {
-        m.push(
-            Entry::ask(
-                t!("Query {n} files together…", n = data_files.len()),
-                IconName::Sigma,
-                MenuEvent::QueryTogether {
-                    paths: data_files.iter().map(|e| e.path.clone()).collect(),
-                },
-            )
-            .node(),
-        );
-    }
-    if !data_files.is_empty() {
-        m.push(
-            Entry::ask(
-                t!("Convert data…"),
-                IconName::FileCog,
-                MenuEvent::ConvertData {
-                    paths: data_files.iter().map(|e| e.path.clone()).collect(),
-                },
-            )
-            .node(),
-        );
-    }
-    if !pdfs.is_empty() {
-        m.push(Some(pdf_tools_menu(&pdfs)));
-    }
-    // Windows' own text recognition, on a picture that is on the disk.
-    let readable_picture =
-        |e: &&FileEntry| !e.dir && on_disk(e) && !is_online_only(e) && TEXT_PICTURES.contains(&e.ext());
-    if let Some(e) = one.filter(readable_picture) {
-        m.push(
-            Entry::ask(
-                t!("Copy the text in it"),
-                IconName::ScanText,
-                MenuEvent::CopyTextIn { path: e.path.clone() },
-            )
-            .node(),
-        );
-    }
-    if let Some(e) = one.filter(|e| can_wallpaper(e)) {
-        m.push(
-            Entry::ask(
-                t!("Set as desktop background"),
-                IconName::Wallpaper,
-                MenuEvent::SetWallpaper { path: e.path.clone() },
-            )
-            .node(),
-        );
-    }
-    if let Some(e) = one.filter(|e| can_convert(e)) {
-        m.push(
-            Entry::ask(
-                t!("Find similar colors"),
-                IconName::Pipette,
-                MenuEvent::MatchColor { path: e.path.clone() },
-            )
-            .node(),
-        );
-    }
-    if !rotatable.is_empty() {
-        let rotate_paths: Vec<String> = rotatable.iter().map(|e| e.path.clone()).collect();
-        m.push(
-            Entry::ask(
-                t!("Rotate right"),
-                IconName::RotateCwSquare,
-                MenuEvent::Rotate {
-                    paths: rotate_paths.clone(),
-                    clockwise: true,
-                },
-            )
-            .node(),
-        );
-        m.push(
-            Entry::ask(
-                t!("Rotate left"),
-                IconName::RotateCcwSquare,
-                MenuEvent::Rotate {
-                    paths: rotate_paths,
-                    clockwise: false,
-                },
-            )
-            .node(),
-        );
-    }
-    if cloud {
-        m.push(
-            Entry::ask(
-                t!("Always keep on this device"),
-                IconName::CloudDownload,
-                MenuEvent::CloudPin {
-                    paths: paths.clone(),
-                    state: if kept { CloudPin::Auto } else { CloudPin::Keep },
-                },
-            )
-            .checked(kept)
-            .node(),
-        );
-        m.push(
-            Entry::ask(
-                t!("Free up space"),
-                IconName::CloudOff,
-                MenuEvent::CloudPin {
-                    paths: paths.clone(),
-                    state: CloudPin::Free,
-                },
-            )
-            .disabled_because(freed, &Some(t!("It is online only already")))
-            .node(),
-        );
+        more.push(Some(scripts_menu(&cwd, &paths, &c.data)));
+        more.push(Some(tags_menu(&paths, &c.data)));
     }
     if one.is_some() && !c.find && !fixed {
-        m.push(
+        more.push(
             Entry::ask(
                 t!("Rename items in this folder…"),
                 IconName::PenLine,
@@ -818,10 +961,18 @@ pub fn item_menu(targets: &[FileEntry], c: &ItemCtx) -> Vec<Node> {
             .node(),
         );
     }
-    m.push(separator());
-
-    if let Some(e) = one.filter(|e| e.dir && !fixed) {
-        m.push(
+    if let Some(e) = one.filter(|e| can_back_up(e)) {
+        more.push(
+            Entry::ask(
+                t!("Back up…"),
+                IconName::DatabaseBackup,
+                MenuEvent::BackUp { folder: e.path.clone() },
+            )
+            .node(),
+        );
+    }
+    if let Some(e) = folder_one.filter(|_| !fixed) {
+        more.push(
             Entry::ask(
                 t!("Search here"),
                 IconName::Search,
@@ -830,7 +981,8 @@ pub fn item_menu(targets: &[FileEntry], c: &ItemCtx) -> Vec<Node> {
             .node(),
         );
     }
-    m.push(Some(Node::menu(
+    more.push(separator());
+    more.push(Some(Node::menu(
         t!("Inspect & check"),
         IconName::ScanSearch,
         vec![
@@ -852,7 +1004,7 @@ pub fn item_menu(targets: &[FileEntry], c: &ItemCtx) -> Vec<Node> {
                     )
                     .node()
                 }),
-            one.filter(|e| e.dir && !fixed).and_then(|e| {
+            folder_one.filter(|_| !fixed).and_then(|e| {
                 Entry::ask(
                     t!("Recent changes"),
                     IconName::FileClock,
@@ -877,61 +1029,52 @@ pub fn item_menu(targets: &[FileEntry], c: &ItemCtx) -> Vec<Node> {
             }),
         ],
     )));
-    let folder_one = one.filter(|e| e.dir && !fixed);
-    m.push(Some(Node::menu(
-        t!("Clean up & share"),
-        IconName::BrushCleaning,
-        vec![
-            folder_one.and_then(|e| {
-                Entry::ask(
-                    t!("Find duplicate files"),
-                    IconName::Files,
-                    MenuEvent::Duplicates { folder: e.path.clone() },
-                )
-                .node()
-            }),
-            folder_one.and_then(|e| {
-                Entry::ask(
-                    t!("Clean up…"),
-                    IconName::BrushCleaning,
-                    MenuEvent::Cleanup { folder: e.path.clone() },
-                )
-                .node()
-            }),
-            when(!fixed && targets.iter().any(can_clean), || {
-                entry_node(Entry::ask(
-                    t!("Remove personal info…"),
-                    IconName::EyeOff,
-                    MenuEvent::RemovePersonalInfo { paths: paths.clone() },
-                ))
-            }),
-            when(!fixed && targets.iter().any(can_redate), || {
-                entry_node(Entry::ask(
-                    t!("Change when it was taken…"),
-                    IconName::CalendarClock,
-                    MenuEvent::ChangeDateTaken { paths: paths.clone() },
-                ))
-            }),
-            separator(),
-            one.filter(|e| !fixed && on_a_drive(&e.path)).and_then(|e| {
-                Entry::ask(
-                    t!("Copy permalink"),
-                    IconName::Link,
-                    MenuEvent::CopyPermalink { path: e.path.clone() },
-                )
-                .node()
-            }),
-            when(!fixed, || {
-                entry_node(Entry::ask(
-                    t!("Share…"),
-                    IconName::Share2,
-                    MenuEvent::Share { paths: paths.clone() },
-                ))
-            }),
-        ],
-    )));
+    let folder_ok = folder_one.filter(|_| !fixed);
+    let mut clean: Vec<Option<Node>> = vec![
+        folder_ok.and_then(|e| {
+            Entry::ask(
+                t!("Find duplicate files"),
+                IconName::Files,
+                MenuEvent::Duplicates { folder: e.path.clone() },
+            )
+            .node()
+        }),
+        folder_ok.and_then(|e| {
+            Entry::ask(
+                t!("Clean up…"),
+                IconName::BrushCleaning,
+                MenuEvent::Cleanup { folder: e.path.clone() },
+            )
+            .node()
+        }),
+    ];
+    if !any_picture {
+        clean.extend(personal_rows());
+    }
+    if shrinks && shrink_home.is_none() {
+        clean.push(
+            Entry::ask(
+                t!("Make smaller…"),
+                IconName::Minimize2,
+                MenuEvent::MakeSmaller { paths: paths.clone() },
+            )
+            .node(),
+        );
+    }
+    clean.push(separator());
+    clean.push(one.filter(|e| !fixed && on_a_drive(&e.path)).and_then(|e| {
+        Entry::ask(
+            t!("Copy permalink"),
+            IconName::Link,
+            MenuEvent::CopyPermalink { path: e.path.clone() },
+        )
+        .node()
+    }));
+    more.push(Some(Node::menu(t!("Clean up"), IconName::BrushCleaning, clean)));
+    m.push(Some(Node::menu(t!("More"), IconName::Ellipsis, more)));
     m.push(separator());
 
+    // ---- The end ------------------------------------------------------------------------------------------------
     if one.is_some() && archived.is_none() && !remote {
         m.push(Entry::command(t!("Properties"), IconName::Info, Command::Properties).node());
     }
@@ -956,6 +1099,97 @@ pub fn item_menu(targets: &[FileEntry], c: &ItemCtx) -> Vec<Node> {
         m.push(closed_note());
     }
     visible_items(m.into_iter().flatten().collect())
+}
+
+/// The kinds' "More … tools" submenus: what their sections keep a click further away.
+fn more_picture_label() -> SharedString {
+    t!("More picture tools")
+}
+
+fn more_video_label() -> SharedString {
+    t!("More video tools")
+}
+
+fn more_audio_label() -> SharedString {
+    t!("More audio tools")
+}
+
+fn more_pdf_label() -> SharedString {
+    t!("More PDF tools")
+}
+
+/// The names of the "More … tools" submenus, for the Suggested section (a copy of a row in one of them doesn't
+/// repeat the shelf's name).
+pub(super) fn kind_shelves() -> [SharedString; 4] {
+    [
+        more_picture_label(),
+        more_video_label(),
+        more_audio_label(),
+        more_pdf_label(),
+    ]
+}
+
+/// What Windows' Sandbox is offered for: programs, scripts and installers, and what Windows marked as
+/// downloaded from the internet (but never a picture, a recording or a plain text file).
+fn runs_in_sandbox(e: &FileEntry, downloaded: bool) -> bool {
+    const RUNNABLE: &[&str] = &[
+        "exe", "msi", "bat", "cmd", "com", "ps1", "vbs", "js", "jar", "appx", "msix", "msc", "scr", "lnk",
+    ];
+    const PLAIN: &[&str] = &[
+        "txt", "md", "log", "json", "xml", "yml", "yaml", "toml", "ini", "csv", "tsv", "rs", "ts", "py", "html", "css",
+        "cfg", "conf", "sql", "svg",
+    ];
+    if e.dir {
+        return false;
+    }
+    if RUNNABLE.contains(&e.ext()) {
+        return true;
+    }
+    downloaded && !can_convert(e) && !can_wallpaper(e) && !is_media_file(e) && !PLAIN.contains(&e.ext())
+}
+
+/// A PDF's rows: the most used ones, then "More PDF tools" with the rest (and Make smaller, when it lives here).
+fn pdf_section(pdfs: &[&FileEntry], make_smaller: Option<Node>) -> Vec<Option<Node>> {
+    let paths: Vec<String> = pdfs.iter().map(|e| e.path.clone()).collect();
+    let tool = |label: SharedString, icon, tool| {
+        Entry::ask(
+            label,
+            icon,
+            MenuEvent::PdfTools {
+                paths: paths.clone(),
+                tool,
+            },
+        )
+        .node()
+    };
+    vec![
+        when(pdfs.len() > 1, || {
+            entry_node(Entry::ask(
+                t!("Merge {n} PDFs…", n = pdfs.len()),
+                IconName::FileStack,
+                MenuEvent::PdfTools {
+                    paths: paths.clone(),
+                    tool: PdfTool::Merge,
+                },
+            ))
+        }),
+        tool(t!("Split…"), IconName::Scissors, PdfTool::Split),
+        tool(t!("Keep or take out pages…"), IconName::FileText, PdfTool::Keep),
+        tool(t!("Make smaller"), IconName::Minimize2, PdfTool::Optimize),
+        Some(Node::menu(
+            more_pdf_label(),
+            IconName::FileText,
+            vec![
+                tool(t!("Turn pages…"), IconName::RotateCw, PdfTool::Rotate),
+                tool(t!("Save its pictures…"), IconName::Images, PdfTool::Images),
+                make_smaller,
+                separator(),
+                tool(t!("Add a password…"), IconName::KeyRound, PdfTool::Encrypt),
+                tool(t!("Take the password off…"), IconName::LockOpen, PdfTool::Decrypt),
+                tool(t!("Stamp…"), IconName::Stamp, PdfTool::Stamp),
+            ],
+        )),
+    ]
 }
 
 /// The note that ends a menu in an archive: why what changes things is greyed out.
@@ -1165,44 +1399,4 @@ fn tags_menu(paths: &[String], data: &MenuData) -> Node {
         .node(),
     );
     Node::menu(t!("Tags"), IconName::Tag, items)
-}
-
-fn pdf_tools_menu(pdfs: &[&FileEntry]) -> Node {
-    let paths: Vec<String> = pdfs.iter().map(|e| e.path.clone()).collect();
-    let tool = |label: SharedString, icon, tool| {
-        Entry::ask(
-            label,
-            icon,
-            MenuEvent::PdfTools {
-                paths: paths.clone(),
-                tool,
-            },
-        )
-        .node()
-    };
-    Node::menu(
-        t!("PDF tools"),
-        IconName::FileText,
-        vec![
-            when(pdfs.len() > 1, || {
-                entry_node(Entry::ask(
-                    t!("Merge {n} PDFs…", n = pdfs.len()),
-                    IconName::FileStack,
-                    MenuEvent::PdfTools {
-                        paths: paths.clone(),
-                        tool: PdfTool::Merge,
-                    },
-                ))
-            }),
-            tool(t!("Split…"), IconName::Scissors, PdfTool::Split),
-            tool(t!("Keep or take out pages…"), IconName::FileText, PdfTool::Keep),
-            tool(t!("Turn pages…"), IconName::RotateCw, PdfTool::Rotate),
-            tool(t!("Make smaller"), IconName::Minimize2, PdfTool::Optimize),
-            tool(t!("Save its pictures…"), IconName::Images, PdfTool::Images),
-            separator(),
-            tool(t!("Add a password…"), IconName::KeyRound, PdfTool::Encrypt),
-            tool(t!("Take the password off…"), IconName::LockOpen, PdfTool::Decrypt),
-            tool(t!("Stamp…"), IconName::Stamp, PdfTool::Stamp),
-        ],
-    )
 }

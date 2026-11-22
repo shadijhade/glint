@@ -223,16 +223,17 @@ fn an_archive_that_was_extracted_suggests_its_folder_first_and_says_so_in_its_he
     rig.opened_on(PACK);
     assert!(rig.head().badges.iter().any(|b| b.label == "Already extracted"), "{:?}", rig.head());
     let nodes = rig.ui.nodes();
-    let at_top = heading(&nodes).expect("a Suggested section");
-    let rows: Vec<&str> = nodes[at_top + 1..]
+    // Its folder and Extract here lead the menu, so they are not suggested a second time.
+    assert!(heading(&nodes).is_none(), "{:?}", labels(&nodes));
+    let rows: Vec<&str> = nodes
         .iter()
-        .take_while(|n| matches!(n, Node::Item(_)))
         .filter_map(|n| match n {
             Node::Item(e) => Some(e.label.as_ref()),
             _ => None,
         })
+        .take(3)
         .collect();
-    assert_eq!(&rows[..2], ["Open extracted folder", "Extract here"], "{:?}", labels(&nodes));
+    assert_eq!(rows, ["Open", "Open extracted folder", "Extract here"], "{:?}", labels(&nodes));
 }
 
 #[gpui_kit::test]
@@ -298,19 +299,20 @@ fn a_checksum_file_suggests_checking_the_files_it_lists_and_choosing_it_asks_for
 }
 
 #[gpui_kit::test]
-fn a_zips_menu_suggests_extract_here_and_leaves_its_own_rows_as_they_were(cx: &mut TestAppContext) {
+fn a_zips_menu_leads_with_extract_here_and_leaves_its_own_rows_as_they_were(cx: &mut TestAppContext) {
     let _guard = english();
     let mut rig = rig(cx, "C:\\x");
     rig.opened_on(PACK);
     let nodes = rig.ui.nodes();
     assert!(matches!(&nodes[1], Node::Strip(_)));
-    assert!(matches!(&nodes[2], Node::Heading(h) if h == "Suggested"), "{:?}", labels(&nodes));
+    assert!(matches!(&nodes[2], Node::Item(e) if e.label == "Open"), "{:?}", labels(&nodes));
     assert!(
-        matches!(&nodes[3], Node::Item(e) if e.label == "Extract here" && e.smart),
+        matches!(&nodes[3], Node::Item(e) if e.label == "Extract here" && !e.smart),
         "{:?}",
         labels(&nodes)
     );
-    // What follows Suggested is the menu as `item_menu` makes it, from its second node on.
+    assert!(heading(&nodes).is_none(), "Extract here is not suggested again: {:?}", labels(&nodes));
+    // What follows the head is the menu as `item_menu` makes it.
     let plain = {
         let menus = rig.ui.menus.clone();
         let entry = file("C:\\x", "pack.zip", 5000, 0);
@@ -319,8 +321,7 @@ fn a_zips_menu_suggests_extract_here_and_leaves_its_own_rows_as_they_were(cx: &m
             item_menu(&[entry], &ctx)
         })
     };
-    assert_eq!(nodes[nodes.len() - (plain.len() - 1)..], plain[1..]);
-    assert_eq!(nodes[1], plain[0], "the strip is the menu's own");
+    assert_eq!(nodes[1..], plain[..]);
 }
 
 #[gpui_kit::test]
@@ -475,9 +476,7 @@ fn unblock_comes_right_after_the_sandbox_and_only_for_a_blocked_file_that_can_ch
 fn a_picture_on_disk_can_have_its_text_copied_and_other_things_cannot() {
     let _guard = english();
     let picture = item_menu(&[text("shot.png")], &ctx());
-    let all = labels(&picture);
-    let at = all.iter().position(|l| l == "Copy the text in it").expect("the row");
-    assert_eq!(all[at + 1], "Set as desktop background");
+    assert!(labels(submenu(&picture, "More picture tools")).contains(&"Copy the text in it".to_string()));
     assert_eq!(
         find(&picture, "Copy the text in it").map(|e| e.run.clone()),
         Some(Run::Ask(MenuEvent::CopyTextIn {
@@ -701,7 +700,7 @@ fn a_menu_waits_a_breath_for_what_is_being_found_out_and_suggests_from_it(cx: &m
     let nodes = rig.ui.nodes();
     in_order(
         &labels(&nodes),
-        &["# Suggested", "Scan with Microsoft Defender", "Run in Windows Sandbox", "Open"],
+        &["Open", "# Suggested", "Scan with Microsoft Defender", "Run in Windows Sandbox", "# Program"],
     );
     let reason = |label: &str| find(&nodes, label).and_then(|entry| entry.reason.clone());
     assert_eq!(reason("Scan with Microsoft Defender").as_deref(), Some("It came from github.com"));
