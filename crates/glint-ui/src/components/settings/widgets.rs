@@ -44,10 +44,21 @@ fn with_mark<E: Styled + ParentElement>(row: E, label: &str, t: &theme::Tokens) 
         return row;
     }
     row.bg(t.primary.opacity(0.10)).child(
-        canvas(|bounds, _, _| MARKED_AT.with(|at| at.set(Some(bounds))), |_, _, _, _| {})
-            .absolute()
-            .size_full(),
+        canvas(
+            |bounds, _, _| MARKED_AT.with(|at| at.set(Some(bounds))),
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .size_full(),
     )
+}
+
+/// The least height of a settings row: the same for a switch, a button and a select, so the pages' rows line up.
+const ROW_MIN: Rems = space_rows(12.);
+
+/// [`space`] as a constant.
+const fn space_rows(n: f32) -> Rems {
+    gpui_kit::rems(n * 0.25)
 }
 
 /// A section: its title (and an optional action at the other end of it) over a card of rows divided by lines.
@@ -71,9 +82,9 @@ pub fn section(
         .test_support()
         .w_full()
         .child(
+            // The title starts where the card's edge is, so a page's sections line up under one another.
             row_start()
                 .h(space(7.))
-                .px(space(1.))
                 .mb(space(2.))
                 .justify_between()
                 .child(
@@ -139,7 +150,10 @@ pub fn setting_row(
         .gap_x(space(6.))
         .gap_y(space(2.))
         .px(space(4.))
-        .py(space(3.));
+        .py(space(3.))
+        // Every row is as tall as one with a button in it, and its label and controls share a centre line.
+        .min_h(ROW_MIN)
+        .items_center();
     with_mark(row, &label, t)
         .child(label_block(label, hint, false, t).flex_1().min_w(space(48.)))
         .child(row_start().flex_none().flex_wrap().gap(space(1.5)).children(controls))
@@ -191,7 +205,9 @@ pub fn switch_row(
         .justify_between()
         .gap(space(6.))
         .px(space(4.))
-        .py(space(3.));
+        .py(space(3.))
+        .min_h(ROW_MIN)
+        .items_center();
     with_mark(row, &marked_label, t)
         .child(text)
         .child(div().flex_none().child(switch))
@@ -334,9 +350,16 @@ pub fn confirm(
     let on_ok = Rc::new(on_ok);
     window.open_dialog(cx, move |dialog, _window, _cx| {
         let on_ok = on_ok.clone();
+        let on_enter = on_ok.clone();
         dialog
             .title(title.clone())
             .w(px(440.))
+            // Enter is the main button: it closes the dialog, then runs.
+            .on_ok(move |_, window, cx| {
+                window.close_dialog(cx);
+                on_enter(window, cx);
+                false
+            })
             .child(
                 div()
                     .id("settings-confirm")
