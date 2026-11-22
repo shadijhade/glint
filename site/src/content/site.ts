@@ -112,13 +112,21 @@ export const FIND = {
 export const MORE = {
   label: "More",
   lines: ["What File Explorer", "leaves out."],
+  /** The hero clip (site/public/media/glint-demo.mp4, recorded in a made-up project folder). */
+  demo: {
+    alt: "Glint at work: into a folder of photos, from the list to tiles on the wheel, Quick Look on Space, and two panes from Ctrl+K",
+    caption: "Sixteen seconds of Glint: into a folder, from the list to tiles on the wheel, Quick Look on Space, and two panes from Ctrl+K.",
+  },
   cards: [
     { shot: "disk-usage", title: "A map of your drive", text: "Every folder and file as a block the size of the space it takes, like WizTree.", alt: "The disk usage map of C:\\Windows: every folder and file as a block sized by how much space it takes" },
     { shot: "dual-pane", title: "Tabs, and two panes", text: "Copy and move between two folders, or compare them and sync.", alt: "Two panes side by side, each with its own list of tabs in the rail" },
-    { shot: "grid-view", title: "Thumbnails that never wait", text: "1,200 photos on screen in 9.3 ms, thumbnails from Windows' own cache.", alt: "Wallpapers found by name and shown as a grid of thumbnails" },
-    { shot: "quick-look", title: "Quick Look on Space", text: "Any file full size without opening it: code, pictures, PDFs, Office files.", alt: "Quick Look showing a Rust file with syntax highlighting" },
-    { shot: "text-search", title: "One search", text: "Names and what the files hold, in one list: a file found by its contents is a row like any other.", alt: "A search for one word: the file with it in its name, then the files with it inside them, each with the lines that matched" },
+    { shot: "grid-view", title: "Thumbnails that never wait", text: "1,200 photos on screen in 9.3 ms, thumbnails from Windows' own cache.", alt: "A folder of photos as a grid of thumbnails" },
+    { shot: "quick-look", title: "Quick Look on Space", text: "Any file full size without opening it: code, pictures, PDFs, Office files.", alt: "Quick Look showing a photo full size, with when and where it was taken" },
+    { shot: "text-search", title: "One search", text: "Names and what the files hold, in one list: a file found by its contents is a row like any other.", alt: "A search for one word: the files with it in their names, then the files with it inside them, each with the lines that matched" },
     { shot: "command-palette", title: "Ctrl+K for everything", text: "Jump to the folders you use most, or run any command, by typing.", alt: "The command palette listing the commands that match what was typed" },
+    { shot: "photo-map", title: "Photos on a map", text: "Where a folder's photos were taken, on a map Glint draws itself, offline, with the trip between them.", alt: "A world map with a pin of photos at every place they were taken, and dashed arcs from one stop to the next" },
+    { shot: "color-wheel", title: "Find photos by color", text: "Pick a color on the wheel and the pictures closest to it come first.", alt: "The Color Wheel with green picked, and the nine photos that match it: lakes, forests and northern lights" },
+    { shot: "hop-mode", title: "Hop anywhere", text: "Alt+J puts letters on everything in sight: type them to go there, without the mouse.", alt: "Hop mode: a letter on every tab, part of the address, place and file in the window" },
   ],
   also: ["Archives that open like folders", "Git status in every folder", "A terminal under the files", "Checksums and File X-Ray", "Batch rename with Undo", "Duplicates and Clean up", "Send files to another PC", "S3, WebDAV and SFTP folders"],
 };

@@ -26,6 +26,15 @@ const shot = (name: string) => {
       <Lines lines={MORE.lines} />
     </div>
 
+    <figure class="demo" data-reveal>
+      <div class="frame">
+        <video data-demo muted loop playsinline preload="none" poster="/media/glint-demo.webp" width="1600" height="1000" aria-label={MORE.demo.alt}>
+          <source src="/media/glint-demo.mp4" type="video/mp4" />
+        </video>
+      </div>
+      <figcaption>{MORE.demo.caption}</figcaption>
+    </figure>
+
     <ul class="cards">
       {
         MORE.cards.map((c, i) => (
@@ -62,9 +71,44 @@ const shot = (name: string) => {
   </div>
 </section>
 
+<script>
+  // The clip plays while it is on screen and rests when it is not. With reduced motion it waits to be asked.
+  const clip = document.querySelector<HTMLVideoElement>("[data-demo]");
+  if (clip) {
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      clip.controls = true;
+    } else {
+      new IntersectionObserver(
+        ([entry]) => {
+          if (entry.isIntersecting) clip.play().catch(() => (clip.controls = true));
+          else clip.pause();
+        },
+        { threshold: 0.3 },
+      ).observe(clip);
+    }
+  }
+</script>
+
 <style>
   .more-head {
     margin-bottom: clamp(36px, 5vw, 64px);
+  }
+
+  .demo {
+    margin-bottom: clamp(36px, 5vw, 64px);
+  }
+
+  .demo video {
+    display: block;
+    width: 100%;
+    height: auto;
+    aspect-ratio: 16 / 10;
+  }
+
+  .demo figcaption {
+    margin-top: 14px;
+    color: var(--mist);
+    font-size: 14.5px;
   }
 
   .cards {
