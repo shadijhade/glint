@@ -207,9 +207,10 @@ dependencies (the release build's import check wasn't run again). e2e 21/21 with
 `smart-menu` check follows the new order, `16ebac1`).
 
 After the quieter look: `cargo clippy --workspace --all-targets -- -D warnings` clean and `cargo test --workspace
---no-fail-fast` (core 386, model 348, ui 2,634, index 103). In the workspace run eight of the hover cards' tests
-(`peek_card`, the tab strip's card) failed once while another build had every core; alone and in a full run of the
-UI crate on an idle machine they pass. No Windows API calls and no dependencies added. e2e 21/21 with the debug
+--no-fail-fast` (core 386, model 348, ui 2,635, index 103). Eight of the hover cards' tests (`peek_card`, the tab
+strip's card) failed in one run and passed in the next: three of Hop mode's tests end with the mode on, its switch
+is the process's, and cards stay away while it is on, so whichever card test ran next found none. Every window
+test now starts with the mode off (`testing::init`). No Windows API calls and no dependencies added. e2e 21/21 with the debug
 build of that working tree (23:45, 2026-11-22).
 
 ## 0.15.1: updates that finish, and Space while renaming

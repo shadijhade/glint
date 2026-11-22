@@ -31,6 +31,8 @@ pub(crate) fn init(cx: &mut App) {
     state::init(cx);
     state::update(cx, |settings| settings.backdrop = Backdrop::Solid);
     i18n::set_mirror(false);
+    // Hop mode's switch is the process's too: a test that ended with it on would hide the next one's cards.
+    crate::components::hop::off_for_tests();
     theme::apply(cx);
     actions::init(cx);
     core_bridge::init_with(cx, false);

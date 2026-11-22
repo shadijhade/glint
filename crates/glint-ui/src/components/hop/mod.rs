@@ -48,6 +48,14 @@ pub fn active() -> bool {
     ON.load(Ordering::Relaxed)
 }
 
+/// The mode is off, whatever a test before this one left. The switch is the process's, and the tests share the
+/// process: one that ends with the mode on left it on for the next, where the hover cards (which stay away
+/// while it is on) then never opened. `testing::init` calls this, so every window test starts with it off.
+#[cfg(test)]
+pub(crate) fn off_for_tests() {
+    ON.store(false, Ordering::Relaxed);
+}
+
 /// What kind of thing a target is. The order is the order hints are handed out in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Kind {
