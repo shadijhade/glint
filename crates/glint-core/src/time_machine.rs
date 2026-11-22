@@ -11,6 +11,7 @@ use glint_model::time_machine::{diff_entries, merge_moments, Moment, MomentSourc
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 static STAGE_SEQ: AtomicU64 = AtomicU64::new(1);
 
@@ -104,46 +105,71 @@ fn usn_moments(folder: &str) -> Vec<Moment> {
     }
 }
 
-/// Collects all historical moments available for `folder` across VSS shadow copies, Git commits,
-/// configured restic backups, and the NTFS USN journal.
-pub async fn folder_moments(folder: String) -> Result<Vec<Moment>, String> {
-    let has_backup = crate::backup::has_plan_for(&folder);
-    let backup_future = if has_backup {
-        Some(crate::backup::backup_versions(folder.clone()))
-    } else {
-        None
-    };
+/// Receives a batch of moments as soon as one source has them. Batches arrive in whatever order the sources
+/// finish (Git is usually first), possibly from several threads at once; the receiver merges them with
+/// [`merge_moments`], whose order depends only on the moments, so the timeline reads the same whichever came first.
+pub type MomentSink = Arc<dyn Fn(Vec<Moment>) + Send + Sync>;
 
-    let folder_bg = folder.clone();
-    let local = blocking(move || Ok(collect_local_moments(&folder_bg))).await?;
-
-    let mut all = local;
-    if let Some(fut) = backup_future {
-        if let Ok(backups) = fut.await {
-            for b in backups {
-                all.push(Moment {
-                    id: format!("restic-{}-{}", b.plan, b.snapshot),
-                    timestamp_ms: b.time,
-                    label: format!("Backup {}", b.snapshot),
-                    detail: b.repository,
-                    source: MomentSource::ResticBackup,
-                    shadow_path: None,
-                    commit_oid: None,
-                    repo_root: None,
-                    plan_id: Some(b.plan),
-                    snapshot_id: Some(b.snapshot),
-                });
+/// Streams every historical moment available for `folder` to `sink`: Windows shadow copies, Git commits, the
+/// NTFS USN journal and the configured restic backups, all asked at the same time, each reported the moment it
+/// is known. Returns when every source has answered.
+pub async fn stream_moments(folder: String, sink: MomentSink) -> Result<(), String> {
+    // Restic starts first: it is the slowest (a process per plan) and has nothing to wait for.
+    let restic = crate::backup::has_plan_for(&folder).then(|| {
+        let folder = folder.clone();
+        let sink = sink.clone();
+        crate::host::async_runtime::spawn(async move {
+            if let Ok(backups) = crate::backup::backup_versions(folder).await {
+                let moments: Vec<Moment> = backups
+                    .into_iter()
+                    .map(|b| Moment {
+                        id: format!("restic-{}-{}", b.plan, b.snapshot),
+                        timestamp_ms: b.time,
+                        label: format!("Backup {}", b.snapshot),
+                        detail: b.repository,
+                        source: MomentSource::ResticBackup,
+                        shadow_path: None,
+                        commit_oid: None,
+                        repo_root: None,
+                        plan_id: Some(b.plan),
+                        snapshot_id: Some(b.snapshot),
+                    })
+                    .collect();
+                if !moments.is_empty() {
+                    sink(moments);
+                }
             }
-        }
-    }
+        })
+    });
 
+    let local_folder = folder;
+    blocking(move || {
+        stream_local_moments(&local_folder, &*sink);
+        Ok(())
+    })
+    .await?;
+    if let Some(restic) = restic {
+        let _ = restic.await;
+    }
+    Ok(())
+}
+
+/// Collects all historical moments available for `folder` across VSS shadow copies, Git commits,
+/// configured restic backups, and the NTFS USN journal, newest first, once every source has answered.
+pub async fn folder_moments(folder: String) -> Result<Vec<Moment>, String> {
+    let all = Arc::new(Mutex::new(Vec::new()));
+    let sink: MomentSink = {
+        let all = all.clone();
+        Arc::new(move |batch| all.lock().unwrap_or_else(|e| e.into_inner()).extend(batch))
+    };
+    stream_moments(folder, sink).await?;
+    let all = std::mem::take(&mut *all.lock().unwrap_or_else(|e| e.into_inner()));
     Ok(merge_moments(all))
 }
 
-fn collect_local_moments(folder: &str) -> Vec<Moment> {
+/// Windows shadow copies of the drive that hold `folder` (non-admin via shadui-index or a device probe).
+fn vss_moments(folder: &str) -> Vec<Moment> {
     let mut moments = Vec::new();
-
-    // 1. Windows Shadow Copies (non-admin via shadui-index or device probe).
     if let Ok(norm) = fsx::normalize(folder) {
         if let Some(drive) = norm.get(..2).filter(|d| d.ends_with(':')) {
             let rest = norm[2..].trim_start_matches('\\');
@@ -173,32 +199,48 @@ fn collect_local_moments(folder: &str) -> Vec<Moment> {
             }
         }
     }
-
-    // 2. Git commits (pure read-only via gitoxide).
-    for (oid, time_ms, summary, repo_root) in crate::git::folder_commits(folder, 25) {
-        let short: String = oid.chars().take(7).collect();
-        moments.push(Moment {
-            id: format!("git-{oid}"),
-            timestamp_ms: time_ms,
-            label: if summary.is_empty() {
-                format!("Commit {short}")
-            } else {
-                summary
-            },
-            detail: short,
-            source: MomentSource::GitCommit,
-            shadow_path: None,
-            commit_oid: Some(oid),
-            repo_root: Some(repo_root),
-            plan_id: None,
-            snapshot_id: None,
-        });
-    }
-
-    // 3. USN journal activity buckets.
-    moments.extend(usn_moments(folder));
-
     moments
+}
+
+/// Git commits that touched `folder` (pure read-only via gitoxide).
+fn git_moments(folder: &str) -> Vec<Moment> {
+    crate::git::folder_commits(folder, 25)
+        .into_iter()
+        .map(|(oid, time_ms, summary, repo_root)| {
+            let short: String = oid.chars().take(7).collect();
+            Moment {
+                id: format!("git-{oid}"),
+                timestamp_ms: time_ms,
+                label: if summary.is_empty() {
+                    format!("Commit {short}")
+                } else {
+                    summary
+                },
+                detail: short,
+                source: MomentSource::GitCommit,
+                shadow_path: None,
+                commit_oid: Some(oid),
+                repo_root: Some(repo_root),
+                plan_id: None,
+                snapshot_id: None,
+            }
+        })
+        .collect()
+}
+
+/// Asks the three local sources (shadow copies, Git, the USN journal) at once, each on a thread of its own,
+/// and hands `sink` each one's moments as it finishes. Returns when all three have.
+fn stream_local_moments(folder: &str, sink: &(dyn Fn(Vec<Moment>) + Sync)) {
+    let report = |moments: Vec<Moment>| {
+        if !moments.is_empty() {
+            sink(moments);
+        }
+    };
+    std::thread::scope(|scope| {
+        scope.spawn(|| report(vss_moments(folder)));
+        scope.spawn(|| report(usn_moments(folder)));
+        report(git_moments(folder));
+    });
 }
 
 /// Inspects `folder` at `moment`, returning entries diffed against the live folder today.
@@ -454,6 +496,21 @@ fn set_readonly(path: &Path) {
 mod tests {
     use super::*;
     use std::process::Command;
+    use std::time::{Duration, Instant};
+
+    /// Every local moment for `folder`, with when the first batch and the last one arrived.
+    fn collect_local(folder: &str) -> (Vec<Moment>, Duration, Duration) {
+        let start = Instant::now();
+        let seen = Mutex::new((Vec::new(), None::<Duration>));
+        stream_local_moments(folder, &|batch| {
+            let mut seen = seen.lock().unwrap();
+            seen.1.get_or_insert_with(|| start.elapsed());
+            seen.0.extend(batch);
+        });
+        let all = start.elapsed();
+        let (moments, first) = seen.into_inner().unwrap();
+        (merge_moments(moments), first.unwrap_or(all), all)
+    }
 
     #[test]
     fn collects_git_moments_inspects_deleted_and_modified_and_restores() {
@@ -487,7 +544,7 @@ mod tests {
         std::fs::remove_file(dir.join("deleted_later.txt")).unwrap();
 
         let dir_str = dir.to_string_lossy().into_owned();
-        let moments = collect_local_moments(&dir_str);
+        let moments = collect_local(&dir_str).0;
         let git_moment = moments
             .into_iter()
             .find(|m| m.source == MomentSource::GitCommit)
@@ -519,6 +576,65 @@ mod tests {
             panic!("expected GitBlob restore source");
         }
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn moments_stream_git_first_while_the_other_sources_are_still_asked() {
+        let dir = std::env::temp_dir().join(format!("glint-tm-stream-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| -> bool {
+            Command::new("git")
+                .args(args)
+                .current_dir(&dir)
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        };
+        if !git(&["init", "-q"]) {
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+        git(&["config", "user.email", "test@glint.local"]);
+        git(&["config", "user.name", "Glint Test"]);
+        for n in 0..20 {
+            std::fs::write(
+                dir.join(format!("f{n}.txt")),
+                format!(
+                    "v{n}
+"
+                ),
+            )
+            .unwrap();
+            assert!(git(&["add", "."]));
+            assert!(git(&["commit", "-q", "-m", &format!("commit {n}")]));
+        }
+        let folder = dir.to_string_lossy().into_owned();
+
+        // One after another, as 0.15 asked.
+        let start = Instant::now();
+        let mut sequential = vss_moments(&folder);
+        let vss_done = start.elapsed();
+        sequential.extend(git_moments(&folder));
+        let git_done = start.elapsed();
+        sequential.extend(usn_moments(&folder));
+        let sequential_all = start.elapsed();
+
+        let (streamed, first, all) = collect_local(&folder);
+        println!(
+            "moments: sequential vss {vss_done:?}, +git {git_done:?} (first Git stops), +usn {sequential_all:?} (all) |              streamed first batch {first:?}, all {all:?}"
+        );
+        assert_eq!(
+            streamed.iter().filter(|m| m.source == MomentSource::GitCommit).count(),
+            20
+        );
+        assert_eq!(
+            merge_moments(sequential),
+            streamed,
+            "the same moments, in the same order"
+        );
+        assert!(first <= all);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
