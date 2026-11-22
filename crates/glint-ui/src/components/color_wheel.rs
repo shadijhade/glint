@@ -7,7 +7,7 @@ use crate::explorer::{explorer, Explorer, ExplorerEvent, TabId};
 use crate::kit::prelude::*;
 use crate::{i18n, t, theme};
 use glint_model::oklab::{
-    oklab_to_srgb, wheel_point_to_oklab, wheel_raster_bgra, ColorFilter, Oklab, WHEEL_MAX_CHROMA,
+    oklab_to_srgb, wheel_point_to_oklab, wheel_raster_bgra, ChordMode, ColorFilter, Oklab, WHEEL_MAX_CHROMA,
 };
 use glint_model::paths::same_path;
 use gpui_kit::{
@@ -25,6 +25,8 @@ impl Global for GlobalState {}
 pub struct ColorWheelModel {
     shown: HashSet<TabId>,
     warmed_folder: HashMap<TabId, String>,
+    /// Which color of the chord the wheel and the lightness slider are set on, per tab (0 is the first).
+    selected: HashMap<TabId, usize>,
     _sub: Subscription,
 }
 
@@ -35,6 +37,7 @@ impl ColorWheelModel {
             ExplorerEvent::TabClosed { tab, .. } => {
                 let removed = this.shown.remove(tab);
                 let dropped = this.warmed_folder.remove(tab).is_some();
+                this.selected.remove(tab);
                 if removed || dropped {
                     cx.notify();
                 }
@@ -55,12 +58,26 @@ impl ColorWheelModel {
         Self {
             shown: HashSet::new(),
             warmed_folder: HashMap::new(),
+            selected: HashMap::new(),
             _sub: sub,
         }
     }
 
     pub fn is_shown(&self, tab: TabId) -> bool {
         self.shown.contains(&tab)
+    }
+
+    /// The color of `tab`'s chord that the wheel sets (0 is the first).
+    pub fn selected(&self, tab: TabId) -> usize {
+        self.selected.get(&tab).copied().unwrap_or(0)
+    }
+
+    /// Selects the `index`th color of `tab`'s chord.
+    pub fn select(&mut self, tab: TabId, index: usize, cx: &mut Context<Self>) {
+        if self.selected(tab) != index {
+            self.selected.insert(tab, index);
+            cx.notify();
+        }
     }
 
     pub fn set_shown(&mut self, tab: TabId, on: bool, folder: Option<String>, cx: &mut Context<Self>) {
@@ -72,6 +89,7 @@ impl ColorWheelModel {
         } else {
             let a = self.shown.remove(&tab);
             let b = self.warmed_folder.remove(&tab).is_some();
+            self.selected.remove(&tab);
             a || b
         };
         if changed {
@@ -302,7 +320,9 @@ impl ColorWheelBar {
     /// Asks for `filter`: the controls show it at once, and the photos are ranked for it at the next frame, once,
     /// whatever number of times the pointer moved in between.
     fn ask(&mut self, filter: ColorFilter, window: &mut Window, cx: &mut Context<Self>) {
-        self.lightness = filter.target.l;
+        if let Some(color) = filter.target_at(self.selected(cx)) {
+            self.lightness = color.l;
+        }
         self.tolerance = filter.max_dist;
         self.pending = Some(filter);
         if !self.queued {
@@ -335,7 +355,13 @@ impl ColorWheelBar {
         match self.filter(cx) {
             Some(mut filter) => {
                 match which {
-                    Drag::Lightness => filter.target.l = value,
+                    Drag::Lightness => {
+                        // The lightness of the color the wheel is set on.
+                        let at = self.selected(cx);
+                        if let Some(color) = filter.target_at(at) {
+                            filter = filter.with_target_at(at, Oklab { l: value, ..color });
+                        }
+                    }
                     _ => filter.max_dist = value,
                 }
                 self.ask(filter, window, cx);
@@ -354,8 +380,63 @@ impl ColorWheelBar {
     fn value_of(&self, which: Drag, cx: &App) -> f32 {
         let filter = self.filter(cx);
         match which {
-            Drag::Lightness => filter.map_or(self.lightness, |f| f.target.l),
+            Drag::Lightness => filter
+                .and_then(|f| f.target_at(self.selected(cx)))
+                .map_or(self.lightness, |color| color.l),
             _ => filter.map_or(self.tolerance, |f| f.max_dist),
+        }
+    }
+
+    /// The color of the chord the wheel and the lightness slider are set on.
+    fn selected(&self, cx: &App) -> usize {
+        let tab = self.tab_id(cx);
+        let last = self.filter(cx).map_or(0, |f| f.count() - 1);
+        self.model.read(cx).selected(tab).min(last)
+    }
+
+    /// Sets the wheel on the `index`th color of the chord.
+    fn select(&mut self, index: usize, cx: &mut Context<Self>) {
+        let tab = self.tab_id(cx);
+        self.model.update(cx, |m, cx| m.select(tab, index, cx));
+    }
+
+    /// Adds a color to the chord (up to three) and sets the wheel on it: at first the opposite of the one the wheel
+    /// is on, which is the other end of a pair that goes well together.
+    fn add_target(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(filter) = self.filter(cx).filter(|f| f.count() < ColorFilter::MAX_TARGETS) else {
+            return;
+        };
+        let from = filter.target_at(self.selected(cx)).unwrap_or(filter.target);
+        // A gray has no opposite: a blue-green does.
+        let (a, b) = if from.a.abs() + from.b.abs() < 0.04 {
+            (-0.10, -0.03)
+        } else {
+            (-from.a, -from.b)
+        };
+        let next = filter.with_added(Oklab { l: from.l, a, b });
+        self.select(next.count() - 1, cx);
+        self.ask(next, window, cx);
+    }
+
+    /// Takes the `index`th color out of the chord; the wheel stays on the same color, or on the next one if it was
+    /// that one.
+    fn remove_target(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(filter) = self.filter(cx) else {
+            return;
+        };
+        let at = self.selected(cx);
+        let Some(next) = filter.without(index) else {
+            return;
+        };
+        let at = if index < at { at - 1 } else { at.min(next.count() - 1) };
+        self.select(at, cx);
+        self.ask(next, window, cx);
+    }
+
+    /// Whether a photo must match any of the colors or all of them.
+    fn set_mode(&mut self, mode: ChordMode, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(filter) = self.filter(cx).filter(|f| f.mode != mode) {
+            self.ask(ColorFilter { mode, ..filter }, window, cx);
         }
     }
 
@@ -373,10 +454,10 @@ impl ColorWheelBar {
                 let lightness = self.value_of(Drag::Lightness, cx);
                 let target = wheel_point_to_oklab(lx, ly, lightness);
                 let filter = match self.filter(cx) {
-                    Some(prev) => ColorFilter { target, ..prev },
+                    Some(prev) => prev.with_target_at(self.selected(cx), target),
                     None => ColorFilter {
-                        target,
                         max_dist: self.tolerance,
+                        ..ColorFilter::new(target)
                     },
                 };
                 self.ask(filter, window, cx);
@@ -565,9 +646,17 @@ impl Render for ColorWheelBar {
         let t = theme::tokens(cx);
         let active_lightness = active_filter.map_or(self.lightness, |f| f.target.l);
         let active_tol = active_filter.map_or(self.tolerance, |f| f.max_dist);
-        let swatch = active_filter.map(|f| srgb_hsla(oklab_to_srgb(f.target)));
+        let selected = self.selected(cx);
+        let chord: Vec<Oklab> = active_filter.map(|f| f.targets().collect()).unwrap_or_default();
+        let swatch = chord.get(selected).map(|c| srgb_hsla(oklab_to_srgb(*c)));
         let wheel_bounds = self.wheel_bounds.clone();
-        let target_marker = active_filter.map(|f| (f.target.a, f.target.b));
+        // Where each color of the chord is on the wheel, and its color; the one the wheel is set on is drawn last.
+        let mut markers: Vec<(f32, f32, Hsla, bool)> = chord
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (c.a, c.b, srgb_hsla(oklab_to_srgb(*c)), i == selected))
+            .collect();
+        markers.sort_by_key(|m| m.3);
 
         // The disk is one picture, made again only when the lightness (to the hundredth) or the window's scale
         // changes, never per frame.
@@ -629,23 +718,29 @@ impl Render for ColorWheelBar {
                 if let Some(image) = &disk {
                     let _ = window.paint_image(square, square, Corners::default(), image.clone(), 0, false);
                 }
-                if let Some((a, b)) = target_marker {
+                for &(a, b, color, current) in &markers {
                     let nx = (a / WHEEL_MAX_CHROMA).clamp(-1.0, 1.0);
                     let ny = (-b / WHEEL_MAX_CHROMA).clamp(-1.0, 1.0);
                     let cx_px = f32::from(bounds.origin.x) + (nx * 0.5 + 0.5) * side;
                     let cy_px = f32::from(bounds.origin.y) + (ny * 0.5 + 0.5) * side;
-                    // A dark ring around the white one, so it reads on pale colors too.
-                    for (r, width, color) in [
-                        (7.0, 1.0, gpui_kit::black().opacity(0.45)),
-                        (6.0, 2.0, gpui_kit::white()),
-                    ] {
+                    // The color the wheel is set on: a white ring in a dark one, so it reads on pale colors too.
+                    // The others of the chord: smaller, filled with their own color.
+                    let rings: &[(f32, f32, Hsla, Hsla)] = if current {
+                        &[
+                            (7.0, 1.0, gpui_kit::black().opacity(0.45), gpui_kit::transparent_black()),
+                            (6.0, 2.0, gpui_kit::white(), gpui_kit::transparent_black()),
+                        ]
+                    } else {
+                        &[(5.0, 2.0, gpui_kit::white(), color)]
+                    };
+                    for &(r, width, edge, fill_color) in rings {
                         let ring = Bounds::new(point(px(cx_px - r), px(cy_px - r)), size(px(r * 2.0), px(r * 2.0)));
                         window.paint_quad(quad(
                             ring,
                             r,
-                            gpui_kit::transparent_black(),
+                            fill_color,
                             Edges::all(px(width)),
-                            color,
+                            edge,
                             BorderStyle::Solid,
                         ));
                     }
@@ -680,7 +775,7 @@ impl Render for ColorWheelBar {
 
         // The lightness track runs from dark to light in the picked color's own hue; the tolerance track from the
         // color itself to a faint wash of it. Both run from the reading direction's start.
-        let (hue_a, hue_b) = active_filter.map_or((0.0, 0.0), |f| (f.target.a, f.target.b));
+        let (hue_a, hue_b) = chord.get(selected).map_or((0.0, 0.0), |c| (c.a, c.b));
         let tone = |l: f32| srgb_hsla(oklab_to_srgb(Oklab { l, a: hue_a, b: hue_b }));
         let angle = if i18n::is_rtl() { 270. } else { 90. };
         let picked = swatch.unwrap_or(t.primary);
@@ -776,6 +871,86 @@ impl Render for ColorWheelBar {
                 .into_any_element(),
         );
 
+        // The chord: a swatch for each color (press one to set the wheel on it, the cross takes it out), a plus for
+        // another color, and whether a photo needs any of them or all.
+        let count = chord.len();
+        let mode = active_filter.map_or(ChordMode::Any, |f| f.mode);
+        let pane = self.pane;
+        let swatches = chord.iter().enumerate().map(|(i, color)| {
+            let rgb = oklab_to_srgb(*color);
+            let current = i == selected;
+            let name = t!(
+                "Color {n}: #{hex}",
+                n = i + 1,
+                hex = format!("{:02X}{:02X}{:02X}", rgb[0], rgb[1], rgb[2])
+            );
+            let swatch = div()
+                .id(("cw-swatch", pane * ColorFilter::MAX_TARGETS + i))
+                .role(Role::Button)
+                .aria_label(name)
+                .aria_selected(current)
+                .test_support()
+                .size(space(5.))
+                .flex_none()
+                .rounded(theme::size::RADIUS_SM)
+                .border_2()
+                .border_color(if current { t.foreground } else { t.border })
+                .bg(srgb_hsla(rgb))
+                .cursor_pointer()
+                .on_click(cx.listener(move |this, _, _, cx| this.select(i, cx)));
+            row_start().items_center().child(swatch).when(count > 1, |r| {
+                r.child(
+                    Button::new(("cw-remove", pane * ColorFilter::MAX_TARGETS + i))
+                        .compact()
+                        .ghost()
+                        .icon(Icon::new(IconName::X))
+                        .accessibility_label(t!("Remove color {n}", n = i + 1))
+                        .tooltip(t!("Remove color {n}", n = i + 1))
+                        .on_click(cx.listener(move |this, _, window, cx| this.remove_target(i, window, cx))),
+                )
+            })
+        });
+        let chord_row = row_start()
+            .items_center()
+            .gap(space(1.5))
+            .children(swatches)
+            .when(active_filter.is_some() && count < ColorFilter::MAX_TARGETS, |r| {
+                r.child(
+                    Button::new(("cw-add", pane))
+                        .compact()
+                        .ghost()
+                        .icon(Icon::new(IconName::Plus))
+                        .accessibility_label(t!("Add a color"))
+                        .tooltip(t!("Add a color: photos can match a combination of colors"))
+                        .on_click(cx.listener(|this, _, window, cx| this.add_target(window, cx))),
+                )
+            })
+            .when(count > 1, |r| {
+                r.child(
+                    row_start()
+                        .items_center()
+                        .gap(space(0.5))
+                        .child(
+                            Button::new(("cw-any", pane))
+                                .compact()
+                                .when(mode == ChordMode::Any, |b| b.primary())
+                                .when(mode != ChordMode::Any, |b| b.ghost())
+                                .label(t!("Any"))
+                                .tooltip(t!("Photos that have at least one of the colors"))
+                                .on_click(cx.listener(|this, _, window, cx| this.set_mode(ChordMode::Any, window, cx))),
+                        )
+                        .child(
+                            Button::new(("cw-all", pane))
+                                .compact()
+                                .when(mode == ChordMode::All, |b| b.primary())
+                                .when(mode != ChordMode::All, |b| b.ghost())
+                                .label(t!("All"))
+                                .tooltip(t!("Photos that have every one of the colors"))
+                                .on_click(cx.listener(|this, _, window, cx| this.set_mode(ChordMode::All, window, cx))),
+                        ),
+                )
+            });
+
         let status = if active_filter.is_some() {
             t!("{n} matching photos", n = matched_count)
         } else {
@@ -860,6 +1035,7 @@ impl Render for ColorWheelBar {
                                     ),
                             ),
                     )
+                    .child(chord_row)
                     .child(lightness_row)
                     .child(tolerance_row),
             )
@@ -1155,5 +1331,126 @@ mod tests {
             (after.max_dist - (before.max_dist - 0.015)).abs() < 0.011,
             "Shift: a notch down is tighter"
         );
+    }
+
+    #[gpui_kit::test]
+    fn a_chord_has_swatches_you_select_and_remove_and_any_all(cx: &mut gpui_kit::TestAppContext) {
+        let _guard = testing::lock();
+        let (view, visual, tab) = bar_with_a_color(cx);
+        let found = |visual: &mut gpui_kit::VisualTestContext, label: &str| {
+            visual.update(|window, cx| {
+                window.render_frame(cx);
+                window.try_find_by_label(label).is_some()
+            })
+        };
+        let first = filter_of(visual, tab).target;
+        let rgb = oklab_to_srgb(first);
+        let first_name = format!("Color 1: #{:02X}{:02X}{:02X}", rgb[0], rgb[1], rgb[2]);
+        assert!(found(visual, &first_name));
+        assert!(found(visual, "Add a color"));
+        assert!(
+            !found(visual, "Remove color 1"),
+            "a single color has nothing to take out"
+        );
+        assert!(!found(visual, "Any"), "and nothing to combine");
+
+        // Adding a color selects it; the wheel then sets that one and leaves the first alone.
+        visual.update(|window, cx| {
+            view.update(cx, |bar, cx| {
+                bar.add_target(window, cx);
+                bar.rank(cx);
+            })
+        });
+        let chord = filter_of(visual, tab);
+        assert_eq!(chord.count(), 2);
+        assert_eq!(chord.target, first);
+        assert!(
+            chord.extra[0].is_some_and(|c| (c.a + first.a).abs() < 1e-6),
+            "the opposite color"
+        );
+        assert_eq!(
+            visual.update(|_, cx| view.read(cx).selected(cx)),
+            1,
+            "the new one is selected"
+        );
+        let rgb = oklab_to_srgb(chord.extra[0].expect("a second color"));
+        let second_name = format!("Color 2: #{:02X}{:02X}{:02X}", rgb[0], rgb[1], rgb[2]);
+        for label in [
+            second_name.as_str(),
+            "Remove color 1",
+            "Remove color 2",
+            "Any",
+            "All",
+            "Add a color",
+        ] {
+            assert!(found(visual, label), "{label}");
+        }
+
+        let wheel = visual.update(|window, cx| {
+            window.render_frame(cx);
+            window.find(("cw-wheel", 0usize)).bounds()
+        });
+        let at = point(
+            wheel.origin.x + wheel.size.width * 0.8,
+            wheel.origin.y + wheel.size.height * 0.5,
+        );
+        visual.simulate_mouse_down(at, MouseButton::Left, gpui_kit::Modifiers::default());
+        visual.simulate_mouse_up(at, MouseButton::Left, gpui_kit::Modifiers::default());
+        visual.update(|_, cx| view.update(cx, |bar, cx| bar.rank(cx)));
+        let moved = filter_of(visual, tab);
+        assert_eq!(moved.target, first, "the first color stays where it was");
+        assert!(
+            moved.extra[0].is_some_and(|c| c.a > 0.1),
+            "the selected one went to the click"
+        );
+
+        // Select the first again: the wheel moves that one.
+        visual.update(|_, cx| view.update(cx, |bar, cx| bar.select(0, cx)));
+        visual.simulate_mouse_down(wheel.center(), MouseButton::Left, gpui_kit::Modifiers::default());
+        visual.simulate_mouse_up(wheel.center(), MouseButton::Left, gpui_kit::Modifiers::default());
+        visual.update(|_, cx| view.update(cx, |bar, cx| bar.rank(cx)));
+        let again = filter_of(visual, tab);
+        assert!(
+            again.target.a.abs() < 0.03 && again.target.b.abs() < 0.03,
+            "the first went to the center"
+        );
+        assert_eq!(again.extra[0], moved.extra[0]);
+
+        // All and Any; a third color fills the chord and the plus goes.
+        visual.update(|window, cx| {
+            view.update(cx, |bar, cx| {
+                bar.set_mode(ChordMode::All, window, cx);
+                bar.add_target(window, cx);
+                bar.add_target(window, cx);
+                bar.rank(cx);
+            })
+        });
+        let full = filter_of(visual, tab);
+        assert_eq!((full.count(), full.mode), (3, ChordMode::All));
+        assert!(!found(visual, "Add a color"), "three is the most");
+
+        // Taking the first out moves the others up and keeps the wheel on the color it was on.
+        let (second, third) = (full.target_at(1), full.target_at(2));
+        visual.update(|window, cx| {
+            view.update(cx, |bar, cx| {
+                assert_eq!(bar.selected(cx), 2);
+                bar.remove_target(0, window, cx);
+                bar.rank(cx);
+            })
+        });
+        let left = filter_of(visual, tab);
+        assert_eq!((left.count(), left.mode), (2, ChordMode::All));
+        assert_eq!((left.target_at(0), left.target_at(1)), (second, third));
+        assert_eq!(visual.update(|_, cx| view.read(cx).selected(cx)), 1);
+        // The last color can't be removed.
+        visual.update(|window, cx| {
+            view.update(cx, |bar, cx| {
+                bar.remove_target(0, window, cx);
+                bar.rank(cx);
+                bar.remove_target(0, window, cx);
+                bar.rank(cx);
+            })
+        });
+        assert_eq!(filter_of(visual, tab).count(), 1);
     }
 }

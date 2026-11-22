@@ -20,21 +20,117 @@ pub struct Palette3 {
     pub weights: [f32; 3],
 }
 
-/// Live OKLab color-wheel filter state (`target` color + maximum Euclidean OKLab radius).
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// How a chord of colors combines: a photo matches when it has at least one of them (`Any`), or every one (`All`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ChordMode {
+    #[default]
+    Any,
+    All,
+}
+
+/// Live OKLab color-wheel filter state: one to three `target` colors (a chord) + the maximum Euclidean OKLab radius
+/// each is matched within.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ColorFilter {
+    /// The first color.
     pub target: Oklab,
     pub max_dist: f32,
+    /// The second and third colors of a chord, in order: the third is never set without the second.
+    #[serde(default)]
+    pub extra: [Option<Oklab>; 2],
+    #[serde(default)]
+    pub mode: ChordMode,
 }
 
 impl ColorFilter {
     pub const DEFAULT_TOLERANCE: f32 = 0.22;
+    /// How many colors a chord has at most.
+    pub const MAX_TARGETS: usize = 3;
 
     pub fn new(target: Oklab) -> Self {
         Self {
             target,
             max_dist: Self::DEFAULT_TOLERANCE,
+            extra: [None, None],
+            mode: ChordMode::Any,
         }
+    }
+
+    /// How many colors the chord has (1 to 3).
+    pub fn count(&self) -> usize {
+        1 + self.extra.iter().flatten().count()
+    }
+
+    /// The colors, the first one first.
+    pub fn targets(&self) -> impl Iterator<Item = Oklab> + '_ {
+        std::iter::once(self.target).chain(self.extra.iter().flatten().copied())
+    }
+
+    /// The `index`th color (0 is the first).
+    pub fn target_at(&self, index: usize) -> Option<Oklab> {
+        match index {
+            0 => Some(self.target),
+            1 | 2 => self.extra[index - 1],
+            _ => None,
+        }
+    }
+
+    /// The chord with its `index`th color replaced (an index past the end changes nothing).
+    pub fn with_target_at(mut self, index: usize, color: Oklab) -> Self {
+        if index >= self.count() {
+            return self;
+        }
+        match index {
+            0 => self.target = color,
+            _ => self.extra[index - 1] = Some(color),
+        }
+        self
+    }
+
+    /// The chord with `color` added as its last color, or unchanged when it is full.
+    pub fn with_added(mut self, color: Oklab) -> Self {
+        match self.count() {
+            1 => self.extra[0] = Some(color),
+            2 => self.extra[1] = Some(color),
+            _ => {}
+        }
+        self
+    }
+
+    /// The chord without its `index`th color; the ones after it move up. `None` when it would leave no color.
+    pub fn without(self, index: usize) -> Option<Self> {
+        if self.count() < 2 || index >= self.count() {
+            return None;
+        }
+        let mut colors: Vec<Oklab> = self.targets().collect();
+        colors.remove(index);
+        let mut next = Self {
+            target: colors[0],
+            extra: [None, None],
+            ..self
+        };
+        for (slot, color) in next.extra.iter_mut().zip(colors.iter().skip(1)) {
+            *slot = Some(*color);
+        }
+        Some(next)
+    }
+
+    /// How far a photo is from matching, squared, for ranking and for the cut at `max_dist`: for each color the
+    /// closest of the photo's palette (`palette_distance_sq`), then for `Any` the best of those, for `All` the worst.
+    #[inline]
+    pub fn score(&self, palette: &Palette3) -> f32 {
+        let first = palette_distance_sq(palette, self.target);
+        let combine = |a: f32, b: f32| {
+            if self.mode == ChordMode::All {
+                a.max(b)
+            } else {
+                a.min(b)
+            }
+        };
+        self.extra
+            .iter()
+            .flatten()
+            .fold(first, |acc, &color| combine(acc, palette_distance_sq(palette, color)))
     }
 }
 
@@ -352,5 +448,114 @@ mod tests {
         let bgra = vec![0u8; 4 * 4 * 4];
         assert!(extract_palette_bgra(4, 4, &bgra).is_none());
         assert!(extract_palette_bgra(4, 4, &[1, 2]).is_none());
+    }
+
+    fn palette_of(colors: [Oklab; 3]) -> Palette3 {
+        Palette3 {
+            colors,
+            weights: [0.6, 0.3, 0.1],
+        }
+    }
+
+    #[test]
+    fn a_chord_matches_any_or_all_of_its_colors_and_ranks_by_the_best_or_the_worst() {
+        let orange = srgb_to_oklab(240, 140, 30);
+        let purple = srgb_to_oklab(80, 30, 120);
+        let teal = srgb_to_oklab(20, 150, 150);
+        // A sunset: orange and purple, a dark third.
+        let sunset = palette_of([orange, purple, srgb_to_oklab(10, 10, 20)]);
+        // A beach: orange sand and teal water.
+        let beach = palette_of([orange, teal, srgb_to_oklab(240, 230, 210)]);
+
+        let mut chord = ColorFilter::new(orange).with_added(purple);
+        assert_eq!(chord.count(), 2);
+        let tolerance_sq = chord.max_dist * chord.max_dist;
+
+        chord.mode = ChordMode::Any;
+        assert!(
+            chord.score(&sunset) <= tolerance_sq && chord.score(&beach) <= tolerance_sq,
+            "either is enough"
+        );
+        chord.mode = ChordMode::All;
+        assert!(chord.score(&sunset) <= tolerance_sq, "the sunset has both");
+        assert!(chord.score(&beach) > tolerance_sq, "the beach has no purple");
+        // A single color is the same either way: the distance to the closest color of the palette.
+        let single = ColorFilter::new(teal);
+        assert_eq!(single.score(&beach), palette_distance_sq(&beach, teal));
+        // Ranking by the worst distance puts the photo that has both closer than the one that has one.
+        chord.mode = ChordMode::All;
+        assert!(chord.score(&sunset) < chord.score(&beach));
+        chord.mode = ChordMode::Any;
+        assert!(
+            chord.score(&beach) <= chord.score(&sunset) + 0.05,
+            "any ranks by the better of the two"
+        );
+    }
+
+    #[test]
+    fn a_chord_has_up_to_three_colors_that_can_be_replaced_and_removed_in_order() {
+        let (a, b, c, d) = (
+            srgb_to_oklab(255, 0, 0),
+            srgb_to_oklab(0, 255, 0),
+            srgb_to_oklab(0, 0, 255),
+            srgb_to_oklab(255, 255, 0),
+        );
+        let chord = ColorFilter::new(a).with_added(b).with_added(c).with_added(d);
+        assert_eq!(chord.count(), 3, "a fourth is not added");
+        assert_eq!(chord.targets().collect::<Vec<_>>(), vec![a, b, c]);
+        assert_eq!(chord.target_at(2), Some(c));
+        assert_eq!(chord.target_at(3), None);
+
+        assert_eq!(chord.with_target_at(1, d).targets().collect::<Vec<_>>(), vec![a, d, c]);
+        assert_eq!(chord.with_target_at(5, d), chord, "past the end changes nothing");
+        // Taking the first out moves the others up; the tolerance and mode stay.
+        let mut all = chord;
+        all.mode = ChordMode::All;
+        all.max_dist = 0.3;
+        let rest = all.without(0).expect("two are left");
+        assert_eq!(rest.targets().collect::<Vec<_>>(), vec![b, c]);
+        assert_eq!((rest.mode, rest.max_dist), (ChordMode::All, 0.3));
+        assert_eq!(
+            rest.without(1).expect("one is left").targets().collect::<Vec<_>>(),
+            vec![b]
+        );
+        assert!(ColorFilter::new(a).without(0).is_none(), "the last color stays");
+        assert!(chord.without(3).is_none());
+    }
+
+    #[test]
+    fn a_filter_saved_before_chords_still_loads() {
+        let old = r#"{"target":{"l":0.5,"a":0.1,"b":-0.1},"max_dist":0.2}"#;
+        let filter: ColorFilter = serde_json::from_str(old).expect("an old filter loads");
+        assert_eq!((filter.count(), filter.mode), (1, ChordMode::Any));
+        let chord = filter.with_added(srgb_to_oklab(1, 2, 3));
+        let again: ColorFilter = serde_json::from_str(&serde_json::to_string(&chord).expect("saves")).expect("loads");
+        assert_eq!(again, chord);
+    }
+
+    #[test]
+    fn the_wheel_raster_has_the_pick_colors_at_its_pixels_and_a_soft_rim() {
+        let side = 64u32;
+        let bgra = wheel_raster_bgra(side, 0.62);
+        assert_eq!(bgra.len(), (side * side * 4) as usize);
+        assert!(wheel_raster_bgra(0, 0.5).is_empty());
+        let pixel = |x: u32, y: u32| &bgra[((y * side + x) * 4) as usize..][..4];
+        // The corners are outside the disk.
+        assert_eq!(pixel(0, 0)[3], 0);
+        assert_eq!(pixel(side - 1, side - 1)[3], 0);
+        // A pixel well inside is opaque, and is the color a click at its center picks.
+        let (x, y) = (40u32, 20u32);
+        assert_eq!(pixel(x, y)[3], 255);
+        let r = side as f32 / 2.0;
+        let want = oklab_to_srgb(wheel_point_to_oklab(
+            (x as f32 + 0.5 - r) / r,
+            (y as f32 + 0.5 - r) / r,
+            0.62,
+        ));
+        assert_eq!([pixel(x, y)[2], pixel(x, y)[1], pixel(x, y)[0]], want);
+        // Along the rim some pixels are partly covered.
+        let soft = (0..side).filter(|&x| (1..255).contains(&pixel(x, side / 2)[3])).count()
+            + (0..side).filter(|&y| (1..255).contains(&pixel(side / 2, y)[3])).count();
+        assert!(soft >= 2, "the rim is anti-aliased");
     }
 }

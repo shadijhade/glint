@@ -459,7 +459,7 @@ pub fn build_rows(entries: &Arc<[FileEntry]>, spec: &RowSpec, now: i64) -> Rows 
                 let Some(pal) = rc.palettes.get(palette_key(&entry.path, &mut key_buf)) else {
                     continue;
                 };
-                let dist = glint_model::oklab::palette_distance_sq(pal, rc.filter.target);
+                let dist = rc.filter.score(pal);
                 if dist > max_sq {
                     continue;
                 }
@@ -1321,8 +1321,8 @@ mod tests {
         let spec = RowSpec {
             color: Some(RowColor {
                 filter: ColorFilter {
-                    target: srgb_to_oklab(245, 25, 25),
                     max_dist: 0.20,
+                    ..ColorFilter::new(srgb_to_oklab(245, 25, 25))
                 },
                 palettes: Arc::new(palettes),
             }),
@@ -1377,10 +1377,7 @@ mod tests {
         }
         let entries: Arc<[FileEntry]> = Arc::from(list);
         let palettes = Arc::new(palettes);
-        let filter = ColorFilter {
-            target: srgb_to_oklab(180, 120, 90),
-            max_dist: 0.22,
-        };
+        let filter = ColorFilter::new(srgb_to_oklab(180, 120, 90));
         let spec = RowSpec {
             color: Some(RowColor {
                 filter,
@@ -1432,5 +1429,58 @@ mod tests {
             "{n} photos, {} kept: color rows 0.15 way {before:.1} ms, now {after:.1} ms",
             want.len()
         );
+    }
+
+    /// A chord keeps the photos that have any of its colors, or all of them, ranked by the best or the worst.
+    #[test]
+    fn a_color_chord_keeps_photos_with_any_or_all_of_its_colors() {
+        use glint_model::oklab::{srgb_to_oklab, ChordMode, ColorFilter, Palette3};
+        let photo = |name: &str| {
+            with_details(
+                RawEntry {
+                    name: name.into(),
+                    ..Default::default()
+                },
+                "C:\\pics",
+            )
+        };
+        let entries: Arc<[FileEntry]> = Arc::from(vec![photo("beach.jpg"), photo("sunset.jpg"), photo("forest.jpg")]);
+        let (orange, purple) = (srgb_to_oklab(240, 140, 30), srgb_to_oklab(80, 30, 120));
+        let palette = |colors: [glint_model::oklab::Oklab; 3]| Palette3 {
+            colors,
+            weights: [0.6, 0.3, 0.1],
+        };
+        let mut palettes = std::collections::HashMap::new();
+        palettes.insert(
+            "c:\\pics\\sunset.jpg".to_string(),
+            palette([orange, purple, srgb_to_oklab(10, 10, 20)]),
+        );
+        palettes.insert(
+            "c:\\pics\\beach.jpg".to_string(),
+            palette([orange, srgb_to_oklab(20, 150, 150), srgb_to_oklab(240, 230, 210)]),
+        );
+        palettes.insert(
+            "c:\\pics\\forest.jpg".to_string(),
+            palette([srgb_to_oklab(20, 90, 30); 3]),
+        );
+        let palettes = Arc::new(palettes);
+        let names = |mode: ChordMode| {
+            let spec = RowSpec {
+                color: Some(RowColor {
+                    filter: ColorFilter {
+                        mode,
+                        ..ColorFilter::new(orange).with_added(purple)
+                    },
+                    palettes: palettes.clone(),
+                }),
+                ..RowSpec::default()
+            };
+            let rows = build_rows(&entries, &spec, 0);
+            rows.iter().map(|e| e.name.clone()).collect::<Vec<_>>()
+        };
+        assert_eq!(names(ChordMode::All), vec!["sunset.jpg"], "only the sunset has both");
+        let any = names(ChordMode::Any);
+        assert_eq!(any.len(), 2, "the forest has neither: {any:?}");
+        assert!(any.contains(&"sunset.jpg".to_string()) && any.contains(&"beach.jpg".to_string()));
     }
 }
