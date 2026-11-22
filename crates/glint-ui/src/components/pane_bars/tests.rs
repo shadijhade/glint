@@ -261,6 +261,41 @@ fn the_search_bar_while_it_runs_has_a_spinner_and_stop_ends_the_search(cx: &mut 
 }
 
 #[gpui_kit::test]
+fn nothing_in_the_bar_moves_when_the_spinner_and_stop_go(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut rig = rig(cx, "no-jump", false);
+    let (live, _task) = rig.start("rep");
+    live.try_send(Found::Started { engine: "fd".into() }).expect("open");
+    settle(&mut rig.visual);
+    let bounds = |rig: &mut Rig, id: (&'static str, usize)| {
+        rig.visual.update(|window, cx| {
+            window.render_frame(cx);
+            window.find(id).bounds()
+        })
+    };
+    let (text, save, close) = (
+        bounds(&mut rig, ("pane-search-text", 0)),
+        bounds(&mut rig, ("pane-search-save", 0)),
+        bounds(&mut rig, ("pane-search-close", 0)),
+    );
+    assert!(rig.there(("pane-search-stop", 0)));
+    live.try_send(Found::Finished {
+        count: 0,
+        elapsed: 1.0,
+        limited: false,
+        fuzzy: false,
+    })
+    .expect("open");
+    settle(&mut rig.visual);
+    assert!(!rig.there(("pane-search-stop", 0)));
+    // The spinner became the magnifier in a box of its size, Stop left from before Save: the words, Save and
+    // Close stand where they stood.
+    assert_eq!(bounds(&mut rig, ("pane-search-text", 0)), text);
+    assert_eq!(bounds(&mut rig, ("pane-search-save", 0)), save);
+    assert_eq!(bounds(&mut rig, ("pane-search-close", 0)), close);
+}
+
+#[gpui_kit::test]
 fn a_finished_search_says_results_for_the_query_in_the_folder_and_close_ends_it(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let mut rig = rig(cx, "finished", false);

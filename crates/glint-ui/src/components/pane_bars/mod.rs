@@ -35,6 +35,7 @@
 mod tests;
 
 use crate::components::git::Tone;
+use crate::components::pane_head::pill::pill;
 use crate::explorer::{explorer, Explorer, Tab, TabId, Wider};
 use crate::kit::prelude::*;
 use crate::persistence::{self, Persistence};
@@ -339,9 +340,22 @@ fn end_group() -> Div {
     }
 }
 
-/// A button of the bar: `variant="ghost" size="sm"`.
-fn ghost(id: &'static str, pane: usize) -> Button {
-    Button::new((id, pane)).ghost().small()
+/// A button of the bar: the head's pill (`lit` for what is on, as a saved search is).
+fn ghost(id: &'static str, pane: usize, lit: bool, cx: &App) -> Button {
+    pill((id, pane), lit, cx)
+}
+
+/// What comes and goes in the bar fades in (at once with reduce motion) instead of appearing in a frame.
+fn fade_in(id: impl Into<ElementId>, element: impl IntoElement + Styled + 'static, cx: &App) -> AnyElement {
+    if cx.reduce_motion() {
+        return element.into_any_element();
+    }
+    use gpui_kit::{Animation, AnimationExt as _};
+    element
+        .with_animation(id, Animation::new(theme::motion::FAST), |element, delta| {
+            element.opacity(delta)
+        })
+        .into_any_element()
 }
 
 impl PaneBars {
@@ -351,22 +365,27 @@ impl PaneBars {
         let pane = self.pane;
         let (plain, _) = search_words(info, false);
 
+        // The spinner and the magnifier swap in one box of one size, so the words never move.
         let lead = if info.running {
             div()
                 .id(("pane-search-spinner", pane))
                 .role(Role::Group)
                 .aria_label(t!("Searching"))
                 .test_support()
-                .flex_none()
                 .child(Spinner::new().small().color(t.primary))
                 .into_any_element()
         } else {
-            icon(IconName::Search)
-                .size_4()
-                .flex_none()
-                .text_color(t.primary)
+            div()
+                .child(icon(IconName::Search).size_4().text_color(t.primary))
                 .into_any_element()
         };
+        let lead = div()
+            .flex_none()
+            .size_4()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(lead);
 
         // “Results for” + the query in bold + the folder.
         let (text, bold) = search_words(info, true);
@@ -396,7 +415,7 @@ impl PaneBars {
             let said = t!("Stopped at {n}", n = format_count(n));
             let ink = Tone::Amber.count_text(t.dark);
             let chosen = info.clone();
-            row_start()
+            let chip = row_start()
                 .id(("pane-search-limit", pane))
                 .role(Role::Group)
                 .aria_label(said.clone())
@@ -425,45 +444,50 @@ impl PaneBars {
                         .label(t!("Show all"))
                         .tooltip(t!("Search again without the limit (Settings → Find files)"))
                         .on_click(cx.listener(move |this, _, _, cx| this.show_all(&chosen, cx))),
-                )
+                );
+            fade_in(("pane-search-limit-in", pane), chip, cx)
         });
 
         // "Inside files too", where the files' contents weren't searched unasked.
         let inside = info.inside_offered.then(|| {
             let chosen = info.clone();
-            ghost("pane-search-inside", pane)
+            let button = ghost("pane-search-inside", pane, false, cx)
                 .icon(IconName::TextSearch)
                 .label(t!("Inside files too"))
                 .tooltip(t!(
                     "Read what the files here hold as well. A whole drive takes a while, so it waits to be asked"
                 ))
-                .on_click(cx.listener(move |this, _, _, cx| this.search_inside(&chosen, cx)))
+                .on_click(cx.listener(move |this, _, _, cx| this.search_inside(&chosen, cx)));
+            fade_in(("pane-search-inside-in", pane), button, cx)
         });
 
         // Save (Saved once it is in the sidebar), Stop while it runs, Close.
         let chosen = info.clone();
         // A flat view has no words to keep.
-        let save = (!info.is_flat()).then(|| ghost("pane-search-save", pane)
-            .icon(if info.saved {
-                icon(IconName::BookmarkCheck).text_color(t.primary)
-            } else {
-                icon(IconName::Bookmark)
-            })
-            .label(if info.saved { t!("Saved") } else { t!("Save") })
-            .tooltip(if info.saved {
-                t!("Take this search out of the sidebar")
-            } else {
-                t!("Keep this search in the sidebar, to run it again with one click")
-            })
-            .on_click(cx.listener(move |this, _, _, cx| this.save(&chosen, cx))));
+        let save = (!info.is_flat()).then(|| {
+            ghost("pane-search-save", pane, info.saved, cx)
+                .icon(if info.saved {
+                    icon(IconName::BookmarkCheck).text_color(t.primary)
+                } else {
+                    icon(IconName::Bookmark)
+                })
+                .label(if info.saved { t!("Saved") } else { t!("Save") })
+                .tooltip(if info.saved {
+                    t!("Take this search out of the sidebar")
+                } else {
+                    t!("Keep this search in the sidebar, to run it again with one click")
+                })
+                .on_click(cx.listener(move |this, _, _, cx| this.save(&chosen, cx)))
+        });
         let stop = info.running.then(|| {
-            ghost("pane-search-stop", pane)
+            let button = ghost("pane-search-stop", pane, false, cx)
                 .icon(icon(IconName::Square).size_3())
                 .label(t!("Stop"))
-                .on_click(cx.listener(|this, _, _, cx| this.stop(cx)))
+                .on_click(cx.listener(|this, _, _, cx| this.stop(cx)));
+            fade_in(("pane-search-stop-in", pane), button, cx)
         });
         let tab = info.tab;
-        let close = ghost("pane-search-close", pane)
+        let close = ghost("pane-search-close", pane, false, cx)
             .icon(IconName::X)
             .label(t!("Close"))
             .tooltip(t!("Back to the folder (Esc)"))
@@ -487,7 +511,8 @@ impl PaneBars {
             .child(lead)
             .child(words)
             .children(limit)
-            .child(end_group().children(inside).children(save).children(stop).child(close))
+            // What comes and goes sits first, so Save and Close stay where they are when it does.
+            .child(end_group().children(inside).children(stop).children(save).child(close))
             .into_any_element()
     }
 
@@ -516,9 +541,7 @@ impl PaneBars {
             .child(said);
         let tab = info.tab;
         let get = info.can_get_access.then(|| {
-            Button::new(("pane-closed-get-access", pane))
-                .ghost()
-                .small()
+            ghost("pane-closed-get-access", pane, false, cx)
                 .icon(IconName::ShieldCheck)
                 .label(t!("Get access"))
                 .loading(self.working)
