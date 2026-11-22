@@ -8,6 +8,127 @@ The plan for 0.12 that was here is in git history (`git show df1245a:NEXT_RELEAS
 before it (`git show 47c33fa:NEXT_RELEASE.md`), and 0.13's own plan, the menu and the dock that know the selection,
 is [docs/gpui/aware/PLAN.md](docs/gpui/aware/PLAN.md) with its task cards beside it.*
 
+## Built for 0.16 (2026-11-22, not released)
+
+*The user's list of eighteen points (speed and size first, then the interface: "do all the points below … any
+other ui enhancement are welcome"), built the same day by twelve agents, each in a worktree of its own from
+`a6738c0` (0.15.1). Every branch was rebased onto master, checked (its crates' tests and clippy) and merged; the
+whole workspace was checked at the end (**Checks**). 36 commits on master, not pushed.*
+
+### Speed and size
+
+1. **Color surfing.** Color matches are ranked by a distance worked out once per photo, sorted with no allocation
+   per comparison (the old sort lowercased two paths per comparison): 100,000 photos, 42,382 kept, 377–455 ms →
+   46–51 ms in a debug build (`668ed45`). The wheel is one anti-aliased picture made once per lightness step
+   (0.6 ms at 112 px, 3.2 ms at 256 px), not 576 squares a frame (`c2121bc`). A thumbnail's palette is taken
+   after its tile has its picture, on a thread of its own (40 µs on the thumbnail thread → 0.4 µs), and photos
+   without one are warmed on four threads that hand matches over as they come: 256 photos 1,630 → 532 ms
+   (`3322ac1`, `5b5908e`).
+2. **Photo World Map and the media cache.** The map draws from one shared set of photos, clustered once per
+   camera: a pan or zoom frame over 5,000 photos 3.57 → 0.12 ms, over 50,000 43.6 → 1.13 ms (`d3b2c4e`,
+   `32fe440`). `gallery-dates.json` and `gallery-geo.json` became one `gallery-meta.bin`, filled by one read
+   per photo: 200,000 records save 633 → 64 ms, load 480 → 146 ms, 42.9 MB in two files → 19.3 MB in one; the
+   old files are read once and removed (`616c2ee`). Cold scans read 64 KB headers through the I/O ring
+   (Windows 10 keeps plain reads) and the map gets its pins about ten times a second while a scan runs
+   (`b0f1881`); over 3,000 just-written photos the scan is no faster (the files were in the cache), and the
+   Gallery still gets its dates at the end of a scan.
+3. **Time Machine.** Shadow copies, Git and the journal are asked at once, restic beside them, and stops show as
+   each source answers: first stops in a 20-commit repository 91.7 → 7.2 ms, all local stops 134 → 42 ms
+   (`fda50e7`). The stops either side of the one shown are read ahead into a per-tab cache (16 stops, 60,000
+   rows, trusted 60 s; backups aren't read ahead, each read starts restic), so arrow keys step without a read
+   (`14ace20`).
+4. **Listings.** `FileEntry` keeps its extension as an offset into its lowercased name (`ext()`), not a String:
+   100,000 entries 290,000 → 200,000 allocations, 144 → 120 bytes an entry, 44.9 → 30.0 ms to fill them
+   (`5bfb444`). An all-ASCII name is copied from its UTF-16 units: 100,000 names 7.7 → 3.7 ms, a 100,000-file
+   folder 34.5 → 30.2 ms, System32 1.6 → 1.4 ms (release, `c60f51e`). The list's third point (a bigger
+   directory read) was already there: `FindFirstFileExW` with `FIND_FIRST_EX_LARGE_FETCH`.
+5. **Copy queue.** Small files are counted with atomics and each worker keeps its own list of what it made, so a
+   file takes no shared lock: 50,000 4 KB files on 16 workers 13.9 → 12.2 s; the copy is bound by making files
+   (and Defender), not locks (`0020964`). Block cloning: Windows 11's own copy (`CopyFileExW`) clones on ReFS and
+   Dev Drive since its Moment 5 update, and nothing in the queue's calls stops it; what did stop a big clone onto
+   a nearly full Dev Drive was the up-front "Not enough space there", which counted every byte as new. It's
+   skipped where every source is on a volume that clones (`855de55`).
+6. **Thumbnails ahead of the scroll.** The thumbnail service has a third, lowest lane for prefetches, behind
+   every lookup and make, promoted when asked for for real and dropped per tab (`303a87f`); the grid asks for
+   one screenful ahead in the direction it moves, up to 160 tiles, dropped when it turns back. Tiles still on
+   their icon on the first frame after a scroll step: 8 → 0 (`bb19a18`).
+7. **The instant search service waits for changes.** Each drive's journal is waited on (`FSCTL_READ_USN_JOURNAL`
+   with `BytesToWaitFor` 1) instead of read every 250 ms: an idle service wakes no more (it was 4 times a second
+   a drive), and a change reaches the index in about 0.1 ms plus a 5 ms settle that gathers a burst. A drive
+   that can't be waited on polls as before; stopping cancels the wait (`CancelIoEx`, given up after 2 s so a
+   stop or an update never hangs) (`3786c21`).
+8. **Glint.exe 84.9 → 80.3 MB.** More crates nobody waits on are compiled for size (gitoxide, the SVG crates,
+   rustls/ring, lopdf/pdf-extract, jaq, unrar…: the Git column, history and icons measured no slower), and
+   glint-ui and glint-core get one codegen unit (2.7 MB of it; listing and sorting the same). Left at full
+   speed: syntect (highlighting 6% slower at "s"), the archive crates (Defender's machine learning flagged the
+   test programs built with them at "s" as malware, a false positive not worth 0.2 MB) and the terminal
+   (`bd944d4`). `strip` changes nothing on this target (debug information is in the PDB). The release build
+   takes about two minutes longer. With everything 0.16 adds, Glint.exe is 82,047,488 bytes (0.15.1:
+   84,923,904); no dependency was added (`Cargo.lock` is unchanged).
+
+### The interface
+
+1. **Photo World Map.** Pins show their lead photo in a circle with a count; the drawer of a cluster is a strip of
+   thumbnails, named "42 photos near Tokyo · Japan" from an offline table of about 800 cities and 190 countries
+   (24 KB of source; city names show when zoomed in). Double-click a pin (or Enter on it) to fly in; a scrubber
+   of years and months filters the pins, and Arcs draws dashed travel arcs between stops in time order
+   (`0eb4837`, `73a2f62`, `bdb6fc6`).
+2. **Color Wheel.** Lightness and Tolerance are sliders (arrows, Page Up/Down, Home/End; the mouse wheel over the
+   wheel is lightness, Shift+wheel tolerance), `+` adds a second and third color with Any/All, and a photo tile
+   shows its three colors as dots while the wheel is open: click one to aim the wheel at it (`96266c8`,
+   `008147a`, `b01d8be`).
+3. **Time Machine.** A timeline rail replaces the grid of buttons: ticks colored by source (Git blue, Windows
+   Restore purple, backups amber, journal gray) under a sparkline of changes, a playhead that snaps to stops (a
+   haptic detent at each), chips to show one source, and Space on a row shows that version in Quick Look without
+   leaving (`14ace20`).
+4. **Portals in the sidebar.** Live portals have a section of their own while any is mounted: archive, search,
+   Git commit or backup icon, open on click, and Open, Copy path, Refresh and Unmount on the right-click. Unmount
+   now removes only a folder right under `Glint portals` (a hand-edited portals.json could have pointed it
+   anywhere) (`9fcaaa5`).
+5. **Drag to transform, File Lego, rename by example.** Pictures or videos dragged out of a pane get a strip at
+   the window's edge (As they are, Clean EXIF, WebP; Under 10 MB, Extract MP3): hover a choice or press Tab
+   during the drag (`88b3884`; once a transform is chosen Glint's own panes refuse the drop). File Lego's dwell
+   fills a ring, snaps a haptic when it arms and names the real output ("Mux subtitles → clip_muxed.mp4"); muxes
+   were always written as "… (2).mp4" before, fixed (`55e9683`). Batch Rename's By example strikes deleted
+   characters in red and shows inserted ones in green, and marks rows a second reading would name differently
+   ("Edit this row to disambiguate") (`81d97ee`).
+6. **Named workspaces.** Save the window's tabs, panes, split, views and scroll places under a name from the
+   sidebar's Workspaces button or Ctrl+K, and switch, rename or delete them there; tabs already showing a wanted
+   folder keep it, without reading it again (`10a506e`).
+7. **Hop mode.** Alt+J puts letters on every tab, crumb, sidebar place and visible row or tile in both panes;
+   typing one acts as a click there (Backspace takes a letter back, Escape cancels) (`15cbc39`, `d4e3485`: in
+   the real window every row's letter had shown on the row below it).
+8. **What's changing, and Freeze order.** The status bar's "Changing now" opens a live list of the files being
+   written (size growing, time since the last write; click to select one). Freeze order (in that list, Ctrl+Alt+F
+   or the palette) keeps the folder's rows where they are while files change: new ones go at the end, gone ones
+   dim, sizes update in place; turning it off sorts once (`fdbcef6`, `9c88c98`).
+9. **The basket's drawer.** The dock's basket pill (Alt+B) opens a drawer: thumbnails, sizes, remove and Clear,
+   Batch rename, Compare (two), Zip, Move here and Copy here, and dragging any row takes the whole basket out
+   (`13154fa`).
+10. **Hover cards.** A background tab, a parent crumb or its arrow shows a card after 400 ms: the folder's name,
+    path, counts, size and make-up band, from what's already known (`2de403f`, `ad6b5e2`).
+
+### Not tried for real
+
+- The journal wait on a real volume (it needs the service, elevated): tested against a fake journal through the
+  same code. Check after the service updates itself: an idle service doesn't wake, a new file is found at once,
+  and stopping or updating the service is quick.
+- A real drag out with the transform strip (does Glint repaint during Windows' drag loop, is a quick Tab caught),
+  a real File Lego mux, block cloning on ReFS (no ReFS volume here), the I/O ring on a cold disk, haptics.
+- Seen in the real window (debug build, generated photos): hop mode, the hover card on a crumb, the Color Wheel
+  and a chord's matches, Time Machine's rail and chips on this repository, the basket drawer, the photo map's
+  pins, scrubber, arcs and "5 photos near Tokyo · Japan".
+
+### Keys added
+
+Alt+J hop mode, Alt+B the basket's drawer, Ctrl+Alt+F Freeze order.
+
+### Checks
+
+`cargo test --workspace` (core 385, model 348, ui 2,544, index 103) and `cargo clippy --workspace --all-targets
+-- -D warnings` clean at `32fe440`; the release build's imports all exist on Windows 10 1809
+(`scripts/check-imports.mjs`); e2e (`tests\e2e\run.ps1`) 21/21 with the debug build of `32fe440`.
+
 ## 0.15.1: updates that finish, and Space while renaming
 
 - People couldn't update to 0.15.0: the setup stopped at "Error opening file for writing: …\Glint\rg.exe". An rg (or fd)
