@@ -2700,6 +2700,9 @@ impl Render for Workspace {
             .on_action(cx.listener(|_, _: &actions::DiskUsage, _, cx| Self::toggle_disk_usage(cx)))
             .on_action(cx.listener(|_, _: &actions::ToggleTimeMachine, _, cx| Self::toggle_time_machine(cx)))
             .on_action(cx.listener(|_, _: &actions::TogglePhotoMap, _, cx| Self::toggle_photo_map(cx)))
+            .on_action(cx.listener(|_, _: &actions::FreezeOrder, _, cx| {
+                Self::explorer(cx, |e, cx| e.toggle_frozen(None, cx))
+            }))
             // File operations, on the active tab's selection.
             .on_action(cx.listener(|_, _: &actions::Copy, _, cx| {
                 let paths = Self::selection(cx);

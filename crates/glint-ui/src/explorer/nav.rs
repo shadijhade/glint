@@ -446,6 +446,17 @@ impl Explorer {
             (None, Some(l)) if l.from_index => Some(NoAccess::default()),
             _ => None,
         };
+        // A frozen tab keeps its order through a re-read of the folder; going to another folder ends the freeze.
+        let listing = if self.freezes.is_empty() {
+            listing
+        } else if same {
+            let held = listing.map(|fresh| self.freezes.hold(id, state.entries(), fresh));
+            self.freezes.refresh_dim(&self.ops.cut);
+            held
+        } else {
+            self.freezes.release(id, &self.ops.cut);
+            listing
+        };
         let no_access = closed.map(|closed| match state.no_access() {
             Some(known) if same => *known,
             _ => closed,

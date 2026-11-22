@@ -101,6 +101,7 @@ mod compare;
 mod create;
 mod find;
 mod find_types;
+mod freeze;
 mod history;
 mod inside;
 mod memory;
@@ -138,6 +139,8 @@ pub(crate) mod fake;
 #[cfg(test)]
 mod find_tests;
 #[cfg(test)]
+mod freeze_tests;
+#[cfg(test)]
 mod flat_tests;
 #[cfg(test)]
 mod history_tests;
@@ -154,6 +157,7 @@ pub use actions_types::*;
 pub use archive_types::*;
 pub use compare::{compare_listings, Comparison, RowDiffs};
 pub use find_types::{FindNotice, FindOptions, Found, SearchIndex, Wider};
+pub use freeze::FrozenInfo;
 pub use history::{SearchVisit, Visit};
 pub use inside::{can_search_inside, inside_filters, inside_unasked, inside_words, InsideEngine, InsideRequest};
 pub use memory::Memory;

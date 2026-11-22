@@ -269,6 +269,7 @@ impl Explorer {
             *slot = Pane { tabs, active };
         }
         let closed = self.tabs.remove(&id);
+        self.freezes.release(id, &self.ops.cut);
         super::model::let_go(closed.as_ref().and_then(|tab| tab.shared_entries()), cx);
         self.remember(closed.as_ref(), pane, at);
         if shown {
@@ -294,6 +295,7 @@ impl Explorer {
         let mut closed = Vec::new();
         for (i, id) in gone.tabs.iter().enumerate() {
             let tab = self.tabs.remove(id);
+            self.freezes.release(*id, &self.ops.cut);
             self.remember(tab.as_ref(), pane, i);
             closed.push((*id, tab));
         }

@@ -70,6 +70,7 @@ actions!(
         DiskUsage,
         ToggleTimeMachine,
         TogglePhotoMap,
+        FreezeOrder,
         // The file list
         OpenItem,
         QuickLook,
@@ -257,6 +258,12 @@ pub static BINDINGS: &[Binding] = &[
         "Workspace",
         ToggleTimeMachine,
         "Time Machine: scrub this folder back through shadow copies, Git, and backups"
+    ),
+    bind!(
+        "ctrl-alt-f",
+        "Workspace",
+        FreezeOrder,
+        "Freeze order: keep this folder's list where it is while files change (again: sort once)"
     ),
     bind!(
         "ctrl-shift-g",

@@ -17,8 +17,11 @@ use std::sync::Arc;
 
 impl Explorer {
     /// Paths cut to the clipboard here, shown dimmed until pasted (`cut`).
+    ///
+    /// While a tab's order is frozen this also holds the items that went from it (`freeze.rs`): their rows stay,
+    /// dimmed the same way.
     pub fn cut_paths(&self) -> &Arc<HashSet<String>> {
-        &self.ops.cut
+        self.freezes.dim().unwrap_or(&self.ops.cut)
     }
 
     fn set_cut(&mut self, paths: impl IntoIterator<Item = String>, cx: &mut Context<Self>) {
@@ -27,6 +30,7 @@ impl Explorer {
             return;
         }
         self.ops.cut = Arc::new(next);
+        self.freezes.refresh_dim(&self.ops.cut);
         cx.emit(ExplorerEvent::CutChanged);
         cx.notify();
     }

@@ -176,6 +176,8 @@ pub struct Explorer {
     pub(super) actions: super::actions::ActionState,
     /// Compare panes: each pane's answer ([`Explorer::comparison_of`]).
     pub(super) compare: super::compare::CompareState,
+    /// The tabs whose order is frozen (`freeze.rs`); empty almost always.
+    pub(super) freezes: super::freeze::Freezes,
     pub(super) _subscriptions: Vec<Subscription>,
 }
 
@@ -233,6 +235,7 @@ impl Explorer {
             archives: Default::default(),
             actions: Default::default(),
             compare: Default::default(),
+            freezes: Default::default(),
             _subscriptions: subscriptions,
         }
     }
@@ -460,6 +463,8 @@ impl Explorer {
     /// its own view" the folder remembers it; otherwise every folder sorts so.
     pub fn set_sort(&mut self, sort: Sort, cx: &mut Context<Self>) {
         let id = self.active_tab_id();
+        // Asking for an order is asking for the list sorted: the freeze ends (and the list sorts once).
+        self.set_frozen(Some(id), false, cx);
         let prefs = Prefs::read(cx);
         let own = self
             .tabs
@@ -737,15 +742,25 @@ impl Explorer {
         } else {
             GroupBy::None
         };
+        // A frozen tab's listing is in the order to show: the rows take it as it is (what the engine's own order
+        // gets), whatever the sort says.
+        let held = self.freezes.holds(id) && tab.find.is_none();
         Some(RowSpec {
-            sort: tab.sort,
-            folders_first: prefs.folders_first,
+            sort: if held {
+                Sort {
+                    key: glint_model::entries::SortKey::Name,
+                    desc: false,
+                }
+            } else {
+                tab.sort
+            },
+            folders_first: held || prefs.folders_first,
             show_hidden: prefs.show_hidden,
             filter: tab.filter.clone(),
             group,
             // A listing arrives sorted; a search's results are sorted here.
             presorted: tab.find.is_none(),
-            sizes: self.row_sizes(tab),
+            sizes: if held { None } else { self.row_sizes(tab) },
             diffs: self.diff_filter(id),
             // Search results have no marks (`useGit(...).view.marks` is undefined while a search shows).
             git: tab

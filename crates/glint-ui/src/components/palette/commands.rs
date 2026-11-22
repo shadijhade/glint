@@ -620,6 +620,15 @@ pub fn actions(inputs: &Inputs) -> Vec<Command> {
         ),
     );
     push(
+        inputs.tab.is_some() && !inputs.finding && !inputs.in_archive && !inputs.path.is_empty(),
+        Command::action(
+            "freeze-order",
+            t!("Freeze order: keep this folder's list where it is while files change, or sort it again"),
+            I::Lock,
+            || Box::new(actions::FreezeOrder),
+        ),
+    );
+    push(
         inputs.flat || inputs.can_flat,
         Command::action(
             "flat-view",
