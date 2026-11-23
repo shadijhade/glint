@@ -8,6 +8,16 @@ The plan for 0.12 that was here is in git history (`git show df1245a:NEXT_RELEAS
 before it (`git show 47c33fa:NEXT_RELEASE.md`), and 0.13's own plan, the menu and the dock that know the selection,
 is [docs/gpui/aware/PLAN.md](docs/gpui/aware/PLAN.md) with its task cards beside it.*
 
+## 0.16.1: scrolling the sidebar no longer closes Glint
+
+- 0.16.0 closed with no message (Windows' Application log: `Glint.exe`, exception `0xc0000409`, `FAST_FAIL_FATAL_APP_EXIT`)
+  at the first wheel notch or touchpad swipe over the sidebar. `panics.log` had it: *RefCell already mutably borrowed*
+  at `vendor/gpui-pre-0.3.12/src/elements/list.rs:798`, then *panic in a function that cannot unwind* (the window
+  procedure), so Rust aborted. GPUI's list runs its scroll handler while it holds its own state (`StateInner::scroll`,
+  from the wheel and from the wheel's glide), and the bottom edge's fade (`3c072ed`) read the list from that handler
+  (`Sidebar::more_below`). The handler now defers the read to the end of the effect cycle, as gpui-component's
+  `message_scroller` does; `scrolling_the_rail_moves_its_fade_and_never_panics` scrolls the rail both ways (`924c154`).
+
 ## In 0.16.0 (built 2026-11-22, released 2026-11-23)
 
 *[Its release](https://github.com/shadijhade/glint/releases/tag/v0.16.0): tag `v0.16.0` at `702cb2c`, built and
