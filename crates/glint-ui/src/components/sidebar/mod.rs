@@ -329,15 +329,20 @@ impl Sidebar {
             eject_focus: HashMap::new(),
             _subscriptions: subscriptions,
         };
-        // The bottom edge's fade follows the scroll: the view is drawn again only when it flips.
+        // The bottom edge's fade follows the scroll: the view is drawn again only when it flips. The list still
+        // holds its state while this handler runs, so it's read once the scroll is done (reading it here panicked
+        // inside the window procedure, and Windows closed Glint: 0.16.0).
         let weak = cx.entity().downgrade();
         this.list.set_scroll_handler(move |_, _, cx| {
-            weak.update(cx, |this, cx| {
-                if this.more_below() != this.fade_below {
-                    cx.notify();
-                }
-            })
-            .ok();
+            let weak = weak.clone();
+            cx.defer(move |cx| {
+                weak.update(cx, |this, cx| {
+                    if this.more_below() != this.fade_below {
+                        cx.notify();
+                    }
+                })
+                .ok();
+            });
         });
         this.portals = (this.sources.portals)();
         this.watch_portals(cx);

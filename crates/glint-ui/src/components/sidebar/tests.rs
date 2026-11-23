@@ -1610,6 +1610,45 @@ fn the_rail_fades_at_its_bottom_edge_only_while_more_is_below(cx: &mut TestAppCo
 }
 
 #[gpui_kit::test]
+fn scrolling_the_rail_moves_its_fade_and_never_panics(cx: &mut TestAppContext) {
+    use gpui_kit::InputEvent as _;
+    let _guard = testing::lock();
+    let mut w = world(cx, "edge-fade-scroll");
+    w.cx.simulate_resize(size(px(300.), px(180.)));
+    w.frame();
+    w.frame();
+    assert!(
+        w.sidebar.read_with(&w.cx, |s, _| s.fade_below),
+        "rows run on below the window"
+    );
+    // 0.16.0 read the list in its scroll handler while the list still held itself: the first scroll over the
+    // rail panicked inside the window procedure and Windows closed Glint. A touchpad's pixels to the bottom,
+    // then a wheel's notch back up (it glides).
+    let steps = [
+        (gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-2000.))), false),
+        (gpui_kit::ScrollDelta::Lines(point(0., 3.)), true),
+    ];
+    for (delta, below) in steps {
+        let at = w.bounds_of("places").center();
+        w.cx.update(|window, cx| {
+            let event = gpui_kit::ScrollEvent {
+                position: at,
+                delta,
+                ..Default::default()
+            };
+            window.dispatch_event(event.to_platform_input(), cx);
+        });
+        w.cx.run_until_parked();
+        w.frame();
+        assert_eq!(
+            w.sidebar.read_with(&w.cx, |s, _| s.fade_below),
+            below,
+            "after {delta:?}"
+        );
+    }
+}
+
+#[gpui_kit::test]
 fn a_drive_without_a_known_size_keeps_the_bars_place_so_rows_do_not_jump(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let mut w = world(cx, "drive-bar-place");
