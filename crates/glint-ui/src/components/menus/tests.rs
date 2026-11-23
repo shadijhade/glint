@@ -14,7 +14,8 @@ use std::rc::Rc;
 
 // ---- Reading a menu --------------------------------------------------------------------------------------
 
-/// A menu as one line per node: items by label, submenus as `label>`, the strip as `[a|b]`, a line as `-`.
+/// A menu as one line per node: items by label, submenus as `label>`, the strip as `[a|b]`, the labels' dots as
+/// `(Red|Blue)`, a line as `-`.
 pub(super) fn labels(nodes: &[Node]) -> Vec<String> {
     nodes
         .iter()
@@ -26,6 +27,14 @@ pub(super) fn labels(nodes: &[Node]) -> Vec<String> {
             Node::Head(head) => format!("<{}>", head.title),
             Node::Strip(entries) => format!(
                 "[{}]",
+                entries
+                    .iter()
+                    .map(|e| e.label.to_string())
+                    .collect::<Vec<_>>()
+                    .join("|")
+            ),
+            Node::Swatches(entries) => format!(
+                "({})",
                 entries
                     .iter()
                     .map(|e| e.label.to_string())

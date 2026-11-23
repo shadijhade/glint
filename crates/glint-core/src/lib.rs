@@ -38,6 +38,8 @@ pub mod lens;
 pub mod links;
 pub mod localsend;
 pub mod locks;
+/// A label, tags and a comment on files and folders, in the file where it can be (docs/gpui/marks).
+pub mod marks;
 pub mod mcp;
 pub mod media;
 pub mod media_tools;

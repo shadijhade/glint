@@ -140,6 +140,16 @@ pub enum MenuEvent {
     },
     /// "Edit tags…" (`useTagsEdit.setState({ paths })`).
     EditTags { paths: Vec<String> },
+    /// One of the labels' dots pressed, or none (docs/gpui/marks, F7).
+    SetLabel { paths: Vec<String>, label: Option<String> },
+    /// "Comment…": Edit comment….
+    EditComment { paths: Vec<String> },
+    /// "Copy marks": the item's marks, as text (F10).
+    CopyMarks { path: String },
+    /// "Paste marks": the copied marks given to the items.
+    PasteMarks { paths: Vec<String> },
+    /// "Clear marks": no label, no tags, no comment.
+    ClearMarks { paths: Vec<String> },
 
     // ---- Making and changing files ----
     /// "Folder sizes" (`calcSizes`).

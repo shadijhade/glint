@@ -704,6 +704,9 @@ pub enum Part {
     History,
     Visits,
     FolderViews,
+    /// The labels, with the tags used lately (docs/gpui/marks, F26). Not in [`ALL_PARTS`] until card G1 writes and
+    /// reads it.
+    Labels,
 }
 
 /// Every part, in order.
@@ -866,6 +869,7 @@ impl SettingsFile {
             Part::History => "history",
             Part::Visits => "visits",
             Part::FolderViews => "folderViews",
+            Part::Labels => "labels",
         };
         self.root.get(key)
     }

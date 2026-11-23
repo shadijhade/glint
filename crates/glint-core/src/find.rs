@@ -267,6 +267,7 @@ fn search_index(roots: &[String], query: &str, options: &FindOptions, stop: &Ato
         max_results: options.max_results,
         fuzzy: options.fuzzy,
         rank: options.rank,
+        marks: false,
     };
     let mut answered = None;
     // A failure halfway keeps what arrived; one before the plan leaves everything to fd.

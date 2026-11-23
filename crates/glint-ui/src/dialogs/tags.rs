@@ -9,7 +9,8 @@
 //! | `setTags(paths, add, remove)`     | [`set_tags`]: tags the items, words a failure, tells [`TagsChanged`]  |
 //! | `useTagsEdit` + `TagsDialog`      | [`open`] and [`TagsDialog`]                                           |
 //!
-//! Where core is called: [`Backend`] has the two calls (`tags_read`, `tags_set`) so tests inject a fake.
+//! Where core is called: [`Backend`] has the calls (`tags_read`, `tags_set`, and for marks `marks_read`, `marks_set`)
+//! so tests inject a fake.
 //!
 //! **How the coordinator wires it.** The menus emit `MenuEvent::EditTags { paths }`: call
 //! `dialogs::tags::open(window, cx, paths)`. They emit `MenuEvent::SetTags { paths, add, remove }` for a color
@@ -20,6 +21,7 @@
 use crate::kit::prelude::*;
 use crate::{core_bridge, t, theme};
 use glint_model::format::plural;
+use glint_model::marks::{Change, Marks, Outcome};
 use glint_model::paths::base_name;
 use std::future::Future;
 use std::pin::Pin;
@@ -158,12 +160,22 @@ pub fn tag_dots(id: impl Into<ElementId>, tags: &[String], cx: &App) -> Option<i
 /// A boxed core call.
 pub type Fut<T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send>>;
 
-/// The two calls into glint-core's tags.rs. The app uses [`CoreBackend`]; tests a fake.
+/// The calls into glint-core's tags.rs and marks (docs/gpui/marks). The app uses [`CoreBackend`]; tests a fake.
 pub trait Backend: Send + Sync {
     /// Each path's tags, in order (`tags_read`).
     fn read(&self, paths: Vec<String>) -> Fut<Vec<Vec<String>>>;
     /// Adds `add` and takes `remove` off every path; the paths that couldn't be tagged, each with why (`tags_set`).
     fn set(&self, paths: Vec<String>, add: Vec<String>, remove: Vec<String>) -> Fut<Vec<(String, String)>>;
+    /// Each path's marks, in order (`marks_read`). Nothing until a backend answers it (card D1).
+    fn read_marks(&self, paths: Vec<String>) -> Fut<Vec<Marks>> {
+        let _ = paths;
+        Box::pin(async { Ok(Vec::new()) })
+    }
+    /// Changes every path's marks: each one's before and after (`marks_set`). Nothing until a backend answers it.
+    fn set_marks(&self, paths: Vec<String>, change: Change) -> Fut<Vec<Outcome>> {
+        let _ = (paths, change);
+        Box::pin(async { Ok(Vec::new()) })
+    }
 }
 
 /// glint-core's tags.
@@ -176,6 +188,14 @@ impl Backend for CoreBackend {
 
     fn set(&self, paths: Vec<String>, add: Vec<String>, remove: Vec<String>) -> Fut<Vec<(String, String)>> {
         Box::pin(glint_core::tags::tags_set(paths, add, remove))
+    }
+
+    fn read_marks(&self, paths: Vec<String>) -> Fut<Vec<Marks>> {
+        Box::pin(glint_core::marks::marks_read(paths))
+    }
+
+    fn set_marks(&self, paths: Vec<String>, change: Change) -> Fut<Vec<Outcome>> {
+        Box::pin(glint_core::marks::marks_set(paths, change))
     }
 }
 
@@ -296,6 +316,13 @@ pub fn set_tags(window: &mut Window, cx: &mut App, paths: Vec<String>, add: Vec<
             .ok();
         })
         .detach();
+}
+
+/// Changes the marks of `paths` (docs/gpui/marks, 6.2): on core's runtime, remembered as one Undo step with a
+/// notice that offers it, then [`TagsChanged`] (which means any mark).
+pub fn set_marks(window: &mut Window, cx: &mut App, paths: Vec<String>, change: Change) {
+    // S0: card D1 fills this in.
+    let _ = (window, cx, paths, change);
 }
 
 // ---- The dialog's model -----------------------------------------------------------------------------------
@@ -986,5 +1013,16 @@ mod tests {
         cx.update(testing::init);
         let (mut visual, _) = testing::open_window(cx, |_, cx| cx.new(|_| Dots));
         assert_eq!(role_of(&mut visual, "Tags: Red, مهم, c, d, e, f"), Some(Role::Group));
+    }
+
+    #[test]
+    fn the_labels_glint_starts_with_are_the_color_tags() {
+        // glint-model can't read this crate's COLOR_TAGS, so it keeps a copy: the two must stay one list.
+        let labels: Vec<(String, u32)> = glint_model::marks::default_labels()
+            .into_iter()
+            .map(|l| (l.name, l.color))
+            .collect();
+        let tags: Vec<(String, u32)> = COLOR_TAGS.iter().map(|(name, hex)| (name.to_string(), *hex)).collect();
+        assert_eq!(labels, tags);
     }
 }

@@ -1,0 +1,100 @@
+# The marks filter's cases (docs/gpui/marks/PLAN.md 6.5, F12). Run by glint-model's tests (marks::Wanted) and
+# shadui-index's (query::MarksFilter), so the two copies of the filter cannot drift.
+#
+# One case a line: query | label | tags | comment | yes or no
+# - query: only marks terms (label:, lbl:, tag:, tags:, comment:, cmt:, has:, each with ! for not).
+# - label: the item's label as its file says it; empty for none.
+# - tags: its tags, separated by commas (no tag here has a comma); empty for none.
+# - comment: its comment, with \n for a line break; empty for none.
+# - yes or no: whether the item is wanted.
+# Lines starting with # and empty lines are not cases. Fields are trimmed.
+#
+# Decided here, for both copies:
+# - label: matches the label only. tag: matches a tag or the label, so tag:red finds what it found in 0.16.
+# - has:label is the label only: a 0.16 color tag is a tag until it is moved (PLAN.md 5.6).
+# - A tag and a label match whole and in any case; a comment word or "phrase" matches inside the comment, any case.
+# - Several terms all hold; ; inside one term is or.
+# - , is or too in tag: (as in 0.16: tag:red,blue), and part of the name in label: (a label may hold a comma).
+
+# label:
+label:red | Red | | | yes
+label:red | red | | | yes
+label:RED | Red | | | yes
+label:red | Orange | | | no
+label:red | | | | no
+label:red | | Red | | no
+label:red;orange | Orange | | | yes
+label:red;orange | Blue | | | no
+label:red label:orange | Red | | | no
+lbl:red | Red | | | yes
+label:"In review" | In review | | | yes
+label:"In review" | In | | | no
+label:مهم | مهم | | | yes
+
+# tag:
+tag:work | | work | | yes
+tag:work | | Work,home | | yes
+tag:work | | homework | | no
+tag:work | | | | no
+tags:work | | work | | yes
+tag:work;home | | home | | yes
+tag:work tag:home | | work,home | | yes
+tag:work tag:home | | work | | no
+tag:red | Red | | | yes
+tag:red | | Red | | yes
+tag:red | Blue | work | | no
+tag:عمل | | مهم,عمل | | yes
+
+# comment:
+comment:lacp | | | mode 4 (802.3ad)\nLACP rate fast | yes
+comment:LACP | | | lacp | yes
+comment:lacp comment:fast | | | LACP rate fast | yes
+comment:lacp comment:slow | | | LACP rate fast | no
+comment:"rate fast" | | | LACP rate fast | yes
+comment:"fast rate" | | | LACP rate fast | no
+comment:802.3ad | | | mode 4 (802.3ad) | yes
+cmt:lacp | | | lacp | yes
+comment:lacp | | | | no
+comment:lacp | | lacp | | no
+comment:عاجل | | | ملاحظة عاجلة | yes
+
+# has:
+has:label | Red | | | yes
+has:label | | Red | | no
+has:label | | | | no
+has:tag | | work | | yes
+has:tag | | | x | no
+has:comment | | | x | yes
+has:comment | Red | work | | no
+has:mark | | work | | yes
+has:mark | Red | | | yes
+has:mark | | | x | yes
+has:mark | | | | no
+
+# not
+!label:red | Red | | | no
+!label:red | Blue | | | yes
+!label:red | | | | yes
+!tag:work | | work | | no
+!tag:work | | | | yes
+!tag:red | Red | | | no
+!comment:lacp | | | lacp rate | no
+!comment:lacp | | | | yes
+!has:comment | | | | yes
+!has:comment | | | x | no
+!has:mark | Red | | | no
+!has:mark | | | | yes
+
+# together
+label:red tag:work | Red | work | | yes
+label:red tag:work | Red | home | | no
+label:red comment:lacp | Red | | lacp | yes
+label:red !tag:old | Red | new | | yes
+label:red !tag:old | Red | old,new | | no
+has:tag !has:label | | work | | yes
+has:tag !has:label | Red | work | | no
+
+# , is or in tag:, and part of the name in label:
+tag:work,home | | home | | yes
+label:"Review, later" | Review, later | | | yes
+label:red,orange | Orange | | | no

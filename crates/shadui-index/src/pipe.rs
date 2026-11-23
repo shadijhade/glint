@@ -348,6 +348,14 @@ fn answer(pipe: Handle, engine: &Engine, updater: Option<&Updater>) {
             proto::write_message(&mut io, &Message::Status(engine.status()))
         }
         Request::Tags => proto::write_message(&mut io, &Message::Tags { tags: engine.tags() }),
+        Request::Marks => proto::write_message(&mut io, &Message::Marks(engine.marks())),
+        Request::MarksIn { path } => {
+            let answer = match engine.marks_in(&path) {
+                Ok(items) => Message::MarksIn { items },
+                Err(message) => Message::Error { message },
+            };
+            proto::write_message(&mut io, &answer)
+        }
         Request::Snapshots => proto::write_message(
             &mut io,
             &match crate::shadow::list() {
@@ -484,6 +492,7 @@ mod tests {
                     max_results: None,
                     fuzzy: false,
                     rank: false,
+                    marks: false,
                 };
                 let ended =
                     client::search_on_until(client::connect_to(&name, &trust).unwrap(), &request, &cancel, |_| true);
@@ -566,6 +575,7 @@ mod tests {
             max_results: None,
             fuzzy: false,
             rank: false,
+            marks: false,
         };
         let (mut plan, mut hits, mut done) = (None, Vec::new(), None);
         client::search_on(client::connect_to(&name, &trust).unwrap(), &request, |event| {
@@ -598,6 +608,7 @@ mod tests {
                 max_results: None,
                 fuzzy,
                 rank,
+                marks: false,
             };
             let (mut paths, mut done) = (Vec::new(), None);
             client::search_on(client::connect_to(&name, &trust).unwrap(), &request, |event| {

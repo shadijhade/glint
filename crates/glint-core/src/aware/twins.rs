@@ -106,6 +106,7 @@ fn same_size(path: &str, size: u64) -> Option<Vec<String>> {
         max_results: Some(MOST_CANDIDATES),
         fuzzy: false,
         rank: false,
+        marks: false,
     };
     let mut found = Vec::new();
     let mut limited = false;

@@ -555,6 +555,8 @@ impl FileList {
                     ColumnId::Artist => said_cell(("file-list-artist", i), width, media.artist.clone(), t),
                     ColumnId::Album => said_cell(("file-list-album", i), width, media.album.clone(), t),
                     ColumnId::Size => size_cell(width, size_text.clone(), percent, t),
+                    // S0: card E1 draws the marks' cells; none can be chosen until then (`COLUMN_ORDER`).
+                    ColumnId::Label | ColumnId::Tags | ColumnId::Comment => text_cell(width, String::new(), false, t),
                 }),
             };
         }

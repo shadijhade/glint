@@ -28,6 +28,8 @@ pub mod hex;
 pub mod i18n;
 pub mod json_tree;
 pub mod markdown;
+/// A label, tags and a comment that stay with the file (docs/gpui/marks).
+pub mod marks;
 pub mod natural;
 pub mod oklab;
 pub mod paths;

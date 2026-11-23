@@ -127,6 +127,11 @@ fn event_key(event: &MenuEvent) -> Option<String> {
         MenuEvent::Compare { .. } => "do:compare",
         MenuEvent::SetTags { .. } => "do:tags",
         MenuEvent::EditTags { .. } => "do:edit-tags",
+        MenuEvent::SetLabel { .. } => "do:label",
+        MenuEvent::EditComment { .. } => "do:comment",
+        MenuEvent::CopyMarks { .. } => "do:copy-marks",
+        MenuEvent::PasteMarks { .. } => "do:paste-marks",
+        MenuEvent::ClearMarks { .. } => "do:clear-marks",
         MenuEvent::CheckSums { .. } => "do:check-sums",
         MenuEvent::FolderSizes => "do:folder-sizes",
         MenuEvent::NewTextDocument => "do:new-text-document",
@@ -257,7 +262,8 @@ fn walk<'a>(nodes: &'a [Node], menus: &mut Vec<&'a str>, found: Found<'a, '_>) -
                     return false;
                 }
             }
-            Node::Menu { .. } | Node::Head(_) | Node::Heading(_) | Node::Separator => {}
+            // S0: the labels' dots are card E2's (whether a dot is a row Suggested may copy).
+            Node::Menu { .. } | Node::Head(_) | Node::Heading(_) | Node::Separator | Node::Swatches(_) => {}
         }
     }
     true

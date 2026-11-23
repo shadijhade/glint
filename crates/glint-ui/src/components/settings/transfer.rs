@@ -24,6 +24,7 @@ pub fn part_label(part: Part) -> SharedString {
         Part::History => t!("Search history"),
         Part::Visits => t!("Folders Ctrl+K ranks"),
         Part::FolderViews => t!("Folders' own views"),
+        Part::Labels => t!("Labels"),
     }
 }
 
@@ -36,6 +37,7 @@ pub fn part_note(part: Part) -> Option<SharedString> {
         )),
         Part::Rules => Some(t!("they come turned off")),
         Part::FolderViews => Some(t!("their columns, sort and list or grid")),
+        Part::Labels => Some(t!("with the tags used lately")),
         Part::Pinned | Part::SavedSearches | Part::History | Part::Visits => None,
     }
 }
@@ -51,6 +53,7 @@ fn slot(part: Part) -> &'static str {
         Part::History => "history",
         Part::Visits => "visits",
         Part::FolderViews => "folder-views",
+        Part::Labels => "labels",
     }
 }
 

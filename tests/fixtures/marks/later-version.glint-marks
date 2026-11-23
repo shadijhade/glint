@@ -1,0 +1,3 @@
+{"glint-marks":2,"writer":"glint 0.18"}
+{"name":"a.txt","label":"Important","tags":["x"],"comment":"c","at":1795436917,"rating":4,"color":"#ff8800"}
+{"name":"b.txt","tags":["y"],"at":1795436918,"future":{"nested":[1,2,3]}}

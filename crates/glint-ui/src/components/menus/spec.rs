@@ -39,6 +39,8 @@ pub enum Node {
     /// (docs/gpui/aware/PLAN.md, F1). Never a stop for the keyboard; its height doesn't change while the menu
     /// is open.
     Head(Head),
+    /// The labels' dots, one press labels (docs/gpui/marks, F7): a row right under the strip.
+    Swatches(Vec<Entry>),
 }
 
 impl Node {
@@ -517,6 +519,7 @@ mod tests {
                 Node::Separator => "-".into(),
                 Node::Strip(entries) => format!("[{}]", entries.len()),
                 Node::Head(head) => format!("<{}>", head.title),
+                Node::Swatches(entries) => format!("({})", entries.len()),
             })
             .collect()
     }

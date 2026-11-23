@@ -985,6 +985,20 @@ impl Engine {
         out
     }
 
+    /// Every label and tag on the ready drives with how many items have it, most used first, and how many items
+    /// have a comment (docs/gpui/marks).
+    pub fn marks(&self) -> crate::proto::MarkCounts {
+        // S0: card C2 fills this in.
+        crate::proto::MarkCounts::default()
+    }
+
+    /// The marked items right inside `path`, never with a comment's text.
+    pub fn marks_in(&self, path: &str) -> Result<Vec<crate::proto::MarkedChild>, String> {
+        // S0: card C2 fills this in.
+        let _ = path;
+        Ok(Vec::new())
+    }
+
     pub fn status(&self) -> Status {
         let slots = self.slots.read().unwrap().clone();
         let volumes = slots

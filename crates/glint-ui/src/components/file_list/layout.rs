@@ -22,6 +22,10 @@ pub fn default_rems(width: Column) -> f32 {
         Column::Dimensions => 7.,
         Column::Duration => 4.5,
         Column::Artist | Column::Album => 9.,
+        // The marks' columns (docs/gpui/marks): a label's pill, a few tags' chips, a comment's first line.
+        Column::Label => 7.,
+        Column::Tags => 9.,
+        Column::Comment => 14.,
     }
 }
 
@@ -36,6 +40,9 @@ pub fn saved_width(widths: &ColumnWidths, width: Column) -> Option<f64> {
         Column::Duration => widths.duration,
         Column::Artist => widths.artist,
         Column::Album => widths.album,
+        Column::Label => widths.label,
+        Column::Tags => widths.tags,
+        Column::Comment => widths.comment,
     }
 }
 
@@ -50,6 +57,9 @@ pub fn set_saved_width(widths: &mut ColumnWidths, width: Column, value: Option<f
         Column::Duration => &mut widths.duration,
         Column::Artist => &mut widths.artist,
         Column::Album => &mut widths.album,
+        Column::Label => &mut widths.label,
+        Column::Tags => &mut widths.tags,
+        Column::Comment => &mut widths.comment,
     };
     *slot = value;
 }

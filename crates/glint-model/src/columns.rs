@@ -24,6 +24,12 @@ pub enum ColumnId {
     Duration,
     Artist,
     Album,
+    /// The item's label (docs/gpui/marks), as a pill with its name.
+    Label,
+    /// Its tags, as chips.
+    Tags,
+    /// Its comment's first line.
+    Comment,
 }
 
 impl ColumnId {
@@ -38,10 +44,13 @@ impl ColumnId {
             ColumnId::Duration => "duration",
             ColumnId::Artist => "artist",
             ColumnId::Album => "album",
+            ColumnId::Label => "label",
+            ColumnId::Tags => "tags",
+            ColumnId::Comment => "comment",
         }
     }
 
-    /// The column with this id, if there is one.
+    /// The column with this id, if there is one (one [`COLUMN_ORDER`] doesn't list yet is none).
     pub fn parse(id: &str) -> Option<ColumnId> {
         COLUMN_ORDER.iter().copied().find(|c| c.as_str() == id)
     }
@@ -97,7 +106,7 @@ const fn def(
 /// Every column's definition, in `ColumnId` order (the TypeScript record listed size last). Index with `ColumnId::def`.
 ///
 /// NOTE(port): the record became an array; the position of each row is its `ColumnId` discriminant.
-pub static COLUMNS: [(ColumnId, ColumnDef); 8] = [
+pub static COLUMNS: [(ColumnId, ColumnDef); 11] = [
     (
         ColumnId::Modified,
         def(
@@ -158,6 +167,25 @@ pub static COLUMNS: [(ColumnId, ColumnDef); 8] = [
         ColumnId::Album,
         def("Album", Column::Album, SortKey::Album, Some(DropAt::Md), true, false),
     ),
+    (
+        ColumnId::Label,
+        def("Label", Column::Label, SortKey::Label, Some(DropAt::Md), false, false),
+    ),
+    (
+        ColumnId::Tags,
+        def("Tags", Column::Tags, SortKey::Tags, Some(DropAt::Md), false, false),
+    ),
+    (
+        ColumnId::Comment,
+        def(
+            "Comment",
+            Column::Comment,
+            SortKey::Comment,
+            Some(DropAt::Md),
+            false,
+            false,
+        ),
+    ),
 ];
 
 /// Sorts by what media files say about themselves (read before they sort).
@@ -169,6 +197,9 @@ pub const FACT_SORTS: [SortKey; 5] = [
     SortKey::Album,
 ];
 
+/// Sorts by what an item is marked with (docs/gpui/marks): every row's marks are read before they sort (M5).
+pub const MARK_SORTS: [SortKey; 3] = [SortKey::Label, SortKey::Tags, SortKey::Comment];
+
 /// Sorts whose first click puts the biggest, longest or newest first.
 pub const DESCENDING: [SortKey; 5] = [
     SortKey::Modified,
@@ -178,7 +209,8 @@ pub const DESCENDING: [SortKey; 5] = [
     SortKey::Duration,
 ];
 
-/// The order columns show in, whichever are chosen.
+/// The order columns show in, whichever are chosen. The marks' columns are not in it until their cells draw
+/// (docs/gpui/marks, card E1), so none can be chosen or shown before then.
 pub const COLUMN_ORDER: [ColumnId; 8] = [
     ColumnId::Modified,
     ColumnId::Taken,
@@ -449,6 +481,9 @@ pub fn width_name(width: Column) -> &'static str {
         Column::Duration => "duration",
         Column::Artist => "artist",
         Column::Album => "album",
+        Column::Label => "label",
+        Column::Tags => "tags",
+        Column::Comment => "comment",
     }
 }
 

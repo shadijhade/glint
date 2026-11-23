@@ -169,7 +169,7 @@ fn inspect_ntfs_metadata(path: &str, logical_size: u64) -> (u64, u32, String, St
 
 /// The file's named streams (Alternate Data Streams) via FindFirstStreamW / FindNextStreamW.
 #[cfg(windows)]
-fn list_streams(path: &str) -> Vec<NtfsStream> {
+pub(crate) fn list_streams(path: &str) -> Vec<NtfsStream> {
     use std::os::windows::ffi::OsStrExt;
     use windows::core::PCWSTR;
     use windows::Win32::Storage::FileSystem::{FindClose, FindFirstStreamW, FindNextStreamW, FindStreamInfoStandard, WIN32_FIND_STREAM_DATA};
@@ -222,7 +222,7 @@ fn inspect_ntfs_metadata(_path: &str, logical_size: u64) -> (u64, u32, String, S
 }
 
 #[cfg(not(windows))]
-fn list_streams(_path: &str) -> Vec<NtfsStream> {
+pub(crate) fn list_streams(_path: &str) -> Vec<NtfsStream> {
     Vec::new()
 }
 

@@ -114,6 +114,7 @@ fn from_index(folders: &[String]) -> Option<Vec<Entry>> {
         max_results: Some(MOST),
         fuzzy: false,
         rank: false,
+        marks: false,
     };
     let mut found = Vec::new();
     let mut whole = true;

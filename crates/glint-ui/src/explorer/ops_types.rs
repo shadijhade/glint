@@ -9,6 +9,7 @@
 //! (`base_name`, which keeps the whole path for a drive).
 
 use super::types::TabId;
+use glint_model::marks::Marks;
 
 // ---- Asking Windows' file engine -------------------------------------------------------------------------
 
@@ -152,6 +153,9 @@ pub enum UndoAction {
     /// replaced files records `[Restore(replaced), Recycle(made)]`: what was made is recycled, then the
     /// originals come back).
     Sequence(Vec<UndoAction>),
+    /// Marks changed (docs/gpui/marks): each item gets back the marks it had, through glint-core's `marks_put`.
+    /// Not a file operation of Windows' file engine.
+    Marks(Vec<(String, Marks)>),
 }
 
 /// One piece of work that taking a step back is made of, in the order it runs (see [`UndoAction::runs`]).
@@ -165,6 +169,8 @@ pub enum UndoRun {
     Wof(u64),
     /// Through glint-core's `undo_links`.
     RemoveLinks(Vec<String>),
+    /// Through glint-core's `marks_put`.
+    Marks(Vec<(String, Marks)>),
 }
 
 impl UndoAction {
@@ -175,6 +181,7 @@ impl UndoAction {
             UndoAction::RenameBatch(pairs) => vec![UndoRun::RenameBatch(pairs.clone())],
             UndoAction::Wof(id) => vec![UndoRun::Wof(*id)],
             UndoAction::RemoveLinks(paths) => vec![UndoRun::RemoveLinks(paths.clone())],
+            UndoAction::Marks(items) => vec![UndoRun::Marks(items.clone())],
             single => single.op().map(UndoRun::File).into_iter().collect(),
         }
     }
@@ -198,7 +205,8 @@ impl UndoAction {
             UndoAction::Sequence(_)
             | UndoAction::RenameBatch(_)
             | UndoAction::Wof(_)
-            | UndoAction::RemoveLinks(_) => None,
+            | UndoAction::RemoveLinks(_)
+            | UndoAction::Marks(_) => None,
             UndoAction::Recycle(paths) => Some(FileOp::Delete {
                 paths: paths.clone(),
                 permanent: false,

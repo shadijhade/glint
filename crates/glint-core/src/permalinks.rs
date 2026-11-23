@@ -171,7 +171,7 @@ pub fn claim_protocol() {
 pub(crate) use win::claim_protocol as claim_protocol_in;
 
 #[cfg(windows)]
-mod win {
+pub(crate) mod win {
     use super::{format_uri, Permalink};
     use std::path::Path;
     use windows::core::{GUID, PCWSTR};
@@ -316,7 +316,8 @@ mod win {
         }))
     }
 
-    fn find_volume_root_by_serial(target: u32) -> Option<String> {
+    /// The root (`D:\`) of the local drive whose volume serial is `target` (XYplorer's storage 4 names drives so).
+    pub(crate) fn find_volume_root_by_serial(target: u32) -> Option<String> {
         // SAFETY: reads bitmask of logical drive letters.
         let mask = unsafe { GetLogicalDrives() };
         for i in 0..26u32 {

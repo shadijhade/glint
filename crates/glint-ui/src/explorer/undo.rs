@@ -156,6 +156,11 @@ impl Explorer {
                     // the person is told which (the web app's second toast, "Couldn't decompress {n} files").
                     UndoRun::Wof(id) => runner.wof_undo(id).await.and_then(wof_outcome),
                     UndoRun::RemoveLinks(paths) => runner.remove_links(paths).await,
+                    // S0: card D1 puts the marks back (glint-core's `marks_put`); nothing records this step yet.
+                    UndoRun::Marks(items) => {
+                        let _ = items;
+                        Ok(())
+                    }
                 };
                 if let Err(message) = done {
                     result = Err(message);

@@ -90,6 +90,10 @@ actions!(
         NewFolder,
         ShowItemMenu,
         Properties,
+        // Marks (docs/gpui/marks): Alt+0 takes the label off, Alt+T and Alt+N edit the tags and the comment
+        ClearLabel,
+        EditTags,
+        EditComment,
         // Windows and dialogs
         OpenSettings,
         ShowShortcuts,
@@ -119,6 +123,15 @@ actions!(
 #[action(namespace = glint, no_json)]
 pub struct GoToTab {
     /// The tab's position, counting from 0.
+    pub index: usize,
+}
+
+/// Give the selection the label at `index` (0-based; Alt+1…9), or take it off when every selected item has it
+/// (docs/gpui/marks, F6). Not a unit action, so not in the macro above.
+#[derive(Clone, PartialEq, Debug, Action)]
+#[action(namespace = glint, no_json)]
+pub struct LabelSelection {
+    /// The label's place in Settings → Files → Labels, counting from 0.
     pub index: usize,
 }
 
@@ -242,6 +255,64 @@ pub static BINDINGS: &[Binding] = &[
         "The menu of what's selected (or the menu key)"
     ),
     bind!("alt-enter", "FileList", Properties, "Properties"),
+    // Marks (docs/gpui/marks, F6): one key labels what is selected, and nothing opens.
+    bind!(
+        "alt-1",
+        "FileList",
+        LabelSelection { index: 0 },
+        "Label what's selected (again: take it off)"
+    ),
+    bind!(
+        "alt-2",
+        "FileList",
+        LabelSelection { index: 1 },
+        "Label what's selected (again: take it off)"
+    ),
+    bind!(
+        "alt-3",
+        "FileList",
+        LabelSelection { index: 2 },
+        "Label what's selected (again: take it off)"
+    ),
+    bind!(
+        "alt-4",
+        "FileList",
+        LabelSelection { index: 3 },
+        "Label what's selected (again: take it off)"
+    ),
+    bind!(
+        "alt-5",
+        "FileList",
+        LabelSelection { index: 4 },
+        "Label what's selected (again: take it off)"
+    ),
+    bind!(
+        "alt-6",
+        "FileList",
+        LabelSelection { index: 5 },
+        "Label what's selected (again: take it off)"
+    ),
+    bind!(
+        "alt-7",
+        "FileList",
+        LabelSelection { index: 6 },
+        "Label what's selected (again: take it off)"
+    ),
+    bind!(
+        "alt-8",
+        "FileList",
+        LabelSelection { index: 7 },
+        "Label what's selected (again: take it off)"
+    ),
+    bind!(
+        "alt-9",
+        "FileList",
+        LabelSelection { index: 8 },
+        "Label what's selected (again: take it off)"
+    ),
+    bind!("alt-0", "FileList", ClearLabel, "Take the label off what's selected"),
+    bind!("alt-t", "FileList", EditTags, "Edit the tags of what's selected"),
+    bind!("alt-n", "FileList", EditComment, "Edit the comment of what's selected"),
     bind!("ctrl-h", "Workspace", ToggleHidden, "Hidden items"),
     bind!("alt-p", "Workspace", TogglePreview, "Preview pane"),
     bind!(
@@ -458,6 +529,22 @@ mod tests {
             let action = (binding.action)();
             let go = action.as_any().downcast_ref::<GoToTab>().map(|go| go.index);
             assert_eq!(go, Some(i));
+        }
+    }
+
+    #[test]
+    fn alt_digits_label_the_selection_with_the_first_nine_labels() {
+        let labels: Vec<_> = BINDINGS
+            .iter()
+            .filter(|b| b.what == "Label what's selected (again: take it off)")
+            .collect();
+        assert_eq!(labels.len(), 9);
+        for (i, binding) in labels.iter().enumerate() {
+            assert_eq!(binding.keys, format!("alt-{}", i + 1));
+            assert_eq!(binding.context, "FileList");
+            let action = (binding.action)();
+            let label = action.as_any().downcast_ref::<LabelSelection>().map(|l| l.index);
+            assert_eq!(label, Some(i));
         }
     }
 

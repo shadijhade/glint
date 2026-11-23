@@ -207,6 +207,18 @@ pub struct Tree {
     pub tags: HashMap<u32, Box<str>>,
 }
 
+/// What a record is marked with, as its `glint.*` streams say (docs/gpui/marks): each field empty when it has
+/// none. Only marked records have one.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Marked {
+    /// The label's name.
+    pub label: Box<str>,
+    /// One tag per line, as the stream has them.
+    pub tags: Box<str>,
+    /// The comment's first 4 KB.
+    pub comment: Box<str>,
+}
+
 /// A name search over one volume.
 /// A match's place in a ranked search (`Tree::rank`): lower is better.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

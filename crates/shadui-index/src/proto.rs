@@ -63,6 +63,14 @@ pub enum Request {
         volume_serial: u32,
         frn: u64,
     },
+    /// Every label and tag on the indexed drives with how many items have it, and how many items have a
+    /// comment (Marks; docs/gpui/marks). A service from before closes the pipe on it.
+    Marks,
+    /// The marked items right inside a folder: their names and marks, never a comment's text (MarksIn). A
+    /// service from before closes the pipe on it.
+    MarksIn {
+        path: String,
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -128,6 +136,10 @@ pub struct SearchRequest {
     /// ones in index order, drive by drive. A service from before this ignores it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub rank: bool,
+    /// Plain words look in tags and comments too, not only in names: such a hit says how it was found
+    /// ([`HIT_BY_COMMENT`], [`HIT_BY_TAG`]). A service from before this ignores it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub marks: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -184,6 +196,12 @@ pub enum Message {
     /// Resolved path for a `(volume_serial, frn)` query.
     Resolved {
         path: Option<String>,
+    },
+    /// Every label and every tag, most used first, with how many items have it, and how many have a comment.
+    Marks(MarkCounts),
+    /// A folder's marked children.
+    MarksIn {
+        items: Vec<MarkedChild>,
     },
     Error {
         message: String,
@@ -289,6 +307,40 @@ pub struct UsageNode {
 }
 
 pub const NO_PARENT: u32 = u32::MAX;
+
+/// The answer to Marks. Sent as `{"type":"marks","labels":…,"tags":…,"comments":…}`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct MarkCounts {
+    /// Every label's name, most used first, with how many items have it.
+    pub labels: Vec<(String, u64)>,
+    /// Every tag the same way.
+    pub tags: Vec<(String, u64)>,
+    /// How many items have a comment.
+    pub comments: u64,
+}
+
+/// One marked item right inside a folder (MarksIn): what it is marked with, but of a comment only that there
+/// is one. The service never sends a comment's text; the app reads it from the file, with the person's rights.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct MarkedChild {
+    pub name: String,
+    /// The label's name ("" for none).
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// It has a comment.
+    #[serde(default)]
+    pub comment: bool,
+}
+
+/// A hit's flags (the first byte of its frame) beside bit 0, "a folder": found by its comment, found by a tag
+/// (a search with `marks`). `decode_hits` before these read bit 0 alone, so an older app is unharmed.
+pub const HIT_BY_COMMENT: u8 = 2;
+/// Found by one of its tags (or its label).
+pub const HIT_BY_TAG: u8 = 4;
 
 /// A search result.
 #[derive(Debug, Clone, PartialEq)]
@@ -468,6 +520,7 @@ mod tests {
             max_results: Some(50_000),
             fuzzy: false,
             rank: false,
+            marks: false,
         });
         let mut wire = Vec::new();
         write_request(&mut wire, &request).unwrap();

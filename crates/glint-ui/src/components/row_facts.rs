@@ -45,6 +45,7 @@ use glint_model::columns::{ColumnId, FACT_SORTS};
 use glint_model::entries::SortKey;
 use glint_model::entries::{is_archived, is_recycled, FileEntry, MediaFacts};
 use glint_model::format::{format_date, format_full_date};
+use glint_model::marks::Marks;
 use glint_model::paths::is_remote_path;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -511,6 +512,20 @@ impl RowFacts {
     /// The tags read for `path` in `folder`, or None while they are unread. Empty for an item with none.
     pub fn tags_of(&self, folder: &str, path: &str) -> Option<&[String]> {
         self.stores.get(folder)?.tags.get(path).map(|read| read.tags.as_slice())
+    }
+
+    /// The marks read for `path` in `folder` (docs/gpui/marks), or None while they are unread (draw nothing).
+    pub fn marks_of(&self, folder: &str, path: &str) -> Option<&Marks> {
+        // S0: card D1 fills this in.
+        let _ = (folder, path);
+        None
+    }
+
+    /// Reads the marks of every entry of `folder` on core's now lane, for a list sorted, grouped or filtered by a
+    /// mark (M5); the rows are built again once they are in.
+    pub fn ask_all(&mut self, folder: &str, entries: &[FileEntry], cx: &mut Context<Self>) {
+        // S0: card D1 fills this in.
+        let _ = (folder, entries, cx);
     }
 
     /// What `entry` says of itself, as read for its current version: None while unread (draw nothing), Some(None)

@@ -1,0 +1,8 @@
+{"glint-marks":1}
+{"name":"..\\secret.txt","label":"Red"}
+{"name":"sub/inner.txt","label":"Red"}
+{"name":"sub\\inner.txt","label":"Red"}
+{"name":"..","label":"Red"}
+{"name":".","label":"Red"}
+{"name":"","label":"Red"}
+{"name":"ok.txt","label":"Green"}

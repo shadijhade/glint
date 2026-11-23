@@ -239,6 +239,7 @@ fn search(args: &[String]) -> i32 {
         max_results: Some(values(args, "--max").first().and_then(|m| m.parse().ok()).unwrap_or(50_000)),
         fuzzy: args.iter().any(|a| a == "--fuzzy"),
         rank: args.iter().any(|a| a == "--rank"),
+        marks: args.iter().any(|a| a == "--marks"),
     };
     let repeat: usize = values(args, "--repeat").first().and_then(|r| r.parse().ok()).unwrap_or(1).max(1);
     let print = args.iter().any(|a| a == "--print");

@@ -265,6 +265,12 @@ pub enum SortKey {
     Duration,
     Artist,
     Album,
+    /// By label, in the labels' order, no label last (docs/gpui/marks).
+    Label,
+    /// By tags.
+    Tags,
+    /// By comment.
+    Comment,
 }
 
 /// A sort: by what, and which way.
@@ -456,6 +462,8 @@ where
             SortKey::Duration => duration(a).partial_cmp(&duration(b)).unwrap_or(Ordering::Equal),
             SortKey::Artist => compare_base_numeric(text(a, true), text(b, true)),
             SortKey::Album => compare_base_numeric(text(a, false), text(b, false)),
+            // S0: card A5 sorts by marks (`Reads` gains `marks_of`); until then they keep the name's order.
+            SortKey::Label | SortKey::Tags | SortKey::Comment => Ordering::Equal,
         };
         let by = if sort.desc { by.reverse() } else { by };
         group(a).cmp(&group(b)).then(by).then_with(|| {

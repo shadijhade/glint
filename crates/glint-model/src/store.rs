@@ -42,6 +42,7 @@ use crate::columns::ColumnId;
 use crate::entries::{Sort, SortKey};
 use crate::grid::TileSize;
 use crate::groups::GroupBy;
+use crate::marks::{default_labels, Label};
 use crate::rank::{frecency, Visit};
 
 /// A map from text to values that keeps the order keys were first added in, as a JS object does (for the
@@ -309,6 +310,9 @@ pub enum Column {
     Duration,
     Artist,
     Album,
+    Label,
+    Tags,
+    Comment,
 }
 
 /// Widths dragged in the list's header, in pixels; unset: the default (`Partial<Record<Column, number>>`).
@@ -330,6 +334,12 @@ pub struct ColumnWidths {
     pub artist: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub album: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub comment: Option<f64>,
 }
 
 /// Glint's settings. Fields are in the order `DEFAULT_SETTINGS` lists them, which is the order they are saved.
@@ -420,6 +430,11 @@ pub struct Settings {
     pub auto_update: bool,
     /// Subtle tactile cues on Precision Touchpads (zoom detents, boundary bumps, File Basket snaps, checksum match).
     pub haptics: bool,
+    /// The labels a file can carry, in their order (Settings → Files → Labels; docs/gpui/marks).
+    pub labels: Vec<Label>,
+    /// What XYplorer's `tag.dat` gains comes into Glint when Glint starts or comes to the front (docs/gpui/marks,
+    /// F30). Off until chosen.
+    pub follow_xyplorer: bool,
 }
 
 impl Default for Settings {
@@ -532,6 +547,8 @@ impl Default for Settings {
             learn: true,
             auto_update: true,
             haptics: true,
+            labels: default_labels(),
+            follow_xyplorer: false,
         }
     }
 }
@@ -862,6 +879,9 @@ lenient_deserialize!(ColumnWidths {
     "duration" => duration,
     "artist" => artist,
     "album" => album,
+    "label" => label,
+    "tags" => tags,
+    "comment" => comment,
 });
 lenient_deserialize!(Settings {
     "theme" => theme,
@@ -917,6 +937,8 @@ lenient_deserialize!(Settings {
     "learn" => learn,
     "autoUpdate" => auto_update,
     "haptics" => haptics,
+    "labels" => labels,
+    "followXyplorer" => follow_xyplorer,
 });
 /// Kinds of remote connection Glint no longer has: a paired PC's folders ("device"), gone with paired devices in
 /// 0.12. A saved one loads as nothing ([`load_persisted`] drops it); any other kind it doesn't know loads as S3.
@@ -1327,7 +1349,11 @@ mod tests {
                 r#""compareSubfolders":false,"compareContents":false,"columns":{{}},"previewWidth":null,"#,
                 r#""dualSplit":null,"gitTrusted":[],"terminalShell":"","terminalHeight":null,"#,
                 r#""terminalFollow":true,"growthDays":7,"showReadme":true,"readmeOpen":false,"#,
-                r#""zoxide":false,"suggest":true,"learn":true,"autoUpdate":true,"haptics":true}}"#
+                r#""zoxide":false,"suggest":true,"learn":true,"autoUpdate":true,"haptics":true,"#,
+                r#""labels":[{{"name":"Red","color":15680580}},{{"name":"Orange","color":16347926}},"#,
+                r#"{{"name":"Yellow","color":15381256}},{{"name":"Green","color":2278750}},"#,
+                r#"{{"name":"Blue","color":3900150}},{{"name":"Purple","color":11032055}},"#,
+                r#"{{"name":"Gray","color":10265519}}],"followXyplorer":false}}"#
             ),
             DEFAULT_EXCLUSIONS
         );

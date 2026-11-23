@@ -25,6 +25,9 @@ pub enum GroupBy {
     Size,
     Type,
     Git,
+    /// By label, in the labels' order, *No label* last (docs/gpui/marks). Not in [`GROUP_BYS`] until card E1
+    /// wires it.
+    Label,
 }
 
 /// One choice of the Group by menu.
@@ -246,7 +249,8 @@ fn group_in(
             Some(GitMark::Ignored) => group(5, "Ignored"),
             None => group(4, "Unchanged"),
         },
-        GroupBy::None => group(0, ""),
+        // S0: card A5 groups by label; until then it is one nameless group, as None is.
+        GroupBy::None | GroupBy::Label => group(0, ""),
     }
 }
 

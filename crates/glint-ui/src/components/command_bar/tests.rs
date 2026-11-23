@@ -269,6 +269,7 @@ fn labels(nodes: &[Node]) -> Vec<String> {
             Node::Separator => "-".into(),
             Node::Strip(entries) => format!("[{}]", entries.len()),
             Node::Head(head) => format!("<{}>", head.title),
+            Node::Swatches(entries) => format!("({})", entries.len()),
         })
         .collect()
 }

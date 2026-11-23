@@ -1370,6 +1370,8 @@ impl MenuView {
                     }
                     Node::Strip(entries) => self.render_strip(lv, i, entries, i + 1 == count, t, cx),
                     Node::Head(_) => return None,
+                    // S0: card E2 draws the labels' dots; no menu has them until then.
+                    Node::Swatches(_) => return None,
                     Node::Item(entry) => self.render_row(Spot::Row(lv, i), entry, None, t, cx),
                     Node::Menu {
                         label, icon, disabled, ..

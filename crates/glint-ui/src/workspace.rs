@@ -1546,6 +1546,12 @@ impl Workspace {
             MenuEvent::SetTags { paths, add, remove } => {
                 dialogs::tags::set_tags(window, cx, paths.clone(), add.clone(), remove.clone())
             }
+            // Marks (docs/gpui/marks): no menu offers these until card E2; the wave's last step wires them.
+            MenuEvent::SetLabel { .. }
+            | MenuEvent::EditComment { .. }
+            | MenuEvent::CopyMarks { .. }
+            | MenuEvent::PasteMarks { .. }
+            | MenuEvent::ClearMarks { .. } => {}
             MenuEvent::EditConnection { id } => dialogs::remote::open_edit(window, cx, id.clone()),
             MenuEvent::RemoveConnection { id } => dialogs::remote::remove_remote(window, cx, id.clone()),
             MenuEvent::SearchText { folder } => self.search_in(folder, window, cx),
