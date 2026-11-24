@@ -1,6 +1,6 @@
 # Glint, feature by feature
 
-Everything Glint does, in detail. The [README](../README.md) has the short tour, how to install it and the benchmarks, and [the release notes](https://github.com/shadijhade/glint/releases) say what changed when. This page describes Glint 0.15.
+Everything Glint does, in detail. The [README](../README.md) has the short tour, how to install it and the benchmarks, and [the release notes](https://github.com/shadijhade/glint/releases) say what changed when. This page describes Glint 0.17.
 
 -   [Browsing](#browsing)
 -   [The menu and the dock](#the-menu-and-the-dock)

@@ -30,6 +30,7 @@ A native Windows app written in Rust. Free, open source, and no account.
 -   **Every folder shows its size.** File Explorer keeps folder sizes in Properties. Glint puts them in the list as the folder opens (all of `C:\Windows` in 0.4 ms from the index), and draws any folder as a map of what fills it, like WizTree.
 -   **Any file on any drive, as you type.** Turn on instant search and a small service reads each NTFS drive's Master File Table once, the way Everything does, then follows every change: every `kernel32.dll` on three drives, among 3 million names, in 7.7 ms. Without it, fd streams results as it finds them.
 -   **One search for names and contents.** ripgrep reads inside the files from the same box, and a file found by what it holds is a row like any other, with the lines that matched under it. PDFs, Office documents and the text in pictures too.
+-   **Labels, tags and comments that stay with the file.** A colored label that says a status, tags, and a note on any file or folder, kept in the file itself, so they survive any program's renames, moves and copies. `label:`, `tag:` and `comment:` find them as you type, and XYplorer's come along in one press.
 -   **A preview for nearly every file.** `Space` shows it full size: code, Markdown, PDFs, Word documents without Office, spreadsheets and databases you can query with SQL, videos, and every file's bytes.
 -   **More to do with files.** Trim and shrink videos, merge and split PDFs, query CSV and Parquet files of any size, convert documents, take personal info out of photos, rename hundreds of files at once (by pattern or by example), and take it all back with `Ctrl+Z`.
 -   **Folders with a past.** **Time Machine** (`Ctrl+Shift+H`) lays a folder's history out from Windows' shadow copies, its Git commits and its backups, and restores from it. **Live portals** open an archive, a Git commit or a backup as a real folder any app can use, and a `glint://` link finds a file wherever it moves on its drive.
@@ -191,6 +192,17 @@ A tour of what Glint does. **Every feature, in detail: [docs/features.md](docs/f
 
 [More about search →](docs/features.md#search)
 
+### Labels, tags and comments
+
+-   **Three marks on any file or folder.** A **label** is one named color that says a status (*Important*, *Waiting*, *Done*: the names and colors are yours, in **Settings → Files → Labels**), **tags** are words, and a **comment** is free text.
+-   **One key each.** `Alt+1`…`Alt+9` give the selection a label and `Alt+0` takes it off; `Alt+T` edits the tags (suggesting the ones you use) and `Alt+N` the comment. The right-click menu has a row of the labels' dots, and the preview pane and Quick Look have a **Marks** block. Every change is one **Undo**.
+-   **Seen where you work.** **Label**, **Tags** and **Comment** are columns that sort, **Group by → Label** groups, a labeled row is washed in its color, and a row with a comment has a small note whose tooltip is the comment. The sidebar has the labels as a line of dots and the tags as chips: a press finds everything that has one, on every drive.
+-   **Found at once.** `label:important`, `tag:netplan`, `comment:lacp`, `has:comment` and `!` for not, in the open folder as you type and on every drive; with instant search, a plain word finds comments too. A Chinese keyboard's `：` and `；` work as typed, and `label:红色` finds the label called Red.
+-   **Kept in the file.** On NTFS and ReFS the marks are streams of the file itself: renamed in a terminal, moved by another program or copied to another PC, it keeps them, and PowerShell reads and writes them. Other drives keep them in a hidden `.glint-marks` beside the files.
+-   **XYplorer comes along.** Glint finds XYplorer's `tag.dat` and brings its labels, tags and comments in with one press and one Undo (or a preview first), can keep following it while you use both, and exports to its format. XYplorer's files are only read.
+
+[How marks are kept, PowerShell and XYplorer →](docs/marks.md)
+
 ### Tabs, two panes and the grid
 
 <table>
@@ -212,6 +224,7 @@ A tour of what Glint does. **Every feature, in detail: [docs/features.md](docs/f
 </tr>
 </table>
 
+-   **A sidebar that is all in sight.** Quick access as tiles, two to a line, the drives right under your pinned folders, the labels as a line of dots and the tags as chips. Every section folds to its title.
 -   **Tabs** in each pane, listed whole in the side rail and back when you start Glint again. Rest the pointer on a background tab, or on a parent folder in the address bar, and a card says what's in it.
 -   **Named workspaces.** Save the window's tabs, panes, split, views and scroll places under a name, and switch between them from the sidebar or `Ctrl+K`.
 -   **Hop mode.** `Alt+J` puts letters on every tab, crumb, place and visible file in both panes: type them to go there, as a click would.
@@ -308,7 +321,8 @@ A tour of what Glint does. **Every feature, in detail: [docs/features.md](docs/f
 -   **Open in Glint** from File Explorer, `Win+E` and folders that open in Glint by default (installer copy), and `Ctrl+Alt+G` to take any file dialog to Glint's folder.
 -   **Links that follow a file.** **Copy permalink** gives a `glint://` link that still opens the file after it's renamed or moved on the same drive.
 -   **A touchpad that taps back**, on haptic Precision Touchpads: light taps for zoom steps, the end of a list and a matching checksum.
--   **Settings that find themselves.** An Overview of how Glint is set up, suggestions for this PC (index every drive, a drive nearly full, tool updates), and a search box for any setting.
+-   **Suggestions at their moment.** What is worth turning on comes to you when it would have helped, with one button: Batch rename after you rename files one by one, the copy queue after a long copy, the Gallery for a folder of photos, a folder rule for a move you keep making. One at a time, each with **Undo** and **Don't suggest this again**.
+-   **Settings that find themselves.** An Overview of how Glint is set up, with every suggestion for this PC and the switch for them, and a search box for any setting.
 
 [More about Windows integration →](docs/features.md#at-home-on-windows)
 
@@ -320,6 +334,7 @@ A tour of what Glint does. **Every feature, in detail: [docs/features.md](docs/f
 | What fills a drive | Not shown (Storage settings has categories) | A treemap of any folder, like WizTree's |
 | Find a file by name | Windows Search where it indexes, otherwise a walk through every folder | An index of every NTFS drive (opt-in), otherwise fd |
 | Search inside files | Indexed places and file types | ripgrep in any folder, with regex; the text in PDFs, Office documents and pictures too |
+| Labels, tags and comments | Tags, ratings and comments for some kinds of file (photos, Office documents), inside the file's own format | A label, tags and a comment on any file or folder, kept with it, found as you type with `label:`, `tag:` and `comment:` |
 | Preview | Preview pane | The same previewers, and Glint's own: Markdown, JSON and YAML trees with jq, tables with SQL, Word without Office, every file's bytes; Quick Look on `Space` |
 | Git | Not shown | Each file's and folder's status, the branch in the address bar, and what changed in a file |
 | Compare two folders | Not available | Side by side, down through subfolders and by contents, with Sync |
@@ -342,7 +357,7 @@ A tour of what Glint does. **Every feature, in detail: [docs/features.md](docs/f
 
 ## AI agents
 
-AI agents that speak the [Model Context Protocol](https://modelcontextprotocol.io/) (Claude Code and Claude Desktop, VS Code's Copilot, Cursor and others) can use Glint's engines. `Glint.exe mcp` is the server: the agent starts it, and it answers on its standard input and output with 12 tools. Eight only read; four change files, and only after you allow each in a Windows dialog naming exactly what will happen.
+AI agents that speak the [Model Context Protocol](https://modelcontextprotocol.io/) (Claude Code and Claude Desktop, VS Code's Copilot, Cursor and others) can use Glint's engines. `Glint.exe mcp` is the server: the agent starts it, and it answers on its standard input and output with 13 tools. Eight only read; five change files or their marks, and only after you allow each in a Windows dialog naming exactly what will happen.
 
 | Tool | What it answers | How |
 | :--- | :--- | :--- |
@@ -353,6 +368,8 @@ AI agents that speak the [Model Context Protocol](https://modelcontextprotocol.i
 | `search_text` | Lines of text files that contain a pattern | ripgrep |
 | `query_data` | One SQL query that only reads, over a CSV, JSON lines, Parquet, Excel or SQLite file | DuckDB, once it's installed |
 | `compare_files` | What differs between two files | Difftastic by structure when it's installed, else line by line |
+| `get_marks` | The label, tags and comment of up to 1,000 files and folders | Read from the files themselves |
+| `set_marks` | A label, tags or a comment given to files and folders, asked first, with Undo in **Settings → AI agents** | Written to the files, as Glint's own keys do |
 | `move_items`, `rename_item`, `create_folder`, `recycle_items` | Moves, renames, new folders and the Recycle Bin, asked first, and listed in **Settings → AI agents** with Undo | Windows' file engine |
 
 Agents that show apps (MCP Apps) draw `folder_sizes` and `largest_files` as a map of the folder, and Glint adds itself to Windows' own agent registry where Windows has one.
@@ -373,6 +390,7 @@ Agents that show apps (MCP Apps) draw `folder_sizes` and `largest_files` as a ma
 | `Ctrl+Shift+D` · `F6` | Two panes · switch between them |
 | `` Ctrl+` `` | The terminal under the files |
 | `F2` | Rename (several selected: batch rename) |
+| `Alt+1`…`Alt+9` · `Alt+T` · `Alt+N` | A label (`Alt+0`: none) · the tags · the comment |
 | `Ctrl+Z` | Undo the last copy, move, rename, delete or new item |
 | `Ctrl+Shift+H` · `Ctrl+Shift+G` | Time Machine for the folder · Photo World Map |
 | `Alt+J` | Hop mode: letters on everything in sight, type them to go there |
@@ -429,6 +447,8 @@ Agents that show apps (MCP Apps) draw `folder_sizes` and `largest_files` as a ma
 | `Alt+J` | Hop mode: letters on every tab, crumb, place and visible file in both panes; type them to go there (`Backspace` takes a letter back, `Esc` leaves) |
 | `Ctrl+Shift+B` · `Alt+B` | Add the selection to the basket · open the basket's drawer |
 | `Alt+F` | Freeze order: keep the folder's rows where they are while files change (again: sort once) |
+| `Alt+1`…`Alt+9` · `Alt+0` | Give the selection the first nine labels (on items that all have it already: take it off) · no label |
+| `Alt+T` · `Alt+N` | Edit the selection's tags · its comment (`Ctrl+Enter` saves) |
 
 #### Disk usage map
 
@@ -538,6 +558,7 @@ npm run test:signing
 ## Roadmap
 
 -   [ ] Code-signed installers (the SignPath Foundation invited a new application once Glint is better known)
+-   [x] 0.17: a label, tags and a comment on every file and folder, XYplorer's brought along in one press, suggestions at their moment, and a sidebar that is all in sight
 -   [x] 0.16: a quieter window, right-click menus by importance, Hop mode, named workspaces, the basket's drawer, and a faster photo map, Color Wheel and Time Machine
 -   [x] 0.15: Time Machine, live portals, links that follow a file, rename by example, File Lego, and photos by place and by color
 -   [x] 0.14: quicker, sharper and lighter: Back that remembers searches, Flat view, matched checksums, and 11 MB less
@@ -574,7 +595,6 @@ npm run test:signing
 -   [x] Previous versions, from Windows' shadow copies
 -   [x] Remotes in File Explorer, on demand
 -   [x] Search inside files from an index, and tags
--   [x] Labels, tags and comments that stay with the file, and XYplorer's brought along
 
 </details>
 
