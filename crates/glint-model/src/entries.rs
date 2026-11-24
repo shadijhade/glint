@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use crate::archives::{is_browsed_ext, is_on_request_ext};
 use crate::collate::compare_base_numeric;
 use crate::js::{is_js_space, js_round, js_trim};
+use crate::marks::{shown, Label, Marks, Shown, Wanted};
 use crate::paths::join_path;
 
 /// Windows FILE_ATTRIBUTE_* bits the explorer cares about, and some of Glint's own (Windows doesn't use them).
@@ -334,6 +335,17 @@ pub type SizeOf<'a> = dyn Fn(&FileEntry) -> u64 + 'a;
 pub type TakenOf<'a> = dyn Fn(&FileEntry) -> Option<i64> + 'a;
 /// What a file says of itself (`None` when unread or nothing).
 pub type FactsOf<'f> = dyn Fn(&FileEntry) -> Option<&'f MediaFacts> + 'f;
+/// An entry's marks as read (`None` while they are unread: it then sorts, groups and filters as an entry with
+/// none; docs/gpui/marks).
+pub type MarksOf<'f> = dyn Fn(&FileEntry) -> Option<&'f Marks> + 'f;
+
+/// What sorting, grouping and filtering by a mark read: each entry's marks, and this PC's labels (their order is
+/// the order labels sort and group in, and a 0.16 color tag reads as its label: `marks::shown`).
+#[derive(Clone, Copy)]
+pub struct MarkReads<'a, 'f> {
+    pub of: &'a MarksOf<'f>,
+    pub labels: &'a [Label],
+}
 
 /// Sorts for display. `presorted` entries already come folders-first in name order (listings sort in Rust), so
 /// the default view costs nothing (the vector comes back as it is) and ties keep name order. `size_of` lets
@@ -392,6 +404,7 @@ pub fn entry_order<'a, 'f: 'a>(
         size_of,
         taken_of,
         facts_of,
+        marks: None,
     };
     entry_order_by(sort, folders_first, presorted, reads, entry_itself, by_name)
 }
@@ -405,6 +418,8 @@ pub struct Reads<'a, 'f> {
     pub size_of: Option<&'a SizeOf<'a>>,
     pub taken_of: Option<&'a TakenOf<'a>>,
     pub facts_of: Option<&'a FactsOf<'f>>,
+    /// For a sort by label, tags or comment; without it those keep the name's order.
+    pub marks: Option<MarkReads<'a, 'f>>,
 }
 
 /// [`entry_order`] over any items that stand for entries: `entry` says which, and `name_order` compares two
@@ -426,7 +441,42 @@ where
         size_of,
         taken_of,
         facts_of,
+        marks,
     } = reads;
+    // ponytail: what is shown is worked out again at every comparison; keys made once per sort if a folder of
+    // 100,000 rows sorted by label proves slow.
+    let shown_of = move |e: &FileEntry| -> Option<Shown> {
+        marks.map(|m| shown(m.labels, (m.of)(e).unwrap_or(&Marks::default())))
+    };
+    let by_mark = move |key: SortKey, a: &FileEntry, b: &FileEntry| -> Ordering {
+        let (Some(x), Some(y)) = (shown_of(a), shown_of(b)) else {
+            return Ordering::Equal;
+        };
+        let first_line = |e: &FileEntry| -> Option<String> {
+            let c = (marks?.of)(e)?.comment.as_deref()?;
+            c.lines().next().filter(|l| !l.is_empty()).map(String::from)
+        };
+        // Something sorts before nothing.
+        let some_first = |p: Option<&str>, q: Option<&str>| match (p, q) {
+            (Some(p), Some(q)) => compare_base_numeric(p, q),
+            (Some(_), None) => Ordering::Less,
+            (None, Some(_)) => Ordering::Greater,
+            (None, None) => Ordering::Equal,
+        };
+        match key {
+            SortKey::Label => match (&x.label, &y.label, x.place, y.place) {
+                (Some(_), Some(_), Some(i), Some(j)) => i.cmp(&j),
+                (Some(_), Some(_), Some(_), None) => Ordering::Less,
+                (Some(_), Some(_), None, Some(_)) => Ordering::Greater,
+                (p, q, ..) => some_first(p.as_deref(), q.as_deref()),
+            },
+            SortKey::Tags => {
+                let join = |s: &Shown| (!s.tags.is_empty()).then(|| s.tags.join(", "));
+                some_first(join(&x).as_deref(), join(&y).as_deref())
+            }
+            _ => some_first(first_line(a).as_deref(), first_line(b).as_deref()),
+        }
+    };
     let group = move |e: &FileEntry| usize::from(!(folders_first && e.dir));
     let size = move |e: &FileEntry| size_of.map_or(e.size, |f| f(e));
     let taken = move |e: &FileEntry| taken_of.and_then(|f| f(e)).unwrap_or(e.modified);
@@ -462,8 +512,8 @@ where
             SortKey::Duration => duration(a).partial_cmp(&duration(b)).unwrap_or(Ordering::Equal),
             SortKey::Artist => compare_base_numeric(text(a, true), text(b, true)),
             SortKey::Album => compare_base_numeric(text(a, false), text(b, false)),
-            // S0: card A5 sorts by marks (`Reads` gains `marks_of`); until then they keep the name's order.
-            SortKey::Label | SortKey::Tags | SortKey::Comment => Ordering::Equal,
+            // Without `reads.marks` these keep the name's order.
+            SortKey::Label | SortKey::Tags | SortKey::Comment => by_mark(sort.key, a, b),
         };
         let by = if sort.desc { by.reverse() } else { by };
         group(a).cmp(&group(b)).then(by).then_with(|| {
@@ -1018,12 +1068,37 @@ pub fn matcher_at<'a, 'f: 'a>(
     facts: Option<&'a FactsOf<'f>>,
     now: i64,
 ) -> Option<EntryTest<'a>> {
-    let parts = terms(&query.to_lowercase());
-    if parts.is_empty() {
+    matcher_marks(query, git, facts, None, now)
+}
+
+/// Whether a search holds a marks filter, which needs every row's marks read to apply (`RowFacts::ask_all`).
+pub fn has_marks_filter(query: &str) -> bool {
+    !Wanted::parse(&terms(&query.to_lowercase())).0.is_empty()
+}
+
+/// `matcher_at`, with the rows' marks for `label:`, `tag:`, `comment:` and `has:` (and `!` before them). An entry
+/// whose marks aren't read yet (`None`) is asked as one with none; without a reader the marks terms accept every
+/// entry (they are left to the search, as a property filter without `facts` is).
+pub fn matcher_marks<'a, 'f: 'a>(
+    query: &str,
+    git: Option<&'a GitMarks>,
+    facts: Option<&'a FactsOf<'f>>,
+    marks: Option<&'a MarksOf<'f>>,
+    now: i64,
+) -> Option<EntryTest<'a>> {
+    let all = terms(&query.to_lowercase());
+    if all.is_empty() {
         return None;
     }
-    let tests: Vec<EntryTest<'a>> = parts
-        .into_iter()
+    let (wanted, parts) = Wanted::parse(&all);
+    let mut tests: Vec<EntryTest<'a>> = Vec::new();
+    if let (false, Some(marks)) = (wanted.is_empty(), marks) {
+        let none = Marks::default();
+        tests.push(Box::new(move |e| wanted.accepts(marks(e).unwrap_or(&none))));
+    }
+    tests.extend(
+        parts
+            .into_iter()
         .map(|term| -> EntryTest<'a> {
             if let Some(filter) = filter_test(&term, git, facts, now) {
                 return filter;
@@ -1051,8 +1126,8 @@ pub fn matcher_at<'a, 'f: 'a>(
                 Some(re) => Box::new(move |e| re.is_match(&e.lower)),
                 None => Box::new(|_| false),
             }
-        })
-        .collect();
+        }),
+    );
     Some(Box::new(move |e| tests.iter().all(|test| test(e))))
 }
 
@@ -1941,5 +2016,134 @@ mod tests {
         );
         assert!(is_cloud_file(&with(attr::PINNED)) && !is_cloud_file(&with(attr::HIDDEN)));
         assert!(is_online_only(&with(attr::RECALL_ON_OPEN)));
+    }
+
+    // ---- marks (card A5) ----
+
+    type Row<'a> = (&'a str, Option<&'a str>, &'a [&'a str], Option<&'a str>);
+
+    fn marked(list: &[Row]) -> HashMap<String, Marks> {
+        list.iter()
+            .map(|(n, l, t, c)| {
+                let m = Marks {
+                    label: l.map(String::from),
+                    tags: t.iter().map(|x| x.to_string()).collect(),
+                    comment: c.map(String::from),
+                };
+                (n.to_string(), m)
+            })
+            .collect()
+    }
+
+    fn reader<'f>(map: &'f HashMap<String, Marks>) -> Box<MarksOf<'f>> {
+        Box::new(move |e| map.get(&e.name))
+    }
+
+    fn passing(query: &str, map: Option<&HashMap<String, Marks>>, files: &[&str]) -> Vec<String> {
+        let of = map.map(reader);
+        let test = matcher_marks(query, None, None, of.as_deref(), 0);
+        let Some(test) = test else { return vec!["<none>".into()] };
+        files.iter().filter(|f| test(&entry(f))).map(|f| f.to_string()).collect()
+    }
+
+    const FILES: [&str; 5] = ["a.txt", "b.txt", "c.txt", "d.txt", "unread.txt"];
+
+    fn folder() -> HashMap<String, Marks> {
+        marked(&[
+            ("a.txt", Some("Red"), &[], None),
+            ("b.txt", None, &["Work"], None),
+            ("c.txt", Some("Work"), &[], Some("fix the LACP bond")),
+            ("d.txt", None, &[], None),
+        ])
+    }
+
+    #[test]
+    fn the_open_folder_is_filtered_by_marks() {
+        let m = folder();
+        let q = |s: &str| passing(s, Some(&m), &FILES);
+        assert_eq!(q("tag:work"), ["b.txt", "c.txt"]);
+        assert_eq!(q("label:red;blue"), ["a.txt"]);
+        assert_eq!(q("comment:lacp"), ["c.txt"]);
+        assert_eq!(q("!has:label"), ["b.txt", "d.txt", "unread.txt"]);
+        assert!(!q("label:red").contains(&"unread.txt".to_string()));
+        assert_eq!(q("c tag:work"), ["c.txt"]);
+        assert_eq!(q("b tag:work"), ["b.txt"]);
+        assert_eq!(q("has:mark"), ["a.txt", "b.txt", "c.txt"]);
+    }
+
+    #[test]
+    fn without_a_reader_marks_terms_accept_everything() {
+        assert_eq!(passing("tag:work", None, &FILES).len(), 5);
+        assert_eq!(passing("c tag:work", None, &FILES), ["c.txt"]);
+        let none = |q: &str| matcher(q, None, None).map(|t| t(&entry("tag.txt")));
+        assert_eq!(none("tag"), Some(true));
+        assert_eq!(none("ext:pdf"), Some(false));
+        assert!(matcher("", None, None).is_none());
+    }
+
+    #[test]
+    fn a_search_holds_a_marks_filter_only_with_a_marks_key() {
+        for q in ["holiday TAG:work", "!has:comment", "lbl:red"] {
+            assert!(has_marks_filter(q), "{q}");
+        }
+        for q in ["holiday ext:jpg", "!ext:pdf", "label", ""] {
+            assert!(!has_marks_filter(q), "{q}");
+        }
+    }
+
+    fn labels() -> Vec<Label> {
+        crate::marks::default_labels()
+    }
+
+    fn order_by(key: SortKey, desc: bool, with: Option<&HashMap<String, Marks>>, names: &[&str]) -> Vec<String> {
+        let labels = labels();
+        let of = with.map(reader);
+        let reads = Reads {
+            size_of: None,
+            taken_of: None,
+            facts_of: None,
+            marks: of.as_deref().map(|f| MarkReads { of: f, labels: &labels }),
+        };
+        let cmp = entry_order_by(Sort { key, desc }, false, false, reads, entry_itself, by_name);
+        let mut list: Vec<FileEntry> = names.iter().map(|n| entry(n)).collect();
+        list.sort_by(&cmp);
+        list.iter().map(|e| e.name.clone()).collect()
+    }
+
+    #[test]
+    fn sorting_by_label_puts_this_pcs_labels_first_then_unknown_ones_by_name_then_none() {
+        let m = marked(&[
+            ("1", Some("Orange"), &[], None),
+            ("2", Some("Zeta"), &[], None),
+            ("3", None, &["red"], None),
+            ("4", Some("Alpha"), &[], None),
+            ("5", None, &[], None),
+            ("6", Some("Red"), &[], None),
+        ]);
+        let all = ["1", "2", "3", "4", "5", "6", "7"];
+        assert_eq!(order_by(SortKey::Label, false, Some(&m), &all), ["3", "6", "1", "4", "2", "5", "7"]);
+        assert_eq!(order_by(SortKey::Label, true, Some(&m), &all), ["5", "7", "2", "4", "1", "3", "6"]);
+    }
+
+    #[test]
+    fn sorting_by_tags_and_comment_puts_none_last_and_leaves_a_color_tag_out() {
+        let m = marked(&[
+            ("1", None, &["b"], Some("zed\nfirst")),
+            ("2", None, &["a", "c"], Some("apple\nzzz")),
+            ("3", None, &["Red", "a"], None),
+            ("4", None, &[], Some("")),
+        ]);
+        let all = ["1", "2", "3", "4"];
+        // "a" (3, its red is the label) then "a, c" then "b", none last.
+        assert_eq!(order_by(SortKey::Tags, false, Some(&m), &all), ["3", "2", "1", "4"]);
+        assert_eq!(order_by(SortKey::Comment, false, Some(&m), &all), ["2", "1", "3", "4"]);
+        assert_eq!(order_by(SortKey::Comment, true, Some(&m), &all), ["3", "4", "1", "2"]);
+    }
+
+    #[test]
+    fn without_marks_the_three_keys_keep_the_names_order() {
+        for key in [SortKey::Label, SortKey::Tags, SortKey::Comment] {
+            assert_eq!(order_by(key, false, None, &["b", "a", "c"]), ["a", "b", "c"]);
+        }
     }
 }

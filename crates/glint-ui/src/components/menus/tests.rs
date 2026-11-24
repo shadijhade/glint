@@ -7,6 +7,7 @@ use crate::explorer::fake::{file, folder, FakeDisk};
 use crate::explorer::{self, NavOptions, NoAccess};
 use crate::{actions, testing};
 use glint_model::entries::{attr, with_details, RawEntry};
+use glint_model::marks::{default_labels, Marks};
 use gpui_kit::test::{TestQueryExt as _, TestWindowExt as _};
 use gpui_kit::{Modifiers, TestAppContext, VisualTestContext};
 use std::cell::RefCell;
@@ -49,7 +50,7 @@ pub(super) fn labels(nodes: &[Node]) -> Vec<String> {
 pub(super) fn find<'a>(nodes: &'a [Node], label: &str) -> Option<&'a Entry> {
     nodes.iter().find_map(|node| match node {
         Node::Item(e) if e.label == label => Some(e),
-        Node::Strip(entries) => entries.iter().find(|e| e.label == label),
+        Node::Strip(entries) | Node::Swatches(entries) => entries.iter().find(|e| e.label == label),
         Node::Menu { items, .. } => find(items, label),
         _ => None,
     })
@@ -174,7 +175,7 @@ fn a_file_gets_the_typescripts_items_in_its_order() {
             "Previous versions…",
             "-",
             "Scripts>",
-            "Tags>",
+            "Marks>",
             "Rename items in this folder…",
             "-",
             "Inspect & check>",
@@ -390,74 +391,135 @@ fn editors_scripts_and_devices_come_from_what_was_read() {
     assert!(find(&item_menu(&[text("alpha.txt")], &ctx()), "Open in").is_none());
 }
 
-#[test]
-fn tags_are_checked_when_every_item_has_them_and_toggle_off_then() {
-    let _guard = english();
-    let mut c = ctx();
-    c.data.tags.insert("c:\\x\\alpha.txt".into(), vec!["red".into()]);
-    let menu = item_menu(&[text("alpha.txt")], &c);
-    let tags = submenu(&menu, "Tags");
-    let red = find(tags, "Red").expect("red");
-    assert_eq!(red.check, Some(true));
-    assert_eq!(
-        red.run,
-        Run::Ask(MenuEvent::SetTags {
-            paths: vec!["C:\\x\\alpha.txt".into()],
-            add: vec![],
-            remove: vec!["Red".into()],
+/// The labels' dots of a menu, if it has them.
+fn dots(menu: &[Node]) -> Vec<Entry> {
+    menu.iter()
+        .find_map(|node| match node {
+            Node::Swatches(entries) => Some(entries.clone()),
+            _ => None,
         })
-    );
-    let blue = find(tags, "Blue").expect("blue");
-    assert_eq!(blue.check, Some(false));
-    assert!(matches!(&blue.run, Run::Ask(MenuEvent::SetTags { add, .. }) if add == &vec!["Blue".to_string()]));
-    assert_eq!(labels(tags).last().map(String::as_str), Some("Edit tags…"));
+        .unwrap_or_default()
+}
+
+/// A menu context that knows the seven labels, and marks read for some items.
+fn marked_ctx(marks: &[(&str, Marks)]) -> ItemCtx {
+    let mut c = ctx();
+    c.data.labels = default_labels();
+    for (path, m) in marks {
+        c.data.marks.insert(path.to_string(), m.clone());
+    }
+    c
+}
+
+fn labelled(name: &str) -> Marks {
+    Marks {
+        label: Some(name.into()),
+        ..Marks::default()
+    }
+}
+
+fn tagged(tag: &str) -> Marks {
+    Marks {
+        tags: vec![tag.into()],
+        ..Marks::default()
+    }
 }
 
 #[test]
-fn a_tag_only_some_of_the_items_have_goes_on_them_all_and_one_all_have_comes_off_them_all() {
+fn an_items_menu_has_the_row_of_dots_right_after_the_strip_seven_labels_and_no_label() {
     let _guard = english();
-    let mut c = ctx();
-    c.data
-        .tags
-        .insert("c:\\x\\alpha.txt".into(), vec!["Red".into(), "blue".into()]);
-    c.data.tags.insert("c:\\x\\beta.md".into(), vec!["RED".into()]);
+    let menu = item_menu(&[text("alpha.txt")], &marked_ctx(&[]));
+    assert!(matches!(menu[0], Node::Strip(_)));
+    assert!(matches!(menu[1], Node::Swatches(_)), "{:?}", labels(&menu));
+    let names: Vec<String> = dots(&menu).iter().map(|e| e.label.to_string()).collect();
+    assert_eq!(names, ["Red", "Orange", "Yellow", "Green", "Blue", "Purple", "Gray", "No label"]);
+    assert_eq!(dots(&menu)[0].tone, Some(0xef4444));
+    assert_eq!(dots(&menu)[7].tone, None);
+    // A menu for items that can't be marked has no dots (nor the Marks submenu).
+    let mut inside = marked_ctx(&[]);
+    inside.archive = Some(an_archive());
+    let archived = item_menu(&[with_attrs(text("a.txt"), attr::IN_ARCHIVE)], &inside);
+    assert!(dots(&archived).is_empty());
+    assert!(find(&archived, "Marks").is_none());
+}
+
+#[test]
+fn a_dot_is_checked_when_every_item_has_the_label_and_not_when_one_lacks_it_or_is_not_read() {
+    let _guard = english();
+    let red = |menu: &[Node]| dots(menu).iter().find(|e| e.label == "Red").and_then(|e| e.check);
     let both = [text("alpha.txt"), text("beta.md")];
+    let c = marked_ctx(&[("c:\\x\\alpha.txt", labelled("Red")), ("c:\\x\\beta.md", labelled("Red"))]);
+    assert_eq!(red(&item_menu(&both, &c)), Some(true));
+    // One of them lacks it.
+    let c = marked_ctx(&[("c:\\x\\alpha.txt", labelled("Red")), ("c:\\x\\beta.md", labelled("Blue"))]);
+    assert_eq!(red(&item_menu(&both, &c)), Some(false));
+    // A 0.16 file tagged red is shown with the label Red.
+    let c = marked_ctx(&[("c:\\x\\alpha.txt", tagged("red"))]);
+    assert_eq!(red(&item_menu(&[text("alpha.txt")], &c)), Some(true));
+    // An item not read yet checks nothing.
+    assert_eq!(red(&item_menu(&[text("alpha.txt")], &marked_ctx(&[]))), Some(false));
+}
+
+#[test]
+fn pressing_a_dot_asks_for_that_label_with_the_menus_paths_and_no_label_asks_for_none() {
+    let _guard = english();
+    let c = marked_ctx(&[]);
+    let menu = item_menu(&[text("alpha.txt"), text("beta.md")], &c);
     let paths = vec!["C:\\x\\alpha.txt".to_string(), "C:\\x\\beta.md".to_string()];
+    let dots = dots(&menu);
+    assert_eq!(
+        dots[4].run,
+        Run::Ask(MenuEvent::SetLabel {
+            paths: paths.clone(),
+            label: Some("Blue".into())
+        })
+    );
+    assert_eq!(dots[7].run, Run::Ask(MenuEvent::SetLabel { paths, label: None }));
+}
+
+#[test]
+fn more_has_marks_with_its_five_rows_each_asking_its_event() {
+    let _guard = english();
+    let c = marked_ctx(&[("c:\\x\\alpha.txt", labelled("Red"))]);
+    let both = [text("alpha.txt"), text("beta.md")];
     let menu = item_menu(&both, &c);
-    let tags = submenu(&menu, "Tags");
-    // Every item has Red, in any case: checked, and choosing it takes it off both.
-    let red = find(tags, "Red").expect("red");
-    assert_eq!(red.check, Some(true));
+    let marks = submenu(&menu, "Marks");
     assert_eq!(
-        red.run,
-        Run::Ask(MenuEvent::SetTags {
-            paths: paths.clone(),
-            add: vec![],
-            remove: vec!["Red".into()],
-        })
+        labels(marks),
+        ["Tags…", "Comment…", "-", "Copy marks", "Paste marks", "Clear marks"]
     );
-    // Only one has Blue: not checked, and choosing it puts it on both.
-    let blue = find(tags, "Blue").expect("blue");
-    assert_eq!(blue.check, Some(false));
+    let paths = vec!["C:\\x\\alpha.txt".to_string(), "C:\\x\\beta.md".to_string()];
+    let run = |label: &str| find(marks, label).map(|e| (e.run.clone(), e.disabled));
+    assert_eq!(run("Tags…"), Some((Run::Ask(MenuEvent::EditTags { paths: paths.clone() }), false)));
+    assert_eq!(run("Comment…"), Some((Run::Ask(MenuEvent::EditComment { paths: paths.clone() }), false)));
+    // Copy marks names the first item the menu was opened on.
     assert_eq!(
-        blue.run,
-        Run::Ask(MenuEvent::SetTags {
-            paths: paths.clone(),
-            add: vec!["Blue".into()],
-            remove: vec![],
-        })
+        run("Copy marks"),
+        Some((Run::Ask(MenuEvent::CopyMarks { path: paths[0].clone() }), false))
     );
-    // None has Green.
-    assert_eq!(find(tags, "Green").and_then(|e| e.check), Some(false));
-    // A third item whose tags were not read yet counts as having none: nothing is all-checked any more.
-    let three = [text("alpha.txt"), text("beta.md"), text("gamma.txt")];
-    let menu = item_menu(&three, &c);
-    assert_eq!(find(submenu(&menu, "Tags"), "Red").and_then(|e| e.check), Some(false));
-    // The strip of colors and "Edit tags…" are for the whole selection.
-    let last = labels(submenu(&menu, "Tags")).last().cloned();
-    assert_eq!(last.as_deref(), Some("Edit tags…"));
-    let edit = find(submenu(&menu, "Tags"), "Edit tags…").expect("edit");
-    assert!(matches!(&edit.run, Run::Ask(MenuEvent::EditTags { paths }) if paths.len() == 3));
+    assert_eq!(run("Paste marks"), Some((Run::Ask(MenuEvent::PasteMarks { paths: paths.clone() }), false)));
+    assert_eq!(run("Clear marks"), Some((Run::Ask(MenuEvent::ClearMarks { paths }), false)));
+    assert!(find(&menu, "Tags").is_none(), "the seven color rows are gone");
+}
+
+#[test]
+fn copy_and_clear_marks_are_greyed_out_and_say_why_when_nothing_is_known_to_be_marked() {
+    let _guard = english();
+    let menu = item_menu(&[text("alpha.txt")], &marked_ctx(&[("c:\\x\\alpha.txt", Marks::default())]));
+    let marks = submenu(&menu, "Marks");
+    for name in ["Copy marks", "Clear marks"] {
+        let row = find(marks, name).expect(name);
+        assert!(row.disabled, "{name}");
+        assert!(row.why_not.is_some(), "{name}");
+    }
+    assert_eq!(find(marks, "Paste marks").map(|e| e.disabled), Some(false));
+    // Any known mark, a comment alone included, turns them on.
+    let comment = Marks {
+        comment: Some("x".into()),
+        ..Marks::default()
+    };
+    let menu = item_menu(&[text("alpha.txt")], &marked_ctx(&[("c:\\x\\alpha.txt", comment)]));
+    assert_eq!(find(submenu(&menu, "Marks"), "Clear marks").map(|e| e.disabled), Some(false));
 }
 
 #[test]
@@ -546,7 +608,7 @@ fn inside_an_archive_changes_are_greyed_out_and_a_note_says_why() {
         "Show more options",
         "Show in File Explorer",
         "Scripts",
-        "Tags",
+        "Marks",
         "Compress to",
     ] {
         assert!(
@@ -1383,7 +1445,7 @@ fn a_right_click_opens_the_item_menu_at_the_pointer_and_escape_closes_it(cx: &mu
     ui.select(&[ALPHA]);
     ui.open_menu(Some(ALPHA), Some(at(200., 10.)), false);
     assert!(ui.is_open());
-    assert_eq!(labels(&ui.nodes())[1], "Open");
+    assert_eq!(labels(&ui.nodes())[2], "Open", "the row of dots is under the strip");
     let bounds = ui.menu_bounds("Item menu");
     assert_eq!(bounds.origin.x, px(200.), "its start edge is at the pointer");
     // Every row is a named menu item for a screen reader.
@@ -1435,9 +1497,16 @@ fn the_menu_key_opens_the_selections_menu_and_the_arrows_enter_and_escape_work_i
     ui.press("up");
     assert_eq!(
         ui.selected().as_deref(),
-        Some("Delete"),
-        "up goes into the strip and round the end"
+        Some("No label"),
+        "up goes into the row of dots, from its end"
     );
+    ui.press("left");
+    assert_eq!(ui.selected().as_deref(), Some("Gray"), "the arrows move along the dots");
+    ui.press("home");
+    for _ in 0..5 {
+        ui.press("right");
+    }
+    assert_eq!(ui.selected().as_deref(), Some("Delete"), "the strip is before the dots");
     ui.press("left");
     assert_eq!(
         ui.selected().as_deref(),
@@ -1450,7 +1519,8 @@ fn the_menu_key_opens_the_selections_menu_and_the_arrows_enter_and_escape_work_i
     assert_eq!(ui.selected().as_deref(), Some("Show more options"));
     ui.press("home");
     assert_eq!(ui.selected().as_deref(), Some("Cut"));
-    for _ in 0..6 {
+    // The six buttons of the strip, then the eight dots, then Open.
+    for _ in 0..14 {
         ui.press("down");
     }
     assert_eq!(ui.selected().as_deref(), Some("Open"));

@@ -5,7 +5,7 @@ use super::{FileList, Frame, InsideInfo, Track};
 use crate::components::file_grid::thumbnail::thumbnail_square;
 use crate::components::git;
 use crate::components::row_facts::{media_cells, Media, MediaCells};
-use crate::dialogs::tags::tag_dots;
+use crate::dialogs::tags::{tag_color, tag_dots};
 use crate::explorer::{HitLine, Line};
 use crate::kit::prelude::*;
 use crate::theme::{self, Tokens};
@@ -17,6 +17,7 @@ use glint_model::entries::{
 use glint_model::file_types::{kind_of, push_type_label, type_label};
 use glint_model::format::{format_count, format_date_shared, format_full_date, format_size};
 use glint_model::groups::GroupHeader;
+use glint_model::marks::{comment_brief, shown, Label, Marks};
 use glint_model::paths::parent_path;
 use gpui_kit::{HighlightStyle, StyledText};
 use std::collections::HashMap;
@@ -26,6 +27,9 @@ use std::collections::HashMap;
 pub const ROW_HEIGHT: Rems = rems(2.);
 /// The air between a line's edge and its highlight, at the sides.
 const INSET: Pixels = px(6.);
+/// [`INSET`] for the list's tests, which measure the label's wash against it.
+#[cfg(test)]
+pub(super) const ROW_INSET: Pixels = INSET;
 /// How far into its line a row's picture starts: past the inset, the highlight's border and its padding.
 pub(super) const PICTURE_AT: Pixels = px(12.);
 /// An item modified within the last hour gets a dot in its date.
@@ -374,18 +378,32 @@ impl FileList {
         // is made when the tooltip is shown.
         let date_text: SharedString = format_date_shared(entry.modified, frame.now, i18n::language()).into();
         let size_text = size_words(entry, size, frame.measuring);
-        // What was read of the item: its tags (the dots, borrowed from what was read), and what it says of itself
-        // while a column of that is shown. Both are empty until read, as the web's were.
-        let (tag_dots, media) = {
+        // What was read of the item: its marks (a label, tags, a comment: nothing is made for an item without
+        // any, or not read yet), and what it says of itself while a column of that is shown. Both are empty until
+        // read, as the web's were.
+        let (marked, tag_dots, media) = {
             let facts = self.facts.read(cx);
-            let tags = facts.tags_of(&frame.facts_key, &entry.path).unwrap_or(&[]);
-            let dots = tag_dots(("file-list-tags", i), tags, cx).map(IntoElement::into_any_element);
+            let marked = facts
+                .marks_of(&frame.facts_key, &entry.path)
+                .filter(|marks| !marks.is_empty())
+                .map(|marks| row_marks(marks, &crate::state::settings(cx).labels, cx));
+            // The Tags column says the tags; while it shows, the name's cell has no dots.
+            let tags_column = marked.is_some()
+                && frame
+                    .tracks
+                    .iter()
+                    .any(|track| matches!(track, Track::Column { id: ColumnId::Tags, .. }));
+            let dots = marked
+                .as_ref()
+                .filter(|_| !tags_column)
+                .and_then(|marked| tag_dots(("file-list-tags", i), &marked.tags, cx))
+                .map(IntoElement::into_any_element);
             let media = if frame.media == Media::None {
                 MediaCells::default()
             } else {
                 media_cells(entry, facts.media_of(&frame.facts_key, entry))
             };
-            (dots, media)
+            (marked, dots, media)
         };
 
         // The name: its icon (a picture's or a video's own small image once it is in), then the name, or the box
@@ -433,6 +451,10 @@ impl FileList {
             Some(rename) => name_cell.child(self.rename_input(rename, cx)),
             None => name_cell.child(div().min_w_0().truncate().child(name_text)),
         };
+        // A comment: a small note mark after the name, which gives way before the name does.
+        if let Some(comment) = marked.as_ref().and_then(|marked| marked.comment.clone()) {
+            name_cell = name_cell.child(note_mark(i, comment, t));
+        }
         // How the item differs from its namesake in the other pane (compare panes), then Git's pill.
         let diff = frame.diffs.as_ref().and_then(|diffs| diffs.status(entry));
         if let Some(badge) = diff.and_then(super::diff::diff_badge) {
@@ -555,8 +577,11 @@ impl FileList {
                     ColumnId::Artist => said_cell(("file-list-artist", i), width, media.artist.clone(), t),
                     ColumnId::Album => said_cell(("file-list-album", i), width, media.album.clone(), t),
                     ColumnId::Size => size_cell(width, size_text.clone(), percent, t),
-                    // S0: card E1 draws the marks' cells; none can be chosen until then (`COLUMN_ORDER`).
-                    ColumnId::Label | ColumnId::Tags | ColumnId::Comment => text_cell(width, String::new(), false, t),
+                    // The marks', drawn only for an item whose marks are read and not empty.
+                    ColumnId::Label => label_cell(i, width, marked.as_ref(), t),
+                    // `box_px` is 1.25 rem: the text size's rem, for the chips' estimated widths.
+                    ColumnId::Tags => tags_cell(i, width, marked.as_ref(), frame.box_px / 1.25, t),
+                    ColumnId::Comment => comment_cell(i, width, marked.as_ref(), t),
                 }),
             };
         }
@@ -629,7 +654,7 @@ impl FileList {
             .id(("file-row", i))
             .role(Role::ListBoxOption)
             .aria_label(entry.name.clone())
-            .aria_description(describe_row(entry, &size_text, &date_text, &media))
+            .aria_description(describe_marked(entry, &size_text, &date_text, &media, marked.as_ref()))
             .aria_selected(selected)
             .aria_position_in_set(i + 1)
             .aria_size_of_set(frame.rows.len())
@@ -638,6 +663,21 @@ impl FileList {
             .flex_none()
             .px(INSET)
             .py(px(1.))
+            // The label's wash: a rounded fill inside the line, as the highlight is, and drawn before it, so the
+            // pointer's fill lies over it. A selected row and the folder dropped on show their one fill alone:
+            // their tints are fainter than a wash, which would read as the state (M11: a label is not a state).
+            .children(marked.as_ref().and_then(|marked| marked.label.as_ref()).filter(|_| !selected && !dropping).map(|label| {
+                div()
+                    .id(("file-row-wash", i))
+                    .absolute()
+                    .top(px(1.))
+                    .bottom(px(1.))
+                    .left(INSET)
+                    .right(INSET)
+                    .rounded(theme::size::RADIUS_ROW)
+                    .bg(label.wash)
+                    .test_support()
+            }))
             .child(fill);
         if let Some(opacity) = dimness(dim, dragged) {
             line = line.opacity(opacity);
@@ -784,7 +824,19 @@ pub(super) fn where_track<E: Styled>(cell: E) -> E {
 /// date, then what its file says of itself, in the columns of that (a screen reader hears them as the cells are
 /// drawn: the web read them out of the cells). Written into one string, as it is made for every visible row on
 /// every frame.
+#[cfg(test)]
 fn describe_row(entry: &FileEntry, size: &str, date: &str, media: &MediaCells) -> SharedString {
+    describe_marked(entry, size, date, media, None)
+}
+
+/// [`describe_row`] and then the item's label, tags and comment (its first line), when it has them.
+pub(super) fn describe_marked(
+    entry: &FileEntry,
+    size: &str,
+    date: &str,
+    media: &MediaCells,
+    marked: Option<&RowMarks>,
+) -> SharedString {
     let mut out = String::with_capacity(64);
     push_type_label(entry, &mut out);
     for part in [
@@ -803,7 +855,247 @@ fn describe_row(entry: &FileEntry, size: &str, date: &str, media: &MediaCells) -
             out.push_str(part);
         }
     }
+    if let Some(marked) = marked {
+        let mut say = |words: SharedString| {
+            if !out.is_empty() {
+                out.push_str(", ");
+            }
+            out.push_str(&words);
+        };
+        if let Some(label) = &marked.label {
+            say(t!("label {name}", name = label.name));
+        }
+        if !marked.tags.is_empty() {
+            say(t!("tags {list}", list = marked.tags.join(", ")));
+        }
+        if let Some(first) = marked.comment.as_deref().map(first_line).filter(|first| !first.is_empty()) {
+            say(t!("comment: {first}", first = first));
+        }
+    }
     out.into()
+}
+
+// ---- The marks: a label, tags, a comment (docs/gpui/marks) --------------------------------------------------
+
+/// The most chips the Tags column draws, whatever the width.
+const MOST_CHIPS: usize = 16;
+
+/// What a row draws of its item's marks, made only for an item whose marks are read and not empty (M4): a row
+/// without marks makes none of this.
+pub(super) struct RowMarks {
+    pub label: Option<LabelLook>,
+    /// The tags to draw: the item's, less the one drawn as its label (a 0.16 color tag).
+    pub tags: Vec<String>,
+    /// The comment, lines kept (`comment_brief`: a long one's start).
+    pub comment: Option<SharedString>,
+}
+
+/// A label as a row draws it: its name, its own color, and the wash that color makes.
+pub(super) struct LabelLook {
+    pub name: String,
+    pub tone: Hsla,
+    pub wash: Hsla,
+}
+
+/// What `marks` are drawn as, with the labels this PC has. A label this PC lacks is drawn in `tag_color` of its
+/// name, as strongly washed as any label is (`theme::label_wash`).
+pub(super) fn row_marks(marks: &Marks, labels: &[Label], cx: &App) -> RowMarks {
+    let shown = shown(labels, marks);
+    let label = shown.label.map(|name| match shown.place.and_then(|at| labels.get(at)) {
+        Some(own) => LabelLook {
+            tone: theme::label_tone(own.color),
+            wash: theme::label_wash(own.color, cx),
+            name,
+        },
+        None => {
+            let tone = tag_color(&name);
+            LabelLook {
+                wash: Hsla {
+                    a: theme::label_wash(0, cx).a,
+                    ..tone
+                },
+                tone,
+                name,
+            }
+        }
+    });
+    RowMarks {
+        label,
+        tags: shown.tags,
+        comment: marks
+            .comment
+            .as_deref()
+            .filter(|comment| !comment.trim().is_empty())
+            .map(|comment| SharedString::from(comment_brief(comment).into_owned())),
+    }
+}
+
+/// A comment's first line (the first that says something), for a cell and for a screen reader.
+pub(super) fn first_line(comment: &str) -> &str {
+    comment.lines().find(|line| !line.trim().is_empty()).unwrap_or("")
+}
+
+/// How many of `tags` the Tags column draws as chips in `width` pixels, a rem being `rem` pixels: all of them when
+/// they fit, else as many as fit with room for "+N" after them (never fewer than one, never more than
+/// `MOST_CHIPS`). The width of a chip is estimated from its characters: text is not measured on the UI thread
+/// for every row.
+pub(super) fn chips_fit(tags: &[String], width: f32, rem: f32) -> usize {
+    // A chip: its dot, the gap after it and its letters; the gap between chips; what "+N" takes.
+    let chip = |tag: &String| 1. + 0.45 * tag.chars().count() as f32;
+    const BETWEEN: f32 = 0.375;
+    const MORE: f32 = 1.75;
+    let room = if rem > 0. { width / rem } else { 0. };
+    let all: f32 = tags.iter().map(chip).sum::<f32>() + BETWEEN * tags.len().saturating_sub(1) as f32;
+    if all <= room && tags.len() <= MOST_CHIPS {
+        return tags.len();
+    }
+    let mut used = MORE;
+    let mut fit = 0;
+    for tag in tags.iter().take(MOST_CHIPS) {
+        used += chip(tag) + BETWEEN;
+        if used > room {
+            break;
+        }
+        fit += 1;
+    }
+    fit.max(1).min(tags.len())
+}
+
+/// The note mark after a name: a stroke icon in the muted color, the comment as its tooltip. It gives way before
+/// the name does, as the folder's peek does.
+fn note_mark(i: usize, comment: SharedString, t: &Tokens) -> impl IntoElement {
+    let tip = comment.clone();
+    div()
+        .id(("file-list-note", i))
+        .role(Role::Image)
+        .aria_label(t!("Comment"))
+        .aria_description(comment)
+        .min_w_0()
+        .flex_shrink(1000.)
+        .overflow_hidden()
+        .child(icon(IconName::StickyNote).size(rems(0.875)).text_color(t.muted_foreground))
+        .tooltip(move |window, cx| tooltip_under(tip.clone(), window, cx))
+        .test_support()
+}
+
+/// The Label column: a pill with the label's name on its wash, a dot of its color at its start; empty for none.
+fn label_cell(i: usize, width: Pixels, marked: Option<&RowMarks>, t: &Tokens) -> AnyElement {
+    let Some(label) = marked.and_then(|marked| marked.label.as_ref()) else {
+        return text_cell(width, String::new(), false, t);
+    };
+    let name = SharedString::from(label.name.clone());
+    row_start()
+        .id(("file-list-label", i))
+        .role(Role::Note)
+        .aria_label(name.clone())
+        .w(width)
+        .flex_none()
+        .overflow_hidden()
+        .text_size(theme::size::XS)
+        .child(
+            row_start()
+                .id(("file-list-label-pill", i))
+                .items_center()
+                .min_w_0()
+                .gap(space(1.5))
+                .px(space(2.))
+                .h(rems(1.25))
+                .rounded_full()
+                .bg(label.wash)
+                .text_color(t.foreground)
+                .child(
+                    div()
+                        .id(("file-list-label-dot", i))
+                        .flex_none()
+                        .size(rems(0.5))
+                        .rounded_full()
+                        .bg(label.tone)
+                        .test_support(),
+                )
+                .child(div().min_w_0().truncate().child(isolate(name)))
+                .test_support(),
+        )
+        .test_support()
+        .into_any_element()
+}
+
+/// The Tags column: a chip for each tag (its dot in `tag_color`, its name) as many as fit, then "+N"; all of them
+/// in the tooltip.
+fn tags_cell(i: usize, width: Pixels, marked: Option<&RowMarks>, rem: f32, t: &Tokens) -> AnyElement {
+    let Some(marked) = marked.filter(|marked| !marked.tags.is_empty()) else {
+        return text_cell(width, String::new(), false, t);
+    };
+    let tags = &marked.tags;
+    let fit = chips_fit(tags, f32::from(width), rem);
+    let all = SharedString::from(tags.join(", "));
+    let tip = all.clone();
+    let more = tags.len() - fit;
+    row_start()
+        .id(("file-list-tags-cell", i))
+        .role(Role::Group)
+        .aria_label(t!("Tags: {tags}", tags = all))
+        .w(width)
+        .flex_none()
+        .overflow_hidden()
+        .items_center()
+        .gap(space(1.5))
+        .text_size(theme::size::XS)
+        .text_color(t.muted_foreground)
+        .children(tags.iter().take(fit).enumerate().map(|(n, tag)| {
+            row_start()
+                .id(("file-list-tag-chip", i * MOST_CHIPS + n))
+                .items_center()
+                .min_w_0()
+                .gap(space(1.))
+                .child(
+                    div()
+                        .flex_none()
+                        .size(space(2.))
+                        .rounded_full()
+                        .bg(tag_color(tag))
+                        .border_1()
+                        .border_color(t.background),
+                )
+                .child(div().min_w_0().truncate().child(isolate(tag.clone())))
+                .test_support()
+        }))
+        .children((more > 0).then(|| {
+            let words = t!("+{n}", n = more);
+            div()
+                .id(("file-list-tag-more", i))
+                .role(Role::Note)
+                .aria_label(words.clone())
+                .flex_none()
+                .child(words)
+                .test_support()
+        }))
+        .tooltip(move |window, cx| tooltip_under(tip.clone(), window, cx))
+        .test_support()
+        .into_any_element()
+}
+
+/// The Comment column: the comment's first line, cut with an ellipsis; the whole comment is the tooltip.
+fn comment_cell(i: usize, width: Pixels, marked: Option<&RowMarks>, t: &Tokens) -> AnyElement {
+    let Some(comment) = marked.and_then(|marked| marked.comment.clone()) else {
+        return text_cell(width, String::new(), false, t);
+    };
+    let first = SharedString::from(first_line(&comment).to_string());
+    let tip = comment.clone();
+    div()
+        .id(("file-list-comment", i))
+        .role(Role::Note)
+        .aria_label(first.clone())
+        .aria_description(comment)
+        .w(width)
+        .flex_none()
+        .truncate()
+        .text_start()
+        .text_size(theme::size::XS)
+        .text_color(t.muted_foreground)
+        .child(isolate(first))
+        .tooltip(move |window, cx| tooltip_under(tip.clone(), window, cx))
+        .test_support()
+        .into_any_element()
 }
 
 /// The date's title: the full date and time ("Deleted …" in the Recycle Bin).

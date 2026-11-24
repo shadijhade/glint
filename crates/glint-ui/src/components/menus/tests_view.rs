@@ -3,6 +3,7 @@
 //! The menus here are built by hand and shown alone in a window, so what is checked is the view and nothing
 //! about what the menus hold (`tests.rs` does that).
 
+use super::event::MenuEvent;
 use super::spec::{Badge, Entry, Head, HeadPicture, Node, Run, Task, Tone};
 use super::view::{MenuView, MenuViewEvent};
 use crate::kit::prelude::*;
@@ -512,4 +513,92 @@ fn the_head_keeps_its_height_when_what_it_says_changes(cx: &mut TestAppContext) 
     rig.view.update(&mut rig.visual, |view, cx| view.set_head(full, cx));
     rig.frame();
     assert_eq!(before, height(&mut rig), "a head never changes height");
+}
+
+// ---- The labels' dots ------------------------------------------------------------------------------------
+
+/// A strip, then the labels' dots (the third checked, the last "No label"), then a row.
+fn dotted(names: &[&str]) -> Vec<Node> {
+    let mut dots: Vec<Entry> = names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            Entry::ask(
+                (*name).into(),
+                IconName::Circle,
+                MenuEvent::SetLabel {
+                    paths: vec!["C:\\x\\a.txt".into()],
+                    label: Some((*name).into()),
+                },
+            )
+            .toned(0xef4444 + i as u32)
+            .checked(i == 2)
+        })
+        .collect();
+    dots.push(Entry::ask(
+        "No label".into(),
+        IconName::Circle,
+        MenuEvent::SetLabel {
+            paths: vec!["C:\\x\\a.txt".into()],
+            label: None,
+        },
+    ));
+    vec![Node::Strip(vec![entry("Cut")]), Node::Swatches(dots), item("Open")]
+}
+
+#[gpui_kit::test]
+fn the_dots_take_the_keyboard_like_the_strip_arrows_along_enter_presses_each_has_a_name(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut rig = rig(cx, dotted(&["Red", "Orange", "Yellow"]));
+    for name in ["Red", "Orange", "Yellow", "No label"] {
+        assert!(rig.drawn(name), "{name} is drawn with its name");
+        let role = rig.visual.update(|window, _| window.find_by_label(name).role());
+        assert_eq!(role, Some(Role::MenuItem), "{name}");
+    }
+    // The menu starts on its first row; Up goes round to the last stop, Home to the first: the strip's button.
+    rig.press("home");
+    assert_eq!(rig.selected().as_deref(), Some("Cut"));
+    rig.press("down");
+    assert_eq!(rig.selected().as_deref(), Some("Red"));
+    rig.press("right");
+    rig.press("right");
+    assert_eq!(rig.selected().as_deref(), Some("Yellow"));
+    rig.press("right");
+    assert_eq!(rig.selected().as_deref(), Some("No label"));
+    rig.press("right");
+    assert_eq!(rig.selected().as_deref(), Some("No label"), "the row ends there");
+    rig.press("left");
+    rig.press("left");
+    rig.press("left");
+    assert_eq!(rig.selected().as_deref(), Some("Red"));
+    rig.press("enter");
+    assert!(matches!(
+        rig.events().as_slice(),
+        [MenuViewEvent::Chose(Run::Ask(MenuEvent::SetLabel { label: Some(l), .. }))] if l == "Red"
+    ));
+    // A click presses a dot as well.
+    rig.click(("menu-swatch", 35usize));
+    assert!(matches!(
+        rig.events().last(),
+        Some(MenuViewEvent::Chose(Run::Ask(MenuEvent::SetLabel { label: None, .. })))
+    ));
+}
+
+#[gpui_kit::test]
+fn with_the_interface_mirrored_and_a_label_named_in_arabic_the_dots_run_from_the_start_edge(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut rig = rig(cx, dotted(&["أحمر", "Orange", "Yellow"]));
+    testing::set_rtl(true);
+    rig.frame();
+    assert!(rig.drawn("أحمر"));
+    let x = |rig: &mut Rig, name: &str| rig.visual.update(|window, _| f32::from(window.find_by_label(name).bounds().origin.x));
+    let (first, last) = (x(&mut rig, "أحمر"), x(&mut rig, "No label"));
+    assert!(first > last, "the first dot is at the right, the start edge: {first} {last}");
+    // Toward the end of the line is Left.
+    rig.press("home");
+    rig.press("down");
+    assert_eq!(rig.selected().as_deref(), Some("أحمر"));
+    rig.press("left");
+    assert_eq!(rig.selected().as_deref(), Some("Orange"));
+    testing::set_rtl(false);
 }

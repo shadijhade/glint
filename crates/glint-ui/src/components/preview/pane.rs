@@ -13,6 +13,7 @@
 use super::cards::items;
 use super::choose::Body;
 use super::frame::{EntryView, Place};
+use super::marks::MarksBlock;
 use super::picture::release_retired;
 use super::states::centered;
 use crate::components::file_grid::thumbnail::{self, Thumbnails, Want};
@@ -83,6 +84,9 @@ impl Summary {
         }
     }
 }
+
+/// The most items the pane's Marks block is about (it reads each one's marks, and draws what they share).
+const MARKS_FOR: usize = 1000;
 
 /// Several items selected: their totals and the first few for the deck (`selected.length > 1`).
 #[derive(Clone, Debug, PartialEq)]
@@ -221,6 +225,8 @@ pub struct PreviewPane {
     _hold: Option<Task<()>>,
     _arrival: Option<Subscription>,
     deck_watch: Option<Subscription>,
+    /// The Marks block of the several items shown, with the paths it is about.
+    marks: Option<(Vec<String>, Entity<MarksBlock>)>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -258,6 +264,7 @@ impl PreviewPane {
             _hold: None,
             _arrival: None,
             deck_watch: None,
+            marks: None,
             _subscriptions: subscriptions,
         };
         pane.refresh(window, cx);
@@ -364,8 +371,18 @@ impl PreviewPane {
                 if self.deck_watch.is_none() {
                     self.deck_watch = Some(cx.observe(&self.thumbs, |_, _, cx| cx.notify()));
                 }
+                // The Marks block of all of them (not for items in an archive, the Recycle Bin, a remote), up to
+                // `MARKS_FOR`: the block reads the marks of every item it is about.
+                let want = (many.writable && many.paths.len() <= MARKS_FOR).then(|| many.paths.clone());
+                if self.marks.as_ref().map(|(paths, _)| paths) != want.as_ref() {
+                    self.marks = want.map(|paths| {
+                        let block = cx.new(|cx| MarksBlock::new(paths.clone(), "preview-many", window, cx));
+                        (paths, block)
+                    });
+                }
             }
             _ => {
+                self.marks = None;
                 if self.deck_watch.take().is_some() {
                     let viewer = cx.entity_id();
                     self.thumbs.update(cx, |thumbs, cx| thumbs.release(viewer, cx));
@@ -619,6 +636,7 @@ impl PreviewPane {
                     })),
             )
             .children(buttons)
+            .children(self.marks.as_ref().map(|(_, block)| div().w_full().child(block.clone())))
             .into_any_element()
     }
 

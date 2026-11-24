@@ -62,6 +62,11 @@ pub(super) fn is_incomplete_filter(term: &str) -> bool {
     let Some((key, value)) = term.split_once(':') else {
         return false;
     };
+    // A marks key (`label:`, `!has:`…) with nothing after it matches nothing yet. `tag:` alone stays as it was.
+    let marks = key.trim_start_matches('!');
+    if !marks.eq_ignore_ascii_case("tag") && glint_model::marks::KEYS.iter().any(|k| marks.eq_ignore_ascii_case(k)) {
+        return value.is_empty();
+    }
     const KEYS: [&str; 9] = [
         "ext", "size", "dm", "width", "height", "duration", "taken", "camera", "artist",
     ];
@@ -131,6 +136,17 @@ mod tests {
         assert!(starts_with_drive("d:/x"));
         assert!(!starts_with_drive("C:"));
         assert!(!starts_with_drive("report"));
+    }
+
+    #[test]
+    fn marks_filters_are_filters_and_finished_once_they_have_a_value() {
+        for finished in ["label:red", "LBL:red", "!tag:old", "has:comment", "cmt:x", "tags:a", "ext:pdf", "report"] {
+            assert!(!is_incomplete_filter(finished), "{finished}");
+        }
+        for unfinished in ["label:", "!label:", "HAS:", "cmt:", "comment:", "!comment:"] {
+            assert!(is_incomplete_filter(unfinished), "{unfinished}");
+        }
+        assert_eq!(ready_query("label:red cmt: !tag:old"), "label:red !tag:old");
     }
 
     #[test]

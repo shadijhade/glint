@@ -327,8 +327,9 @@ struct Step {
     item: usize,
 }
 
-/// What's in the items to copy: their files (and folders to make), under `dest`.
-fn plan(sources: &[String], dest: &Path, failures: &mut Vec<Failure>) -> (Vec<Step>, Vec<PathBuf>) {
+/// What's in the items to copy: their files (and the folders to make, each with the one it is a copy of), under
+/// `dest`.
+fn plan(sources: &[String], dest: &Path, failures: &mut Vec<Failure>) -> (Vec<Step>, Vec<(PathBuf, PathBuf)>) {
     let mut steps = Vec::new();
     let mut folders = Vec::new();
     for (item, source) in sources.iter().enumerate() {
@@ -337,7 +338,7 @@ fn plan(sources: &[String], dest: &Path, failures: &mut Vec<Failure>) -> (Vec<St
         let to = dest.join(name);
         match crate::fsx::stat(source) {
             Some(e) if e.dir => {
-                folders.push(to.clone());
+                folders.push((from.clone(), to.clone()));
                 let mut stack = vec![(from, to)];
                 while let Some((dir, into)) = stack.pop() {
                     match crate::fsx::read_dir(&dir.to_string_lossy()) {
@@ -348,7 +349,7 @@ fn plan(sources: &[String], dest: &Path, failures: &mut Vec<Failure>) -> (Vec<St
                                     // A link to another folder: what it points to isn't copied here.
                                     failures.push(Failure { path: a.to_string_lossy().into_owned(), error: "A link to another folder: left out".into() });
                                 } else if e.dir {
-                                    folders.push(b.clone());
+                                    folders.push((a.clone(), b.clone()));
                                     stack.push((a, b));
                                 } else {
                                     steps.push(Step { from: a, to: b, size: e.size, item });
@@ -390,7 +391,10 @@ fn run(job: &Job) {
                 continue;
             }
             match rename(Path::new(&source), &to) {
-                Ok(()) => job.set(|v| v.made.push(Made { from: source.clone(), to: to.to_string_lossy().into_owned() })),
+                Ok(()) => {
+                    crate::marks::carry::carry_one(&source, &to.to_string_lossy(), true);
+                    job.set(|v| v.made.push(Made { from: source.clone(), to: to.to_string_lossy().into_owned() }))
+                }
                 Err(_) => left.push(source),
             }
         }
@@ -417,9 +421,10 @@ fn run(job: &Job) {
     // what went into a folder that was there already, is taken back file by file (never what was there).
     let fresh: Vec<bool> = sources.iter().map(|s| !item_root(&dest, s).exists()).collect();
     let created: Vec<Vec<(PathBuf, PathBuf)>> = vec![Vec::new(); sources.len()];
-    // The originals copied (and checked) whole: a move's to delete.
-    let copied_from: Vec<Vec<PathBuf>> = vec![Vec::new(); sources.len()];
-    for folder in &folders {
+    // The originals copied (and checked) whole, with their copies: a move's to delete.
+    let copied_from: Vec<Vec<(PathBuf, PathBuf)>> = vec![Vec::new(); sources.len()];
+    let copies = Copies::default();
+    for (_, folder) in &folders {
         let _ = std::fs::create_dir_all(folder);
     }
     let done = Arc::new(AtomicU64::new(0));
@@ -501,6 +506,7 @@ fn run(job: &Job) {
                     let step = &steps[*index];
                     match copy_plain(&step.from, to) {
                         Ok(()) => {
+                            copies.add(&step.from, to);
                             let good = !verify || match same(&step.from, to, job) {
                                 Ok(true) => {
                                     small_checked.fetch_add(1, Ordering::Relaxed);
@@ -548,7 +554,7 @@ fn run(job: &Job) {
         let step = &steps[*index];
         created[step.item].push((step.from.clone(), to.clone()));
         if good {
-            copied_from[step.item].push(step.from.clone());
+            copied_from[step.item].push((step.from.clone(), to.clone()));
         }
     }
     let mut window = (Instant::now(), done.load(Ordering::Relaxed));
@@ -563,6 +569,7 @@ fn run(job: &Job) {
         let copied = copy_file(&step.from, &to, job, &done, base);
         match copied {
             Ok(()) => {
+                copies.add(&step.from, &to);
                 created[step.item].push((step.from.clone(), to.clone()));
                 let good = if verify {
                     job.set(|v| v.state = "checking".into());
@@ -591,7 +598,7 @@ fn run(job: &Job) {
                     true
                 };
                 if good {
-                    copied_from[step.item].push(step.from.clone());
+                    copied_from[step.item].push((step.from.clone(), to.clone()));
                 }
                 done.store(base + step.size, Ordering::Relaxed);
             }
@@ -614,6 +621,10 @@ fn run(job: &Job) {
             v.bytes_done = now;
         });
     }
+    // A folder's own marks: no copy takes a folder's streams, so they are read and written (marks::carry), before
+    // a move takes the originals away.
+    let made_folders: Vec<(String, String)> = folders.iter().map(|(from, to)| (from.to_string_lossy().into_owned(), to.to_string_lossy().into_owned())).collect();
+    crate::marks::carry::carry(&made_folders, false);
     // Undo's list: a new folder whole, else each file made (with where it came from).
     for (i, source) in sources.iter().enumerate() {
         let root = item_root(&dest, source);
@@ -626,18 +637,59 @@ fn run(job: &Job) {
         // A move: the originals that were copied (and checked) go, file by file, then the folders left
         // empty; what was skipped or failed stays where it was.
         if kind == "move" {
-            for from in &copied_from[i] {
-                if let Err(e) = std::fs::remove_file(from) {
-                    job.set(|v| v.errors.push(Failure { path: from.to_string_lossy().into_owned(), error: format!("Copied, but the original couldn't go: {e}") }));
+            // The copies have their marks before an original goes; then the line an original had beside it or on
+            // this PC goes with it. Never sooner: a move that is stopped, or a copy that fails its check, leaves
+            // the original as it was, marks and all.
+            copies.carry();
+            let mut gone = Vec::new();
+            for (from, to) in &copied_from[i] {
+                match std::fs::remove_file(from) {
+                    Ok(()) => gone.push((from.to_string_lossy().into_owned(), to.to_string_lossy().into_owned())),
+                    Err(e) => job.set(|v| v.errors.push(Failure { path: from.to_string_lossy().into_owned(), error: format!("Copied, but the original couldn't go: {e}") })),
                 }
             }
+            crate::marks::carry::carry_files(&gone, true);
             if Path::new(source).is_dir() {
                 remove_empty(Path::new(source));
             }
         }
     }
+    // Before the job says it is done, so what shows the copies next shows their marks.
+    copies.carry();
     let state = if job.view().errors.is_empty() || job.view().files_done > 0 { "done" } else { "failed" };
     finish(job, state);
+}
+
+/// The copies a job made, whose marks follow them where they are kept beside the files or on this PC and not in
+/// them (`marks::carry`): some hundreds at a time, and when the job ends however it ends. One file at a time
+/// would write a folder's `.glint-marks` again for every file in it.
+#[derive(Default)]
+struct Copies(Mutex<Vec<(String, String)>>);
+
+impl Copies {
+    const AT_ONCE: usize = 512;
+
+    fn add(&self, from: &Path, to: &Path) {
+        let full = {
+            let mut pairs = self.0.lock().unwrap_or_else(|e| e.into_inner());
+            pairs.push((from.to_string_lossy().into_owned(), to.to_string_lossy().into_owned()));
+            (pairs.len() >= Self::AT_ONCE).then(|| std::mem::take(&mut *pairs))
+        };
+        if let Some(pairs) = full {
+            crate::marks::carry::carry_files(&pairs, false);
+        }
+    }
+
+    fn carry(&self) {
+        let pairs = std::mem::take(&mut *self.0.lock().unwrap_or_else(|e| e.into_inner()));
+        crate::marks::carry::carry_files(&pairs, false);
+    }
+}
+
+impl Drop for Copies {
+    fn drop(&mut self) {
+        self.carry();
+    }
 }
 
 /// Whether every source is on `dest`'s volume and that volume clones blocks (ReFS, a Dev Drive). CopyFileEx
@@ -940,10 +992,10 @@ mod tests {
         assert!(failures.is_empty());
         assert_eq!(steps.len(), 3);
         assert_eq!(steps.iter().map(|s| s.size).sum::<u64>(), 5 + 300_000 + 3);
-        assert!(folders.contains(&dir.join("to").join("from").join("sub")));
+        assert!(folders.contains(&(dir.join("from").join("sub"), dir.join("to").join("from").join("sub"))));
         let job = quiet();
         let done = AtomicU64::new(0);
-        for folder in &folders {
+        for (_, folder) in &folders {
             std::fs::create_dir_all(folder).unwrap();
         }
         for step in &steps {

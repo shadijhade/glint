@@ -10,11 +10,11 @@ use crate::proto::{
 };
 use crate::query::{self, Excludes, Filters, NameMatcher};
 use crate::snapshot::{self, Meta};
-use crate::tree::{self, Rank, Search, Tree, NONE, ROOT};
+use crate::tree::{self, Marked, Rank, Search, Tree, NONE, ROOT};
 use crate::usn;
 use crate::volume::{self, Journal, JournalError, Volume};
 use rayon::prelude::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -330,6 +330,25 @@ fn local_day(ms: i64) -> i64 {
     local / 864_000_000_000
 }
 
+/// Whether the service reads the marks a record doesn't show (`far.rs`). On: the read opens each item by its file
+/// reference on the drive (`OpenFileById`), never by a path. This service runs as LocalSystem, and an account that
+/// can write a folder could swap part of a path for a link while the service looks, and so send it to open
+/// somewhere else, another computer included; a reference walks no path, and a link is not followed
+/// (docs/gpui/marks/PLAN.md, section 9, card C4).
+const FAR_READS: bool = true;
+
+/// Counts from several drives as one: names alike in any case are one, shown as first met; most used first, then
+/// by name.
+fn merged(counts: impl Iterator<Item = (String, u64)>) -> Vec<(String, u64)> {
+    let mut all: HashMap<String, (String, u64)> = HashMap::new();
+    for (name, count) in counts {
+        all.entry(name.to_lowercase()).or_insert_with(|| (name, 0)).1 += count;
+    }
+    let mut out: Vec<(String, u64)> = all.into_values().collect();
+    out.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.to_lowercase().cmp(&b.0.to_lowercase())));
+    out
+}
+
 fn ms(since: Instant) -> f64 {
     since.elapsed().as_secs_f64() * 1000.0
 }
@@ -462,7 +481,31 @@ impl Engine {
             }
         });
         engine.workers.lock().unwrap().push(handle);
+        // The marks a record doesn't show are read through the file system, on a thread no search waits for. It
+        // is not one of `workers`, so `stop` doesn't wait for it either: another program can keep an open of its
+        // own file waiting for as long as it likes (an oplock), and the service must still stop.
+        if FAR_READS {
+            let far = engine.clone();
+            thread::spawn(move || {
+                while !far.stop.is_set() {
+                    if far.far_round() == 0 && far.stop.sleep(Duration::from_secs(1)) {
+                        break;
+                    }
+                }
+            });
+        }
         engine
+    }
+
+    /// One round of reading the far records (`far::drain`) of every ready drive: how many it took. No lock of the
+    /// engine's is held while a drive is drained. Run by a thread of its own: see [`FAR_READS`].
+    fn far_round(&self) -> usize {
+        let slots = self.slots.read().unwrap().clone();
+        slots
+            .iter()
+            .filter(|s| s.ready.load(Ordering::SeqCst))
+            .map(|s| crate::far::drain(&s.tree, s.letter, &|| self.stop.is_set()))
+            .sum()
     }
 
     /// An engine serving one ready drive from `tree`, with no workers: for tests.
@@ -800,9 +843,16 @@ impl Engine {
             return (None, tree.growth);
         }
         let mut tree = tree;
-        // Tags are kept beside the snapshot (a snapshot from before them has none: they come back
-        // as their files change, or at the next read of the disk).
-        tree.tags = load_tags(&path.with_extension("tags"));
+        // Marks are kept beside the snapshot (a snapshot from before them has none: they come back
+        // as their files change, or at the next read of the disk). 0.16 kept only tags, in `.tags`.
+        let marks = path.with_extension("marks");
+        (tree.marks, tree.far) = if marks.exists() {
+            load_marks(&marks)
+        } else {
+            let old = load_tags(&path.with_extension("tags"));
+            let marks = old.into_iter().map(|(n, tags)| (n, Marked { tags, ..Default::default() })).collect();
+            (marks, HashSet::new())
+        };
         self.log
             .line(&format!("{letter}: loaded the snapshot in {:.0} ms", ms(started)));
         (Some((tree, meta)), Growth::default())
@@ -826,8 +876,12 @@ impl Engine {
             self.log
                 .line(&format!("{}: couldn't save the record numbers: {e}", slot.letter));
         }
-        if let Err(e) = save_tags(&path.with_extension("tags"), &slot.tree.read().unwrap().tags) {
-            self.log.line(&format!("{}: couldn't save the tags: {e}", slot.letter));
+        let saved_marks = {
+            let tree = slot.tree.read().unwrap();
+            save_marks(&path.with_extension("marks"), &tree.marks, &tree.far)
+        };
+        if let Err(e) = saved_marks {
+            self.log.line(&format!("{}: couldn't save the marks: {e}", slot.letter));
         }
         let saved = snapshot::save(path, &slot.tree.read().unwrap(), &meta);
         match saved {
@@ -968,35 +1022,46 @@ impl Engine {
 
     /// Every tag on the ready drives, with how many items have it, most used first.
     pub fn tags(&self) -> Vec<(String, u64)> {
-        let mut all: std::collections::HashMap<String, (String, u64)> = std::collections::HashMap::new();
-        for slot in self
-            .slots
-            .read()
-            .unwrap()
-            .iter()
-            .filter(|s| s.ready.load(Ordering::SeqCst))
-        {
-            for (tag, count) in slot.tree.read().unwrap().tag_counts() {
-                all.entry(tag.to_lowercase()).or_insert_with(|| (tag, 0)).1 += count;
-            }
-        }
-        let mut out: Vec<(String, u64)> = all.into_values().collect();
-        out.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.to_lowercase().cmp(&b.0.to_lowercase())));
-        out
+        merged(self.ready_slots().iter().flat_map(|s| s.tree.read().unwrap().tag_counts()))
+    }
+
+    fn ready_slots(&self) -> Vec<Arc<Slot>> {
+        let slots = self.slots.read().unwrap();
+        slots.iter().filter(|s| s.ready.load(Ordering::SeqCst)).cloned().collect()
     }
 
     /// Every label and tag on the ready drives with how many items have it, most used first, and how many items
     /// have a comment (docs/gpui/marks).
     pub fn marks(&self) -> crate::proto::MarkCounts {
-        // S0: card C2 fills this in.
-        crate::proto::MarkCounts::default()
+        let slots = self.ready_slots();
+        let trees: Vec<_> = slots.iter().map(|s| s.tree.read().unwrap()).collect();
+        crate::proto::MarkCounts {
+            labels: merged(trees.iter().flat_map(|t| t.label_counts())),
+            tags: merged(trees.iter().flat_map(|t| t.tag_counts())),
+            comments: trees.iter().map(|t| t.comments()).sum(),
+        }
     }
 
     /// The marked items right inside `path`, never with a comment's text.
     pub fn marks_in(&self, path: &str) -> Result<Vec<crate::proto::MarkedChild>, String> {
-        // S0: card C2 fills this in.
-        let _ = path;
-        Ok(Vec::new())
+        let (letter, rest) = split_drive(path).ok_or("Not a folder on a local drive")?;
+        let slot = self.ready_slot(letter).ok_or("This drive isn't indexed")?;
+        let tree = slot.tree.read().unwrap();
+        let dir = tree.resolve(rest).ok_or("This folder isn't in the index")?;
+        tree.rec(dir).filter(|r| r.dir()).ok_or("Not a folder")?;
+        Ok(tree
+            .list(dir)
+            .into_iter()
+            .filter_map(|id| {
+                let marked = tree.marked(tree.link(id).rec)?;
+                Some(crate::proto::MarkedChild {
+                    name: tree.name(id).to_string(),
+                    label: marked.label.to_string(),
+                    tags: marked.tags.lines().map(str::to_string).collect(),
+                    comment: !marked.comment.is_empty(),
+                })
+            })
+            .collect())
     }
 
     pub fn status(&self) -> Status {
@@ -1078,12 +1143,17 @@ impl Engine {
                 query::fold(seg).replace(['*', '?', '"'], "")
             })
             .unwrap_or_default();
-        let mut send = |matcher: &NameMatcher| -> io::Result<(usize, bool)> {
-            if request.rank {
-                return send_ranked(
+        // Plain words only: a wildcard or a path looks at names alone.
+        let words: Option<Vec<String>> = (request.marks
+            && !names.is_empty()
+            && names.iter().all(|t| !t.contains(['*', '?', '\\', '/', ':'])))
+        .then(|| names.iter().map(|t| query::fold(t)).collect());
+        let mut send = |matcher: &NameMatcher, filters: &Filters, by_marks: bool| -> io::Result<(usize, bool)> {
+            let (mut count, mut limited) = if request.rank {
+                send_ranked(
                     &targets,
                     matcher,
-                    &filters,
+                    filters,
                     now,
                     request.hidden,
                     &excludes,
@@ -1091,40 +1161,88 @@ impl Engine {
                     max,
                     gone,
                     out,
-                );
-            }
-            let (mut count, mut limited) = (0, false);
-            for (slot, scope) in &targets {
-                if count >= max {
-                    limited = true;
-                    break;
-                }
-                check()?;
-                // Results are encoded under the lock (ids are only valid until the next change), then sent.
-                let (frames, found) = {
-                    let tree = slot.tree.read().unwrap();
-                    let search = Search {
-                        matcher,
-                        filters: &filters,
-                        now,
-                        scope: *scope,
-                        hidden: request.hidden,
-                        excludes: &excludes,
+                )?
+            } else {
+                let (mut count, mut limited) = (0, false);
+                for (slot, scope) in &targets {
+                    if count >= max {
+                        limited = true;
+                        break;
+                    }
+                    check()?;
+                    // Results are encoded under the lock (ids are only valid until the next change), then sent.
+                    let (frames, found) = {
+                        let tree = slot.tree.read().unwrap();
+                        let search = Search {
+                            matcher,
+                            filters,
+                            now,
+                            scope: *scope,
+                            hidden: request.hidden,
+                            excludes: &excludes,
+                        };
+                        collect_hits_until(&tree, slot.letter, &search, max - count, gone)
                     };
-                    collect_hits_until(&tree, slot.letter, &search, max - count, gone)
-                };
-                check()?;
-                let taken = found.min(max - count);
-                limited |= taken < found;
-                count += taken;
-                for frame in frames {
-                    proto::write_frame(out, FRAME_HITS, &frame)?;
+                    check()?;
+                    let taken = found.min(max - count);
+                    limited |= taken < found;
+                    count += taken;
+                    for frame in frames {
+                        proto::write_frame(out, FRAME_HITS, &frame)?;
+                    }
+                }
+                (count, limited)
+            };
+            if let Some(words) = words.as_ref().filter(|_| by_marks) {
+                for (slot, scope) in &targets {
+                    check()?;
+                    let (frames, found) = {
+                        let tree = slot.tree.read().unwrap();
+                        let search = Search {
+                            matcher,
+                            filters,
+                            now,
+                            scope: *scope,
+                            hidden: request.hidden,
+                            excludes: &excludes,
+                        };
+                        let found = tree.search_marks(&search, words, gone);
+                        let taken = &found[..found.len().min(max - count)];
+                        let drive = format!("{}:\\", slot.letter);
+                        let frames: Vec<Vec<u8>> = taken.chunks(BATCH).map(|c| encode_hits_by(&tree, c, &drive)).collect();
+                        (frames, found.len())
+                    };
+                    check()?;
+                    let taken = found.min(max - count);
+                    limited |= taken < found;
+                    count += taken;
+                    for frame in frames {
+                        proto::write_frame(out, FRAME_HITS, &frame)?;
+                    }
                 }
             }
             Ok((count, limited))
         };
-        let (mut count, mut limited) = send(&matcher)?;
-        // Nothing as typed: close matches, when asked for and a word is long enough to have typos.
+        let (mut count, mut limited) = send(&matcher, &filters, true)?;
+        // Nothing as typed: a tag or label that nothing has gives way to the nearest that something has.
+        let mut nearer = None;
+        if count == 0 && request.fuzzy && !filters.marks.is_empty() {
+            let (mut labels, mut tags) = (Vec::new(), Vec::new());
+            for (slot, _) in &targets {
+                let tree = slot.tree.read().unwrap();
+                labels.extend(tree.label_counts().into_iter().map(|(n, _)| n));
+                tags.extend(tree.tag_counts().into_iter().map(|(n, _)| n));
+            }
+            let (labels, tags): (Vec<&str>, Vec<&str>) = (labels.iter().map(String::as_str).collect(), tags.iter().map(String::as_str).collect());
+            if let Some(marks) = filters.marks.nearest(&labels, &tags) {
+                check()?;
+                let swapped = Filters { marks, ..filters.clone() };
+                (count, limited) = send(&matcher, &swapped, true)?;
+                nearer = Some(swapped);
+            }
+        }
+        let fuzzy_marks = count > 0 && nearer.is_some();
+        // Still nothing: close matches of the names, when asked for and a word is long enough to have typos.
         let near = if count == 0 && request.fuzzy {
             NameMatcher::near(names)
         } else {
@@ -1132,7 +1250,7 @@ impl Engine {
         };
         if let Some(near) = &near {
             check()?;
-            (count, limited) = send(near)?;
+            (count, limited) = send(near, nearer.as_ref().unwrap_or(&filters), false)?;
         }
         proto::write_message(
             out,
@@ -1140,7 +1258,7 @@ impl Engine {
                 count: count as u64,
                 limited,
                 elapsed: ms(started),
-                fuzzy: near.is_some(),
+                fuzzy: near.is_some() || fuzzy_marks,
             },
         )
     }
@@ -1451,6 +1569,7 @@ fn encode_ranked(tree: &Tree, ranked: &[Rank], drive: &str) -> (Vec<u8>, Vec<(Ra
                 size: rec.size(),
                 modified: unix_ms(rec.modified),
                 attrs: rec.attrs(),
+                by: 0,
             },
         );
         hits.push((rank, start..out.len()));
@@ -1483,9 +1602,15 @@ fn collect_hits_until(
 }
 
 fn encode_hits(tree: &Tree, ids: &[u32], drive: &str) -> Vec<u8> {
+    let ids: Vec<(u32, u8)> = ids.iter().map(|&id| (id, 0)).collect();
+    encode_hits_by(tree, &ids, drive)
+}
+
+/// The hits of `ids`, each with how it was found (0: by its name).
+fn encode_hits_by(tree: &Tree, ids: &[(u32, u8)], drive: &str) -> Vec<u8> {
     let mut dirs = HashMap::new();
     let mut out = Vec::with_capacity(ids.len() * 96);
-    for &id in ids {
+    for &(id, by) in ids {
         let Some(path) = tree.path(id, &mut dirs) else { continue };
         let Some(rec) = tree.rec(tree.link(id).rec) else {
             continue;
@@ -1496,28 +1621,93 @@ fn encode_hits(tree: &Tree, ids: &[u32], drive: &str) -> Vec<u8> {
             size: rec.size(),
             modified: unix_ms(rec.modified),
             attrs: rec.attrs(),
+            by,
         };
         proto::encode_hit(&mut out, &hit);
     }
     out
 }
 
-/// The drive letter and the path below its root, for `C:\Users\me` or `\\?\C:\Users\me`.
-/// Tags beside a snapshot: "GLINTTAG", a count, then each record's number, length and text.
-fn save_tags(path: &Path, tags: &HashMap<u32, Box<str>>) -> io::Result<()> {
-    let mut out = Vec::with_capacity(16 + tags.len() * 16);
-    out.extend_from_slice(b"GLINTTAG");
-    out.extend_from_slice(&(tags.len() as u64).to_le_bytes());
-    for (n, text) in tags {
+/// The longest label, tags or comment a marks file may hold: 64 KB.
+const MARKS_FIELD_MAX: usize = 64 << 10;
+
+/// Marks beside a snapshot (little-endian): "GLINTMRK", version 1, a count, then each record's number, label,
+/// tags and comment (each a length and its bytes), then the far records: a count and their numbers.
+fn save_marks(path: &Path, marks: &HashMap<u32, Marked>, far: &HashSet<u32>) -> io::Result<()> {
+    let mut out = Vec::with_capacity(32 + marks.len() * 28 + far.len() * 4);
+    out.extend_from_slice(b"GLINTMRK");
+    out.extend_from_slice(&1u32.to_le_bytes());
+    out.extend_from_slice(&(marks.len() as u64).to_le_bytes());
+    for (n, marked) in marks {
         out.extend_from_slice(&n.to_le_bytes());
-        out.extend_from_slice(&(text.len() as u32).to_le_bytes());
-        out.extend_from_slice(text.as_bytes());
+        for text in [&marked.label, &marked.tags, &marked.comment] {
+            // The three kinds of text are far below 64 KB (a label 256 bytes, tags 64 lines, a comment 4 KB).
+            let text = &text.as_bytes()[..text.len().min(MARKS_FIELD_MAX)];
+            out.extend_from_slice(&(text.len() as u32).to_le_bytes());
+            out.extend_from_slice(text);
+        }
     }
-    let tmp = path.with_extension("tags.tmp");
+    out.extend_from_slice(&(far.len() as u64).to_le_bytes());
+    for n in far {
+        out.extend_from_slice(&n.to_le_bytes());
+    }
+    let tmp = path.with_extension("marks.tmp");
     fs::write(&tmp, out)?;
-    fs::rename(tmp, path)
+    fs::rename(tmp, path)?;
+    // From now on the old tags file is stale.
+    let _ = fs::remove_file(path.with_extension("tags"));
+    Ok(())
 }
 
+/// What `save_marks` wrote; no marks at all for a file that is missing or damaged in any way.
+fn load_marks(path: &Path) -> (HashMap<u32, Marked>, HashSet<u32>) {
+    fs::read(path).ok().and_then(|bytes| read_marks(&bytes)).unwrap_or_default()
+}
+
+fn read_marks(bytes: &[u8]) -> Option<(HashMap<u32, Marked>, HashSet<u32>)> {
+    struct Reader<'a>(&'a [u8]);
+    impl<'a> Reader<'a> {
+        fn take(&mut self, n: usize) -> Option<&'a [u8]> {
+            let (head, rest) = (self.0.get(..n)?, self.0.get(n..)?);
+            self.0 = rest;
+            Some(head)
+        }
+        fn u32(&mut self) -> Option<u32> {
+            Some(u32::from_le_bytes(self.take(4)?.try_into().ok()?))
+        }
+        fn u64(&mut self) -> Option<u64> {
+            Some(u64::from_le_bytes(self.take(8)?.try_into().ok()?))
+        }
+        fn text(&mut self) -> Option<Box<str>> {
+            let len = self.u32()? as usize;
+            if len > MARKS_FIELD_MAX {
+                return None;
+            }
+            Some(String::from_utf8_lossy(self.take(len)?).into())
+        }
+    }
+    let mut r = Reader(bytes);
+    if r.take(8)? != b"GLINTMRK" || r.u32()? != 1 {
+        return None;
+    }
+    // A record takes at least 16 bytes, a far number 4: a count the file can't hold is a damaged file.
+    let count = usize::try_from(r.u64()?).ok().filter(|&c| c <= r.0.len() / 16)?;
+    let mut marks = HashMap::with_capacity(count);
+    for _ in 0..count {
+        let n = r.u32()?;
+        let (label, tags, comment) = (r.text()?, r.text()?, r.text()?);
+        marks.insert(n, Marked { label, tags, comment });
+    }
+    let far_count = usize::try_from(r.u64()?).ok().filter(|&c| c <= r.0.len() / 4)?;
+    let mut far = HashSet::with_capacity(far_count);
+    for _ in 0..far_count {
+        far.insert(r.u32()?);
+    }
+    Some((marks, far))
+}
+
+/// The tags 0.16 kept beside a snapshot ("GLINTTAG", a count, then each record's number, length and text):
+/// read when there is no marks file yet.
 fn load_tags(path: &Path) -> HashMap<u32, Box<str>> {
     let mut tags = HashMap::new();
     let Ok(bytes) = fs::read(path) else { return tags };
@@ -1537,6 +1727,7 @@ fn load_tags(path: &Path) -> HashMap<u32, Box<str>> {
     tags
 }
 
+/// The drive letter and the path below its root, for `C:\Users\me` or `\\?\C:\Users\me`.
 pub fn split_drive(path: &str) -> Option<(char, &str)> {
     let path = path.strip_prefix(r"\\?\").unwrap_or(path);
     let bytes = path.as_bytes();
@@ -1646,6 +1837,85 @@ mod tests {
         // Not asked: nothing about growth.
         let (_, earlier, summary) = ask(None);
         assert!(earlier.is_none() && summary.growth.is_none());
+    }
+
+    fn marks_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("glint-marks-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn sample_marks() -> (HashMap<u32, Marked>, HashSet<u32>) {
+        let mut marks = HashMap::new();
+        marks.insert(
+            40,
+            Marked { label: "مهم".into(), tags: "a\nb".into(), comment: "سطر أول\nسطر ثان\nthird".into() },
+        );
+        marks.insert(41, Marked { tags: "only".into(), ..Default::default() });
+        (marks, HashSet::from([41, 77]))
+    }
+
+    #[test]
+    fn marks_saved_beside_a_snapshot_come_back_the_same_the_far_ones_too() {
+        let dir = marks_dir("roundtrip");
+        let (marks, far) = sample_marks();
+        let file = dir.join("C.marks");
+        save_marks(&file, &marks, &far).unwrap();
+        assert_eq!(load_marks(&file), (marks, far));
+        assert!(!dir.join("C.marks.tmp").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_tags_file_as_0_16_wrote_it_is_read_when_there_is_no_marks_file_and_goes_once_marks_are_saved() {
+        let dir = marks_dir("old");
+        let mut old = Vec::new();
+        old.extend_from_slice(b"GLINTTAG");
+        old.extend_from_slice(&1u64.to_le_bytes());
+        old.extend_from_slice(&7u32.to_le_bytes());
+        old.extend_from_slice(&3u32.to_le_bytes());
+        old.extend_from_slice(b"a\nb");
+        fs::write(dir.join("C.tags"), old).unwrap();
+        // What a snapshot's load does: the marks if there are any, else the old tags.
+        let old = load_tags(&dir.join("C.tags"));
+        assert_eq!(old.get(&7).map(|t| &**t), Some("a\nb"));
+        assert!(!dir.join("C.marks").exists());
+        let marks: HashMap<u32, Marked> = old.into_iter().map(|(n, tags)| (n, Marked { tags, ..Default::default() })).collect();
+        assert_eq!(marks[&7], Marked { tags: "a\nb".into(), ..Default::default() });
+        save_marks(&dir.join("C.marks"), &marks, &HashSet::new()).unwrap();
+        assert!(!dir.join("C.tags").exists());
+        assert_eq!(load_marks(&dir.join("C.marks")).0, marks);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_damaged_marks_file_is_no_marks_and_no_panic() {
+        let dir = marks_dir("damaged");
+        let (marks, far) = sample_marks();
+        let file = dir.join("C.marks");
+        save_marks(&file, &marks, &far).unwrap();
+        let good = fs::read(&file).unwrap();
+        for cut in 0..good.len() {
+            assert!(read_marks(&good[..cut]).is_none(), "cut at {cut}");
+        }
+        assert!(read_marks(&good).is_some());
+        let mut bad = good.clone();
+        bad[..8].copy_from_slice(b"GLINTXXX");
+        assert!(read_marks(&bad).is_none());
+        let mut bad = good.clone();
+        bad[8..12].copy_from_slice(&2u32.to_le_bytes());
+        assert!(read_marks(&bad).is_none());
+        let mut bad = good.clone();
+        bad[12..20].copy_from_slice(&u64::MAX.to_le_bytes());
+        assert!(read_marks(&bad).is_none());
+        // The first record's label length (after its number).
+        let mut bad = good.clone();
+        bad[24..28].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(read_marks(&bad).is_none());
+        fs::write(&file, &bad).unwrap();
+        assert_eq!(load_marks(&file), Default::default());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1787,5 +2057,157 @@ mod tests {
         assert_eq!(stop.wait_poke(poke_bit('C'), Duration::from_millis(10)), Woken::TimedOut, "taken once");
         poker.join().unwrap();
         assert_eq!(poke_bit('1'), 0);
+    }
+
+    use crate::proto::{Hit, MarkedChild, HIT_BY_COMMENT, HIT_BY_TAG};
+    use crate::tree::{make_ref, RecordState};
+
+    /// T:\{docs\{lacp.txt, rates.txt (comment), plan.yaml (tags, label), note.txt}, src\net.cfg (tag), loose.txt}.
+    fn marked_engine() -> Arc<Engine> {
+        let parent = |n: u32| make_ref(n, if n == ROOT { 5 } else { 1 });
+        let entry = |dir: bool, p: u32, name: &str| RecordState {
+            seq: 1,
+            dir,
+            attrs: if dir { 0x10 } else { 0x20 },
+            modified: 2,
+            names: vec![(parent(p), name.into())],
+            ..Default::default()
+        };
+        let mut tree = Tree::default();
+        tree.set_record(ROOT, &RecordState { seq: 5, dir: true, names: vec![(make_ref(ROOT, 5), ".".into())], ..Default::default() });
+        tree.set_record(20, &entry(true, ROOT, "docs"));
+        tree.set_record(21, &entry(false, 20, "lacp.txt"));
+        tree.set_record(22, &RecordState { comment: Some("LACP rate fast".into()), ..entry(false, 20, "rates.txt") });
+        let plan = RecordState { label: Some("Red".into()), tags: Some("netplan\nWork".into()), ..entry(false, 20, "plan.yaml") };
+        tree.set_record(23, &plan);
+        tree.set_record(24, &entry(false, 20, "note.txt"));
+        tree.set_record(25, &entry(true, ROOT, "src"));
+        tree.set_record(26, &RecordState { tags: Some("Netplan".into()), ..entry(false, 25, "net.cfg") });
+        tree.set_record(27, &RecordState { tags: Some("work".into()), comment: Some("x".into()), ..entry(false, ROOT, "loose.txt") });
+        Engine::with_tree('T', tree)
+    }
+
+    /// Runs a search: its hits in the order sent, and what Done said.
+    fn ask(engine: &Engine, request: &SearchRequest) -> (Vec<Hit>, (u64, bool, bool)) {
+        let mut wire = Vec::new();
+        engine.search_until(request, &mut wire, &|| false).unwrap();
+        let (mut hits, mut done) = (Vec::new(), (u64::MAX, false, false));
+        let mut reader = wire.as_slice();
+        while let Some((kind, payload)) = proto::read_frame(&mut reader, proto::MAX_FRAME).unwrap() {
+            if kind == FRAME_HITS {
+                hits.extend(proto::decode_hits(&payload).unwrap());
+            } else if let Ok(Message::Done { count, limited, fuzzy, .. }) = serde_json::from_slice(&payload) {
+                done = (count, limited, fuzzy);
+            }
+        }
+        (hits, done)
+    }
+
+    fn search(query: &str, marks: bool) -> SearchRequest {
+        SearchRequest {
+            query: query.into(),
+            roots: vec![r"T:\".into()],
+            hidden: true,
+            exclude: vec![],
+            max_results: None,
+            fuzzy: false,
+            rank: false,
+            marks,
+        }
+    }
+
+    fn by(hits: &[Hit]) -> Vec<(String, u8)> {
+        hits.iter().map(|h| (h.path.rsplit('\\').next().unwrap_or("").to_string(), h.by)).collect()
+    }
+
+    #[test]
+    fn marks_merge_cases_show_the_first_spelling_and_count_comments() {
+        let counts = marked_engine().marks();
+        let low: Vec<(String, u64)> = counts.tags.iter().map(|(t, c)| (t.to_lowercase(), *c)).collect();
+        assert_eq!(low, [("netplan".to_string(), 2), ("work".to_string(), 2)]);
+        assert_eq!(counts.labels, [("Red".to_string(), 1)]);
+        assert_eq!(counts.comments, 2);
+    }
+
+    #[test]
+    fn marks_in_lists_the_marked_children_with_no_comment_text() {
+        let engine = marked_engine();
+        let mut docs = engine.marks_in(r"T:\docs").unwrap();
+        docs.sort_by(|a, b| a.name.cmp(&b.name));
+        let child = |name: &str, label: &str, tags: &[&str], comment| MarkedChild {
+            name: name.into(),
+            label: label.into(),
+            tags: tags.iter().map(|t| t.to_string()).collect(),
+            comment,
+        };
+        assert_eq!(docs, [child("plan.yaml", "Red", &["netplan", "Work"], false), child("rates.txt", "", &[], true)]);
+        assert_eq!(engine.marks_in(r"T:\src").unwrap(), [child("net.cfg", "", &["Netplan"], false)]);
+        assert!(!format!("{docs:?}").contains("LACP"));
+        assert_eq!(engine.marks_in(r"T:\").unwrap().len(), 1, "only loose.txt: folders aren't marked");
+        assert_eq!(engine.marks_in(r"T:\docs\nope").unwrap_err(), engine.sizes(r"T:\docs\nope", false).unwrap_err());
+        assert_eq!(engine.marks_in(r"Q:\docs").unwrap_err(), engine.sizes(r"Q:\docs", false).unwrap_err());
+    }
+
+    #[test]
+    fn a_search_with_marks_sends_what_is_named_and_what_is_marked_each_once() {
+        let engine = marked_engine();
+        let (hits, done) = ask(&engine, &search("lacp", true));
+        assert_eq!(by(&hits), [("lacp.txt".to_string(), 0), ("rates.txt".to_string(), HIT_BY_COMMENT)]);
+        assert_eq!(done, (2, false, false));
+        let (hits, done) = ask(&engine, &search("lacp", false));
+        assert_eq!((by(&hits), done), (vec![("lacp.txt".to_string(), 0)], (1, false, false)));
+        let mut ranked = search("lacp", true);
+        ranked.rank = true;
+        let (hits, done) = ask(&engine, &ranked);
+        assert_eq!(by(&hits), [("lacp.txt".to_string(), 0), ("rates.txt".to_string(), HIT_BY_COMMENT)]);
+        assert_eq!(done.0, 2);
+        // A tag finds by tag, and a name and a mark together need every word.
+        assert!(ask(&engine, &search("netplan yaml", true)).0.is_empty(), "every word must be in the marks");
+        let (hits, _) = ask(&engine, &search("plan", true));
+        assert_eq!(by(&hits), [("plan.yaml".to_string(), 0), ("net.cfg".to_string(), HIT_BY_TAG)]);
+    }
+
+    #[test]
+    fn wildcards_and_paths_look_at_names_only_and_max_results_limits_marks_too() {
+        let engine = marked_engine();
+        assert_eq!(by(&ask(&engine, &search("net*", true)).0), [("net.cfg".to_string(), 0)]);
+        assert_eq!(by(&ask(&engine, &search(r"src\net", true)).0), [("net.cfg".to_string(), 0)]);
+        assert!(ask(&engine, &search("netpl*", true)).0.is_empty());
+        let mut one = search("lacp", true);
+        one.max_results = Some(1);
+        let (hits, done) = ask(&engine, &one);
+        assert_eq!((hits.len(), done), (1, (1, true, false)));
+        one.rank = true;
+        let (hits, done) = ask(&engine, &one);
+        assert_eq!((hits.len(), done), (1, (1, true, false)));
+    }
+
+    #[test]
+    fn a_tag_typed_wrong_finds_the_nearest_tag_only_when_fuzzy_and_says_so() {
+        let engine = marked_engine();
+        let mut request = search("tag:netpaln", false);
+        let (hits, done) = ask(&engine, &request);
+        assert_eq!((hits.len(), done), (0, (0, false, false)));
+        request.fuzzy = true;
+        let (hits, done) = ask(&engine, &request);
+        assert_eq!((by(&hits).len(), done), (2, (2, false, true)));
+        request.query = "tag:netplan".into();
+        let (hits, done) = ask(&engine, &request);
+        assert_eq!((hits.len(), done), (2, (2, false, false)));
+    }
+
+    #[test]
+    fn a_far_round_over_a_tree_with_nothing_far_takes_nothing_and_the_thread_ends_when_stopped() {
+        let engine = marked_engine();
+        let before = engine.marks();
+        assert_eq!(engine.far_round(), 0);
+        assert_eq!(engine.marks(), before);
+        let dir = marks_dir("far-thread");
+        let started = Engine::start(dir.clone(), Some(vec![]), false);
+        thread::sleep(Duration::from_millis(50));
+        let at = Instant::now();
+        started.stop();
+        assert!(at.elapsed() < Duration::from_secs(5));
+        let _ = fs::remove_dir_all(&dir);
     }
 }

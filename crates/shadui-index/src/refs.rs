@@ -380,7 +380,7 @@ pub fn record_state(volume: &Handle, letter: char, ids: &mut Ids, number: u32) -
         modified: basic.LastWriteTime,
         size: if dir { 0 } else { standard.EndOfFile.max(0) as u64 },
         names,
-        tags: None,
+        ..Default::default()
     }))
 }
 

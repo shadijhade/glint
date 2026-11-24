@@ -12,8 +12,9 @@ use std::collections::HashMap;
 
 use chrono::{Datelike, Local, TimeZone};
 
-use crate::entries::{FileEntry, GitMark};
+use crate::entries::{FileEntry, GitMark, MarkReads};
 use crate::file_types::{kind_of, type_label, TYPE_GROUPS};
+use crate::marks::{shown, Marks};
 
 /// What a folder's (or a search's) items are grouped by, as File Explorer's Group by: headers over the rows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -25,8 +26,8 @@ pub enum GroupBy {
     Size,
     Type,
     Git,
-    /// By label, in the labels' order, *No label* last (docs/gpui/marks). Not in [`GROUP_BYS`] until card E1
-    /// wires it.
+    /// By label, in the labels' order, *No label* last (docs/gpui/marks). One nameless group until the rows' marks
+    /// are handed in (`group_order_marked`).
     Label,
 }
 
@@ -38,7 +39,7 @@ pub struct GroupByOption {
 }
 
 /// The Group by menu's choices, in order.
-pub const GROUP_BYS: [GroupByOption; 6] = [
+pub const GROUP_BYS: [GroupByOption; 7] = [
     GroupByOption {
         by: GroupBy::None,
         label: "Nothing",
@@ -62,6 +63,10 @@ pub const GROUP_BYS: [GroupByOption; 6] = [
     GroupByOption {
         by: GroupBy::Git,
         label: "Git status",
+    },
+    GroupByOption {
+        by: GroupBy::Label,
+        label: "Label",
     },
 ];
 
@@ -200,6 +205,7 @@ fn group_in(
     bounds: Option<&DateBounds>,
     size_of: Option<&SizeOf>,
     git: Option<&GitMarks>,
+    marks: Option<MarkReads>,
 ) -> Group {
     match by {
         GroupBy::Kind => {
@@ -249,7 +255,26 @@ fn group_in(
             Some(GitMark::Ignored) => group(5, "Ignored"),
             None => group(4, "Unchanged"),
         },
-        // S0: card A5 groups by label; until then it is one nameless group, as None is.
+        // Without the marks, a label is one nameless group, as None is.
+        GroupBy::Label if marks.is_some() => {
+            let Some(m) = marks else { return group(0, "") };
+            let none = Marks::default();
+            let s = shown(m.labels, (m.of)(entry).unwrap_or(&none));
+            match (s.label, s.place) {
+                (Some(name), Some(at)) => Group {
+                    rank: i64::try_from(at).unwrap_or(i64::MAX - 2),
+                    label: Cow::Owned(name),
+                },
+                (Some(name), None) => Group {
+                    rank: i64::try_from(m.labels.len()).unwrap_or(i64::MAX - 2),
+                    label: Cow::Owned(name),
+                },
+                _ => Group {
+                    rank: i64::try_from(m.labels.len()).map_or(i64::MAX, |n| n + 1),
+                    label: Cow::Borrowed("No label"),
+                },
+            }
+        }
         GroupBy::None | GroupBy::Label => group(0, ""),
     }
 }
@@ -262,7 +287,7 @@ pub fn group_of(entry: &FileEntry, by: GroupBy, now: i64, size_of: Option<&SizeO
     } else {
         None
     };
-    group_in(entry, by, bounds.as_ref(), size_of, git)
+    group_in(entry, by, bounds.as_ref(), size_of, git, None)
 }
 
 /// A header: its label, how many items it has and their size, and where its first row is.
@@ -340,6 +365,18 @@ pub fn group_order<E: std::borrow::Borrow<FileEntry>>(
     size_of: Option<&SizeOf>,
     git: Option<&GitMarks>,
 ) -> GroupedOrder {
+    group_order_marked(rows, by, now, size_of, git, None)
+}
+
+/// [`group_order`], with the rows' marks for `GroupBy::Label`.
+pub fn group_order_marked<E: std::borrow::Borrow<FileEntry>>(
+    rows: &[E],
+    by: GroupBy,
+    now: i64,
+    size_of: Option<&SizeOf>,
+    git: Option<&GitMarks>,
+    marks: Option<MarkReads>,
+) -> GroupedOrder {
     let bounds = if by == GroupBy::Date {
         DateBounds::new(now)
     } else {
@@ -348,7 +385,7 @@ pub fn group_order<E: std::borrow::Borrow<FileEntry>>(
     let mut keyed: Vec<(usize, Group)> = rows
         .iter()
         .enumerate()
-        .map(|(i, entry)| (i, group_in(entry.borrow(), by, bounds.as_ref(), size_of, git)))
+        .map(|(i, entry)| (i, group_in(entry.borrow(), by, bounds.as_ref(), size_of, git, marks)))
         .collect();
     keyed.sort_by(|(i, a), (j, b)| {
         a.rank
@@ -519,7 +556,7 @@ mod tests {
         let labels: Vec<&str> = GROUP_BYS.iter().map(|g| g.label).collect();
         assert_eq!(
             labels,
-            vec!["Nothing", "Kind", "Date modified", "Size", "Type", "Git status"]
+            vec!["Nothing", "Kind", "Date modified", "Size", "Type", "Git status", "Label"]
         );
         assert_eq!(GROUP_BYS[0].by, GroupBy::None);
         assert_eq!(GROUP_BYS[5].by, GroupBy::Git);
@@ -696,5 +733,52 @@ mod tests {
         // U+FF5E (a BMP character) is above U+D83D (an emoji's first UTF-16 unit); Rust's own order disagrees.
         assert_eq!(js_label_order("\u{FF5E}", "\u{1F600}"), Ordering::Greater);
         assert_eq!("\u{FF5E}".cmp("\u{1F600}"), Ordering::Less);
+    }
+
+    fn marked_rows(rows: &[(&str, Option<&str>)]) -> (Vec<FileEntry>, HashMap<String, Marks>) {
+        let list = rows.iter().map(|(n, _)| entry(n, 1)).collect();
+        let map = rows
+            .iter()
+            .filter_map(|(n, l)| {
+                l.map(|l| (n.to_string(), Marks { label: Some(l.to_string()), ..Marks::default() }))
+            })
+            .collect();
+        (list, map)
+    }
+
+    #[test]
+    fn grouping_by_label_goes_by_the_labels_order_then_unknown_ones_then_no_label() {
+        let mut labels = crate::marks::default_labels();
+        labels[0].name = "Important".into();
+        labels[0].was = vec!["Red".into()];
+        let (rows, map) = marked_rows(&[
+            ("a", Some("Blue")),
+            ("b", Some("Zeta")),
+            ("c", Some("Red")),
+            ("d", None),
+            ("e", Some("Alpha")),
+            ("f", Some("blue")),
+            ("g", Some("Red")),
+            ("unread", None),
+        ]);
+        let of = |e: &FileEntry| map.get(&e.name);
+        let reads = MarkReads { of: &of, labels: &labels };
+        let g = group_order_marked(&rows, GroupBy::Label, now(), None, None, Some(reads));
+        let heads: Vec<(&str, usize)> = g.headers.iter().map(|h| (h.label.as_str(), h.count)).collect();
+        assert_eq!(heads, [("Important", 2), ("Blue", 2), ("Alpha", 1), ("Zeta", 1), ("No label", 2)]);
+        assert_eq!(g.order, [2, 6, 0, 5, 4, 1, 3, 7]);
+    }
+
+    #[test]
+    fn grouping_by_label_without_marks_is_one_nameless_group() {
+        let rows = [entry("a", 1), entry("b", 1)];
+        let g = group_order(&rows, GroupBy::Label, now(), None, None);
+        assert_eq!(g.headers.len(), 1);
+        assert_eq!(g.headers[0].label, "");
+        for by in [GroupBy::None, GroupBy::Kind, GroupBy::Type, GroupBy::Date, GroupBy::Size, GroupBy::Git, GroupBy::Label] {
+            let a = group_order(&rows, by, now(), None, None);
+            let b = group_order_marked(&rows, by, now(), None, None, None);
+            assert_eq!((a.order, a.lines, a.line_of, a.headers), (b.order, b.lines, b.line_of, b.headers));
+        }
     }
 }

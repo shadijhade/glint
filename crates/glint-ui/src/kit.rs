@@ -509,6 +509,10 @@ mod tests {
         for name in [
             IconName::Activity,
             IconName::AppWindow,
+            // Marks (docs/gpui/marks): the note mark, Comment… and Clear marks.
+            IconName::StickyNote,
+            IconName::MessageSquare,
+            IconName::Eraser,
             IconName::Archive,
             IconName::ArchiveRestore,
             IconName::ArrowDown,

@@ -352,6 +352,8 @@ pub struct Hit {
     /// Last write time, Unix milliseconds (0 when unknown).
     pub modified: i64,
     pub attrs: u32,
+    /// 0 for a hit found by its name, else [`HIT_BY_COMMENT`], [`HIT_BY_TAG`] or both (a search with `marks`).
+    pub by: u8,
 }
 
 /// FILETIME (100 ns since 1601) to Unix milliseconds.
@@ -368,7 +370,7 @@ pub fn encode_hit(out: &mut Vec<u8>, hit: &Hit) {
     // A path too long for its 16-bit length (deep \\?\ folders) is left out: cut mid-character, it
     // would make the app drop the whole batch.
     let Ok(len) = u16::try_from(hit.path.len()) else { return };
-    out.push(hit.dir as u8);
+    out.push(hit.dir as u8 | hit.by & (HIT_BY_COMMENT | HIT_BY_TAG));
     out.extend_from_slice(&hit.attrs.to_le_bytes());
     out.extend_from_slice(&hit.size.to_le_bytes());
     out.extend_from_slice(&hit.modified.to_le_bytes());
@@ -387,6 +389,7 @@ pub fn decode_hits(mut bytes: &[u8]) -> Result<Vec<Hit>, String> {
         let path = bytes.get(23..23 + len).ok_or_else(bad)?;
         hits.push(Hit {
             dir: bytes[0] & 1 != 0,
+            by: bytes[0] & (HIT_BY_COMMENT | HIT_BY_TAG),
             attrs: u32::from_le_bytes(bytes[1..5].try_into().unwrap()),
             size: u64::from_le_bytes(bytes[5..13].try_into().unwrap()),
             modified: i64::from_le_bytes(bytes[13..21].try_into().unwrap()),
@@ -592,6 +595,7 @@ mod tests {
                 size: 1 << 40,
                 modified: 1_700_000_000_000,
                 attrs: 0x20,
+                by: 0,
             },
             Hit {
                 path: r"D:\Reports".into(),
@@ -599,6 +603,7 @@ mod tests {
                 size: 0,
                 modified: 0,
                 attrs: 0x10,
+                by: 0,
             },
         ];
         let mut payload = Vec::new();
@@ -862,6 +867,22 @@ mod tests {
         let json = serde_json::to_string(&Message::Sizes(answer.clone())).unwrap();
         assert!(json.contains(r#""files":3,"folders":1"#), "{json}");
         assert_eq!(serde_json::from_str::<Message>(&json).unwrap(), Message::Sizes(answer));
+    }
+
+    #[test]
+    fn a_hit_says_how_it_was_found_in_its_first_byte_beside_its_dir_bit() {
+        let hit = |dir, by| Hit { path: "C:\\a".into(), dir, size: 7, modified: 9, attrs: 0x20, by };
+        let hits = [hit(false, HIT_BY_COMMENT), hit(true, HIT_BY_TAG), hit(false, HIT_BY_COMMENT | HIT_BY_TAG), hit(true, 0)];
+        let mut bytes = Vec::new();
+        hits.iter().for_each(|h| encode_hit(&mut bytes, h));
+        assert_eq!(decode_hits(&bytes).unwrap(), hits);
+        assert_eq!(bytes[27], 1 | HIT_BY_TAG, "a folder found by a tag");
+        // A hit by name encodes to the bytes it always did.
+        let mut plain = Vec::new();
+        encode_hit(&mut plain, &hit(false, 0));
+        let mut by_hand = vec![0u8, 0x20, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0, 4, 0];
+        by_hand.extend_from_slice(b"C:\\a");
+        assert_eq!(plain, by_hand);
     }
 
     #[test]

@@ -32,6 +32,8 @@ pub mod check_sums;
 pub mod cleanup;
 /// Connecting a cloud through rclone (CloudSetup.tsx).
 pub mod cloud_setup;
+/// Edit comment… (docs/gpui/marks).
+pub mod comment;
 /// Comparing two files and merging their changes (CompareFilesDialog.tsx).
 pub mod compare_files;
 /// Compressing in place with Windows' WOF (CompressInPlaceDialog.tsx).
@@ -184,6 +186,19 @@ pub fn show<V: Render>(window: &mut Window, cx: &mut App, title: SharedString, w
     show_unless(window, cx, title, width, view, |_| false);
 }
 
+/// [`show`] for a dialog about one item of the pane the keyboard is in: it opens out of that item's row or tile
+/// (`Dialog::opens_from`, as Quick Look does), and plainly when the item isn't on screen.
+pub fn show_out_of<V: Render>(
+    window: &mut Window,
+    cx: &mut App,
+    title: SharedString,
+    width: Pixels,
+    view: Entity<V>,
+    path: String,
+) {
+    show_with(window, cx, title, width, view, |_| false, Some(path));
+}
+
 /// [`show`] for a dialog that can't be left while `busy` says so (a run under way): Escape, the close button and
 /// the backdrop do nothing then.
 pub fn show_unless<V: Render>(
@@ -194,6 +209,19 @@ pub fn show_unless<V: Render>(
     view: Entity<V>,
     busy: impl Fn(&App) -> bool + 'static,
 ) {
+    show_with(window, cx, title, width, view, busy, None);
+}
+
+/// What [`show_unless`] and [`show_out_of`] share: `from` is the item the dialog opens out of, if any.
+fn show_with<V: Render>(
+    window: &mut Window,
+    cx: &mut App,
+    title: SharedString,
+    width: Pixels,
+    view: Entity<V>,
+    busy: impl Fn(&App) -> bool + 'static,
+    from: Option<String>,
+) {
     let busy = std::rc::Rc::new(busy);
     let id = view.entity_id();
     // The entry goes with the view, so a closed dialog leaves nothing behind.
@@ -201,7 +229,17 @@ pub fn show_unless<V: Render>(
         cx.default_global::<MainActions>().0.remove(&id);
     })
     .detach();
-    window.open_dialog(cx, move |dialog, _window, _cx| {
+    window.open_dialog(cx, move |dialog, window, cx| {
+        // Out of the row or tile of the item it is about, when that is on screen.
+        let spot = from.as_deref().and_then(|path| {
+            let explorer = crate::explorer::try_explorer(cx)?;
+            let pane = explorer.read(cx).active_pane().min(1);
+            crate::stage::spot_of(pane, path, window, cx)
+        });
+        let dialog = match spot {
+            Some(spot) => dialog.opens_from(spot),
+            None => dialog,
+        };
         // Enter in a text box belongs to the box (the dialog listens to its PressEnter); anywhere else in the
         // dialog it is the main button. Returning false keeps the dialog open: the main action closes it itself.
         dialog

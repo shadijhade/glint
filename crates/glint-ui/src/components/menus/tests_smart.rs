@@ -641,3 +641,33 @@ fn a_folders_own_head_has_its_name_its_item_count_and_its_branch() {
     assert_eq!((b.label.as_ref(), b.icon, b.tone, b.run.clone()), ("main", IconName::GitBranch, Tone::Plain, Run::Nothing));
     let _ = find(&[], "x");
 }
+
+// ---- The labels' dots and the Marks rows ------------------------------------------------------------------
+
+#[test]
+fn suggested_never_copies_a_dot_and_the_marks_events_keep_their_keys() {
+    let _guard = english();
+    let mut c = ctx();
+    c.data.labels = glint_model::marks::default_labels();
+    let menu = item_menu(&[text("alpha.txt")], &c);
+    assert!(menu.iter().any(|node| matches!(node, Node::Swatches(_))));
+    let all = keys(&menu);
+    assert!(!all.contains(&"do:label".to_string()), "{all:?}");
+    assert!(row_for(&menu, "do:label").is_none());
+    // The rows of Marks are rows like any other (Copy and Clear are greyed out: nothing is marked).
+    for key in ["do:edit-tags", "do:comment", "do:paste-marks"] {
+        assert!(all.contains(&key.to_string()), "{key}");
+    }
+    let paths = vec!["C:\\x\\a.txt".to_string()];
+    for (event, key) in [
+        (MenuEvent::SetLabel { paths: paths.clone(), label: None }, "do:label"),
+        (MenuEvent::EditComment { paths: paths.clone() }, "do:comment"),
+        (MenuEvent::CopyMarks { path: paths[0].clone() }, "do:copy-marks"),
+        (MenuEvent::PasteMarks { paths: paths.clone() }, "do:paste-marks"),
+        (MenuEvent::ClearMarks { paths: paths.clone() }, "do:clear-marks"),
+        (MenuEvent::SetTags { paths: paths.clone(), add: vec![], remove: vec![] }, "do:tags"),
+        (MenuEvent::EditTags { paths }, "do:edit-tags"),
+    ] {
+        assert_eq!(Run::Ask(event).key().as_deref(), Some(key));
+    }
+}

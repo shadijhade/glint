@@ -86,6 +86,29 @@ pub fn tracks_for(columns: &[ColumnId], located: bool, width_in_rems: f32) -> Ve
     }
 }
 
+/// The least room the name keeps, in rems: past it, columns go (`leave_room`).
+pub const NAME_ROOM: f32 = 14.;
+
+/// Takes columns out of `tracks` while those left would give the name less than `room` of `total` (in the unit
+/// `width_of` answers): the last that a narrow list leaves out first, then the last that a narrow pane does. A
+/// column no list leaves out stays. The breakpoints of [`tracks_for`] alone let the marks' wide columns squeeze
+/// the name to nothing.
+pub fn leave_room(tracks: &mut Vec<GridTrack>, width_of: impl Fn(ColumnId) -> f32, total: f32, room: f32) {
+    use glint_model::columns::DropAt;
+    let fixed = |tracks: &[GridTrack]| -> f32 {
+        tracks.iter().map(|t| if let GridTrack::Column(id) = t { width_of(*id) } else { 0. }).sum()
+    };
+    while total - fixed(tracks) < room {
+        let last = |at: DropAt| tracks.iter().rposition(|t| matches!(t, GridTrack::Column(id) if id.def().drop == Some(at)));
+        match last(DropAt::Md).or_else(|| last(DropAt::Sm)) {
+            Some(at) => {
+                tracks.remove(at);
+            }
+            None => break,
+        }
+    }
+}
+
 /// Where a search result is, below the folder that was searched ("" when right in it) (`relativeTo`).
 pub fn relative_to(scope: &str) -> impl Fn(&str) -> String {
     let scope = scope.to_string();
@@ -131,6 +154,29 @@ mod tests {
         set_saved_width(&mut widths, Column::Size, None);
         assert_eq!(saved_width(&widths, Column::Size), None);
         assert_eq!(saved_width(&widths, Column::Date), None);
+    }
+
+    #[test]
+    fn the_name_keeps_its_room_and_the_widest_optional_columns_go_last_first() {
+        let columns = [ColumnId::Modified, ColumnId::Label, ColumnId::Tags, ColumnId::Comment, ColumnId::Size];
+        let width_of = |id: ColumnId| default_rems(id.def().width);
+        let left = |total: f32| {
+            let mut tracks = tracks_for(&columns, false, total);
+            leave_room(&mut tracks, width_of, total, NAME_ROOM);
+            tracks.into_iter().filter_map(|t| if let GridTrack::Column(id) = t { Some(id) } else { None }).collect::<Vec<_>>()
+        };
+        // 45 rems of columns in a list of 52: the comment goes (a narrow list's columns go first, the last first).
+        assert_eq!(left(52.), [ColumnId::Modified, ColumnId::Label, ColumnId::Tags, ColumnId::Size]);
+        // Wide enough for all of them.
+        assert_eq!(left(60.), columns);
+        // Narrower: the tags go too. In a narrow list the marks' columns are out already, and the date goes once
+        // nothing else can (only a narrow pane leaves it out otherwise); the size always stays.
+        assert_eq!(left(43.), [ColumnId::Modified, ColumnId::Label, ColumnId::Size]);
+        assert_eq!(left(28.), [ColumnId::Size]);
+        // The name is never asked for more than there is: with nothing left to take out, it stays as it is.
+        let mut tracks = vec![GridTrack::Name, GridTrack::Column(ColumnId::Size)];
+        leave_room(&mut tracks, width_of, 10., NAME_ROOM);
+        assert_eq!(tracks, [GridTrack::Name, GridTrack::Column(ColumnId::Size)]);
     }
 
     #[test]

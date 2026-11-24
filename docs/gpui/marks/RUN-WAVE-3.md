@@ -1,0 +1,61 @@
+# Writing and running wave 3 of the Marks wave
+
+*For the session that writes wave 3's cards and then runs them, as it did wave 2 ([what was asked](RUN-WAVE-2.md), [its report](WAVE-2-REPORT.md)). This is the wave the person sees: the list, the menu, the keys, the dialogs, the preview. The session that wrote the plan reviews what comes back, looks at it in the real app, and commits.*
+
+## Where things stand
+
+- Repository `C:\Repo\VisualStudioRepos\glint`, branch `marks-wave`. The last commit is `13660c7`. **Waves 1 and 2 and their reviews are in the working tree, not committed**; leave it so. `dist/` and `src-tauri/` are untracked and not ours.
+- The tree as it is now is kept as `6ef80cfc60e4bf1c8dd767162f70f839cb5339b8` (`git stash create`: no branch, no stash entry): `git diff 6ef80cf` shows wave 3 alone. `crates/shadui-index/src/far.rs` is new and untracked, so the snapshot doesn't hold it: say in the report what changed in it.
+- `cargo test --workspace --no-fail-fast`: 3,644 pass, 1 fails, the one that has nothing to do with this work (`thumbs::tests::draws_a_pdfs_first_page`). Clippy is clean.
+- Read [PLAN.md](PLAN.md) whole first. Under §9's table, **"Wave 2, as it landed"** says what the review changed (the far reads are off, and why), what wave 3's cards must do since nothing does it yet, and what wave 2's agents decided.
+
+## Part 1: write the cards
+
+Wave 3 in PLAN §9's table: **B3**, **C4**, **E1**, **E2**, **E3**, **E4**. Write them as wave 2's were (their shape is [A4-filter.md](cards/A4-filter.md)'s and [D1-hub.md](cards/D1-hub.md)'s), from the code as it is today, with `file:line`. One card is one agent's one run: cut a card in two that own different files when it is too big (E1 and E2 are the likely ones), and add a card for what the table leaves out and somebody must do (the lists of filter keys, the keys' handlers, `explorer/ops.rs`'s call to `carry`), or do those yourself before or after.
+
+**No card may need another wave-3 card's code to compile or to pass its tests.** Land what two cards share first, as code that compiles and does nothing (never `todo!()`), and say so in both: a theme function for the wash, the rows of `COLUMN_ORDER` and `GROUP_BYS`, one line's text for the clipboard, whatever a dialog and the preview's block both need. Never change a signature code outside a card's files already calls.
+
+**For every card that draws** (E1 to E4), STANDARDS §5 is the law, and these are where such cards go wrong:
+
+- The kit and the theme only: no `gpui_component` in a view, no color or size of its own. A label's color is the label's own (the same in both themes), and how strongly it washes a row is **one function in the theme**, landed first, so it is tuned in one place.
+- **A label is not a state** (PLAN §3, M11): selected, hovered and dropped-on rows keep their one fill, and a label is drawn under them, never in the accent, never as a bar at the row's edge, never as the color of the whole line's text.
+- Every string through `t!`, exactly as PLAN §4 words it where it words it; list every new string in the report.
+- Every thing that can be pressed has a role and a name; `describe_row` says an item's label, tags and comment; keyboard alone works (focus order, Enter, Escape).
+- Right to left: start and end helpers, and a test with an Arabic name, tag and comment in everything that lays text out.
+- Nothing on the UI thread but reading what is in memory: marks come from `RowFacts`, changes go through `dialogs::tags::set_marks` (which remembers Undo and says `TagsChanged`), never straight to core.
+- Only what is known is drawn (M4): a row whose marks aren't read yet draws none.
+- The tests the files have pass unchanged, except the ones PLAN §10 names for the menu's rows.
+
+**What each card must hold to:**
+
+- **E1, the list and the grid** (PLAN F1, F3, F4; "Wave 2, as it landed", E1). The wash in the row and the pill under a tile's name; the note mark after a name with a comment, its tooltip the comment; the Label, Tags and Comment columns listed where columns are chosen, each sorting; Group by → Label. The dots leave the name's cell while the Tags column shows. And the wiring nothing does yet: `explorer/rows.rs` hands `RowFacts::marks_of` to `Reads::marks`, `matcher_marks` and `group_order_marked`, and asks `ask_all` each frame until `has_all` while `has_marks_filter` holds or the sort or the group is by a mark; then the rows are built once. What a row draws comes from `marks::shown` with the labels of `state::settings`. A listing costs what it costs today when no mark is shown, sorted by or filtered on (M5): measure a folder of 10,000 rows built before and after, and put both numbers in the report.
+- **E2, the menu, the palette and the keys** (F6, F7, F9, F10). The row of the labels' dots under the strip (`Node::Swatches` is there and draws nothing yet); under More, **Marks**: *Tags…*, *Comment…*, *Copy marks*, *Paste marks*, *Clear marks*, in place of the seven color rows; the commands of F9 in `Ctrl+K`; the handlers of the four actions `actions.rs` already binds (`Alt+1`…`Alt+9`, `Alt+0`, `Alt+T`, `Alt+N`), which act on the selection of the pane the keyboard is in and do nothing while a text box has the keys. A label pressed on items that all have it takes it off. The menu reads marks only from what `RowFacts` holds (`marks_among`): opening one stays under a millisecond. Keys of rows are never renamed (`do:tags`, `do:edit-tags` stay; the new ones are in PLAN §8). Plain words get the labels (`plain_query_with` in `address_bar/find.rs` and `quick_search/mod.rs`), and the four lists of filter keys read `marks::KEYS` (§6.5): in this card or one of its own.
+- **E3, the dialogs** (F2, F3). Edit tags… suggests as you type: tags that start with what is typed, then tags that contain it, the most used first (`marks_all`, and the recent ones when instant search is off), those used in this folder ahead (`RowFacts::marks_among`). Edit comment…: a text box of several lines, `Enter` a new line, `Ctrl+Enter` saves, `Escape` leaves; for several items what they share, and *Several comments* where they differ; more than 64 KB is refused with words before anything is asked of core. Both open out of the row (`Dialog::opens_from`), and both change marks through `set_marks`.
+- **E4, the Marks block** (F8, F20), at the head of the preview pane's details and Quick Look's, for every kind of item: the labels' dots, the tags as chips with a box to add one, the comment in a box that grows from one line to six. It saves when the focus leaves it or on `Ctrl+Enter`; `Escape` puts back what was there. Several items: what they share. Where the marks are not in the file it says so quietly (*Kept beside the file*, *Kept on this PC*), from the home core answers. It follows the selection without reading the disk itself.
+- **B3, following and fd's drives** (PLAN §6.3, §6.5; "Wave 2, as it landed", B3). `marks::carry(pairs, moved)`: for each pair whose homes differ the marks are read at the source and written at the destination, and for a move taken out of the source's sidecar or the ledger; a rename or a delete of an item whose marks are beside it or on this PC moves or drops its line. Called where a copy or a move Glint ran is known to be done: the copy queue (`queue.rs`, after each file is in place), and the explorer's operations (`glint-ui/src/explorer/ops.rs`, where the Undo step is recorded: that call is a marked place or yours). A file made in another's place (`actions::run` with `Output::Replace`, `convert::convert`) gets the original's marks, read before it is recycled (G6). On fd's drives `find.rs` asks `marks::matches` on the threads that read the media filters, with one `.glint-marks` kept a folder for the length of a search, and adds the ledger's matches under the folders searched; it reads `Filters::marks` and `without_marks` where it reads `Filters::tags` and `without_tags`. A copy's speed is what it is today when nothing is marked: say what was measured.
+- **C4, the far reads by file reference** (PLAN §9, "Wave 2, as it landed"). `far::read` opens an item by its path, and the service is LocalSystem: an account that can write a folder can swap part of that path for a link while the service looks. So the read walks no path:
+  1. The item is opened by its file reference (the record's number with its sequence, as `tree::make_ref` puts them together) with `OpenFileById`, on a handle of the drive's root taken once a round; for its attributes alone, with backup semantics, a link not followed. A reference that no longer opens (the file is gone, the record is another file's now) is `None`, and the record is left as it is.
+  2. Its streams are listed on that handle (`GetFileInformationByHandleEx`, `FileStreamInfo`, as `glint-core/src/marks/streams.rs` does: bounds checked, no pointer cast). No `glint.*` stream is no marks: that is nearly every far record, and nothing was held open that another program could trip over.
+  3. Only an item that has one is opened again by its reference, for reading, and its streams are walked with `BackupRead` (a `WIN32_STREAM_ID`, its name, its data; `BackupSeek` over what isn't ours, the file's own data first of all; the last call frees the context whatever happened). Each `glint.*` stream is read up to its cap and given to `record`'s readers. A file another program holds with no sharing can't be opened so: `None`, and its record is left.
+  
+  `far::read(path)` goes from the service's code. The tests open their files by reference too (a reference comes from `GetFileInformationByHandle`), and hold: marks read back; a stale reference; eighty other streams; a file held open with no sharing; a folder; headers that lie about their sizes given straight to the walker without a panic. Then `FAR_READS` is turned on, and `docs/instant-search.md`'s security model gains what is true from then on: the service holds every account's labels, tags and the first 4 KB of their comments; whoever may ask it can learn which files match a word; it never sends a comment's text; and it opens marked files by their reference to read those three streams, never a file's own data and never by a path.
+
+Then link the cards from PLAN §9's table and add to §8.1 what you landed for them.
+
+## Part 2: run them
+
+As before: one agent for each card, all at the same time, on a cheaper model than your own (Sonnet), in this tree; each given `docs/gpui/STANDARDS.md`, section 6 of `docs/gpui/aware/PLAN.md` (with the card's own commands for its rule 4), the sections of `docs/gpui/marks/PLAN.md` its card lists, and its card; told that others are editing other files in the same tree, and that its last message is that section's report. While they work, change nothing. When all have reported, read each report against its card and finish or send again what is partial. Then check the whole once: `cargo test --workspace --no-fail-fast` and `cargo clippy --workspace --all-targets -- -D warnings`.
+
+## Part 3: the report
+
+`docs/gpui/marks/WAVE-3-REPORT.md`, in the shape of wave 2's: what you landed first; each card's status, files, tests, what it didn't do, what it needs, what it was unsure of; the totals; every new string; what was measured (E1's rows, B3's copy, C4's read of an item with no marks); what is left between the cards; what a card's wording got wrong. Say plainly what is partial, and what nobody has seen on a screen.
+
+## What not to do
+
+- **No commit, no push, no branch change**, and none of `git stash`, `checkout`, `restore` or `add`. The agents run no `git` command that changes anything, and never `cargo fmt` on a file that isn't theirs.
+- **Nothing of waves 4 and 5**: no import, no export, no sidebar, no settings page for the labels (they are read from `state::settings`, which has the seven).
+- **Not the end-to-end checks** (`tests\e2e\run.ps1`), and not the installed Glint: they take the real mouse, keyboard and profile. How it looks on a screen is checked afterwards.
+- **No new crates**, and nothing outside the files the cards name, apart from what Part 1 has you land first and what the check of the whole needs.
+- **`PLAN.md` is changed only** in §9's table and §8.1.
+
+When the report is written, say so, with the two totals.

@@ -6,7 +6,7 @@
 
 use crate::fsx::blocking;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::Read;
 
 /// The stream's name, after the file's: `C:\notes.txt:glint.tags`.
 const STREAM: &str = "glint.tags";
@@ -44,7 +44,9 @@ pub fn matches(path: &str, wanted: &[Vec<String>]) -> bool {
 }
 
 /// Writes `tags` as `path`'s (none: the stream goes), with the file's dates kept as they were.
+#[cfg(test)]
 fn write(path: &str, tags: &[String]) -> Result<(), String> {
+    use std::io::Write;
     #[cfg(windows)]
     let times = keep_times(path);
     let result = if tags.is_empty() {
@@ -62,9 +64,10 @@ fn write(path: &str, tags: &[String]) -> Result<(), String> {
     result
 }
 
-/// The file's dates now, and a way to put them back (writing a stream moves "Date modified").
+/// The file's dates now, and a way to put them back (writing a stream moves "Date modified"). The marks'
+/// streams are written under it too (`marks::streams`).
 #[cfg(windows)]
-fn keep_times(path: &str) -> Option<impl FnOnce()> {
+pub(crate) fn keep_times(path: &str) -> Option<impl FnOnce()> {
     use std::os::windows::fs::OpenOptionsExt;
     use std::os::windows::io::AsRawHandle;
     use windows::Win32::Foundation::{FILETIME, HANDLE};
@@ -73,39 +76,24 @@ fn keep_times(path: &str) -> Option<impl FnOnce()> {
     const FILE_WRITE_ATTRIBUTES: u32 = 0x100;
     let file = fs::OpenOptions::new().access_mode(FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES).custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0).open(path).ok()?;
     let (mut created, mut accessed, mut written) = (FILETIME::default(), FILETIME::default(), FILETIME::default());
+    // SAFETY: the handle is open and the three out-parameters are live locals.
     unsafe { GetFileTime(HANDLE(file.as_raw_handle()), Some(&mut created), Some(&mut accessed), Some(&mut written)) }.ok()?;
-    Some(move || unsafe {
-        let _ = SetFileTime(HANDLE(file.as_raw_handle()), Some(&created), Some(&accessed), Some(&written));
+    Some(move || {
+        // SAFETY: the handle lives in this closure; the times are copies.
+        let _ = unsafe { SetFileTime(HANDLE(file.as_raw_handle()), Some(&created), Some(&accessed), Some(&written)) };
     })
 }
 
 /// Each path's tags, for the rows on screen.
 pub async fn tags_read(paths: Vec<String>) -> Result<Vec<Vec<String>>, String> {
-    blocking(move || Ok(paths.iter().map(|p| read(p)).collect())).await
+    Ok(crate::marks::marks_read(paths).await?.into_iter().map(|m| m.tags).collect())
 }
 
 /// Adds `add` to each path's tags and takes `remove` off (any case). Returns the paths that couldn't
 /// be tagged, each with why.
 pub async fn tags_set(paths: Vec<String>, add: Vec<String>, remove: Vec<String>) -> Result<Vec<(String, String)>, String> {
-    blocking(move || {
-        let add: Vec<String> = add.into_iter().map(|t| t.trim().replace(['\n', '\r'], " ")).filter(|t| !t.is_empty()).collect();
-        let mut failed = Vec::new();
-        for path in paths {
-            let mut tags = read(&path);
-            tags.retain(|t| !remove.iter().any(|r| r.eq_ignore_ascii_case(t)));
-            for tag in &add {
-                if !tags.iter().any(|t| t.eq_ignore_ascii_case(tag)) {
-                    tags.push(tag.clone());
-                }
-            }
-            if let Err(e) = write(&path, &tags) {
-                let reason = if e.contains("123") || e.to_lowercase().contains("syntax") { "This drive keeps no tags (FAT or exFAT)".to_string() } else { e };
-                failed.push((path, reason));
-            }
-        }
-        Ok(failed)
-    })
-    .await
+    let outcomes = crate::marks::marks_set(paths, crate::marks::Change::Tags { add, remove }).await?;
+    Ok(outcomes.into_iter().filter_map(|o| o.after.err().map(|why| (o.path, why))).collect())
 }
 
 /// Every tag on the drives instant search covers, with how many items have it, most used first; Err

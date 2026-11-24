@@ -613,7 +613,39 @@ mod imp {
     }
 
     pub fn file_op(owner: isize, op: FileOp) -> Result<Performed, String> {
-        in_sta(move || unsafe { perform(owner, op) })
+        // Marks kept beside the files or on this PC, and not in them, go where the items went (marks::carry). An
+        // item in the Recycle Bin keeps its line where it was, for when it comes back.
+        let moved = match &op {
+            FileOp::Copy { .. } | FileOp::CopyInto { .. } => Some(false),
+            FileOp::Move { .. } | FileOp::Rename { .. } | FileOp::MoveBack { .. } => Some(true),
+            FileOp::Delete { .. } | FileOp::Restore { .. } | FileOp::Purge { .. } => None,
+        };
+        // A folder's own marks are in its own streams, and a move to another drive leaves those behind (Windows
+        // makes the folder anew there): read before it goes, given to it where it went.
+        let leaving: Vec<&str> = match &op {
+            FileOp::Move { sources, .. } => sources.iter().map(String::as_str).collect(),
+            FileOp::MoveBack { items } => items.iter().map(|back| back.path.as_str()).collect(),
+            _ => Vec::new(),
+        };
+        let own: Vec<(String, glint_model::marks::Marks)> = leaving
+            .into_iter()
+            .filter(|path| Path::new(path).is_dir())
+            .map(|path| (path.to_string(), crate::marks::carry::taken(path)))
+            .filter(|(_, marks)| !marks.is_empty())
+            .collect();
+        let performed = in_sta(move || unsafe { perform(owner, op) })?;
+        if let Some(moved) = moved {
+            let pairs: Vec<(String, String)> = performed.items.iter().filter_map(|done| Some((done.from.clone(), done.to.clone()?))).collect();
+            crate::marks::carry::carry(&pairs, moved);
+            for (from, marks) in &own {
+                let to = pairs.iter().find(|(source, _)| source.eq_ignore_ascii_case(from)).map(|(_, to)| to);
+                // Only where it has none now: a folder that kept its streams, or one it was merged into, keeps its own.
+                if let Some(to) = to.filter(|to| crate::marks::carry::taken(to).is_empty()) {
+                    crate::marks::carry::given(to, marks);
+                }
+            }
+        }
+        Ok(performed)
     }
 
     /// Hears from the copy engine what became of each item: where the copy, the moved or renamed

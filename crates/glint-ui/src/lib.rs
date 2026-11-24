@@ -27,6 +27,8 @@ pub mod drops;
 pub mod explorer;
 pub mod i18n;
 pub mod kit;
+/// Marking what is selected, from the keys, the menus and the palette (docs/gpui/marks).
+pub mod marking;
 pub mod notices;
 /// The old app's settings, read from WebView2's localStorage at the first start (wave 16).
 pub mod old_settings;

@@ -170,7 +170,10 @@ mod tests {
 
     fn wait_for(seen: &Mutex<Vec<Answer>>, count: usize) -> Vec<Answer> {
         let start = Instant::now();
-        while start.elapsed() < Duration::from_secs(5) {
+        // Long enough for the quiet lane on a busy machine: its threads run at background priority, and beside
+        // every other test of the crate an answer has taken more than five seconds. It returns as soon as the
+        // answers are in, so a healthy run waits no longer for it.
+        while start.elapsed() < Duration::from_secs(30) {
             let now = seen.lock().unwrap_or_else(|e| e.into_inner()).clone();
             if now.len() >= count {
                 return now;

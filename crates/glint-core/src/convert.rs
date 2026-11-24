@@ -263,14 +263,21 @@ fn convert(owner: isize, pictures: &[String], options: &ConvertOptions, progress
 
     // In their place: the pictures converted are recycled together first, so their names are free.
     let mut recycled: Vec<Option<String>> = vec![None; pictures.len()];
+    // What each picture had marked, read before it is recycled, and whether it was (G6).
+    let mut kept: Vec<Option<glint_model::marks::Marks>> = vec![None; pictures.len()];
+    let mut was_recycled = vec![false; pictures.len()];
     if matches!(options.output, Output::Replace) {
         let originals: Vec<String> = results.iter().filter(|(_, made)| made.is_ok()).map(|(i, _)| pictures[*i].clone()).collect();
         if !originals.is_empty() {
+            for (i, _) in results.iter().filter(|(_, made)| made.is_ok()) {
+                kept[*i] = Some(crate::marks::carry::taken(&pictures[*i])).filter(|m| !m.is_empty());
+            }
             crate::host::previews::release(&originals);
             if let Ok(performed) = crate::shell::recycle(owner, originals) {
                 for done in performed.items {
                     if let Some(i) = pictures.iter().position(|p| p.eq_ignore_ascii_case(&done.from)) {
                         recycled[i] = done.to;
+                        was_recycled[i] = true;
                     }
                 }
             }
@@ -287,6 +294,9 @@ fn convert(owner: isize, pictures: &[String], options: &ConvertOptions, progress
         });
         match placed {
             Ok(to) => {
+                if let (true, Some(marks)) = (was_recycled[i], kept[i].take()) {
+                    crate::marks::carry::given(&to, &marks);
+                }
                 let after = fs::metadata(&to).map_or(0, |m| m.len());
                 converted.push(Converted { from: pictures[i].clone(), to, recycled: recycled[i].take(), before: sizes[i], after });
             }

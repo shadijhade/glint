@@ -295,6 +295,44 @@ pub fn tags() -> Result<Vec<(String, u64)>, Error> {
     }
 }
 
+/// Every label and tag on the indexed drives with how many items have it, most used first, and how many items
+/// have a comment (docs/gpui/marks). An older service closes the pipe on it: an Io error.
+pub fn marks() -> Result<proto::MarkCounts, Error> {
+    marks_on(connect()?)
+}
+
+/// One request, one answer; a pipe closed without one is an UnexpectedEof, as the others give.
+fn answer(pipe: Handle, request: &Request) -> Result<Message, Error> {
+    let pipe = ask(pipe, request)?;
+    match proto::read_frame(&mut PipeIo(&pipe), MAX_FRAME).map_err(Error::Io)? {
+        Some((kind, payload)) => message(kind, &payload),
+        None => Err(Error::Io(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "the instant search service closed the connection",
+        ))),
+    }
+}
+
+pub(crate) fn marks_on(pipe: Handle) -> Result<proto::MarkCounts, Error> {
+    match answer(pipe, &Request::Marks)? {
+        Message::Marks(counts) => Ok(counts),
+        _ => Err(unexpected()),
+    }
+}
+
+/// The marked items right inside the folder `path`: their names, labels and tags, and whether each has a
+/// comment (never its text). An older service closes the pipe on it: an Io error.
+pub fn marks_in(path: &str) -> Result<Vec<proto::MarkedChild>, Error> {
+    marks_in_on(connect()?, path)
+}
+
+pub(crate) fn marks_in_on(pipe: Handle, path: &str) -> Result<Vec<proto::MarkedChild>, Error> {
+    match answer(pipe, &Request::MarksIn { path: path.to_string() })? {
+        Message::MarksIn { items } => Ok(items),
+        _ => Err(unexpected()),
+    }
+}
+
 /// Windows' shadow copies of every volume, newest first, with the times VSS took them (which only an
 /// administrator, the service, may ask). An older service closes the pipe on it: an Io error.
 pub fn snapshots() -> Result<Vec<crate::shadow::Snapshot>, Error> {
@@ -624,6 +662,45 @@ mod tests {
             install_args("S-1-5-21-1-2-3-1001", Some("Glint.Test_4cqh9yg7jc6m4")),
             "install --allow-sid S-1-5-21-1-2-3-1001 --package Glint.Test_4cqh9yg7jc6m4"
         );
+    }
+
+    fn served(tag: &str) -> (String, crate::pipe::Server) {
+        use crate::tree::{make_ref, RecordState, ROOT};
+        let mut tree = crate::tree::Tree::default();
+        tree.set_record(ROOT, &RecordState { seq: 5, dir: true, ..Default::default() });
+        tree.set_record(
+            20,
+            &RecordState { seq: 1, dir: true, names: vec![(make_ref(ROOT, 5), "Users".into())], ..Default::default() },
+        );
+        let name = format!(r"\\.\pipe\shadui-index-test-client-{tag}-{}", std::process::id());
+        let me = win::current_user_sid().unwrap();
+        let dacl = format!("{}(A;;GA;;;{me})", crate::pipe::sddl(&[]));
+        let engine = crate::engine::Engine::with_tree('T', tree);
+        (name.clone(), crate::pipe::serve_on(&name, engine, &dacl, None).unwrap())
+    }
+
+    #[test]
+    fn marks_over_a_real_pipe_answer_counts_that_decode() {
+        let (name, server) = served("marks");
+        let pipe = connect_to(&name, &|_: &str| true).unwrap();
+        assert!(marks_on(pipe).is_ok());
+        server.stop();
+    }
+
+    #[test]
+    fn marks_in_over_a_real_pipe_answers_or_says_why_never_unexpected() {
+        let (name, server) = served("marks-in");
+        for path in [r"T:\Users", r"T:\Nowhere"] {
+            let said = marks_in_on(connect_to(&name, &|_: &str| true).unwrap(), path);
+            assert!(matches!(said, Ok(_) | Err(Error::Service(_))), "{said:?}");
+        }
+        server.stop();
+    }
+
+    #[test]
+    fn marks_against_a_pipe_nobody_serves_is_the_error_connecting_gives() {
+        let name = format!(r"\\.\pipe\shadui-index-test-client-nobody-{}", std::process::id());
+        assert!(matches!(connect_to(&name, &|_: &str| true), Err(Error::NotRunning)));
     }
 
     #[test]

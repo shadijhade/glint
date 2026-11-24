@@ -306,9 +306,10 @@ fn a_zips_menu_leads_with_extract_here_and_leaves_its_own_rows_as_they_were(cx: 
     rig.opened_on(PACK);
     let nodes = rig.ui.nodes();
     assert!(matches!(&nodes[1], Node::Strip(_)));
-    assert!(matches!(&nodes[2], Node::Item(e) if e.label == "Open"), "{:?}", labels(&nodes));
+    assert!(matches!(&nodes[2], Node::Swatches(_)), "{:?}", labels(&nodes));
+    assert!(matches!(&nodes[3], Node::Item(e) if e.label == "Open"), "{:?}", labels(&nodes));
     assert!(
-        matches!(&nodes[3], Node::Item(e) if e.label == "Extract here" && !e.smart),
+        matches!(&nodes[4], Node::Item(e) if e.label == "Extract here" && !e.smart),
         "{:?}",
         labels(&nodes)
     );
@@ -322,7 +323,10 @@ fn a_zips_menu_leads_with_extract_here_and_leaves_its_own_rows_as_they_were(cx: 
             item_menu(&[entry], &ctx)
         })
     };
-    assert_eq!(nodes[1..], plain[..]);
+    // (The host's menu has the dots; the context made here has read no labels.)
+    let mut led: Vec<Node> = nodes[1..].to_vec();
+    led.retain(|node| !matches!(node, Node::Swatches(_)));
+    assert_eq!(led, plain);
 }
 
 #[gpui_kit::test]

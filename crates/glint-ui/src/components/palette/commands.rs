@@ -469,6 +469,11 @@ pub fn folders(inputs: &Inputs) -> Vec<Command> {
 /// Every command that applies to what the active tab shows (`paletteCommands`' second half, the commands
 /// that have an action or a plain change here; see the module notes of [`super`] for what waits for its part).
 pub fn actions(inputs: &Inputs) -> Vec<Command> {
+    actions_with(inputs, &[])
+}
+
+/// [`actions`], knowing the names of the labels in Settings → Files → Labels, in their order (`Label: Red`…).
+pub fn actions_with(inputs: &Inputs, labels: &[String]) -> Vec<Command> {
     use IconName as I;
     let path = inputs.path.as_str();
     // The Recycle Bin is a place, not a folder: what's done to folders isn't done to it.
@@ -882,6 +887,9 @@ pub fn actions(inputs: &Inputs) -> Vec<Command> {
         );
     }
     for command in to_the_other_pane(inputs, &place) {
+        push(true, command);
+    }
+    for command in marks(inputs, &place, labels) {
         push(true, command);
     }
     push(
@@ -1442,6 +1450,92 @@ fn share_and_files(inputs: &Inputs, place: &Place) -> Vec<Command> {
     out
 }
 
+/// The marks of the selection (docs/gpui/marks F9): a label, tags, a comment, copied, pasted or cleared. They are
+/// the menus' own events, which the workspace hands to `marking`.
+fn marks(inputs: &Inputs, place: &Place, labels: &[String]) -> Vec<Command> {
+    use IconName as I;
+    if !inputs.chosen || inputs.in_archive || place.remote || place.bin {
+        return Vec::new();
+    }
+    let paths = inputs.selected.clone();
+    let with_key = |mut command: Command, key: Option<SharedString>| {
+        command.shortcut = key;
+        command
+    };
+    let mut out: Vec<Command> = Vec::new();
+    for (index, name) in labels.iter().enumerate() {
+        let key = actions::BINDINGS
+            .iter()
+            .find(|b| {
+                (b.action)()
+                    .as_any()
+                    .downcast_ref::<actions::LabelSelection>()
+                    .is_some_and(|l| l.index == index)
+            })
+            .map(|b| SharedString::from(describe_keys(b.keys)));
+        out.push(with_key(
+            menu(
+                &format!("label-{index}"),
+                t!("Label: {name}", name = name),
+                I::Bookmark,
+                MenuEvent::SetLabel {
+                    paths: paths.clone(),
+                    label: Some(name.clone()),
+                },
+            ),
+            key,
+        ));
+    }
+    let key_of = |maker: ActionMaker| shortcut_of(maker);
+    out.push(with_key(
+        menu(
+            "label-none",
+            t!("No label"),
+            I::X,
+            MenuEvent::SetLabel {
+                paths: paths.clone(),
+                label: None,
+            },
+        ),
+        key_of(|| Box::new(actions::ClearLabel)),
+    ));
+    out.push(with_key(
+        menu(
+            "edit-tags",
+            t!("Edit tags…"),
+            I::Tag,
+            MenuEvent::EditTags { paths: paths.clone() },
+        ),
+        key_of(|| Box::new(actions::EditTags)),
+    ));
+    out.push(with_key(
+        menu(
+            "edit-comment",
+            t!("Edit comment…"),
+            I::PenLine,
+            MenuEvent::EditComment { paths: paths.clone() },
+        ),
+        key_of(|| Box::new(actions::EditComment)),
+    ));
+    // The item the keyboard is on, else the first selected.
+    if let Some(path) = inputs.focus_path.clone().or_else(|| paths.first().cloned()) {
+        out.push(menu("copy-marks", t!("Copy marks"), I::Copy, MenuEvent::CopyMarks { path }));
+    }
+    out.push(menu(
+        "paste-marks",
+        t!("Paste marks"),
+        I::ClipboardPaste,
+        MenuEvent::PasteMarks { paths: paths.clone() },
+    ));
+    out.push(menu(
+        "clear-marks",
+        t!("Clear marks"),
+        I::BrushCleaning,
+        MenuEvent::ClearMarks { paths },
+    ));
+    out
+}
+
 /// Copy or move the selection into the folder of the other pane.
 fn to_the_other_pane(inputs: &Inputs, place: &Place) -> Vec<Command> {
     let mut out = Vec::new();
@@ -1769,8 +1863,13 @@ fn inspect_and_clean(inputs: &Inputs, place: &Place) -> Vec<Command> {
 
 /// Everything the palette offers: the folders, then the commands (`paletteCommands`).
 pub fn all(inputs: &Inputs) -> Vec<Command> {
+    all_with(inputs, &[])
+}
+
+/// [`all`], knowing the labels' names (see [`actions_with`]).
+pub fn all_with(inputs: &Inputs, labels: &[String]) -> Vec<Command> {
     let mut commands = folders(inputs);
-    commands.extend(actions(inputs));
+    commands.extend(actions_with(inputs, labels));
     commands
 }
 

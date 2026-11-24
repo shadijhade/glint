@@ -56,13 +56,13 @@ fn dots(ui: &mut Ui) -> Vec<String> {
 #[gpui_kit::test]
 fn dots_show_for_tagged_rows_and_change_after_tags_are_set(cx: &mut TestAppContext) {
     let _guard = testing::lock();
-    let tags = fake::Tags::with(&[("C:\\x\\alpha.txt", &["Red", "Work"]), ("C:\\x\\docs", &["Blue"])]);
+    let tags = fake::Tags::with(&[("C:\\x\\alpha.txt", &["Plan", "Work"]), ("C:\\x\\docs", &["Docs"])]);
     let media = fake::Media::with(vec![]);
     let mut ui = open_faked(cx, &small_disk(), "C:\\x", &tags, &media);
     // Unread rows show nothing; once read, the tagged ones have their dots, named for a screen reader.
     until(&mut ui, "the dots", |ui| dots(ui).len() == 2);
-    assert_eq!(dots(&mut ui), ["Tags: Blue", "Tags: Red, Work"]);
-    assert_eq!(ui.role_of("Tags: Red, Work"), Some(Role::Group));
+    assert_eq!(dots(&mut ui), ["Tags: Docs", "Tags: Plan, Work"]);
+    assert_eq!(ui.role_of("Tags: Plan, Work"), Some(Role::Group));
     assert_eq!(tags.calls().len(), 1, "the four rows were read together");
     assert_eq!(tags.paths_read(), 4);
 
@@ -72,14 +72,14 @@ fn dots_show_for_tagged_rows_and_change_after_tags_are_set(cx: &mut TestAppConte
             window,
             cx,
             vec!["C:\\x\\alpha.txt".to_string()],
-            vec!["Green".to_string()],
+            vec!["Misc".to_string()],
             vec!["Work".to_string()],
         )
     });
     until(&mut ui, "the new dots", |ui| {
-        dots(ui).contains(&"Tags: Red, Green".to_string())
+        dots(ui).contains(&"Tags: Plan, Misc".to_string())
     });
-    assert_eq!(dots(&mut ui), ["Tags: Blue", "Tags: Red, Green"]);
+    assert_eq!(dots(&mut ui), ["Tags: Docs", "Tags: Plan, Misc"]);
     assert_eq!(tags.paths_read(), 5, "only the tagged path was read again");
 
     // Taking the last tag off a row takes its dots away.
@@ -89,10 +89,10 @@ fn dots_show_for_tagged_rows_and_change_after_tags_are_set(cx: &mut TestAppConte
             cx,
             vec!["C:\\x\\docs".to_string()],
             vec![],
-            vec!["blue".to_string()],
+            vec!["docs".to_string()],
         )
     });
-    until(&mut ui, "no dots on the folder", |ui| dots(ui) == ["Tags: Red, Green"]);
+    until(&mut ui, "no dots on the folder", |ui| dots(ui) == ["Tags: Plan, Misc"]);
 }
 
 #[gpui_kit::test]
@@ -275,6 +275,8 @@ fn the_media_cells_have_their_own_tooltips_and_leave_a_narrow_list(cx: &mut Test
     let (disk, media) = media_disk();
     let tags = fake::Tags::with(&[]);
     let mut ui = open_faked(cx, &disk, "C:\\m", &tags, &media);
+    // Wide enough for the seven columns and the room the name keeps (`layout::NAME_ROOM`).
+    ui.visual.simulate_resize(size(px(1400.), px(700.)));
     set_columns(&mut ui, MEDIA_COLUMNS.to_vec());
     until(&mut ui, "the media read", |_| media.paths_read() == 4);
     ui.settle();

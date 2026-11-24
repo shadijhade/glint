@@ -17,6 +17,7 @@ use super::spec::{separator, visible_items, when, Command, Entry, Node, Task};
 use crate::explorer::is_disk_image;
 use crate::kit::prelude::*;
 use crate::t;
+use glint_model::marks::shown;
 use glint_model::entries::{
     attr, cloud_state, is_archive_file, is_archived, is_browsable, is_closed, is_cloud_file, is_online_only,
     is_recycled, is_remote, CloudState, FileEntry, InArchive,
@@ -210,6 +211,10 @@ pub fn item_menu(targets: &[FileEntry], c: &ItemCtx) -> Vec<Node> {
     let folder_one = one.filter(|e| e.dir);
     let mut m: Vec<Option<Node>> = Vec::new();
     m.push(Some(Node::Strip(strip)));
+    // The labels' dots, right under the strip; an item that can't be marked has none, nor has a PC with no labels.
+    if !fixed && !c.data.labels.is_empty() {
+        m.push(Some(swatches(&paths, &c.data)));
+    }
 
     // ---- The rows the menu leads with ----------------------------------------------------------------------
     m.push(
@@ -947,7 +952,7 @@ pub fn item_menu(targets: &[FileEntry], c: &ItemCtx) -> Vec<Node> {
             paths.first().map(|p| parent_path(p)).unwrap_or_default()
         };
         more.push(Some(scripts_menu(&cwd, &paths, &c.data)));
-        more.push(Some(tags_menu(&paths, &c.data)));
+        more.push(Some(marks_menu(&paths, &c.data)));
     }
     if one.is_some() && !c.find && !fixed {
         more.push(
@@ -1348,54 +1353,81 @@ pub fn scripts_menu(cwd: &str, paths: &[String], data: &MenuData) -> Node {
     Node::menu(t!("Scripts"), IconName::ScrollText, items)
 }
 
-/// The Tags submenu: the seven color tags, each checked when every item has it (choosing it then takes it off
-/// them all; otherwise it goes on them all, as with some of them having it already), then "Edit tags…". The
-/// workspace handles both events (`dialogs::tags::set_tags`, `dialogs::tags::open`); the checks come from
-/// `MenuData::tags`, the tags the file list has read (`MenuData::read_tags`).
-fn tags_menu(paths: &[String], data: &MenuData) -> Node {
-    let has = |path: &String, tag: &str| {
-        data.tags
+/// The labels' dots (docs/gpui/marks, F7): one entry a label, in the settings' order, checked when every item is
+/// shown with it (a 0.16 color tag counts), then "No label". Pressing a dot only says which label: the workspace
+/// takes it off when every item has it. An item whose marks aren't read yet counts as having none.
+fn swatches(paths: &[String], data: &MenuData) -> Node {
+    let has = |path: &String, name: &str| {
+        data.marks
             .get(&path.to_lowercase())
-            .is_some_and(|tags| tags.iter().any(|x| x.eq_ignore_ascii_case(tag)))
+            .is_some_and(|marks| shown(&data.labels, marks).label.as_deref() == Some(name))
     };
-    let mut items: Vec<Option<Node>> = Vec::new();
-    for (label, tag) in [
-        (t!("Red"), "Red"),
-        (t!("Orange"), "Orange"),
-        (t!("Yellow"), "Yellow"),
-        (t!("Green"), "Green"),
-        (t!("Blue"), "Blue"),
-        (t!("Purple"), "Purple"),
-        (t!("Gray"), "Gray"),
-    ] {
-        let all = paths.iter().all(|p| has(p, tag));
-        let (add, remove) = if all {
-            (Vec::new(), vec![tag.to_string()])
-        } else {
-            (vec![tag.to_string()], Vec::new())
-        };
-        items.push(
+    let mut dots: Vec<Entry> = data
+        .labels
+        .iter()
+        .map(|label| {
+            let all = paths.iter().all(|p| has(p, &label.name));
             Entry::ask(
-                label,
+                label.name.clone().into(),
                 IconName::Circle,
-                MenuEvent::SetTags {
+                MenuEvent::SetLabel {
                     paths: paths.to_vec(),
-                    add,
-                    remove,
+                    label: Some(label.name.clone()),
                 },
             )
+            .toned(label.color)
             .checked(all)
-            .node(),
-        );
-    }
-    items.push(separator());
-    items.push(
+        })
+        .collect();
+    dots.push(Entry::ask(
+        t!("No label"),
+        IconName::Circle,
+        MenuEvent::SetLabel {
+            paths: paths.to_vec(),
+            label: None,
+        },
+    ));
+    Node::Swatches(dots)
+}
+
+/// The Marks submenu: Tags… and Comment…, then Copy, Paste and Clear marks. The rows are always there; Copy and
+/// Clear are greyed out when no item of the menu is known to have a mark. The workspace handles the events.
+fn marks_menu(paths: &[String], data: &MenuData) -> Node {
+    let marked = paths
+        .iter()
+        .any(|p| data.marks.get(&p.to_lowercase()).is_some_and(|marks| !marks.is_empty()));
+    let why = Some(t!("Nothing here is marked"));
+    let items = vec![
+        Entry::ask(t!("Tags…"), IconName::Tag, MenuEvent::EditTags { paths: paths.to_vec() }).node(),
         Entry::ask(
-            t!("Edit tags…"),
-            IconName::Tag,
-            MenuEvent::EditTags { paths: paths.to_vec() },
+            t!("Comment…"),
+            IconName::MessageSquare,
+            MenuEvent::EditComment { paths: paths.to_vec() },
         )
         .node(),
-    );
-    Node::menu(t!("Tags"), IconName::Tag, items)
+        separator(),
+        paths.first().and_then(|first| {
+            Entry::ask(
+                t!("Copy marks"),
+                IconName::Copy,
+                MenuEvent::CopyMarks { path: first.clone() },
+            )
+            .disabled_because(!marked, &why)
+            .node()
+        }),
+        Entry::ask(
+            t!("Paste marks"),
+            IconName::ClipboardPaste,
+            MenuEvent::PasteMarks { paths: paths.to_vec() },
+        )
+        .node(),
+        Entry::ask(
+            t!("Clear marks"),
+            IconName::Eraser,
+            MenuEvent::ClearMarks { paths: paths.to_vec() },
+        )
+        .disabled_because(!marked, &why)
+        .node(),
+    ];
+    Node::menu(t!("Marks"), IconName::Tag, items)
 }

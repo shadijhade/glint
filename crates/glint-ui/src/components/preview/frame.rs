@@ -24,6 +24,7 @@ use super::data::DataPreview;
 use super::details::{has_details, map_link, rows};
 use super::docx::{DocxEvent, DocxView};
 use super::hex::HexPreview;
+use super::marks::{self, MarksBlock};
 use super::more::{self, OpenMore};
 use super::notebook::NotebookView;
 use super::pdf::PdfView;
@@ -140,6 +141,8 @@ pub struct EntryView {
     /// The SQL a database's Rows button asked the Query view to start with: the file's path and the SQL.
     draft: Option<(String, String)>,
     scroll: ScrollHandle,
+    /// The Marks block above the details (none for an item in an archive, the Recycle Bin or on a remote).
+    marks: Option<Entity<MarksBlock>>,
     /// The header's "…" menu while it is open.
     more: Option<OpenMore>,
     _media: Option<Task<()>>,
@@ -192,6 +195,8 @@ impl EntryView {
                 .ok();
             })
         });
+        let marks = marks::applies(&entry)
+            .then(|| cx.new(|cx| MarksBlock::new(vec![entry.path.clone()], place.prefix(), window, cx)));
         let mut view = EntryView {
             entry,
             place,
@@ -207,6 +212,7 @@ impl EntryView {
             pair,
             draft: None,
             scroll: ScrollHandle::new(),
+            marks,
             more: None,
             _media: media,
             _body_events: None,
@@ -287,6 +293,12 @@ impl EntryView {
             return probe.read(cx).is_ready(cx);
         }
         true
+    }
+
+    /// The Marks block above the details, when the item has one (tests).
+    #[cfg(test)]
+    pub fn marks(&self) -> Option<&Entity<MarksBlock>> {
+        self.marks.as_ref()
     }
 
     /// The item shown.
@@ -792,7 +804,16 @@ impl Render for EntryView {
                     .track_scroll(&self.scroll)
                     .child(body),
             )
-            .child(self.details(&t))
+            // The marks and the details take at most half the frame, and scroll past it: the preview keeps the rest.
+            .child(
+                col()
+                    .id(format!("{prefix}-below"))
+                    .flex_none()
+                    .max_h(relative(0.5))
+                    .overflow_y_scroll()
+                    .children(self.marks.clone())
+                    .child(self.details(&t)),
+            )
             .children(menu)
     }
 }

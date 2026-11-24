@@ -9,6 +9,7 @@ use crate::components::row_facts;
 use glint_core::newmenu::NewKind;
 use glint_core::openers::Opener;
 use glint_core::scripts::Script;
+use glint_model::marks::{Label, Marks};
 use gpui_kit::App;
 use std::collections::HashMap;
 use std::future::Future;
@@ -25,8 +26,13 @@ pub struct MenuData {
     /// The kinds of file Windows' New menu has (`newKinds()`).
     pub new_kinds: Vec<NewKind>,
     /// The tags each item has, by its path in lower case (`useTags.byPath`): what the rows read, for the items the
-    /// menu is about ([`tags_for`]). An item not read yet is missing, and the Tags submenu shows it without them.
+    /// menu is about. An item not read yet is missing.
     pub tags: HashMap<String, Vec<String>>,
+    /// What each item is marked with, by its path in lower case (`RowFacts::marks_among`). An item not read yet is
+    /// missing, and counts as having no marks: nothing is read from the disk to open a menu.
+    pub marks: HashMap<String, Marks>,
+    /// The labels of Settings (`state::settings(cx).labels`), in their order: the row of dots.
+    pub labels: Vec<Label>,
     /// What Undo would take back, in a few words ("copy"), or None when there is nothing to undo
     /// (`nextUndo()?.label`). The host fills it from the explorer each time a folder menu opens.
     pub undo: Option<String>,
@@ -35,14 +41,17 @@ pub struct MenuData {
 }
 
 impl MenuData {
-    /// Takes the tags read so far for `paths` (by path in lower case) as [`MenuData::tags`]. The file list reads the
-    /// tags of the rows it shows and of what is selected (`components::row_facts`), so by the time a menu opens
-    /// they are there; `MenuHost` calls this on the data of the item menu it is making, with the paths the menu is
-    /// about. An item not read yet is left out, and the Tags submenu shows it without the tag.
+    /// Takes the marks (and so the tags) read so far for `paths` as [`MenuData::marks`] and [`MenuData::tags`], and the
+    /// labels of Settings. The file list reads the marks of the rows it shows and of what is selected
+    /// (`components::row_facts`), so by the time a menu opens they are there; `MenuHost` calls this on the data of
+    /// the item menu it is making, with the paths the menu is about. An item not read yet is left out and counts as
+    /// having no marks. Nothing is read from the disk.
     pub fn read_tags<'a>(&mut self, cx: &App, paths: impl IntoIterator<Item = &'a str>) {
-        self.tags = row_facts::try_shared(cx)
-            .map(|facts| facts.read(cx).tags_among(paths))
+        self.marks = row_facts::try_shared(cx)
+            .map(|facts| facts.read(cx).marks_among(paths))
             .unwrap_or_default();
+        self.tags = self.marks.iter().map(|(path, marks)| (path.clone(), marks.tags.clone())).collect();
+        self.labels = crate::state::try_settings(cx).map(|s| s.labels.clone()).unwrap_or_default();
     }
 }
 

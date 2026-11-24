@@ -55,7 +55,7 @@ The numbers are how cards and tests refer to features.
 
 ### The three marks
 
-- **F1. Label.** One per item, from a short list of named colors. It starts as today's seven (Red, Orange, Yellow, Green, Blue, Purple, Gray: also XYplorer's seven). **Settings → Files → Labels** renames one ("Red" to "Important"), recolors, adds (32 at most) and reorders. In the list a labeled row is washed in its color, inside the row's rounded line; a tile's name sits on a pill of it.
+- **F1. Label.** One per item, from a short list of named colors. It starts as today's seven (Red, Orange, Yellow, Green, Blue, Purple, Gray: also XYplorer's seven). **Settings → Files → Labels** renames one ("Red" to "Important"), recolors, adds (32 at most) and reorders. In the list a labeled row is washed in its color, inside the row's rounded line (a selected row shows its selection alone); a tile's name sits on a pill of it.
 - **F2. Tags.** As today. Edit tags… now suggests as you type: tags that start with what is typed, then tags that contain it, the most used first, with the ones used in this folder ahead.
 - **F3. Comment.** Free text, several lines, 64 KB at most. A row with one has a small note mark after its name; the mark's tooltip is the comment.
 
@@ -84,7 +84,7 @@ The numbers are how cards and tests refer to features.
 
 ### Staying with the file
 
-- **F18. On NTFS and ReFS** the marks are in the file. Rename it, move it, copy it with any program: they go along. They follow it into the Recycle Bin and back.
+- **F18. On NTFS and ReFS** the marks are in the file. Rename it, move it, copy it with any program: they go along. They follow it into the Recycle Bin and back. A folder's own marks stay with it when it is renamed, or moved on its drive; Windows never copies them (it copies a file's streams, not a folder's), so a copy of a folder made by another program is bare. Glint's own copies carry them (F21).
 - **F19. On a drive without streams** (FAT, exFAT, a camera's card, some NAS shares) they are in `.glint-marks`, a hidden text file in the same folder. Copy the folder to any system and the marks are in it.
 - **F20. Where neither can be written** (a read-only share, inside an archive, a remote, a file your account may not change) they are kept on this PC, by path. The Marks block says *Kept on this PC*.
 - **F21. Glint's copies carry them across.** A copy or move from NTFS to exFAT writes the lines beside the copies; from exFAT to NTFS it writes the streams. Through Windows' file engine, the copy queue, a drop and the other pane alike.
@@ -187,7 +187,7 @@ A view calls `dialogs::tags::set_marks(window, cx, paths, change)`. Core's `mark
 
 ### 6.3 Following
 
-- **Nothing to do** for a rename or a move on a drive with streams, or a copy between two such drives: Windows' engine and `CopyFileExW` take streams along (`shell.rs:760`, `queue.rs:769`, `:824`).
+- **Nothing to do** for a rename or a move on a drive with streams, or a copy between two such drives: Windows' engine and `CopyFileExW` take streams along (`shell.rs:760`, `queue.rs:769`, `:824`). **A file's.** Neither copies a folder's own streams, so `carry` reads and writes a folder's own marks whatever the drives keep (found in wave 3's review: section 9).
 - **`marks::carry(pairs, moved)`** runs where an operation Glint ran is known to be done (`explorer/ops.rs:186`, the copy queue after `queue.rs:503` and `:565`): for each pair whose homes differ, the marks are read at the source and written at the destination; for a move, taken out of the source's sidecar or the ledger. Items in a sidecar or the ledger that Glint renames or deletes have their line renamed or dropped the same way.
 - **A file made in another's place**: `actions::run` with `Output::Replace` and `convert::convert` read the original's marks before it is recycled and write them to the file that takes its place (G6).
 
@@ -400,6 +400,9 @@ The tree wins; this is what a card finds there.
 - **shadui-index**: `Message::Marks(MarkCounts)`, a struct for the counts (clippy refuses the tuple), the same JSON on the wire as the struct variant above; `MarkedChild { name, label, tags, comment }`. `Engine::marks` and `Engine::marks_in` answer empty and `pipe.rs` already sends what they answer, so C2 fills the engine and nothing else. `SearchRequest.marks` is left out of the JSON while false, as `fuzzy` and `rank` are; every request Glint builds says `marks: false`, and the command line's `search` takes `--marks`. `Marked` is in `tree.rs`.
 - **glint-ui**: the `Backend`'s two calls have bodies that answer nothing, so the tests' fakes compile unchanged, and `CoreBackend` calls core; `set_marks` does nothing yet. `UndoAction::Marks` runs as `UndoRun::Marks`, which does nothing until D1 calls `marks_put`. The keys are actions `LabelSelection { index }` (Alt+1…9, one row of the shortcut sheet), `ClearLabel`, `EditTags` and `EditComment`; nothing handles them yet. The five menu events are matched and do nothing in `workspace.rs`; `Node::Swatches` draws nothing and `smart::walk` skips it (E2 decides whether Suggested may copy a dot).
 - **Columns**: the `ColumnId`, `SortKey` and `GroupBy` variants have their `COLUMNS` rows, `Column::{Label, Tags, Comment}` its widths (7, 9 and 14 rem), and `columns::MARK_SORTS` lists the three sorts. `COLUMN_ORDER` and `GROUP_BYS` don't list them, so nothing can show or choose them until E1 adds them; until then the cells draw nothing, the sort keeps the name's order and `GroupBy::Label` is one group, as `None` is. `persistence::Part::Labels` exists but is not in `ALL_PARTS` or `PARTS` until G1 writes and reads it.
+- **Landed before wave 2's cards** (signatures two cards or two crates share, each compiling and doing nothing until its card fills it): glint-model's `entries::MarksOf` (an entry's marks as read, `None` while unread), `entries::MarkReads { of, labels }` and the field `Reads::marks: Option<MarkReads>`, which `entry_order` and glint-ui's `explorer/rows.rs` fill with `None` (A5 reads it; the coordinator hands the rows' marks in afterwards); shadui-index's `far.rs`, a public module with `far::read(path) -> Option<Marked>`, `far::drain(tree: &RwLock<Tree>, letter, stop) -> usize` and `far::BATCH` (C3 fills them, C2's thread calls `drain`); `client::marks() -> Result<MarkCounts, Error>` and `client::marks_in(path) -> Result<Vec<MarkedChild>, Error>`, which answer `Err` until C3 (B2's `marks_all` calls the first).
+- **Landed before wave 3's cards**: glint-ui's `theme::label_tone(color)` and `theme::label_wash(color, cx)` (the one place a label's strength in a row is set); glint-model's `COLUMN_ORDER` with the marks' three columns and `GROUP_BYS` with Label, so both can be chosen; `marks::clip_text(name, marks)` and `marks::clip_marks(text)` (one item's marks as the sidecar's line, for Copy marks and Paste marks); glint-ui's `marking.rs` (eight functions the workspace calls for the four key actions and the menus' five events, filled by E5), `dialogs/comment.rs` with `open(window, cx, paths)` (E3), the module `preview/marks.rs` (E4), `explorer::RowFileMarks` with the field `RowSpec::marked`, and `explorer::marked::init`, which start-up calls (E1a).
+- **Added by wave 3's review**: `marks::carry::carry_files` (pairs known to be files: the queue's), `Change::Paste`, `marks::comment_brief`, the queue's `Copies` (what a job copied, carried 512 at a time and when it ends), `marking::take_label_off` as `pub(crate)`; `queue::plan` gives each folder with the one it is a copy of; glint-ui's `file_list::layout::leave_room` with `NAME_ROOM`.
 - **Engine helpers**: `xray::list_streams` is `pub(crate)`; `permalinks::win` is `pub(crate)`, so `find_volume_root_by_serial` is `crate::permalinks::win::find_volume_root_by_serial` (Windows only).
 
 ## 9. The waves
@@ -408,22 +411,28 @@ Cards in a wave run at the same time; a wave starts when the one before it is in
 
 | Wave | Card | What | Crate | Owns |
 | :--- | :--- | :--- | :--- | :--- |
-| S0 | — | **Coordinator**: section 8 as code; the settings (`labels`, `follow_xyplorer`); the keys of F6 in `actions::BINDINGS`; the new menu events and their keys; the column, sort and group variants with their table rows; `xray::list_streams` and `permalinks`' `find_volume_root_by_serial` made `pub(crate)`; the fixtures of section 11; **the measurements of 6.6's first column**; the answers to section 14. *Landed 2026-11-23, not committed: 8.1, 6.6, 14.* | all | — |
+| S0 | — | **Coordinator**: section 8 as code; the settings (`labels`, `follow_xyplorer`); the keys of F6 in `actions::BINDINGS`; the new menu events and their keys; the column, sort and group variants with their table rows; `xray::list_streams` and `permalinks`' `find_volume_root_by_serial` made `pub(crate)`; the fixtures of section 11; **the measurements of 6.6's first column**; the answers to section 14. *Landed 2026-11-23 (`13660c7`): 8.1, 6.6, 14.* | all | — |
 | 1 | [A1](cards/A1-marks.md) | Marks, the labels, what is drawn for old color tags, what an import does with what is there | model | `marks/mod.rs`, `marks/labels.rs` |
 | 1 | [A2](cards/A2-lines.md) | The lines: beside, the ledger, the export | model | `marks/lines.rs` |
 | 1 | [A3](cards/A3-xyplorer.md) | XYplorer's format, read and written | model | `marks/xyplorer.rs` |
 | 1 | [A4](cards/A4-filter.md) | The filter in the service: `label:`, `comment:`, `has:`, `!`, the nearest names | index | `query.rs` |
 | 1 | [B1](cards/B1-streams.md) | Streams: one listing per file, writing with the dates kept; what a volume can do | core | `marks/streams.rs`, `marks/caps.rs` |
 | 1 | [C1](cards/C1-index.md) | The index reads three streams; `Marked`; the `.marks` side file | index | `record.rs`, `tree.rs`, marked places in `volume.rs`, `refs.rs` and `engine.rs` |
-| 2 | A5 | The filter in the open folder; sort and group by a mark; plain words | model | `entries.rs`, `groups.rs`, `plain.rs`, `marks/wanted.rs` |
-| 2 | B2 | The three homes; `marks_read`, `marks_set`, `marks_put`, `read`, `matches` | core | `marks/mod.rs`, `marks/beside.rs`, `marks/ledger.rs` |
-| 2 | C2 | Streams that left the record; `Marks`, `MarksIn`; a search that looks in marks | index | `far.rs`, `proto.rs`, `client.rs`, `engine.rs` |
-| 2 | D1 | The hub takes marks; `RowFacts` keeps them; Undo | ui | `dialogs/tags.rs` (the hub's part), `row_facts.rs`, `explorer/ops_types.rs`, `explorer/undo.rs` |
-| 3 | B3 | Carrying: copies, moves, files made in another's place; fd's drives; the ledger in results | core | `marks/carry.rs`, `find.rs`, marked places in `queue.rs`, `actions.rs`, `convert.rs` |
-| 3 | E1 | The list and the grid: the wash, the note mark, three columns, sort and group wired | ui | `file_list/{cells,layout,header}.rs`, `file_grid/tile.rs`, `explorer/rows.rs` |
-| 3 | E2 | The menu's row of dots, Marks under More, the commands in `Ctrl+K`, the keys' handlers | ui | `menus/{item,spec,view,smart}.rs`, `palette/commands.rs` |
-| 3 | E3 | Edit tags… suggests; Edit comment… | ui | `dialogs/tags.rs` (the dialog's part), `dialogs/comment.rs` |
-| 3 | E4 | The Marks block in the preview pane and Quick Look | ui | `preview/marks.rs`, one marked place in `preview/frame.rs` |
+| 2 | [A5](cards/A5-open-folder.md) | The filter in the open folder; sort and group by a mark; plain words | model | `entries.rs`, `groups.rs`, `plain.rs`, `marks/wanted.rs` |
+| 2 | [B2](cards/B2-homes.md) | The three homes; `marks_read`, `marks_set`, `marks_put`, `read`, `matches` | core | `marks/mod.rs`, `marks/beside.rs`, `marks/ledger.rs`, `tags_read` and `tags_set` in `tags.rs` |
+| 2 | [C2](cards/C2-engine.md) | The engine: `Marks`, `MarksIn`; a search that looks in marks; the far records' thread | index | `engine.rs`, `proto.rs`, one new method in `tree.rs` |
+| 2 | [C3](cards/C3-far.md) | Streams that left the record, read through the file system; the app's two calls (C2's other half: it was too big for one run) | index | `far.rs`, `client.rs` |
+| 2 | [D1](cards/D1-hub.md) | The hub takes marks; `RowFacts` keeps them; Undo | ui | `dialogs/tags.rs` (the hub's part), `row_facts.rs`, `explorer/ops_types.rs`, `explorer/undo.rs` |
+| 3 | [B3](cards/B3-carry.md) | Carrying: copies, moves, files made in another's place; fd's drives; the ledger in results | core | `marks/carry.rs`, `find.rs`, marked places in `queue.rs`, `actions.rs`, `convert.rs` |
+| 3 | [C4](cards/C4-far-by-reference.md) | The far reads open an item by its file reference, never by its path; then the thread is turned on (see "Wave 2, as it landed") | index | `far.rs`, and `FAR_READS` with `far_round` in `engine.rs` |
+| 3 | [E1a](cards/E1a-rows.md) | The rows' marks reach the rows: filter, sort and group by a mark (E1 was three runs' work) | ui | `explorer/rows.rs`, `explorer/marked.rs`, marked places in `explorer/model.rs` |
+| 3 | [E1b](cards/E1b-list.md) | The list: the wash, the note mark, three columns | ui | `file_list/{cells,layout,header}.rs` |
+| 3 | [E1c](cards/E1c-grid.md) | The grid: a label's pill under a tile's name, the note mark | ui | `file_grid/tile.rs` |
+| 3 | [E2a](cards/E2a-menu.md) | The menu's row of dots, Marks under More | ui | `menus/{item,spec,view,smart,data}.rs` |
+| 3 | [E2b](cards/E2b-palette-and-words.md) | The commands in `Ctrl+K`; plain words that know the labels; the lists of filter keys | ui | `palette/commands.rs`, `address_bar/{find,search}.rs`, `quick_search/mod.rs`, the key lists in `explorer/inside.rs` and `sidebar/rows.rs` |
+| 3 | [E5](cards/E5-marking.md) | Marking: what the keys and the menus' events do (the table left the handlers to nobody) | ui | `marking.rs` |
+| 3 | [E3](cards/E3-dialogs.md) | Edit tags… suggests; Edit comment… | ui | `dialogs/tags.rs` (the dialog's part), `dialogs/comment.rs` |
+| 3 | [E4](cards/E4-preview.md) | The Marks block in the preview pane and Quick Look | ui | `preview/marks.rs`, one marked place in `preview/frame.rs` and one in `preview/pane.rs` |
 | 4 | F1 | Import: finding XYplorer, finding the items, moved since, the plan, applying, the journal, following | core | `marks/import.rs`, `marks/xy_find.rs` |
 | 4 | F2 | The import's preview and report; the suggestion; following when Glint comes to the front | ui | `dialogs/marks_import.rs`, marked places in `settings/overview.rs` and `startup.rs` |
 | 4 | F3 | Export, both formats | core, ui | `marks/export.rs`, `dialogs/marks_export.rs` |
@@ -435,12 +444,85 @@ Cards in a wave run at the same time; a wave starts when the one before it is in
 
 Why this order: wave 1 has no card that reads another's code. B2 needs A1, A2 and B1; C2 needs C1 and A4; D1 needs only section 8. Wave 3 is the interface on D1, and carrying on B2. Wave 4 is XYplorer and what stands on a working feature. Wave 5 can be left for 0.17.1 without anyone missing a promise of the issue.
 
-**What wave 1's cards leave for the coordinator** (decided when the cards were written, so that none of the six reads another's code):
+**Wave 1, as it landed** (2026-11-23: six agents on Sonnet, one a card, run from another session; [its report](WAVE-1-REPORT.md), and [what that session was asked](RUN-WAVE-1.md)). Every card came back done, in twelve files, each a card's own. The cards were written so that none of the six read another's code, which left two things to do afterwards:
 
-- **The search asks the new filter.** A4 adds `Filters::marks` and keeps filling `Filters::tags`; C1 keeps `Tree::tagged`. After the wave, `Tree::search` asks `filters.marks.accepts(label, tags, comment)` of the record's `Marked` where it asks `tagged` today (`tree.rs:1099`); `Filters::tags` goes when glint-core's `find.rs` reads `marks` too (B3).
-- **Tidying is A1's alone.** The readers of A2, A3 and B1 return what a file says; `marks::tidy` is called by whoever keeps marks (B2's `marks_set` and `marks_put`, F1's import). A1 also adds `settled`, which 5.6's move and B2's writes use.
-- **`keep_times` is one function again.** B1 copies it from `tags.rs` (it is private there); the coordinator makes it `pub(crate)` and takes the copy out.
-- **New names the cards add**: `marks::tidy`, `marks::settled`, `lines::LEDGER_MAX_BYTES`, the ledger's and the export's first lines (`{"glint-ledger":1}`, `{"glint-export":1,"labels":[…]}`), `query::MarksFilter` with `nearest` and `without_marks`, `record::COMMENT_KEPT`, `Tree::far` with `set_marks`, and the `.marks` file's layout (C1's card).
+- **The search asks the new filter.** `Tree::search` asks `filters.marks.accepts` of each record's `Marked` (what the filter says of a record with no marks is worked out once a search), so `label:`, `comment:`, `has:` and `!` narrow what the index answers, and a label answers to `tag:`. `Filters::tags` and `Tree::tagged` stay until glint-core's `find.rs` reads `marks` too (B3).
+- **`keep_times` is one function**: `tags::keep_times`, `pub(crate)`, which `marks::streams` writes under.
+
+What the later cards should know:
+
+- **Tidying is A1's alone** (`marks::tidy`). The readers of A2, A3 and B1 return what a file says; whoever keeps marks calls it (B2's `marks_set` and `marks_put`, F1's import). `marks::settled` is what 5.6's move and B2's writes use; it gives a label its new name only through `was`, and never changes a name's case.
+- **Made, and not called by anything yet**: `MarksFilter::nearest` (the engine asks it in C2); `Tree::far`, which fills and is saved in `.marks` but is read by C2's `far.rs`; `streams::read`, `streams::write` and `caps::has_streams` (B2).
+- **Decided by the cards' agents, and kept**: in a `.glint-marks`, a later line with no marks for the same item drops the item; a `.marks` file that is damaged gives no marks, and the old `.tags` is not tried then; `streams::write` takes a label or a comment of only white space as none; XYplorer's checkbox is on for any value, `0` too (to check against a real `tag.dat`: 14.1); `label:` splits on `;` alone, `tag:` on `,` too (the fixture has both).
+- **New names the cards added**: `marks::tidy`, `marks::settled`, `lines::LEDGER_MAX_BYTES`, the ledger's and the export's first lines (`{"glint-ledger":1}`, `{"glint-export":1,"labels":[…]}`), `query::MarksFilter` with `nearest` and `without_marks`, `record::COMMENT_KEPT`, `Tree::far` with `set_marks`, and the `.marks` file's layout (C1's card).
+
+**Wave 2, as it landed** (2026-11-23: the other session wrote the five cards and ran them, one Sonnet agent a card; [its report](WAVE-2-REPORT.md), and [what it was asked](RUN-WAVE-2.md)). Every card came back done. C2 was too big for one run and became C2 (the engine) and C3 (the far reads and the app's two calls). The signatures the cards share were landed first (§8.1).
+
+What the review changed:
+
+- **The far reads are off** (`FAR_READS` in `engine.rs`). `far::read` opens an item by its path, and the service runs as LocalSystem: an account that can write a folder can swap part of a path for a link while the service looks, and so send it to open somewhere else, another computer included. Card C4 makes the read open the item by its file reference on the volume (`OpenFileById`: no path is walked); list its streams with `FileStreamInfo` on a handle that asks for attributes alone, so nothing is held open for a file with no marks, which is nearly every far record; and only for an item that has a `glint.*` stream read them through `BackupRead`. Until then a far record keeps what its record shows, and G3 stays open.
+- **A test that began to fail now and then is given time.** `aware::probe`'s tests wait for the quiet lane, whose threads run at background priority; beside the crate's new tests an answer took more than the five seconds they allowed. They wait up to thirty now, and still return the moment the answer is in.
+
+What wave 3's cards must do, since nothing does it yet:
+
+- **E1: the rows' marks reach the model.** `explorer/rows.rs` still passes `Reads { marks: None }` and calls `matcher` and `group_order`. It hands `RowFacts::marks_of` to `Reads::marks`, `matcher_marks` and `group_order_marked`, and asks `ask_all` each frame until `has_all` while `has_marks_filter` holds or the sort or the group is by a mark. Until it does, `tag:` typed over an open folder shows every row.
+- **E2: plain words know the labels.** `address_bar/find.rs` and `quick_search/mod.rs` call `plain_query`; `plain_query_with` takes the labels. The four lists of filter keys (§6.5) read `marks::KEYS`.
+- **E2, E3 and E4: `set_marks` gets its callers** (the menu's events, the keys, the dialogs, the preview's block). Today only `set_tags` reaches it.
+- **B3: fd's drives.** `marks::matches` reads a folder's `.glint-marks` again for every item it is asked about: B3 keeps one for the length of a search. `Filters::tags` and `Tree::tagged` go when `find.rs` reads `marks`.
+- **Wave 4 (G1, G2)**: `marks_all` for the sidebar; `client::marks_in` for a sort from the index (§6.6); and `SearchRequest.marks`, which every request Glint builds still leaves false.
+
+Decided by the cards' agents, and kept:
+
+- A change to an item that isn't there goes to the ledger (a line beside it would be dropped as an item that is gone).
+- A `.glint-marks`'s first line keeps its version on a rewrite, and not its other keys.
+- `tags_read` and `tags_set` go through the homes, so a drive without streams no longer refuses a tag: it keeps it beside the file. `tags::write` is left for its own test.
+- A search with `marks` looks for the words in tags and comments as typed, and sets both flags on a hit found in both. `search_until` and `search_marks` make the same checks and are kept alike by hand.
+- A read of every row that fails counts as read, with no marks (`RowFacts::has_all`).
+- Not proved: that `far::read` leaves a link unfollowed (its test may have returned early). C4 replaces that read.
+
+**Wave 3, as it landed** (2026-11-23 and 24: the other session wrote ten cards and ran them, one Sonnet agent a card; [its report](WAVE-3-REPORT.md), and [what it was asked](RUN-WAVE-3.md)). E1 became three cards and E2 two, and E5 (what the keys and the menus' events do) was added. Seven came back done and three partial, which that session finished. Nobody had seen any of it on a screen; the review looked (below).
+
+What the review changed:
+
+- **The far reads are on, by file reference, and three gaps in them are closed.** What was read is given to a record only while its number is still that file's (a file deleted while it was read, its number taken by another, gave the new file the old one's marks). The drive's root is opened without following a link, and an item with `FILE_FLAG_OPEN_NO_RECALL`, so a cloud folder's file is never fetched for its marks. The thread is not one of the engine's `workers`: another program can keep an open of its own marked file waiting for as long as it likes (an oplock), and `stop` must not wait for that. **Left:** such a program still stalls the far reads (never a search) until the service starts again. An open that comes back at once from an oplocked file ends that (`NtCreateFile` with `FILE_COMPLETE_IF_OPLOCKED`; the crate has the `Wdk` features already): wave 6. `instant-search.md` no longer says this is the one time the service opens anything but a volume: on ReFS it has always walked the folders.
+- **A folder's own marks are carried, always.** Windows copies a file's streams and never a folder's (tried: the shell's copy and a plain one both left a labeled folder's copy bare). So `marks::carry` reads and writes a folder's own marks whatever the drives keep; `carry_files` is for pairs known to be files (the queue's: none is looked at to tell). The queue hands `carry` every folder it made (`plan` gives each with the one it is a copy of), and Windows' engine reads a moved folder's marks before it goes, since a move to another drive is a copy and a delete. F18 and 6.3 say so.
+- **Windows' engine carries**, in `shell::imp::file_op`, which the explorer, an AI agent's moves and a folder rule's all go through: a copy and a sync as copies; a move, a rename and the Undo of a move as moves. An item sent to the Recycle Bin keeps its line where it was, for when it comes back. This was what the report left "between the cards"; `explorer/ops.rs` needed nothing.
+- **The queue carries 512 pairs at a time and when a job ends, however it ends** (`Copies`), not once a file: a file at a time wrote a folder's `.glint-marks` again for every marked file in it. **And a move takes an original's line only once the original is deleted.** The cards' version took it when the copy was made, so a move that was stopped, or a copy that failed its check, left the original without its marks.
+- **`caps::has_streams` asks a handle** (`GetVolumeInformationByHandleW` on the item, or on its folder when it isn't there): 0.02 ms where finding the volume's root first took 1.2 ms a call (2,000 calls each, the same answers). Every write of a mark asks it, and every file the queue copies.
+- **Paste marks is one change**, `Change::Paste`: one Undo step and one write a file, where there were up to three of each.
+- **The Marks block**: a label that is a 0.16 color tag can be taken off from its dot (`marking::take_label_off`, as the menu and the keys do); the pane makes no block for more than 1,000 items, since a block reads the marks of every item it is about; and a change the hub says is matched against the block's paths through a set, not each path against each.
+- **A row holds the start of a long comment** (`marks::comment_brief`, one kilobyte): a row is made again on every frame it shows, and a comment can be 64 KB.
+
+**Looked at in the real app** (2026-11-24: a debug copy on a scratch profile, driven by `GLINT_SELFTEST=fly:` and captured with `PrintWindow`, in both themes; not in Arabic, which the interface no longer speaks, so right to left is only tested). What it showed, and what changed for it:
+
+- **You couldn't tell which labeled row was selected.** The wash (18% of the label's color) lay under the selection's tint, which is fainter (11% of the accent in light, 17% in dark). A selected row and the folder dropped on now show their one fill alone; the label stays in the Label column, the tile's pill and the preview. The pointer's fill still lies over a wash.
+- **Three marks columns squeezed the name to nothing**: with the date and the size they are 45 rems, and the list's breakpoints never counted widths. `layout::leave_room` takes optional columns out, those a narrow list leaves out first and the last first, while the name would have less than 14 rems (`NAME_ROOM`). The media columns' test now gives its window room for its seven.
+- **The preview pane's own preview was a sliver**: the block (about 230 px) and the details took the rest. The two now take at most half the frame and scroll; the block's label dots sit on one line at the pane's usual width.
+- **Kept as it is**: the wash's strength (0.18 in both themes). It reads as a label in both, and no longer hides a state. A Red label and a red or pink accent are close in hue: on such a PC a red-labeled row looks like a selected one.
+- **Seen working**: the wash; Group by → Label; `tag:work` typed over the folder; the three columns (the pill, the chips and their "+5", a comment's first line, Arabic tags and comments); a 0.16 color tag drawn as its label; the grid's pills, dots and note marks; the menu's row of dots with the label checked; the Marks block in the pane and Quick Look; Edit comment… and Edit tags….
+- **Found, and left for wave 6**: Edit tags… still offers the seven color names as tags, 0.16's chips, though colors are labels now (5.6's move); the grid's sort bar offers no mark to sort by; *Kept beside the file* shows only where the marks would be kept beside, not for a line beside a file on NTFS (it says where they go, as `home_of` answers).
+- The tour (`selftest.rs`, debug builds) gained `menu`, `tags`, `comment`, `filter:`, `sort:` and `group:`, so the next look needs no hands.
+
+**The access violation the report found is older than the marks.** The seven tests of `components::color_wheel` and the grid's `a_photos_dots_name_their_colors_and_press_one_to_set_the_wheel_on_it` end with `0xc0000005` whenever they run alone, in the workspace's test binary too, and pass inside the whole run. 0.16.1's own sources (`44679b2`) crash the same way, three runs of three. It is the Color Wheel's, for its own fix, and not this wave's.
+
+The whole, after the review: `cargo test --workspace --no-fail-fast` 3,756 passed, 1 failed (`thumbs::tests::draws_a_pdfs_first_page`, as before), 51 ignored; clippy clean.
+
+What is left, and whose it is:
+
+- **Wave 4 (G1)**: `sidebar/rows.rs`'s `reads_files` still lists `tag:`; and, as before, `marks_all` for the sidebar, `client::marks_in`, `SearchRequest.marks`.
+- **Wave 6, speed**: a sort by label works out what each row is shown as at every comparison (318 ms for 10,000 marked rows in a test build): a key a row, made once, as names have. With no mark read, `build_rows` makes the calls it made before after one `None` (0.28 ms for 10,000 rows in the default order); nobody measured the tree before it.
+- **Wave 6, the look**: what keys do in a real window was not tried (the tour presses none): `Enter`, `Ctrl+Enter` and `Escape` in Edit comment… (its tests never saw the dialog's own key handler fire), and the block's in Quick Look.
+- **Not carried** (each a card, or a line of section 12): the folders *inside* a folder that Windows' engine copies or moves to another drive (the queue carries them: it knows each one); a `.glint-marks` goes with its folder as a file, so merging into a folder that has one and answering Replace replaces that folder's lines; ledger lines under a folder that was renamed keep its old path; a line that moves loses a later version's keys.
+- **Not run on a real drive without streams**: on NTFS the queue's and Windows' engine's calls have nothing to do for a file. `carry`'s own tests tell it a drive keeps none. Section 14, item 3.
+
+Decided by the cards' agents, and kept:
+
+- Edit comment…'s title for one item is `Comment of “name”`.
+- A file reference whose sequence is 0 is never opened (NTFS reads 0 as any file with that number), and a far record with no name is read like any other.
+- A label this PC lacks is washed in the color its name gets as a tag; with no labels in Settings a menu has no row of dots.
+- The keys act on the selected rows: the item the keyboard is on is not a selection by itself.
+- Taking a label off a selection that mixes labels and 0.16 color tags is two changes (two Undo steps).
+- The Tags column works out how many chips fit from the letters' count, not by measuring text.
 
 **A cut that still keeps the issue's word**: S0 and waves 1 to 3 are the three marks, their columns, keys, menu, panel, search and following the file. Wave 4's F1 to F3 are import and export, XYplorer's included. Everything else is what makes it Glint's.
 

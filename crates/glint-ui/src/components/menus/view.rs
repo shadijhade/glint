@@ -48,6 +48,8 @@ const BADGE_LINE_ROOM: f32 = 24.;
 const FILTER_ROOM: f32 = 56.;
 /// What a strip that stays at the top takes.
 const STRIP_ROOM: f32 = 46.;
+/// What the row of the labels' dots takes.
+const SWATCH_ROOM: f32 = 40.;
 /// The frame's own padding and border.
 const FRAME_ROOM: f32 = 10.;
 /// How many ids a column keeps for itself: the rows of column `lv` are `lv * LEVEL_STEP + their place`.
@@ -155,7 +157,7 @@ impl Level {
             match node {
                 Node::Item(entry) if !entry.disabled => stops.push(Stop::Row(i)),
                 Node::Menu { disabled: false, .. } => stops.push(Stop::Row(i)),
-                Node::Strip(entries) => {
+                Node::Strip(entries) | Node::Swatches(entries) => {
                     for (j, entry) in entries.iter().enumerate() {
                         if !entry.disabled {
                             stops.push(Stop::Button(i, j));
@@ -176,7 +178,7 @@ impl Level {
     fn first_scrolled(&self) -> usize {
         self.nodes
             .iter()
-            .take_while(|node| matches!(node, Node::Head(_) | Node::Strip(_)))
+            .take_while(|node| matches!(node, Node::Head(_) | Node::Strip(_) | Node::Swatches(_)))
             .count()
     }
 }
@@ -326,7 +328,7 @@ impl MenuView {
                 _ => None,
             },
             Stop::Button(i, j) => match level.nodes.get(i)? {
-                Node::Strip(entries) => entries.get(j).map(|e| e.label.clone()),
+                Node::Strip(entries) | Node::Swatches(entries) => entries.get(j).map(|e| e.label.clone()),
                 _ => None,
             },
         }
@@ -544,7 +546,7 @@ impl MenuView {
                 _ => {}
             },
             Some(Stop::Button(i, j)) => {
-                if let Some(Node::Strip(entries)) = level.nodes.get(i) {
+                if let Some(Node::Strip(entries) | Node::Swatches(entries)) = level.nodes.get(i) {
                     if let Some(entry) = entries.get(j) {
                         self.choose(entry.clone(), cx);
                     }
@@ -1245,20 +1247,24 @@ impl MenuView {
             .into_any_element()
     }
 
+    /// A strip of icon buttons, or with `dots` the row of the labels' dots: the same stops for the keyboard and the
+    /// same presses, drawn as dots in each label's own color.
+    #[allow(clippy::too_many_arguments)]
     fn render_strip(
         &self,
         lv: usize,
         ix: usize,
         entries: &[Entry],
         last: bool,
+        dots: bool,
         t: &theme::Tokens,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let place = lv * LEVEL_STEP + ix;
         row_start()
-            .id(("menu-strip", place))
+            .id((if dots { "menu-swatches" } else { "menu-strip" }, place))
             .role(Role::Group)
-            .aria_label(t!("Quick actions"))
+            .aria_label(if dots { t!("Label") } else { t!("Quick actions") })
             .test_support()
             .w_full()
             .flex_none()
@@ -1289,7 +1295,7 @@ impl MenuView {
                     t.accent
                 };
                 let mut button = div()
-                    .id(("menu-strip-button", place * 32 + j))
+                    .id((if dots { "menu-swatch" } else { "menu-strip-button" }, place * 32 + j))
                     .role(Role::MenuItem)
                     .aria_label(entry.label.clone())
                     .test_support()
@@ -1329,9 +1335,41 @@ impl MenuView {
                             this.activate(cx);
                         }));
                 }
-                button.children(entry.icon.map(|name| icon(name).size_4().flex_none()))
+                if dots {
+                    return button.child(Self::dot(entry, t)).into_any_element();
+                }
+                button
+                    .children(entry.icon.map(|name| icon(name).size_4().flex_none()))
+                    .into_any_element()
             }))
             .into_any_element()
+    }
+
+    /// A label's dot: its own color, with a check mark and a ring in the text's color when it is on (never the
+    /// accent), or the hollow ring of "No label".
+    fn dot(entry: &Entry, t: &theme::Tokens) -> AnyElement {
+        let on = entry.check == Some(true);
+        let dot = div()
+            .size(space(4.))
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_full()
+            .border_1()
+            .border_color(t.muted_foreground);
+        match entry.tone {
+            Some(color) => dot
+                .bg(theme::label_tone(color))
+                .when(on, |d| {
+                    d.border_2()
+                        .border_color(t.popover_foreground)
+                        .text_color(t.popover)
+                        .child(icon(IconName::Check).size_3().flex_none())
+                })
+                .into_any_element(),
+            None => dot.into_any_element(),
+        }
     }
 
     /// The rows of column `lv`: every node past the head and the strips that stay put.
@@ -1355,7 +1393,7 @@ impl MenuView {
                         .into_any_element(),
                     Node::Heading(text) => {
                         // The strip and the head have their own hairline: no second line right under them.
-                        let first = i == 0 || matches!(nodes.get(i - 1), Some(Node::Strip(_) | Node::Head(_)));
+                        let first = i == 0 || matches!(nodes.get(i - 1), Some(Node::Strip(_) | Node::Swatches(_) | Node::Head(_)));
                         div()
                             .px(space(2.))
                             .pb(space(1.))
@@ -1368,10 +1406,9 @@ impl MenuView {
                             .child(isolate(text.clone()))
                             .into_any_element()
                     }
-                    Node::Strip(entries) => self.render_strip(lv, i, entries, i + 1 == count, t, cx),
+                    Node::Strip(entries) => self.render_strip(lv, i, entries, i + 1 == count, false, t, cx),
+                    Node::Swatches(entries) => self.render_strip(lv, i, entries, i + 1 == count, true, t, cx),
                     Node::Head(_) => return None,
-                    // S0: card E2 draws the labels' dots; no menu has them until then.
-                    Node::Swatches(_) => return None,
                     Node::Item(entry) => self.render_row(Spot::Row(lv, i), entry, None, t, cx),
                     Node::Menu {
                         label, icon, disabled, ..
@@ -1474,16 +1511,27 @@ impl MenuView {
             nodes[..first]
                 .iter()
                 .enumerate()
-                .filter_map(|(i, node)| match node {
-                    Node::Strip(entries) => Some(self.render_strip(lv, i, entries, i + 1 == nodes.len(), t, cx)),
-                    _ => None,
+                .filter_map(|(i, node)| {
+                    // A strip with the dots under it has no line of its own: the dots' row has it.
+                    let last = i + 1 == nodes.len();
+                    match node {
+                        Node::Strip(entries) => {
+                            let dotted = matches!(nodes.get(i + 1), Some(Node::Swatches(_)));
+                            Some(self.render_strip(lv, i, entries, last || dotted, false, t, cx))
+                        }
+                        Node::Swatches(entries) => Some(self.render_strip(lv, i, entries, last, true, t, cx)),
+                        _ => None,
+                    }
                 })
                 .collect()
         };
         let pinned_room = if lv == 0 && typing {
             0.
         } else {
-            STRIP_ROOM * strips.len() as f32
+            nodes[..first]
+                .iter()
+                .map(|node| if matches!(node, Node::Swatches(_)) { SWATCH_ROOM } else { STRIP_ROOM })
+                .sum::<f32>()
         };
         let reserved = FRAME_ROOM
             + pinned_room

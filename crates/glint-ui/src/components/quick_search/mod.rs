@@ -40,7 +40,7 @@ use glint_model::entries::FileEntry;
 use glint_model::file_types::kind_of;
 use glint_model::format::format_size;
 use glint_model::paths::parent_path;
-use glint_model::plain::{plain_query, Plain};
+use glint_model::plain::{plain_query_with, Plain};
 use glint_model::rank::Visit;
 use search::{folder_entry, mark_range, used_folders, words_of, USED_FOLDERS};
 use std::ops::Range;
@@ -334,7 +334,11 @@ impl QuickSearch {
             return;
         }
         self.query = value;
-        self.plain = plain_query(&self.query);
+        // The settings' labels are words here too (nothing is read from disk: the names are borrowed).
+        let names: Vec<&str> = state::try_settings(cx)
+            .map(|s| s.labels.iter().map(|l| l.name.as_str()).collect())
+            .unwrap_or_default();
+        self.plain = plain_query_with(&self.query, &names);
         self.search_after_a_pause(cx);
         cx.notify();
     }

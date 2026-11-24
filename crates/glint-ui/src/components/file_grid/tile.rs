@@ -5,7 +5,7 @@
 use super::thumbnail::{thumbnail_square, Thumbnails, Want};
 use crate::components::row_facts::{Media, RowFacts, Want as FactsWant};
 use crate::components::{file_list::diff, git};
-use crate::dialogs::tags::tag_dots;
+use crate::dialogs::tags::{tag_color, tag_dots};
 use crate::explorer::Comparison;
 use crate::kit::prelude::*;
 use crate::{i18n, t, theme};
@@ -15,6 +15,7 @@ use glint_model::entries::{
 use glint_model::file_types::{kind_of, type_label};
 use glint_model::format::{format_full_date, format_size};
 use glint_model::grid::GridTile;
+use glint_model::marks::{shown, Shown};
 use glint_model::paths::parent_path;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -396,13 +397,23 @@ fn tile(frame: &Rc<Frame>, i: usize, entry: &FileEntry, cx: &App) -> AnyElement 
     }
     // The item's tags, as the list's rows show them: small colored dots, on the thumbnail's bottom corner at the
     // reading direction's start (the cloud and lock marks are at its end).
-    let tags = frame
-        .facts
-        .read(cx)
-        .tags_of(&frame.facts_key, &entry.path)
-        .unwrap_or(&[]);
-    if let Some(dots) = tag_dots(("file-grid-tags", i), tags, cx) {
-        let corner = div().absolute().bottom(space(0.5)).child(dots);
+    // Marks not read yet draw nothing (M4); a label is the pill under the name, a comment the note beside the dots.
+    let marks = frame.facts.read(cx).marks_of(&frame.facts_key, &entry.path);
+    let seen = marks.map(|marks| shown(&crate::state::settings(cx).labels, marks));
+    let comment = marks.and_then(|marks| marks.comment.as_deref()).filter(|c| !c.trim().is_empty());
+    let dots = seen
+        .as_ref()
+        .and_then(|seen| tag_dots(("file-grid-tags", i), &seen.tags, cx));
+    let note = comment.map(|comment| note_mark(i, comment, t));
+    if dots.is_some() || note.is_some() {
+        let corner = div()
+            .absolute()
+            .bottom(space(0.5))
+            .flex()
+            .items_center()
+            .gap(space(0.5))
+            .children(dots)
+            .children(note);
         square = square.child(if i18n::is_rtl() {
             corner.right(space(0.5))
         } else {
@@ -477,19 +488,45 @@ fn tile(frame: &Rc<Frame>, i: usize, entry: &FileEntry, cx: &App) -> AnyElement 
         faded
     };
     let name = entry.name.clone();
+    let aria = marked_name(&name, seen.as_ref(), comment);
+    let wash = seen.as_ref().and_then(|seen| pill_wash(seen, cx));
     let renaming = frame.rename.as_ref().filter(|rename| rename.path == entry.path);
     // The name under the thumbnail, or the box that renames it.
     let label = match renaming {
         Some(rename) => super::rename::box_element(rename, t),
-        None => div()
-            .mt(space(1.5))
-            .w_full()
-            .text_size(theme::size::XS)
-            .line_height(rems(1.))
-            .line_clamp(2)
-            .overflow_hidden()
-            .child(isolate(name.clone()))
-            .into_any_element(),
+        // A label is the name's ground: a pill hugging its lines, under the tile's own fill (M11).
+        None => match wash {
+            Some(wash) => div()
+                .mt(space(1.5))
+                .w_full()
+                .flex()
+                .justify_center()
+                .child(
+                    div()
+                        .id(("file-grid-pill", i))
+                        .test_support()
+                        .min_w_0()
+                        .max_w_full()
+                        .px(space(1.))
+                        .rounded(theme::size::RADIUS_SM)
+                        .bg(wash)
+                        .text_size(theme::size::XS)
+                        .line_height(rems(1.))
+                        .line_clamp(2)
+                        .overflow_hidden()
+                        .child(isolate(name.clone())),
+                )
+                .into_any_element(),
+            None => div()
+                .mt(space(1.5))
+                .w_full()
+                .text_size(theme::size::XS)
+                .line_height(rems(1.))
+                .line_clamp(2)
+                .overflow_hidden()
+                .child(isolate(name.clone()))
+                .into_any_element(),
+        },
     };
     let renaming = renaming.is_some();
 
@@ -503,7 +540,7 @@ fn tile(frame: &Rc<Frame>, i: usize, entry: &FileEntry, cx: &App) -> AnyElement 
             div()
                 .id(("file-grid-tile", i))
                 .role(Role::ListBoxOption)
-                .aria_label(name.clone())
+                .aria_label(aria)
                 .aria_description(line.clone())
                 .aria_selected(selected)
                 .aria_position_in_set(i + 1)
@@ -633,6 +670,49 @@ fn tile(frame: &Rc<Frame>, i: usize, entry: &FileEntry, cx: &App) -> AnyElement 
         }
         None => cell.into_any_element(),
     }
+}
+
+/// What a screen reader says of a tile: its name, then its label, tags and the comment's first line, when it has them.
+fn marked_name(name: &str, seen: Option<&Shown>, comment: Option<&str>) -> String {
+    let mut said = name.to_string();
+    if let Some(label) = seen.and_then(|seen| seen.label.as_deref()) {
+        said = format!("{said}, {}", t!("label {name}", name = label));
+    }
+    if let Some(seen) = seen.filter(|seen| !seen.tags.is_empty()) {
+        said = format!("{said}, {}", t!("tags {list}", list = seen.tags.join(", ")));
+    }
+    if let Some(first) = comment.and_then(|c| c.lines().map(str::trim).find(|l| !l.is_empty())) {
+        said = format!("{said}, {}", t!("comment: {first}", first = first));
+    }
+    said
+}
+
+/// The fill of a label's pill: the label's own color washed by `theme::label_wash`, or for a label this PC lacks the
+/// color its name gets as a tag, at the same strength.
+pub(super) fn pill_wash(seen: &Shown, cx: &App) -> Option<Hsla> {
+    let name = seen.label.as_deref()?;
+    let own = seen.place.and_then(|place| crate::state::settings(cx).labels.get(place));
+    Some(match own {
+        Some(label) => theme::label_wash(label.color, cx),
+        None => Hsla {
+            a: theme::label_wash(0, cx).a,
+            ..tag_color(name)
+        },
+    })
+}
+
+/// The small note beside a tile's dots: a comment is there, its words in the tooltip.
+fn note_mark(i: usize, comment: &str, t: &theme::Tokens) -> impl IntoElement {
+    let tip = SharedString::from(glint_model::marks::comment_brief(comment).into_owned());
+    div()
+        .id(("file-grid-note", i))
+        .role(Role::Image)
+        .aria_label(t!("Comment"))
+        .aria_description(tip.clone())
+        .test_support()
+        .flex_none()
+        .tooltip(move |window, cx| crate::kit::tooltip(tip.clone(), window, cx))
+        .child(icon(IconName::StickyNote).size(rems(0.75)).text_color(t.muted_foreground))
 }
 
 /// The palette dots of a photo's tile: its dominant colors (the ones that are more than a sliver of it), small

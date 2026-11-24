@@ -126,6 +126,8 @@ enum Row {
 pub struct Palette {
     inputs: Inputs,
     sources: Sources,
+    /// The labels' names, for the `Label: …` commands (docs/gpui/marks, F9), as they were when it opened.
+    labels: Vec<String>,
     /// Every folder and command on offer.
     all: Vec<Command>,
     input: Entity<InputState>,
@@ -153,10 +155,14 @@ impl Palette {
                 this.typed(cx);
             }
         });
-        let all = commands::all(&inputs);
+        let labels: Vec<String> = crate::state::try_settings(cx)
+            .map(|settings| settings.labels.iter().map(|label| label.name.clone()).collect())
+            .unwrap_or_default();
+        let all = commands::all_with(&inputs, &labels);
         let mut palette = Palette {
             inputs,
             sources,
+            labels,
             all,
             input: input.clone(),
             query: SharedString::default(),
@@ -190,7 +196,7 @@ impl Palette {
             if let Some(folders) = folders {
                 this.update(cx, |this, cx| {
                     this.inputs.zoxide = folders;
-                    this.all = commands::all(&this.inputs);
+                    this.all = commands::all_with(&this.inputs, &this.labels);
                     this.remake_results();
                     cx.notify();
                 })
@@ -210,7 +216,7 @@ impl Palette {
                 this.inputs.scripts = tools.scripts;
                 this.inputs.openers = tools.openers;
                 this.inputs.tasks = tools.tasks;
-                this.all = commands::all(&this.inputs);
+                this.all = commands::all_with(&this.inputs, &this.labels);
                 this.remake_results();
                 cx.notify();
             })

@@ -172,9 +172,58 @@ pub struct Attribute<'a> {
     pub body: Body<'a>,
 }
 
-/// The stream Glint keeps a file's tags in (`file:glint.tags`), as UTF-16LE bytes: a resident one is
-/// read with the rest of the record.
-const TAGS_STREAM: &[u8] = b"g\0l\0i\0n\0t\0.\0t\0a\0g\0s\0";
+/// The streams Glint keeps a file's marks in (`file:glint.tags`, `.label`, `.comment`): a resident one is
+/// read with the rest of the record, one that isn't makes the record far.
+const TAGS_STREAM: &str = "glint.tags";
+const LABEL_STREAM: &str = "glint.label";
+const COMMENT_STREAM: &str = "glint.comment";
+
+/// How much of a comment is kept.
+pub const COMMENT_KEPT: usize = 4096;
+/// How much of a label is kept.
+const LABEL_KEPT: usize = 256;
+
+/// Whether an attribute's name (UTF-16LE bytes) is `stream`, without regard to ASCII case: NTFS opens
+/// `Glint.Tags` as `glint.tags` and keeps the case it was made with.
+fn is_stream(name: &[u8], stream: &str) -> bool {
+    name.len() == 2 * stream.len()
+        && stream
+            .bytes()
+            .enumerate()
+            .all(|(i, s)| name[2 * i + 1] == 0 && name[2 * i].eq_ignore_ascii_case(&s))
+}
+
+/// The longest start of `text` that is at most `max` bytes and ends on a character.
+fn cut(text: &str, max: usize) -> &str {
+    let mut end = max.min(text.len());
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
+/// A file's label from its label stream: the first line with anything in it, trimmed, at most 256 bytes.
+pub fn label_text(value: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(value);
+    let line = text.lines().map(str::trim).find(|l| !l.is_empty())?;
+    let line = cut(line, LABEL_KEPT).trim_end();
+    (!line.is_empty()).then(|| line.to_string())
+}
+
+/// A file's comment from its comment stream: the first 4 KB (a character the cut breaks is dropped), line ends
+/// as `\n`, trailing white space trimmed.
+pub fn comment_text(value: &[u8]) -> Option<String> {
+    let head = &value[..value.len().min(COMMENT_KEPT)];
+    // A cut inside a character leaves an incomplete one at the end: it is dropped, not made a U+FFFD.
+    let text = match std::str::from_utf8(head) {
+        Ok(text) => text.to_string(),
+        Err(e) if e.error_len().is_none() => String::from_utf8_lossy(&head[..e.valid_up_to()]).into_owned(),
+        Err(_) => String::from_utf8_lossy(head).into_owned(),
+    };
+    let text = text.replace("\r\n", "\n");
+    let text = text.trim_end();
+    (!text.is_empty()).then(|| text.to_string())
+}
 
 /// A file's tags from its tags stream: one per line, UTF-8, blank lines left out.
 pub fn tags_text(value: &[u8]) -> Option<String> {
@@ -305,6 +354,13 @@ pub struct Parsed {
     pub attribute_list: Option<AttributeList>,
     /// Glint's tags, from a resident `glint.tags` stream (one per line).
     pub tags: Option<String>,
+    /// Its label, from a resident `glint.label` stream.
+    pub label: Option<String>,
+    /// Its comment, from a resident `glint.comment` stream.
+    pub comment: Option<String>,
+    /// A mark stream that isn't resident, or an attribute list that isn't: what the record shows may be
+    /// older than what Windows holds, so the marks are read through the file system.
+    pub far: bool,
 }
 
 /// Parses one record in place (fixups are applied to `record`). None when it isn't a valid file record.
@@ -333,9 +389,17 @@ pub fn parse(record: &mut [u8], strict: bool) -> Option<Parsed> {
                 Body::NonResident { lowest_vcn: 0, data_size, .. } => parsed.size = Some(data_size),
                 Body::NonResident { .. } => {}
             },
-            (ATTR_DATA, Body::Resident(value)) if attr.name == TAGS_STREAM => parsed.tags = tags_text(value),
+            (ATTR_DATA, Body::Resident(value)) if is_stream(attr.name, TAGS_STREAM) => parsed.tags = tags_text(value),
+            (ATTR_DATA, Body::Resident(value)) if is_stream(attr.name, LABEL_STREAM) => parsed.label = label_text(value),
+            (ATTR_DATA, Body::Resident(value)) if is_stream(attr.name, COMMENT_STREAM) => parsed.comment = comment_text(value),
+            (ATTR_DATA, Body::NonResident { .. })
+                if [TAGS_STREAM, LABEL_STREAM, COMMENT_STREAM].iter().any(|s| is_stream(attr.name, s)) =>
+            {
+                parsed.far = true;
+            }
             (ATTR_ATTRIBUTE_LIST, Body::Resident(value)) => parsed.attribute_list = Some(AttributeList::Resident(value.to_vec())),
             (ATTR_ATTRIBUTE_LIST, Body::NonResident { data_size, runs, .. }) => {
+                parsed.far = true;
                 parsed.attribute_list = parse_runs(runs).ok().map(|runs| AttributeList::NonResident { runs, size: data_size });
             }
             _ => {}
@@ -460,6 +524,18 @@ pub(crate) mod tests {
             self.attribute(ATTR_DATA, &[], Some(value), None)
         }
 
+        /// A resident named data stream (`glint.tags`...).
+        pub fn stream(&mut self, name: &str, value: &[u8]) -> &mut Self {
+            let name: Vec<u16> = name.encode_utf16().collect();
+            self.attribute(ATTR_DATA, &name, Some(value), None)
+        }
+
+        /// A named data stream that isn't resident.
+        pub fn far_stream(&mut self, name: &str, size: u64) -> &mut Self {
+            let name: Vec<u16> = name.encode_utf16().collect();
+            self.attribute(ATTR_DATA, &name, None, Some((0, size, &[0])))
+        }
+
         pub fn data_runs(&mut self, stream: &str, lowest_vcn: u64, size: u64, runs: &[u8]) -> &mut Self {
             let name: Vec<u16> = stream.encode_utf16().collect();
             self.attribute(ATTR_DATA, &name, None, Some((lowest_vcn, size, runs)))
@@ -493,6 +569,73 @@ pub(crate) mod tests {
             }
             bytes
         }
+    }
+
+    fn marked_record(build: impl FnOnce(&mut RecordBuilder)) -> Parsed {
+        let mut b = RecordBuilder::new(1024, 1, RECORD_IN_USE, 0);
+        b.file_name(5 | 5 << 48, NAMESPACE_WIN32, "m.txt").data(b"x");
+        build(&mut b);
+        parse(&mut b.build(), true).unwrap()
+    }
+
+    #[test]
+    fn a_record_with_the_three_streams_resident_says_its_marks_and_is_not_far() {
+        let p = marked_record(|b| {
+            b.stream("glint.label", b"Important\n").stream("glint.tags", b"a\nb\n").stream("glint.comment", b"Hi\r\nthere\r\n");
+        });
+        assert_eq!(p.label.as_deref(), Some("Important"));
+        assert_eq!(p.tags.as_deref(), Some("a\nb"));
+        assert_eq!(p.comment.as_deref(), Some("Hi\nthere"));
+        assert!(!p.far);
+    }
+
+    #[test]
+    fn a_stream_named_glint_label_in_any_case_is_the_label() {
+        let p = marked_record(|b| {
+            b.stream("Glint.Label", b"Red").stream("GLINT.TAGS", b"t");
+        });
+        assert_eq!((p.label.as_deref(), p.tags.as_deref()), (Some("Red"), Some("t")));
+    }
+
+    #[test]
+    fn a_comment_that_left_the_record_makes_it_far_and_its_resident_tags_are_still_read() {
+        let p = marked_record(|b| {
+            b.far_stream("glint.comment", 9000).stream("glint.tags", b"work");
+        });
+        assert!(p.far);
+        assert_eq!((p.tags.as_deref(), p.comment), (Some("work"), None));
+    }
+
+    #[test]
+    fn an_attribute_list_that_left_the_record_makes_it_far() {
+        let p = marked_record(|b| {
+            b.attribute(ATTR_ATTRIBUTE_LIST, &[], None, Some((0, 4096, &[0])));
+        });
+        assert!(p.far);
+        assert!(!marked_record(|_| {}).far);
+    }
+
+    #[test]
+    fn label_and_comment_text_are_cut_where_they_should_be() {
+        assert_eq!(label_text(b"  Important \r\nsecond\n").as_deref(), Some("Important"));
+        let long = label_text("é".repeat(300).as_bytes()).unwrap();
+        assert!(long.len() <= 256 && long.chars().all(|c| c == 'é'));
+        assert_eq!(label_text(b"\r\n\n  \n"), None);
+        let comment = comment_text("é".repeat(5000).as_bytes()).unwrap();
+        assert!(comment.len() <= COMMENT_KEPT && comment.len().is_multiple_of(2) && comment.chars().all(|c| c == 'é'));
+        assert_eq!(comment_text(b"a\r\nb\r\n").as_deref(), Some("a\nb"));
+        assert_eq!(comment_text(b"\n \n"), None);
+        // Not UTF-8: no panic.
+        assert!(comment_text(&[0xFF, 0xFE, b'a', 0x80]).is_some());
+        assert!(label_text(&[0xFF, 0xFE]).is_some());
+    }
+
+    #[test]
+    fn other_streams_are_not_marks() {
+        let p = marked_record(|b| {
+            b.stream("Zone.Identifier", b"[ZoneTransfer]").stream("glint.other", b"x");
+        });
+        assert_eq!((p.label, p.tags, p.comment, p.far), (None, None, None, false));
     }
 
     #[test]

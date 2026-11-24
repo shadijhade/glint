@@ -1174,6 +1174,7 @@ fn every_icon_the_grid_draws_is_in_the_embedded_assets() {
     use gpui_kit::assets::AllAssets;
     use gpui_kit::AssetSource as _;
     for name in [
+        IconName::StickyNote,
         IconName::ChevronUp,
         IconName::ChevronDown,
         IconName::SearchX,
@@ -1539,4 +1540,178 @@ fn a_tiles_spot_is_where_the_tile_is_drawn(cx: &mut TestAppContext) {
     );
     // What the grid doesn't show has no spot.
     assert_eq!(env.visual.update(|_, cx| grid.read(cx).spot_of("C:\\x\\nothing")), None);
+}
+
+// ---- A label's pill and a comment's note ---------------------------------------------------------------------
+
+mod marked_tiles {
+    use super::*;
+    use crate::components::row_facts::{self, fake};
+    use crate::dialogs::tags;
+    use glint_model::marks::Marks;
+    use std::sync::Arc;
+
+    const ARABIC: &str = "تقرير الربع.pdf";
+
+    fn marks(label: Option<&str>, tags: &[&str], comment: Option<&str>) -> Marks {
+        Marks {
+            label: label.map(str::to_string),
+            tags: tags.iter().map(|t| t.to_string()).collect(),
+            comment: comment.map(str::to_string),
+        }
+    }
+
+    /// The grid on `C:\x` (docs, a.jpg, b.txt, the Arabic pdf) whose marks are `items`, before any is read.
+    fn marked_env(cx: &mut TestAppContext, items: &[(&str, Marks)]) -> Env {
+        let backend = fake::MarksBackend::with(items);
+        let media = fake::Media::with(vec![]);
+        let (backend, source): (Arc<dyn tags::Backend>, Arc<dyn row_facts::MediaSource>) = (backend, media);
+        cx.update(|cx| {
+            tags::init_with(cx, backend);
+            row_facts::init_with(cx, source);
+        });
+        env(cx, &disk(0), plain())
+    }
+
+    fn pill_of(env: &mut Env, tile: usize) -> Option<Bounds<Pixels>> {
+        env.visual.update(|window, cx| {
+            window.render_frame(cx);
+            window.try_find(("file-grid-pill", tile)).map(|pill| pill.bounds())
+        })
+    }
+
+    #[gpui_kit::test]
+    fn a_labeled_tile_has_the_pill_an_unlabeled_one_has_none_and_an_unread_one_has_none(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let mut env = marked_env(cx, &[("C:\\x\\a.jpg", marks(Some("Red"), &[], None))]);
+        env.settle(|env| pill_of(env, 1).is_some());
+        assert_eq!(pill_of(&mut env, 2), None, "no label, no pill");
+        assert_eq!(pill_of(&mut env, 0), None);
+        use gpui_kit::assets::AllAssets;
+        use gpui_kit::AssetSource as _;
+        let path = IconName::StickyNote.path();
+        assert!(matches!(AllAssets.load(&path), Ok(Some(_))), "{path} is not embedded");
+    }
+
+    #[gpui_kit::test]
+    fn a_tile_whose_marks_are_not_read_yet_has_no_pill(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        // A backend that never answers: the marks are never read, and nothing is drawn for them.
+        struct Never;
+        impl tags::Backend for Never {
+            fn read(&self, _: Vec<String>) -> tags::Fut<Vec<Vec<String>>> {
+                Box::pin(std::future::pending())
+            }
+            fn set(&self, _: Vec<String>, _: Vec<String>, _: Vec<String>) -> tags::Fut<Vec<(String, String)>> {
+                Box::pin(std::future::pending())
+            }
+        }
+        let never: Arc<dyn tags::Backend> = Arc::new(Never);
+        let media: Arc<dyn row_facts::MediaSource> = fake::Media::with(vec![]);
+        cx.update(|cx| {
+            tags::init_with(cx, never);
+            row_facts::init_with(cx, media);
+        });
+        let mut unread = env(cx, &disk(0), plain());
+        unread.frame();
+        unread.visual.run_until_parked();
+        assert_eq!(pill_of(&mut unread, 1), None, "not read yet: no pill, no placeholder");
+    }
+
+    #[gpui_kit::test]
+    fn a_labeled_tile_that_is_selected_keeps_the_selection_and_the_pill_is_the_labels_wash_not_the_accent(
+        cx: &mut TestAppContext,
+    ) {
+        let _guard = testing::lock();
+        let mut env = marked_env(cx, &[("C:\\x\\a.jpg", marks(Some("Red"), &[], None))]);
+        env.settle(|env| pill_of(env, 1).is_some());
+        env.click(1);
+        assert_eq!(env.selected(), ["a.jpg"]);
+        assert!(pill_of(&mut env, 1).is_some(), "the pill stays under the selection");
+        env.visual.update(|_, cx| {
+            let labels = state::settings(cx).labels.clone();
+            let marks = marks(Some("Red"), &[], None);
+            let wash = tile::pill_wash(&glint_model::marks::shown(&labels, &marks), cx).expect("a pill");
+            assert_eq!(wash, theme::label_wash(0xef4444, cx));
+            let t = theme::tokens(cx);
+            assert_ne!(wash, t.primary);
+            assert_ne!(wash, t.selected);
+            // A label this PC lacks gets its name's tag color, washed as strongly.
+            let lacking = glint_model::marks::shown(&labels, &super::marked_tiles::marks(Some("Zzz"), &[], None));
+            let wash = tile::pill_wash(&lacking, cx).expect("a pill");
+            assert_eq!(wash.a, theme::label_wash(0xef4444, cx).a);
+        });
+    }
+
+    #[gpui_kit::test]
+    fn a_016_item_with_a_color_tag_and_no_label_has_that_colors_pill_and_only_the_other_tag_as_a_dot(
+        cx: &mut TestAppContext,
+    ) {
+        let _guard = testing::lock();
+        let mut env = marked_env(cx, &[("C:\\x\\a.jpg", marks(None, &["Work", "Red"], None))]);
+        env.settle(|env| pill_of(env, 1).is_some());
+        env.visual.update(|window, _| {
+            assert!(window.try_find_by_label("Tags: Work").is_some(), "one dot, for Work");
+            assert!(window.try_find_by_label("Tags: Work, Red").is_none());
+            assert!(window.try_find_by_label("Tags: Red").is_none());
+        });
+    }
+
+    #[gpui_kit::test]
+    fn a_tile_with_a_comment_has_the_note_named_comment_with_the_comment_as_its_words(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let mut env = marked_env(cx, &[("C:\\x\\b.txt", marks(None, &[], Some("see the totals\nand the notes")))]);
+        env.settle(|env| env.visual.update(|window, _| window.try_find(("file-grid-note", 2usize)).is_some()));
+        env.visual.update(|window, _| {
+            let note = window.find_by_label("Comment");
+            assert_eq!(note.role(), Some(Role::Image));
+            assert_eq!(note.description(), Some("see the totals\nand the notes"));
+            assert!(window.try_find(("file-grid-note", 1usize)).is_none());
+        });
+    }
+
+    #[gpui_kit::test]
+    fn a_tiles_name_says_label_tags_and_comment_when_it_has_them_and_only_the_name_when_not(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let mut env = marked_env(
+            cx,
+            &[("C:\\x\\b.txt", marks(Some("Red"), &["Work", "Q3"], Some("see the totals\nand the notes")))],
+        );
+        env.settle(|env| env.tile_names().iter().any(|name| name.starts_with("b.txt,")));
+        let names = env.tile_names();
+        assert!(
+            names.contains(&"b.txt, label Red, tags Work, Q3, comment: see the totals".to_string()),
+            "{names:?}"
+        );
+        assert!(names.contains(&"a.jpg".to_string()), "{names:?}");
+    }
+
+    #[gpui_kit::test]
+    fn right_to_left_the_pill_is_under_the_name_s_picture_and_nothing_overlaps(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let mut env = marked_env(
+            cx,
+            &[(
+                "C:\\x\\تقرير الربع.pdf",
+                marks(Some("Red"), &["عمل"], Some("ملاحظة مهمة")),
+            )],
+        );
+        testing::set_rtl(true);
+        env.settle(|env| pill_of(env, 3).is_some());
+        env.visual.update(|window, _| {
+            let tile = window.find(("file-grid-tile", 3usize)).bounds();
+            let picture = window.find(("file-grid-picture", 3usize)).bounds();
+            let pill = window.find(("file-grid-pill", 3usize)).bounds();
+            let note = window.find(("file-grid-note", 3usize)).bounds();
+            let dots = window.find(("file-grid-tags", 3usize)).bounds();
+            assert!(pill.top() >= picture.bottom() - px(1.), "{pill:?} under {picture:?}");
+            assert!(tile.contains(&pill.origin) && tile.contains(&pill.bottom_right()), "{pill:?} in {tile:?}");
+            assert!(!pill.intersects(&note) && !pill.intersects(&dots) && !note.intersects(&dots));
+            assert!(dots.left() > note.left() || dots.right() < note.right(), "side by side");
+            let name = window.find(("file-grid-tile", 3usize));
+            assert_eq!(name.role(), Some(Role::ListBoxOption));
+            assert!(name.label().is_some_and(|l| l.starts_with(ARABIC)), "{:?}", name.label());
+        });
+        testing::set_rtl(false);
+    }
 }

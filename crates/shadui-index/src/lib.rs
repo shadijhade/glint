@@ -28,6 +28,8 @@ pub mod cli;
 #[cfg(windows)]
 mod engine;
 #[cfg(windows)]
+pub mod far;
+#[cfg(windows)]
 mod install;
 #[cfg(windows)]
 mod pipe;

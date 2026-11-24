@@ -12,6 +12,8 @@ use super::types::*;
 use crate::{core_bridge, t};
 use glint_core::batch_rename::RenamePair;
 use glint_model::format::plural;
+use glint_model::marks::Marks;
+use glint_model::paths::base_name;
 #[cfg(test)]
 use gpui_kit::App;
 use gpui_kit::{Context, Global, Task};
@@ -36,6 +38,18 @@ impl UndoRunner for CoreRunner {
     fn remove_links(&self, paths: Vec<String>) -> UndoFut<Result<(), String>> {
         let call = core_bridge::run(glint_core::links::undo_links(paths));
         Box::pin(async move { call.await.and_then(|inner| inner) })
+    }
+
+    fn put_marks(&self, items: Vec<(String, Marks)>) -> UndoFut<Result<(), String>> {
+        let call = core_bridge::run(glint_core::marks::marks_put(items));
+        Box::pin(async move {
+            let outcomes = call.await.and_then(|inner| inner)?;
+            // The first item that couldn't be put back, with its words.
+            match outcomes.iter().find_map(|o| o.after.as_ref().err().map(|why| (&o.path, why))) {
+                Some((path, why)) => Err(format!("“{}”: {why}", base_name(path))),
+                None => Ok(()),
+            }
+        })
     }
 
     fn wof_undo(&self, id: u64) -> UndoFut<Result<WofUndone, String>> {
@@ -156,11 +170,7 @@ impl Explorer {
                     // the person is told which (the web app's second toast, "Couldn't decompress {n} files").
                     UndoRun::Wof(id) => runner.wof_undo(id).await.and_then(wof_outcome),
                     UndoRun::RemoveLinks(paths) => runner.remove_links(paths).await,
-                    // S0: card D1 puts the marks back (glint-core's `marks_put`); nothing records this step yet.
-                    UndoRun::Marks(items) => {
-                        let _ = items;
-                        Ok(())
-                    }
+                    UndoRun::Marks(items) => runner.put_marks(items).await,
                 };
                 if let Err(message) = done {
                     result = Err(message);
@@ -523,5 +533,64 @@ mod tests {
         assert!(!explorer.update(cx, |e, cx| e.forget_undo(id, cx)));
         assert!(explorer.read_with(cx, |e, _| e.next_undo().is_none()));
         assert!(runner.wof_asked().is_empty());
+    }
+
+    fn marks_step() -> UndoAction {
+        let was = Marks {
+            label: Some("Red".into()),
+            ..Marks::default()
+        };
+        UndoAction::Marks(vec![
+            ("C:\\a\\1.txt".into(), was),
+            ("C:\\a\\2.txt".into(), Marks::default()),
+        ])
+    }
+
+    #[gpui_kit::test]
+    fn ctrl_z_on_a_marks_step_puts_the_marks_back_through_the_runner_and_says_so(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let (disk, explorer, runner) = explorer_in_a(cx);
+        let told = told_by(cx, &explorer);
+        let id = explorer.update(cx, |e, cx| e.remember_undo("label of 2 items", marks_step(), cx));
+        undo_now(cx, &explorer, Some(id));
+        let UndoAction::Marks(items) = marks_step() else {
+            return;
+        };
+        assert_eq!(runner.marks_put(), [items]);
+        assert!(disk.ops().is_empty(), "no file operation ran");
+        assert!(told.borrow().contains(&OpNotice::Undid {
+            label: "label of 2 items".into()
+        }));
+        assert!(explorer.read_with(cx, |e, _| !e.has_undo(id)));
+    }
+
+    #[gpui_kit::test]
+    fn a_marks_step_the_runner_cannot_put_back_is_told_and_used_up(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let (_disk, explorer, runner) = explorer_in_a(cx);
+        let told = told_by(cx, &explorer);
+        let id = explorer.update(cx, |e, cx| e.remember_undo("label of 2 items", marks_step(), cx));
+        *runner.fail.lock().unwrap() = Some("“1.txt”: read-only".into());
+        undo_now(cx, &explorer, None);
+        assert!(told.borrow().contains(&OpNotice::UndoFailed {
+            label: "label of 2 items".into(),
+            message: "“1.txt”: read-only".into()
+        }));
+        assert!(explorer.read_with(cx, |e, _| e.next_undo().is_none() && !e.has_undo(id)));
+    }
+
+    #[test]
+    fn a_marks_step_is_not_a_file_operation_and_takes_its_turn_in_a_sequence() {
+        let step = marks_step();
+        assert!(step.ops().is_empty());
+        assert_eq!(step.op(), None);
+        assert!(step.renamed_folders().is_empty());
+        assert!(matches!(step.runs().as_slice(), [UndoRun::Marks(items)] if items.len() == 2));
+        let mixed = UndoAction::Sequence(vec![UndoAction::Recycle(vec!["C:\\a\\x".into()]), marks_step()]);
+        let runs = mixed.runs();
+        assert!(matches!(runs[0], UndoRun::Marks(_)));
+        assert!(matches!(runs[1], UndoRun::File(FileOp::Delete { .. })));
+        assert_eq!(mixed.ops().len(), 1);
+        assert!(mixed.renamed_folders().is_empty());
     }
 }

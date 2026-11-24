@@ -5,7 +5,7 @@
 //! through an `Explorer` method, which keeps the rows, the watches and the events right.
 
 use super::history::Visit;
-use super::rows::{RowSpec, Rows};
+use super::rows::{RowFileMarks, RowSpec, Rows};
 use super::types::*;
 use glint_model::columns::{ColumnId, FolderKind};
 use glint_model::entries::{FileEntry, GitMarks, Sort, SortKey};
@@ -185,6 +185,8 @@ pub struct Tab {
     pub(super) git: Option<Arc<GitMarks>>,
     /// The folder those marks were given for: once the tab is in another folder they are not its marks.
     pub(super) git_for: String,
+    /// The marks of the entries, handed in by `explorer::marked` while the filter, sort or grouping reads them.
+    pub(super) marked: Option<RowFileMarks>,
     pub(super) rows_spec: Option<RowSpec>,
     /// The entries `rows` were built from, to tell a new listing from a new sort.
     pub(super) rows_for: Option<Arc<[FileEntry]>>,
@@ -240,6 +242,7 @@ impl Tab {
             rows: Rows::empty(),
             git: None,
             git_for: String::new(),
+            marked: None,
             rows_spec: None,
             rows_for: None,
             rows_seq: 0,

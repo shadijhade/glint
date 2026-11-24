@@ -6,7 +6,7 @@
 use super::*;
 use glint_model::js::is_js_space;
 use glint_model::paths::is_folder_path;
-use glint_model::plain::plain_query;
+use glint_model::plain::plain_query_with;
 use glint_model::store::{SavedSearch, SearchOptionKey, SearchOptions};
 use search::{has_git_filter, ready_query, starts_with_drive, Offer, FILTERS, GIT_FILTER, PROP_FILTERS};
 
@@ -25,13 +25,21 @@ pub(super) fn as_typed_after(query: &str) -> Duration {
     })
 }
 
+/// `plain_query_with` knowing the settings' labels by name.
+fn plain_for(text: &str, cx: &App) -> Option<glint_model::plain::Plain> {
+    let names: Vec<&str> = crate::state::try_settings(cx)
+        .map(|s| s.labels.iter().map(|l| l.name.as_str()).collect())
+        .unwrap_or_default();
+    plain_query_with(text, &names)
+}
+
 impl AddressBar {
     /// Puts the tab's filter in the box when something else changed it (clearing a search, another tab), and
     /// says what the box searches.
     pub(super) fn sync_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let filter = self.seen.filter.clone();
         if self.search.read(cx).value().as_ref() != filter.as_str() {
-            self.plain = self.read_plain(&filter);
+            self.plain = self.read_plain(&filter, cx);
             self.search.update(cx, |input, cx| input.set_value(filter, window, cx));
         }
         let placeholder = t!("Search {folder}", folder = self.seen.folder_name);
@@ -43,9 +51,11 @@ impl AddressBar {
     }
 
     /// What plain words in the box mean as filters, while the box has the keyboard.
-    fn read_plain(&self, text: &str) -> Option<glint_model::plain::Plain> {
+    /// The settings' labels are its names too ("important pdfs" is `label:important ext:pdf`): read from the
+    /// settings in place, no disk and no copy of them but a list of borrowed names.
+    fn read_plain(&self, text: &str, cx: &App) -> Option<glint_model::plain::Plain> {
         if self.find_focused {
-            plain_query(text)
+            plain_for(text, cx)
         } else {
             None
         }
@@ -72,7 +82,7 @@ impl AddressBar {
             }
             InputEvent::Focus => {
                 self.find_focused = true;
-                self.plain = self.read_plain(&self.search.read(cx).value());
+                self.plain = self.read_plain(&self.search.read(cx).value(), cx);
                 cx.notify();
             }
             InputEvent::Blur => {
@@ -87,7 +97,7 @@ impl AddressBar {
     /// The text in the box changed (`onFilterChange`): it filters the folder now, and may search below it.
     pub(super) fn filter_changed(&mut self, value: String, cx: &mut Context<Self>) {
         self.find_timer = None;
-        self.plain = self.read_plain(&value);
+        self.plain = self.read_plain(&value, cx);
         self.explorer
             .update(cx, |explorer, cx| explorer.set_filter(&value, None, cx));
         let trimmed = value.trim_matches(is_js_space);
@@ -738,5 +748,28 @@ impl AddressBar {
         } else {
             search_div.w(width).into_any_element()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{state, testing};
+    use gpui_kit::TestAppContext;
+
+    fn query_of(cx: &mut TestAppContext, text: &str) -> Option<String> {
+        cx.update(|cx| plain_for(text, cx).map(|p| p.query))
+    }
+
+    #[gpui_kit::test]
+    fn plain_words_know_the_labels_by_name(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        cx.update(testing::init);
+        // Red is the first label, as it starts.
+        cx.update(|cx| state::update(cx, |s| s.labels[0].name = "Important".into()));
+        assert_eq!(query_of(cx, "important pdfs").as_deref(), Some("label:important ext:pdf"));
+        cx.update(|cx| state::update(cx, |s| s.labels.retain(|l| l.name != "Important")));
+        assert_eq!(query_of(cx, "important pdfs").as_deref(), Some("important ext:pdf"));
+        assert_eq!(query_of(cx, "tagged netplan").as_deref(), Some("tag:netplan"));
     }
 }

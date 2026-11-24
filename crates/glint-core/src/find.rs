@@ -6,12 +6,14 @@
 use crate::fsx::{entry_for_path, ms_since, Entry};
 use crate::proc::Slot;
 use crate::AppState;
-use shadui_index::query::{parse, without_props, Filters, Kind};
+use glint_model::marks::{tidy, Beside, Line, Marks, Wanted};
+use shadui_index::query::{parse, without_marks, without_props, Filters, Kind, NameMatcher};
 use std::io::{BufRead, BufReader, Read};
 use std::process::Stdio;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{mpsc, Arc, Mutex, MutexGuard};
+use std::sync::{mpsc, Arc, Mutex, MutexGuard, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 use crate::host::ipc::Channel;
@@ -198,6 +200,107 @@ fn full_path_regex(term: &str) -> String {
     }
 }
 
+/// A path as the searches key it: without its end separator, in lower case.
+fn key_of(path: &str) -> String {
+    path.trim_end_matches(['\\', '/']).to_lowercase()
+}
+
+/// What a query asks of fd, and of the marks: the query without its marks terms (fd reads names; "*" when
+/// nothing else is left), and the filter its marks terms make (glint-model's, which agrees with the index's).
+fn fd_side(query: &str) -> (String, Wanted) {
+    let (wanted, _) = Wanted::parse(&glint_model::entries::terms(&query.to_lowercase()));
+    if wanted.is_empty() {
+        return (query.to_string(), wanted);
+    }
+    let rest = without_marks(query);
+    (if rest.trim().is_empty() { "*".to_string() } else { rest }, wanted)
+}
+
+/// What a search with marks terms asks of each item: the filter, every folder's `.glint-marks` read once for
+/// the whole search (four threads share them), and the ledger as it was when the search began.
+struct MarkedBy {
+    wanted: Wanted,
+    folders: Mutex<HashMap<String, Arc<OnceLock<Option<Beside>>>>>,
+    /// By path as `key_of` makes it.
+    ledger: HashMap<String, Line>,
+    #[cfg(test)]
+    sidecar_reads: AtomicUsize,
+}
+
+impl MarkedBy {
+    fn new(wanted: Wanted) -> Self {
+        let lines = crate::marks::ledger::shared().lock().unwrap_or_else(|e| e.into_inner()).lines().cloned().collect();
+        Self::with(wanted, lines)
+    }
+
+    fn with(wanted: Wanted, lines: Vec<Line>) -> Self {
+        let ledger = lines.into_iter().map(|line| (key_of(&line.name), line)).collect();
+        MarkedBy {
+            wanted,
+            folders: Mutex::new(HashMap::new()),
+            ledger,
+            #[cfg(test)]
+            sidecar_reads: AtomicUsize::new(0),
+        }
+    }
+
+    /// The folder's sidecar: read by whichever thread asks first, while the others asking for it wait.
+    fn sidecar(&self, folder: &Path) -> Arc<OnceLock<Option<Beside>>> {
+        let key = folder.to_string_lossy().to_lowercase();
+        let cell = self.folders.lock().unwrap_or_else(|e| e.into_inner()).entry(key).or_default().clone();
+        cell.get_or_init(|| {
+            #[cfg(test)]
+            self.sidecar_reads.fetch_add(1, Ordering::SeqCst);
+            crate::marks::beside::read(folder)
+        });
+        cell
+    }
+
+    /// An item's marks, from the first home that has any (as `marks::read` does).
+    fn marks(&self, path: &str) -> Marks {
+        if let Some(marks) = crate::marks::streams::read(path) {
+            return tidy(&marks);
+        }
+        let item = Path::new(path.trim_end_matches(['\\', '/']));
+        if let (Some(folder), Some(name)) = (item.parent().filter(|f| !f.as_os_str().is_empty()), item.file_name()) {
+            let side = self.sidecar(folder);
+            let name = name.to_string_lossy();
+            if let Some(line) = side.get().and_then(Option::as_ref).and_then(|b| crate::marks::beside::line(b, &name)).filter(|l| !l.marks.is_empty()) {
+                return tidy(&line.marks);
+            }
+        }
+        self.ledger.get(&key_of(path)).filter(|l| !l.marks.is_empty()).map(|l| tidy(&l.marks)).unwrap_or_default()
+    }
+
+    fn accepts(&self, path: &str) -> bool {
+        self.wanted.accepts(&self.marks(path))
+    }
+
+    /// The ledger's items under `roots` that the filter wants and whose names hold `names`, which
+    /// `seen` (keyed by `key_of`) doesn't have yet: what fd can't see.
+    fn ledger_adds(&self, roots: &[String], names: &[String], seen: &HashSet<String>) -> Vec<Entry> {
+        let matcher = NameMatcher::from_terms(names.to_vec());
+        let roots: Vec<String> = roots.iter().map(|r| key_of(r)).collect();
+        let mut found: Vec<Entry> = Vec::new();
+        for (key, line) in &self.ledger {
+            let under = roots.iter().any(|r| key.len() > r.len() && key.starts_with(r.as_str()) && key[r.len()..].starts_with(['\\', '/']));
+            let marks = tidy(&line.marks);
+            if !under || seen.contains(key) || marks.is_empty() || !self.wanted.accepts(&marks) {
+                continue;
+            }
+            let path = line.name.trim_end_matches(['\\', '/']);
+            let name = Path::new(path).file_name().map_or_else(|| path.to_string(), |n| n.to_string_lossy().into_owned());
+            let lower = name.to_lowercase();
+            let folded = (!name.is_ascii()).then_some(lower.as_bytes());
+            if matcher.matches_in(name.as_bytes(), folded, key.as_bytes()) {
+                found.push(entry_for_path(path, false));
+            }
+        }
+        found.sort_by(|a, b| a.path.cmp(&b.path));
+        found
+    }
+}
+
 /// Sends results in batches: up to 10,000 at a time, at least every 40 ms.
 struct Out<'a> {
     channel: &'a Channel<FindEvent>,
@@ -207,15 +310,16 @@ struct Out<'a> {
     started: bool,
     /// With property filters (width:, taken:…): what's found goes to be read first (`check`), not
     /// straight to the app.
-    check: Option<mpsc::SyncSender<Entry>>,
-    /// With tag: filters, what fd finds keeps only what has the tags (read from each file's stream;
-    /// the index reads them itself).
-    tags: Vec<Vec<String>>,
+    /// The entry travels with whether its marks are still to be checked (what fd found: the index reads
+    /// marks itself).
+    check: Option<mpsc::SyncSender<(Entry, bool)>>,
+    /// Set while fd's results are sent: they are checked against the marks filter by the same threads.
+    marks: bool,
 }
 
 impl<'a> Out<'a> {
-    fn new(channel: &'a Channel<FindEvent>, check: Option<mpsc::SyncSender<Entry>>) -> Self {
-        Out { channel, batch: Vec::new(), sent: Instant::now(), count: 0, started: false, check, tags: Vec::new() }
+    fn new(channel: &'a Channel<FindEvent>, check: Option<mpsc::SyncSender<(Entry, bool)>>) -> Self {
+        Out { channel, batch: Vec::new(), sent: Instant::now(), count: 0, started: false, check, marks: false }
     }
 
     fn started(&mut self, engine: &'static str) {
@@ -225,12 +329,9 @@ impl<'a> Out<'a> {
     }
 
     fn push(&mut self, entry: Entry) {
-        if !self.tags.is_empty() && !entry.path.as_deref().is_some_and(|path| crate::tags::matches(path, &self.tags)) {
-            return;
-        }
         self.count += 1;
         if let Some(check) = &self.check {
-            let _ = check.send(entry);
+            let _ = check.send((entry, self.marks));
             return;
         }
         self.batch.push(entry);
@@ -398,6 +499,8 @@ pub async fn find_files(
     // What photos, videos and songs say of themselves (width:, taken:, artist:…) is read here: the
     // index and fd get the query without it, narrowed to the files that can say it.
     let props = filters.props.clone();
+    // Whether the marks (and the names) are all a query asks: only then can what only this PC knows of be judged.
+    let marks_only = Filters { marks: Default::default(), tags: Vec::new(), props: Vec::new(), ..filters.clone() } == Filters::default();
     let (query, filters) = if props.is_empty() {
         (query, filters)
     } else {
@@ -412,6 +515,9 @@ pub async fn find_files(
         let filters = parse(&narrowed)?.1;
         (narrowed, filters)
     };
+    // What the marks terms ask is read here for what fd finds (and for what only this PC knows of): the index
+    // reads them itself, fd is given the query without them.
+    let (_, wanted_marks) = fd_side(&query);
     let run = state.finds.start(&lane);
     let finds = state.finds.clone();
     thread::spawn(move || {
@@ -424,22 +530,38 @@ pub async fn find_files(
         // (each file once a session): the limit is on what holds them.
         let wanted = options.max_results.filter(|&m| m > 0);
         let checking = !props.is_empty();
-        let options = if checking { FindOptions { max_results: None, ..options } } else { options };
-        let (to_check, checks) = mpsc::sync_channel::<Entry>(1024);
+        // Properties and marks are read by four threads (each file once a session) after the index and fd.
+        let marked = (!wanted_marks.is_empty()).then(|| MarkedBy::new(wanted_marks));
+        let threaded = checking || marked.is_some();
+        let seen: Mutex<HashSet<String>> = Mutex::new(HashSet::new());
+        let options = if threaded { FindOptions { max_results: None, ..options } } else { options };
+        let (to_check, checks) = mpsc::sync_channel::<(Entry, bool)>(1024);
         let checks = Mutex::new(checks);
         let held = AtomicUsize::new(0);
         let (count, limited, fuzzy) = thread::scope(|scope| {
-            for _ in 0..if checking { 4 } else { 0 } {
+            for _ in 0..if threaded { 4 } else { 0 } {
                 let channel = on_event.clone();
-                let (checks, held, props) = (&checks, &held, &props);
+                let (checks, held, props, marked, seen) = (&checks, &held, &props, &marked, &seen);
                 scope.spawn(move || {
                     let mut out = Out::new(&channel, None);
                     out.started = true;
                     let next = || checks.lock().unwrap_or_else(|e| e.into_inner()).recv();
-                    while let Ok(entry) = next() {
+                    while let Ok((entry, marks_too)) = next() {
                         // Stopped: what's left is passed over, so what finds it never waits.
-                        if stop.load(Ordering::SeqCst) || !entry.path.as_deref().is_some_and(|path| crate::media::matches(path, entry.size, entry.modified, props)) {
+                        if stop.load(Ordering::SeqCst) {
                             continue;
+                        }
+                        let path = entry.path.as_deref();
+                        if !props.is_empty() && !path.is_some_and(|path| crate::media::matches(path, entry.size, entry.modified, props)) {
+                            continue;
+                        }
+                        if let Some(marked) = marked {
+                            if marks_too && !path.is_some_and(|path| marked.accepts(path)) {
+                                continue;
+                            }
+                            if let Some(path) = path {
+                                seen.lock().unwrap_or_else(|e| e.into_inner()).insert(key_of(path));
+                            }
                         }
                         if wanted.is_some_and(|w| held.fetch_add(1, Ordering::SeqCst) >= w) {
                             // The limit: the index and fd stop too.
@@ -455,7 +577,7 @@ pub async fn find_files(
                     out.flush();
                 });
             }
-            let mut out = Out::new(&on_event, checking.then_some(to_check));
+            let mut out = Out::new(&on_event, threaded.then_some(to_check));
             let mut fd_roots = roots.clone();
             let (mut limited, mut fuzzy) = (false, false);
             // A folder in an archive: searched in the archive's own list of entries.
@@ -490,12 +612,10 @@ pub async fn find_files(
             let left = options.max_results.filter(|&m| m > 0).map(|m| m.saturating_sub(out.count));
             if !fd_roots.is_empty() && !stop.load(Ordering::SeqCst) && left != Some(0) {
                 out.started("fd");
-                // fd doesn't read tags: it gets the rest of the query, and what it finds is checked.
-                let tags = parse(&query).map(|(_, f)| f.tags).unwrap_or_default();
-                let fd_query = if tags.is_empty() { query.clone() } else { shadui_index::query::without_tags(&query) };
-                let fd_query = if fd_query.trim().is_empty() { "*".to_string() } else { fd_query };
-                out.tags = tags;
-                let options = FindOptions { max_results: if out.tags.is_empty() { left } else { None }, ..options };
+                // fd doesn't read marks: it gets the rest of the query, and what it finds is checked.
+                let (fd_query, _) = fd_side(&query);
+                out.marks = marked.is_some();
+                let options = FindOptions { max_results: left, ..options };
                 match search_fd(slot, &fd_roots, &fd_query, &options, &mut out) {
                     Ok(hit_limit) => limited |= hit_limit,
                     Err(message) => {
@@ -510,12 +630,25 @@ pub async fn find_files(
             (out.count, limited, fuzzy)
         });
         // Checked: as many as held, up to the limit.
-        let (count, limited) = if checking {
+        let (mut count, mut limited) = if threaded {
             let held = held.into_inner();
             (wanted.map_or(held, |w| held.min(w)), wanted.is_some_and(|w| held > w))
         } else {
             (count, limited)
         };
+        // What only this PC knows of (marks in the ledger: inside an archive, on a remote) joins what was found.
+        if let Some(marked) = marked.as_ref().filter(|_| marks_only && !run.stop.load(Ordering::SeqCst)) {
+            let seen = seen.into_inner().unwrap_or_else(|e| e.into_inner());
+            let mut more: Vec<Entry> = marked.ledger_adds(&roots, &terms, &seen);
+            more.retain(|e| props.is_empty() || e.path.as_deref().is_some_and(|p| crate::media::matches(p, e.size, e.modified, &props)));
+            let room = wanted.map_or(usize::MAX, |w| w.saturating_sub(count));
+            limited |= more.len() > room;
+            more.truncate(room);
+            count += more.len();
+            if !more.is_empty() {
+                tell(&on_event, FindEvent::Found(more));
+            }
+        }
         tell(&on_event, FindEvent::Finished { count, elapsed: ms_since(started), limited, fuzzy });
         finds.finished(&lane, &run);
     });
@@ -594,5 +727,65 @@ mod tests {
         assert!(finds.lock().is_empty());
         finds.stop("right");
         assert!(!stopped(&other));
+    }
+
+    fn line(path: &str, label: &str) -> Line {
+        Line { name: path.into(), marks: Marks { label: Some(label.into()), ..Marks::default() }, ..Line::default() }
+    }
+
+    #[test]
+    fn a_querys_marks_terms_are_taken_out_of_what_fd_is_asked_and_kept_as_the_filter() {
+        let (fd, wanted) = fd_side("report label:red !tag:old");
+        assert_eq!(fd, "report");
+        let (expected, _) = Wanted::parse(&glint_model::entries::terms("label:red !tag:old"));
+        assert_eq!(wanted, expected);
+        assert!(!wanted.is_empty());
+        // Marks terms alone leave fd every name; a query without any is as typed.
+        assert_eq!(fd_side("has:comment").0, "*");
+        let (plain, none) = fd_side("report 2026");
+        assert_eq!((plain.as_str(), none.is_empty()), ("report 2026", true));
+        assert!(fd_args(&fd, &["C:\\".to_string()], &options()).is_ok());
+    }
+
+    #[test]
+    fn two_hundred_items_of_one_folder_read_its_sidecar_once() {
+        let dir = std::env::temp_dir().join(format!("glint-find-marks-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (wanted, _) = Wanted::parse(&["label:red".to_string()]);
+        crate::marks::beside::change(&dir, &[("f7.txt".to_string(), Marks { label: Some("Red".into()), ..Marks::default() })], 1).unwrap_or_default();
+        let marked = MarkedBy::with(wanted, Vec::new());
+        let paths: Vec<String> = (0..200).map(|i| dir.join(format!("f{i}.txt")).to_string_lossy().into_owned()).collect();
+        std::thread::scope(|scope| {
+            for chunk in paths.chunks(50) {
+                let marked = &marked;
+                scope.spawn(move || chunk.iter().for_each(|p| {
+                    let _ = marked.accepts(p);
+                }));
+            }
+        });
+        assert_eq!(marked.sidecar_reads.load(Ordering::SeqCst), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_ledgers_lines_under_a_searched_folder_that_pass_are_added_once_and_one_outside_is_not() {
+        let (wanted, _) = Wanted::parse(&["label:red".to_string()]);
+        let lines = vec![
+            line(r"Z:\gone\inside.zip\report.txt", "Red"),
+            line(r"Z:\gone\inside.zip\other.txt", "Red"),
+            line(r"Z:\gone\inside.zip\blue.txt", "Blue"),
+            line(r"Z:\gone\seen.txt", "Red"),
+            line(r"Z:\elsewhere\report.txt", "Red"),
+            line(r"Z:\gone-too\report.txt", "Red"),
+        ];
+        let marked = MarkedBy::with(wanted, lines);
+        let roots = vec![r"Z:\gone".to_string()];
+        let seen: HashSet<String> = [key_of(r"Z:\gone\seen.txt")].into();
+        let paths = |found: Vec<Entry>| found.into_iter().filter_map(|e| e.path).collect::<Vec<_>>();
+        assert_eq!(paths(marked.ledger_adds(&roots, &[], &seen)), [r"Z:\gone\inside.zip\other.txt", r"Z:\gone\inside.zip\report.txt"]);
+        // With name terms the name must hold them.
+        assert_eq!(paths(marked.ledger_adds(&roots, &["report".to_string()], &seen)), [r"Z:\gone\inside.zip\report.txt"]);
+        assert!(marked.ledger_adds(&[r"Z:\nowhere".to_string()], &[], &seen).is_empty());
     }
 }

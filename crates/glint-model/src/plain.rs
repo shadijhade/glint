@@ -272,6 +272,11 @@ impl Found {
 /// What plain words in the box mean as filters, or `None` when they read as names: nothing recognized,
 /// or the box holds filters, quotes or wildcards already.
 pub fn plain_query(text: &str) -> Option<Plain> {
+    plain_query_with(text, &[])
+}
+
+/// `plain_query`, knowing this PC's labels by name.
+pub fn plain_query_with(text: &str, labels: &[&str]) -> Option<Plain> {
     if text.trim_matches(is_js_space).is_empty() || text.contains([':', '"', '*', '?']) {
         return None;
     }
@@ -287,6 +292,29 @@ pub fn plain_query(text: &str) -> Option<Plain> {
         })
         .collect();
     let at = |i: usize| lower.get(i).map(String::as_str);
+    // The labels this PC has, as words; one the filter couldn't carry is left out.
+    let known: Vec<(Vec<String>, &str)> = labels
+        .iter()
+        .filter(|l| !l.contains(['"', ';', ':']))
+        .map(|l| (l.to_lowercase().split(is_js_space).filter(|w| !w.is_empty()).map(String::from).collect(), *l))
+        .filter(|(w, _): &(Vec<String>, &str)| !w.is_empty())
+        .collect();
+    // The longest known label whose words are the ones at `from`: how many, and its name.
+    let known_at = |from: usize| {
+        known
+            .iter()
+            .filter(|(w, _)| lower.get(from..from + w.len()).is_some_and(|run| run == w.as_slice()))
+            .max_by_key(|(w, _)| w.len())
+            .map(|(w, name)| (w.len(), name.trim()))
+    };
+    let label_filter = |name: &str| {
+        let n = name.to_lowercase();
+        if n.contains(is_js_space) {
+            format!("label:\"{n}\"")
+        } else {
+            format!("label:{n}")
+        }
+    };
     let mut names: Vec<&str> = Vec::new();
     let mut found = Found {
         filters: Vec::new(),
@@ -474,6 +502,40 @@ pub fn plain_query(text: &str) -> Option<Plain> {
                     }
                 }
             }
+            // Marks: tagged work, labeled red, with a comment.
+            if matches!(w, "tagged" | "labeled" | "labelled") && next.is_some() {
+                if w == "tagged" {
+                    found.add(&format!("tag:{}", lower[i + 1]), &format!("tagged {}", words[i + 1]));
+                    break 'step 1;
+                }
+                if let Some((n, name)) = known_at(i + 1) {
+                    found.add(&label_filter(name), &format!("labeled {name}"));
+                    break 'step n;
+                }
+                found.add(&format!("label:{}", lower[i + 1]), &format!("labeled {}", words[i + 1]));
+                break 'step 1;
+            }
+            if w == "commented" {
+                found.add("has:comment", "with a comment");
+                break 'step 0;
+            }
+            if w == "with" {
+                let (what, used) = match (next, after) {
+                    (Some("a"), Some(x)) => (x, 2),
+                    (Some(x), _) => (x, 1),
+                    _ => ("", 0),
+                };
+                let said = match what {
+                    "comments" | "comment" => Some(("has:comment", "with a comment")),
+                    "tags" | "tag" => Some(("has:tag", "with tags")),
+                    "labels" | "label" => Some(("has:label", "with a label")),
+                    _ => None,
+                };
+                if let Some((filter, chip)) = said {
+                    found.add(filter, chip);
+                    break 'step used;
+                }
+            }
             if w == "with" || w == "on" {
                 if let Some(next_word) = next {
                     if !is_filler(next_word) && (matches!(prev, Some("taken" | "shot")) || media == Some(Media::Photo))
@@ -487,6 +549,10 @@ pub fn plain_query(text: &str) -> Option<Plain> {
             if (w == "named" || w == "called") && next.is_some() {
                 names.push(words[i + 1]);
                 break 'step 1;
+            }
+            if let Some((n, name)) = known_at(i) {
+                found.add(&label_filter(name), &format!("labeled {name}"));
+                break 'step n - 1;
             }
             if is_filler(w) || w == "taken" || w == "shot" || w == "than" {
                 break 'step 0;
@@ -636,5 +702,47 @@ mod tests {
         assert_eq!(plain("over 2.5 kb").as_deref(), Some("size:>2560b"));
         // 1.5 b is not whole, so it rounds half up like Math.round: 2.
         assert_eq!(plain("over 1.5 b").as_deref(), Some("size:>2b"));
+    }
+
+    fn with(text: &str) -> Option<Plain> {
+        plain_query_with(text, &["Important", "Pending", "In review"])
+    }
+
+    #[test]
+    fn marks_read_as_filters_when_this_pc_has_labels() {
+        let p = with("important pdfs");
+        assert_eq!(p.as_ref().map(|p| p.query.as_str()), Some("label:important ext:pdf"));
+        assert_eq!(p.map(|p| p.chips), strs(&["labeled Important", "PDF files"]));
+        let q = |t: &str| with(t).map(|p| p.query);
+        assert_eq!(q("tagged netplan").as_deref(), Some("tag:netplan"));
+        assert_eq!(q("with comments").as_deref(), Some("has:comment"));
+        assert_eq!(q("with a comment").as_deref(), Some("has:comment"));
+        assert_eq!(q("commented").as_deref(), Some("has:comment"));
+        assert_eq!(q("labeled pending from last week").as_deref(), Some("label:pending dm:7d"));
+        assert_eq!(q("labeled in review").as_deref(), Some("label:\"in review\""));
+        assert_eq!(q("in review pdfs").as_deref(), Some("label:\"in review\" ext:pdf"));
+        assert_eq!(q("labeled mauve").as_deref(), Some("label:mauve"));
+        assert_eq!(with("labeled mauve").map(|p| p.chips), strs(&["labeled mauve"]));
+        assert!(q("photos with tags").unwrap().ends_with(" has:tag"));
+        assert!(q("things with a label").unwrap().ends_with("has:label"));
+        assert_eq!(q("budget tagged work").as_deref(), Some("budget tag:work"));
+        assert_eq!(with("tagged Work").map(|p| p.chips), strs(&["tagged Work"]));
+    }
+
+    #[test]
+    fn without_labels_plain_words_read_as_they_did() {
+        assert_eq!(plain("important pdfs").as_deref(), Some("important ext:pdf"));
+        assert_eq!(plain_query_with("pdfs from last week over 5 mb", &[]), plain_query("pdfs from last week over 5 mb"));
+        assert_eq!(plain_query_with("big zip files", &[]), plain_query("big zip files"));
+        assert!(plain("photos with pixel").unwrap().ends_with(" camera:pixel"));
+    }
+
+    #[test]
+    fn the_marks_words_at_the_end_or_an_empty_label_do_not_panic() {
+        for t in ["tagged", "labeled", "with", "pdfs labelled", "pdfs with a", "photos with a tag"] {
+            let _ = with(t);
+        }
+        let _ = plain_query_with("labeled important", &["", "  ", "x\"y"]);
+        assert_eq!(plain_query_with("labeled", &[""]), None);
     }
 }

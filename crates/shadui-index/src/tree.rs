@@ -3,10 +3,11 @@
 //! total size below every folder, kept current as changes come in.
 
 use crate::growth::{Growth, RecordHasher, ABSENT};
+use crate::proto::{HIT_BY_COMMENT, HIT_BY_TAG};
 use crate::query::{fold, is_hidden, Excludes, Filters, NameMatcher};
 use rayon::prelude::*;
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::hash::BuildHasherDefault;
 
 /// No record or link.
@@ -138,6 +139,12 @@ pub struct RecordState {
     pub names: Vec<(u64, String)>,
     /// Glint's tags (one per line), from the file's `glint.tags` stream.
     pub tags: Option<String>,
+    /// Its label, from the file's `glint.label` stream.
+    pub label: Option<String>,
+    /// Its comment, from the file's `glint.comment` stream.
+    pub comment: Option<String>,
+    /// Some mark stream isn't in the record itself: what it says is read through the file system.
+    pub far: bool,
 }
 
 /// Splits a 64-bit file reference into the record number and its sequence number.
@@ -203,8 +210,11 @@ pub struct Tree {
     garbage: usize,
     /// Folders' sizes at daily marks, noted as they change.
     pub growth: Growth,
-    /// Glint's tags, by record: only the tagged ones (one tag per line).
-    pub tags: HashMap<u32, Box<str>>,
+    /// What the marked records are marked with: only they take room.
+    pub marks: HashMap<u32, Marked>,
+    /// Records whose marks the record itself doesn't show (a stream that left it, an attribute list that did):
+    /// to be read through the file system (far.rs).
+    pub far: HashSet<u32>,
 }
 
 /// What a record is marked with, as its `glint.*` streams say (docs/gpui/marks): each field empty when it has
@@ -547,13 +557,28 @@ impl Tree {
             }
         }
         // (A folder new to the index starts with whatever its contents added up to already.)
-        match state.tags.as_deref() {
-            Some(tags) => {
-                self.tags.insert(n, tags.into());
+        if state.far {
+            // What the record doesn't show was read through the file system, and will be again: it stays.
+            let mut marked = self.marks.get(&n).cloned().unwrap_or_default();
+            if let Some(label) = &state.label {
+                marked.label = label.as_str().into();
             }
-            None => {
-                self.tags.remove(&n);
+            if let Some(tags) = &state.tags {
+                marked.tags = tags.as_str().into();
             }
+            if let Some(comment) = &state.comment {
+                marked.comment = comment.as_str().into();
+            }
+            self.store_marks(n, marked);
+            self.far.insert(n);
+        } else {
+            let marked = Marked {
+                label: state.label.as_deref().unwrap_or("").into(),
+                tags: state.tags.as_deref().unwrap_or("").into(),
+                comment: state.comment.as_deref().unwrap_or("").into(),
+            };
+            self.store_marks(n, marked);
+            self.far.remove(&n);
         }
         let rec = &mut self.recs[n as usize];
         rec.set_seq(state.seq);
@@ -601,25 +626,67 @@ impl Tree {
             self.remove_link(id);
         }
         self.recs[n as usize] = Rec::default();
-        self.tags.remove(&n);
+        self.marks.remove(&n);
+        self.far.remove(&n);
+    }
+
+    /// Keeps `marked` as record `n`'s, or nothing when it has no marks.
+    fn store_marks(&mut self, n: u32, marked: Marked) {
+        if marked == Marked::default() {
+            self.marks.remove(&n);
+        } else {
+            self.marks.insert(n, marked);
+        }
+    }
+
+    /// Record `n`'s marks, if it has any.
+    pub fn marked(&self, n: u32) -> Option<&Marked> {
+        self.marks.get(&n)
+    }
+
+    /// Gives record `n` exactly these marks, as read through the file system: all three empty takes them
+    /// away. `n` is then no longer far.
+    pub fn set_marks(&mut self, n: u32, marks: Marked) {
+        self.store_marks(n, marks);
+        self.far.remove(&n);
     }
 
     /// Whether record `n` has, for each group, one of its tags (any case).
     pub fn tagged(&self, n: u32, wanted: &[Vec<String>]) -> bool {
-        let Some(tags) = self.tags.get(&n) else { return false };
+        let Some(marked) = self.marks.get(&n) else { return false };
         wanted
             .iter()
-            .all(|any| tags.lines().any(|t| any.iter().any(|w| t.eq_ignore_ascii_case(w))))
+            .all(|any| marked.tags.lines().any(|t| any.iter().any(|w| t.eq_ignore_ascii_case(w))))
+    }
+
+    /// Every label in the index with how many items have it, most used first.
+    pub fn label_counts(&self) -> Vec<(String, u64)> {
+        self.counted(|m| if m.label.is_empty() { None } else { Some(&*m.label) })
+    }
+
+    /// How many items have a comment.
+    pub fn comments(&self) -> u64 {
+        self.marks.iter().filter(|(&n, m)| !m.comment.is_empty() && self.in_use(n)).count() as u64
+    }
+
+    fn in_use(&self, n: u32) -> bool {
+        self.recs.get(n as usize).is_some_and(Rec::used)
     }
 
     /// Every tag in the index, with how many items have it, most used first.
     pub fn tag_counts(&self) -> Vec<(String, u64)> {
+        self.counted(|m| Some(&*m.tags))
+    }
+
+    /// Counts the lines `text` picks out of each marked record in use: names alike in any case are one, shown
+    /// as first met; most used first, then by name.
+    fn counted<'a>(&'a self, text: impl Fn(&'a Marked) -> Option<&'a str>) -> Vec<(String, u64)> {
         let mut counts: HashMap<String, (String, u64)> = HashMap::new();
-        for (&n, tags) in &self.tags {
-            if !self.recs.get(n as usize).is_some_and(Rec::used) {
+        for (&n, marked) in &self.marks {
+            if !self.in_use(n) {
                 continue;
             }
-            for tag in tags.lines() {
+            for tag in text(marked).unwrap_or("").lines() {
                 counts
                     .entry(tag.to_lowercase())
                     .or_insert_with(|| (tag.to_string(), 0))
@@ -1059,6 +1126,10 @@ impl Tree {
     pub fn search_until(&self, search: &Search, gone: &(dyn Fn() -> bool + Sync)) -> Vec<u32> {
         const CHUNK: usize = 1 << 14;
         let has_paths = search.matcher.has_paths();
+        // label:, tag:, comment: and has: are asked of each record's own marks. Most records have none, and
+        // what the filter says of those is the same for all of them: worked out once.
+        let marks = &search.filters.marks;
+        let unmarked = marks.accepts("", "", "");
         let found: Vec<Vec<(u32, u32)>> = self
             .links
             .par_chunks(CHUNK)
@@ -1096,7 +1167,9 @@ impl Tree {
                         ) {
                             continue;
                         }
-                        if !search.filters.tags.is_empty() && !self.tagged(link.rec, &search.filters.tags) {
+                        if !marks.is_empty()
+                            && !self.marks.get(&link.rec).map_or(unmarked, |m| marks.accepts(&m.label, &m.tags, &m.comment))
+                        {
                             continue;
                         }
                     }
@@ -1167,6 +1240,63 @@ impl Tree {
             found.sort_by_key(|&(edits, _)| edits);
         }
         found.into_iter().map(|(_, id)| id).collect()
+    }
+
+    /// The names of marked records whose **marks** hold every one of `words` (folded, plain: no wildcard, no path),
+    /// and which `search` would let through but for their names: each with how it was found (`HIT_BY_COMMENT`,
+    /// `HIT_BY_TAG`, or both). A name `search.matcher` itself matches is left out: `search_until` found it.
+    /// In index order (by link id). `gone` is asked now and then; what is found then is incomplete.
+    pub fn search_marks(&self, search: &Search, words: &[String], gone: &(dyn Fn() -> bool + Sync)) -> Vec<(u32, u8)> {
+        let mut found = Vec::new();
+        if words.is_empty() {
+            return found;
+        }
+        let marks = &search.filters.marks;
+        for (seen, (&n, marked)) in self.marks.iter().enumerate() {
+            if seen % 1024 == 0 && gone() {
+                break;
+            }
+            if !self.in_use(n) {
+                continue;
+            }
+            let comment = fold(&marked.comment);
+            let tags: Vec<String> = marked.label.lines().chain(marked.tags.lines()).map(fold).collect();
+            let mut by = 0;
+            let all = words.iter().all(|word| {
+                let (in_comment, in_tag) = (comment.contains(word.as_str()), tags.iter().any(|t| t.contains(word.as_str())));
+                by |= if in_comment { HIT_BY_COMMENT } else { 0 } | if in_tag { HIT_BY_TAG } else { 0 };
+                in_comment || in_tag
+            });
+            if !all {
+                continue;
+            }
+            for id in self.links_of(n) {
+                let Some(link) = self.links.get(id as usize).filter(|l| l.flags & LINK_USED != 0) else { continue };
+                let name = &self.names[link.name as usize..link.name as usize + link.len as usize];
+                let folded = Tree::folded_in(&self.names, link);
+                if search.matcher.distance(name, folded).is_some() {
+                    continue;
+                }
+                if !search.filters.is_empty() {
+                    let rec = &self.recs[link.rec as usize];
+                    if !search.filters.accepts(name, folded, rec.dir(), rec.size(), (search.now - rec.modified) / 10_000_000)
+                        || !marks.accepts(&marked.label, &marked.tags, &marked.comment)
+                    {
+                        continue;
+                    }
+                }
+                if (!search.hidden && is_hidden(self.recs[link.rec as usize].attrs(), name))
+                    || search.excludes.name(name, folded)
+                    || !self.reachable(link.parent, search)
+                    || (search.excludes.has_paths() && self.excluded_path(id, search))
+                {
+                    continue;
+                }
+                found.push((id, by));
+            }
+        }
+        found.sort_unstable_by_key(|&(id, _)| id);
+        found
     }
 
     /// The best `max` of `found` (what `search` matched), best first, as quick search ranks them: a name
@@ -1511,10 +1641,31 @@ impl Builder {
         self.tree.recs.get_mut(n as usize)
     }
 
-    /// Record `n`'s tags.
+    /// Record `n`'s tags (a record and its extension records may each bring one field: they add up).
     pub fn tags(&mut self, n: u32, tags: String) {
         if self.slot(n).is_some() {
-            self.tree.tags.insert(n, tags.into());
+            self.tree.marks.entry(n).or_default().tags = tags.into();
+        }
+    }
+
+    /// Record `n`'s label.
+    pub fn label(&mut self, n: u32, label: String) {
+        if self.slot(n).is_some() {
+            self.tree.marks.entry(n).or_default().label = label.into();
+        }
+    }
+
+    /// Record `n`'s comment.
+    pub fn comment(&mut self, n: u32, comment: String) {
+        if self.slot(n).is_some() {
+            self.tree.marks.entry(n).or_default().comment = comment.into();
+        }
+    }
+
+    /// Record `n`'s marks aren't all in its records.
+    pub fn far(&mut self, n: u32) {
+        if self.slot(n).is_some() {
+            self.tree.far.insert(n);
         }
     }
 
@@ -1634,7 +1785,7 @@ mod tests {
             modified: 1,
             size: 0,
             names: names.iter().map(|&(p, n)| (parent_ref(p), n.into())).collect(),
-            tags: None,
+            ..Default::default()
         }
     }
 
@@ -1646,7 +1797,7 @@ mod tests {
             modified: 2,
             size,
             names: names.iter().map(|&(p, n)| (parent_ref(p), n.into())).collect(),
-            tags: None,
+            ..Default::default()
         }
     }
 
@@ -1674,6 +1825,80 @@ mod tests {
         tree.set_record(30, &dir(1, &[(ROOT, "Data")]));
         tree.set_record(31, &file(1024 * KB, &[(30, "big.bin")]));
         tree
+    }
+
+    fn marked_file(label: &str, tags: &str, comment: &str) -> RecordState {
+        let opt = |s: &str| (!s.is_empty()).then(|| s.to_string());
+        RecordState { label: opt(label), tags: opt(tags), comment: opt(comment), ..file(1, &[(ROOT, "m.txt")]) }
+    }
+
+    #[test]
+    fn a_records_marks_come_and_go_with_it() {
+        let mut tree = sample();
+        tree.set_record(50, &marked_file("Red", "a", ""));
+        assert_eq!(tree.marked(50), Some(&Marked { label: "Red".into(), tags: "a".into(), comment: "".into() }));
+        tree.set_record(50, &marked_file("", "", ""));
+        assert_eq!(tree.marked(50), None);
+        tree.set_record(50, &marked_file("Red", "", "c"));
+        tree.remove_record(50);
+        assert_eq!(tree.marked(50), None);
+    }
+
+    #[test]
+    fn tags_and_labels_and_comments_are_counted_from_the_marks() {
+        let low = |v: Vec<(String, u64)>| v.into_iter().map(|(t, c)| (t.to_lowercase(), c)).collect::<Vec<_>>();
+        let mut tree = sample();
+        tree.set_record(50, &marked_file("Red", "Work\nhome\nwork", "c"));
+        tree.set_record(51, &marked_file("red", "work", ""));
+        tree.set_record(52, &marked_file("Blue", "WORK", "d"));
+        assert!(tree.tagged(50, &[vec!["WORK".into()]]));
+        assert!(tree.tagged(50, &[vec!["x".into(), "Home".into()], vec!["work".into()]]));
+        assert!(!tree.tagged(51, &[vec!["home".into()]]) && !tree.tagged(22, &[vec!["work".into()]]));
+        assert_eq!(low(tree.tag_counts()), [("work".to_string(), 4), ("home".to_string(), 1)]);
+        assert_eq!(low(tree.label_counts()), [("red".to_string(), 2), ("blue".to_string(), 1)]);
+        assert_eq!(tree.comments(), 2);
+        // Alike in any case is one, shown as first met (within one record, in its order).
+        tree.remove_record(51);
+        tree.remove_record(52);
+        assert_eq!(tree.tag_counts(), [("Work".to_string(), 2), ("home".to_string(), 1)]);
+        assert_eq!(tree.label_counts(), [("Red".to_string(), 1)]);
+        tree.remove_record(50);
+        assert!(tree.tag_counts().is_empty() && tree.label_counts().is_empty());
+        assert_eq!(tree.comments(), 0);
+    }
+
+    #[test]
+    fn a_far_record_keeps_what_was_read_for_it() {
+        let mut tree = sample();
+        tree.set_marks(50, Marked { label: "L".into(), tags: "old".into(), comment: "read".into() });
+        tree.set_record(50, &RecordState { far: true, ..marked_file("", "new", "") });
+        assert_eq!(tree.marked(50), Some(&Marked { label: "L".into(), tags: "new".into(), comment: "read".into() }));
+        assert!(tree.far.contains(&50));
+        tree.set_record(50, &marked_file("", "new", ""));
+        assert_eq!(tree.marked(50), Some(&Marked { tags: "new".into(), ..Default::default() }));
+        assert!(!tree.far.contains(&50));
+    }
+
+    #[test]
+    fn set_marks_with_nothing_removes_the_marks_and_the_far() {
+        let mut tree = sample();
+        tree.set_record(50, &RecordState { far: true, ..marked_file("", "t", "") });
+        assert!(tree.far.contains(&50));
+        tree.set_marks(50, Marked::default());
+        assert_eq!(tree.marked(50), None);
+        assert!(!tree.far.contains(&50));
+    }
+
+    #[test]
+    fn the_builder_adds_up_a_records_tags_and_an_extensions_comment_and_remembers_far() {
+        let mut builder = Builder::new(100);
+        builder.record(50, 1, false, 0x20, 0);
+        builder.tags(50, "a".into());
+        builder.comment(50, "note".into());
+        builder.far(50);
+        let tree = builder.tree;
+        assert_eq!(tree.marked(50), Some(&Marked { label: "".into(), tags: "a".into(), comment: "note".into() }));
+        assert!(tree.far.contains(&50));
     }
 
     fn size(tree: &Tree, n: u32) -> u64 {
@@ -1860,6 +2085,34 @@ mod tests {
         assert_eq!((size(&tree, 21), size(&tree, 30)), (111 * KB, 1026 * KB));
         assert_totals(&mut tree);
         assert_eq!(tree.links_of(40).count(), 1);
+    }
+
+    #[test]
+    fn a_search_asks_the_marks_filter_of_each_records_marks() {
+        let mut tree = sample();
+        // a.txt is labeled and tagged, b.pdf has a comment, and nothing else is marked.
+        tree.set_record(
+            22,
+            &RecordState { label: Some("Red".into()), tags: Some("work\nold".into()), ..file(KB, &[(21, "a.txt")]) },
+        );
+        tree.set_record(24, &RecordState { comment: Some("LACP rate fast".into()), ..file(10 * KB, &[(23, "b.pdf")]) });
+        let none = Vec::<String>::new();
+        assert_eq!(find(&tree, "label:red", ROOT, false, &[]), [r"Users\me\a.txt"]);
+        assert_eq!(find(&tree, "tag:WORK", ROOT, false, &[]), [r"Users\me\a.txt"]);
+        // A label answers to tag: too, so tag:red finds what it found in 0.16.
+        assert_eq!(find(&tree, "tag:red", ROOT, false, &[]), [r"Users\me\a.txt"]);
+        assert_eq!(find(&tree, "comment:lacp", ROOT, false, &[]), [r"Users\me\docs\b.pdf"]);
+        assert_eq!(find(&tree, "has:mark", ROOT, false, &[]), [r"Users\me\a.txt", r"Users\me\docs\b.pdf"]);
+        assert_eq!(find(&tree, "label:blue", ROOT, false, &[]), none);
+        // Not: what has no marks at all is wanted too.
+        assert_eq!(find(&tree, "!has:mark file:", ROOT, false, &[]), [r"Data\big.bin"]);
+        assert_eq!(find(&tree, "!tag:old pdf", ROOT, false, &[]), [r"Users\me\docs\b.pdf"]);
+        // Beside a name and another filter.
+        assert_eq!(find(&tree, "a label:red ext:txt", ROOT, false, &[]), [r"Users\me\a.txt"]);
+        assert_eq!(find(&tree, "b label:red", ROOT, false, &[]), none);
+        // Marks that go take the item out of the answer.
+        tree.set_record(22, &file(KB, &[(21, "a.txt")]));
+        assert_eq!(find(&tree, "label:red", ROOT, false, &[]), none);
     }
 
     #[test]
@@ -3041,5 +3294,81 @@ mod tests {
         // Stale sequence number must be rejected cleanly.
         assert_eq!(tree.path_of_frn(make_ref(24, 2)), None);
         assert_eq!(tree.path_of_frn(make_ref(999, 1)), None);
+    }
+
+    /// What `search_marks` finds for `query`'s names and filters and these `words`: each path with how it was found.
+    fn found_by_marks(tree: &Tree, query: &str, words: &[&str], scope: u32, hidden: bool, excl: &[&str]) -> Vec<(String, u8)> {
+        let (names, filters) = crate::query::parse(query).unwrap();
+        let matcher = NameMatcher::from_terms(names);
+        let excludes = Excludes::new(&excl.iter().map(|e| e.to_string()).collect::<Vec<_>>());
+        let words: Vec<String> = words.iter().map(|w| fold(w)).collect();
+        let search = Search { matcher: &matcher, filters: &filters, now: 134_116_992_000_000_000, scope, hidden, excludes: &excludes };
+        let mut cache = HashMap::new();
+        tree.search_marks(&search, &words, &|| false)
+            .into_iter()
+            .map(|(id, by)| (tree.path(id, &mut cache).unwrap(), by))
+            .collect()
+    }
+
+    fn marks_of(label: &str, tags: &str, comment: &str) -> Marked {
+        Marked { label: label.into(), tags: tags.into(), comment: comment.into() }
+    }
+
+    #[test]
+    fn a_word_in_a_comment_or_a_tag_or_the_label_finds_the_file_and_says_how() {
+        let mut tree = sample();
+        tree.set_marks(22, marks_of("", "", "LACP rate fast"));
+        tree.set_marks(24, marks_of("", "Net\nWork", "slow"));
+        tree.set_marks(31, marks_of("Netplan", "", ""));
+        tree.set_marks(26, marks_of("", "شبكة المنزل", "ملاحظة عن الشبكة"));
+        let find = |words: &[&str]| found_by_marks(&tree, "zzq", words, ROOT, true, &[]);
+        let one = |path: &str, by| vec![(path.to_string(), by)];
+        assert_eq!(find(&["lacp"]), one(r"Users\me\a.txt", HIT_BY_COMMENT));
+        assert_eq!(find(&["ACP", "FAST"]), one(r"Users\me\a.txt", HIT_BY_COMMENT));
+        assert_eq!(find(&["work"]), one(r"Users\me\docs\b.pdf", HIT_BY_TAG));
+        assert_eq!(find(&["plan"]), one(r"Data\big.bin", HIT_BY_TAG));
+        assert_eq!(find(&["net", "slow"]), one(r"Users\me\docs\b.pdf", HIT_BY_COMMENT | HIT_BY_TAG));
+        assert_eq!(find(&["lacp", "work"]), vec![]);
+        assert_eq!(find(&["nothing"]), vec![]);
+        assert_eq!(find(&["شبكة"]), one(r"Users\me\docs\.hidden\c.pdf", HIT_BY_COMMENT | HIT_BY_TAG));
+        assert_eq!(find(&["منزل"]), one(r"Users\me\docs\.hidden\c.pdf", HIT_BY_TAG));
+    }
+
+    #[test]
+    fn a_name_that_holds_the_word_is_left_out_and_no_words_find_nothing() {
+        let mut tree = sample();
+        tree.set_marks(22, marks_of("", "", "a note"));
+        tree.set_marks(24, marks_of("", "", "a note"));
+        let by_a = found_by_marks(&tree, "a", &["a"], ROOT, true, &[]);
+        assert_eq!(by_a, vec![(r"Users\me\docs\b.pdf".to_string(), HIT_BY_COMMENT)], "a.txt is the name search's");
+        let both = found_by_marks(&tree, "pdf", &["note"], ROOT, true, &[]);
+        assert_eq!(both, vec![(r"Users\me\a.txt".to_string(), HIT_BY_COMMENT)], "b.pdf is the name search's");
+        assert_eq!(found_by_marks(&tree, "a", &[], ROOT, true, &[]), vec![]);
+    }
+
+    #[test]
+    fn marks_found_obey_scope_hidden_excludes_filters_removal_and_every_name() {
+        let mut tree = sample();
+        tree.set_marks(22, marks_of("Red", "", "kw"));
+        tree.set_marks(24, marks_of("Blue", "", "kw"));
+        tree.set_marks(26, marks_of("Red", "", "kw"));
+        fn paths(tree: &Tree, query: &str, scope: u32, hidden: bool, excl: &[&str]) -> Vec<String> {
+            found_by_marks(tree, query, &["kw"], scope, hidden, excl).into_iter().map(|(p, _)| p).collect()
+        }
+        assert_eq!(paths(&tree, "zzq", ROOT, true, &[]).len(), 3);
+        assert_eq!(paths(&tree, "zzq", 23, true, &[]), [r"Users\me\docs\b.pdf", r"Users\me\docs\.hidden\c.pdf"]);
+        assert_eq!(paths(&tree, "zzq", ROOT, false, &[]), [r"Users\me\a.txt", r"Users\me\docs\b.pdf"]);
+        assert_eq!(paths(&tree, "zzq", ROOT, true, &["docs"]), [r"Users\me\a.txt"]);
+        assert_eq!(paths(&tree, "zzq ext:pdf", ROOT, true, &[]), [r"Users\me\docs\b.pdf", r"Users\me\docs\.hidden\c.pdf"]);
+        assert_eq!(paths(&tree, "zzq label:red", ROOT, true, &[]), [r"Users\me\a.txt", r"Users\me\docs\.hidden\c.pdf"]);
+        tree.remove_record(22);
+        assert_eq!(paths(&tree, "zzq", ROOT, true, &[]).len(), 2);
+        // Two names (hard links): found by each in scope.
+        let twice = RecordState { comment: Some("kw".into()), ..file(1, &[(21, "x1.txt"), (23, "x2.txt")]) };
+        tree.set_record(50, &twice);
+        assert_eq!(paths(&tree, "zzq", ROOT, true, &[]).len(), 4);
+        assert_eq!(paths(&tree, "x1", ROOT, true, &[]).len(), 3, "x1.txt is the name search's");
+        assert_eq!(paths(&tree, "zzq", 23, true, &[]).len(), 3);
+        assert_eq!(paths(&tree, "zzq", 21, true, &[]).len(), 4, "21 is me: both names are below it");
     }
 }

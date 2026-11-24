@@ -1546,12 +1546,12 @@ impl Workspace {
             MenuEvent::SetTags { paths, add, remove } => {
                 dialogs::tags::set_tags(window, cx, paths.clone(), add.clone(), remove.clone())
             }
-            // Marks (docs/gpui/marks): no menu offers these until card E2; the wave's last step wires them.
-            MenuEvent::SetLabel { .. }
-            | MenuEvent::EditComment { .. }
-            | MenuEvent::CopyMarks { .. }
-            | MenuEvent::PasteMarks { .. }
-            | MenuEvent::ClearMarks { .. } => {}
+            // Marks (docs/gpui/marks).
+            MenuEvent::SetLabel { paths, label } => crate::marking::set_label(paths.clone(), label.clone(), window, cx),
+            MenuEvent::EditComment { paths } => dialogs::comment::open(window, cx, paths.clone()),
+            MenuEvent::CopyMarks { path } => crate::marking::copy_marks(path, window, cx),
+            MenuEvent::PasteMarks { paths } => crate::marking::paste_marks(paths.clone(), window, cx),
+            MenuEvent::ClearMarks { paths } => crate::marking::clear_marks(paths.clone(), window, cx),
             MenuEvent::EditConnection { id } => dialogs::remote::open_edit(window, cx, id.clone()),
             MenuEvent::RemoveConnection { id } => dialogs::remote::remove_remote(window, cx, id.clone()),
             MenuEvent::SearchText { folder } => self.search_in(folder, window, cx),
@@ -2993,6 +2993,13 @@ impl Render for Workspace {
                 }
             }))
             .on_action(cx.listener(|_, _: &actions::QuickLook, window, cx| preview::quick_look::toggle(window, cx)))
+            // Marks (docs/gpui/marks, F6): the keys act on the selection of the pane the keyboard is in.
+            .on_action(cx.listener(|_, label: &actions::LabelSelection, window, cx| {
+                crate::marking::label_selection(label.index, window, cx)
+            }))
+            .on_action(cx.listener(|_, _: &actions::ClearLabel, window, cx| crate::marking::clear_label(window, cx)))
+            .on_action(cx.listener(|_, _: &actions::EditTags, window, cx| crate::marking::edit_tags(window, cx)))
+            .on_action(cx.listener(|_, _: &actions::EditComment, window, cx| crate::marking::edit_comment(window, cx)))
             .on_action(cx.listener(|_, _: &actions::TogglePreview, _, cx| preview::toggle_pane(cx)))
             // The bar: the mark at the start edge (before the address in English, after it in Arabic), the
             // address, then what the window has to say at the end.

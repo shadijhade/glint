@@ -933,7 +933,10 @@ impl FileList {
         let rem = f32::from(window.rem_size());
         let width = self.width.get();
         let rems_wide = if width > 0. { width / rem } else { FIRST_WIDTH / rem };
-        layout::tracks_for(&view.columns, view.located, rems_wide)
+        let mut tracks = layout::tracks_for(&view.columns, view.located, rems_wide);
+        let width_of = |id: ColumnId| f32::from(self.column_width(id.def().width, window, cx));
+        layout::leave_room(&mut tracks, width_of, rems_wide * rem, layout::NAME_ROOM * rem);
+        tracks
             .into_iter()
             .map(|track| match track {
                 GridTrack::Name => Track::Name,

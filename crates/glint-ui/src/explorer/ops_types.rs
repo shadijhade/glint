@@ -265,6 +265,8 @@ pub trait UndoRunner: Send + Sync {
     fn wof_undo(&self, id: u64) -> UndoFut<Result<WofUndone, String>>;
     /// Removes links Paste as link made, and only the links (`glint_core::links::undo_links`).
     fn remove_links(&self, paths: Vec<String>) -> UndoFut<Result<(), String>>;
+    /// Puts these marks back on these items (glint-core's `marks_put`).
+    fn put_marks(&self, items: Vec<(String, Marks)>) -> UndoFut<Result<(), String>>;
 }
 
 /// An [`UndoRunner`] for tests: it writes down what it was asked and answers as told.
@@ -277,6 +279,8 @@ pub struct FakeUndoRunner {
     pub wofs: std::sync::Mutex<Vec<u64>>,
     /// Every set of links it was asked to remove, in order.
     pub links: std::sync::Mutex<Vec<Vec<String>>>,
+    /// Every set of marks it was asked to put back, in order.
+    pub marks: std::sync::Mutex<Vec<Vec<(String, Marks)>>>,
     /// What the next call says, once: it fails with this.
     pub fail: std::sync::Mutex<Option<String>>,
     /// What a taken-back compression leaves undone.
@@ -302,6 +306,11 @@ impl FakeUndoRunner {
         self.links.lock().map(|l| l.clone()).unwrap_or_default()
     }
 
+    /// The marks asked to be put back, in order.
+    pub fn marks_put(&self) -> Vec<Vec<(String, Marks)>> {
+        self.marks.lock().map(|m| m.clone()).unwrap_or_default()
+    }
+
     /// The compression runs asked for, in order.
     pub fn wof_asked(&self) -> Vec<u64> {
         self.wofs.lock().map(|w| w.clone()).unwrap_or_default()
@@ -325,6 +334,14 @@ impl UndoRunner for FakeUndoRunner {
     fn remove_links(&self, paths: Vec<String>) -> UndoFut<Result<(), String>> {
         if let Ok(mut asked) = self.links.lock() {
             asked.push(paths);
+        }
+        let answer = self.failure().map_or(Ok(()), Err);
+        Box::pin(async move { answer })
+    }
+
+    fn put_marks(&self, items: Vec<(String, Marks)>) -> UndoFut<Result<(), String>> {
+        if let Ok(mut asked) = self.marks.lock() {
+            asked.push(items);
         }
         let answer = self.failure().map_or(Ok(()), Err);
         Box::pin(async move { answer })

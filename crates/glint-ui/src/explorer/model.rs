@@ -9,7 +9,7 @@
 
 use super::memory::Memory;
 use super::ops_state::OpsState;
-use super::rows::{build_rows, reads_git, RowMarks, RowSpec, Rows};
+use super::rows::{build_rows, reads_git, RowFileMarks, RowMarks, RowSpec, Rows};
 use super::source::Source;
 use super::tab::Tab;
 use super::types::*;
@@ -765,15 +765,16 @@ impl Explorer {
         // A frozen tab's listing is in the order to show: the rows take it as it is (what the engine's own order
         // gets), whatever the sort says.
         let held = self.freezes.holds(id) && tab.find.is_none();
+        let sort = if held {
+            Sort {
+                key: glint_model::entries::SortKey::Name,
+                desc: false,
+            }
+        } else {
+            tab.sort
+        };
         Some(RowSpec {
-            sort: if held {
-                Sort {
-                    key: glint_model::entries::SortKey::Name,
-                    desc: false,
-                }
-            } else {
-                tab.sort
-            },
+            sort,
             folders_first: held || prefs.folders_first,
             show_hidden: prefs.show_hidden,
             filter: tab.filter.clone(),
@@ -804,6 +805,11 @@ impl Explorer {
                 filter,
                 palettes: tab.color_palettes.clone(),
             }),
+            // Only while something reads them (`explorer::marked` hands them in).
+            marked: tab
+                .marked
+                .clone()
+                .filter(|_| super::rows::reads_marks(&tab.filter, sort, group)),
         })
     }
 
@@ -838,6 +844,32 @@ impl Explorer {
         tab.git = marks;
         tab.git_for = tab.path.clone();
         // Only the rows that read the marks change with them; a rebuild with the same spec is skipped.
+        self.rebuild_rows(id, cx);
+        cx.notify();
+    }
+
+    /// Whether the tab's filter, sort or grouping reads its entries' marks now (`explorer::marked` reads them for it).
+    pub fn wants_row_marks(&self, id: TabId) -> bool {
+        let Some(tab) = self.tabs.get(&id) else {
+            return false;
+        };
+        let group = if tab.view == ViewMode::List { tab.group } else { GroupBy::None };
+        let held = self.freezes.holds(id) && tab.find.is_none();
+        let key = if held { glint_model::entries::SortKey::Name } else { tab.sort.key };
+        super::rows::reads_marks(&tab.filter, Sort { key, desc: false }, group)
+    }
+
+    /// Hands a tab the marks of its entries (and this PC's labels), for the filter, sort and grouping that read them
+    /// (`explorer::marked` does, once every row's marks are read). The same marks again change nothing; others
+    /// rebuild the tab's rows (only if the rows read them). `None` lets the map go.
+    pub fn set_row_marks(&mut self, id: TabId, marks: Option<RowFileMarks>, cx: &mut Context<Self>) {
+        let Some(tab) = self.tabs.get_mut(&id) else {
+            return;
+        };
+        if tab.marked == marks {
+            return;
+        }
+        tab.marked = marks;
         self.rebuild_rows(id, cx);
         cx.notify();
     }

@@ -142,6 +142,8 @@ pub struct Entry {
     pub why_not: Option<SharedString>,
     /// A suggested row: its icon is drawn in the accent color.
     pub smart: bool,
+    /// A label's own color (`0xRRGGBB`) for its dot in [`Node::Swatches`]; none draws the hollow ring of "No label".
+    pub tone: Option<u32>,
 }
 
 impl Entry {
@@ -160,6 +162,7 @@ impl Entry {
             reason: None,
             why_not: None,
             smart: false,
+            tone: None,
         }
     }
 
@@ -234,6 +237,12 @@ impl Entry {
     /// An on/off row, on when `yes`.
     pub fn checked(mut self, yes: bool) -> Entry {
         self.check = Some(yes);
+        self
+    }
+
+    /// Drawn as a dot of this color (`0xRRGGBB`) in the labels' row.
+    pub fn toned(mut self, color: u32) -> Entry {
+        self.tone = Some(color);
         self
     }
 
@@ -426,7 +435,7 @@ pub fn visible_items(items: Vec<Node>) -> Vec<Node> {
     let kept: Vec<Node> = items
         .into_iter()
         .filter_map(|node| match node {
-            Node::Strip(entries) if entries.is_empty() => None,
+            Node::Strip(entries) | Node::Swatches(entries) if entries.is_empty() => None,
             Node::Menu {
                 label,
                 icon,

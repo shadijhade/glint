@@ -195,11 +195,11 @@ pub fn facts_of(details: &MediaDetails) -> MediaFacts {
 
 // ---- What is kept -----------------------------------------------------------------------------------------
 
-/// A path's tags as read, and when.
+/// A path's marks as read (its tags among them), and when.
 struct TagsRead {
-    tags: Vec<String>,
-    /// The store's epoch when read. Fresh while it equals the store's; 0 never does (a tag change named this
-    /// path), so the next ask reads it again while `tags` keeps showing.
+    marks: Marks,
+    /// The store's epoch when read. Fresh while it equals the store's; 0 never does (a mark change named this
+    /// path), so the next ask reads it again while `marks` keeps showing.
     epoch: u64,
 }
 
@@ -212,13 +212,17 @@ struct MediaRead {
 
 /// Everything read for one folder.
 struct Store {
-    /// By the path the listing gave.
+    /// The marks read, by the path the listing gave (they began as tags: the name stayed).
     tags: HashMap<String, TagsRead>,
     /// Paths being read, with the ticket of the read that counts (a tag change cancels it by dropping it).
     tags_inflight: HashMap<String, u64>,
     media: HashMap<String, MediaRead>,
     /// Paths being read, and the modified time they were asked for.
     media_inflight: HashMap<String, i64>,
+    /// A whole read of the folder has landed (`ask_all`): a sort needs every row, so `trim` leaves it be.
+    whole: bool,
+    /// The ticket of the whole read on its way.
+    whole_inflight: Option<u64>,
     /// Counts the times the folder was listed again; starts at 1 so that 0 can mean "stale".
     epoch: u64,
 }
@@ -230,12 +234,17 @@ impl Store {
             tags_inflight: HashMap::new(),
             media: HashMap::new(),
             media_inflight: HashMap::new(),
+            whole: false,
+            whole_inflight: None,
             epoch: 1,
         }
     }
 
     /// The folder holds too many reads: it starts over, and the rows on screen are asked for again.
     fn trim(&mut self) {
+        if self.whole || self.whole_inflight.is_some() {
+            return;
+        }
         if self.tags.len() + self.media.len() > MOST_PER_FOLDER {
             self.tags.clear();
             self.media.clear();
@@ -261,6 +270,8 @@ struct MediaAsk {
 /// The reads of one frame, taken to be made.
 struct Batch {
     tags: Vec<TagsAsk>,
+    /// A folder's marks read in one call, with the ticket that tells the read still counts.
+    whole: Vec<(u64, Vec<TagsAsk>)>,
     media: Vec<MediaAsk>,
     backend: Arc<dyn Backend>,
     source: Arc<dyn MediaSource>,
@@ -273,6 +284,7 @@ pub struct RowFacts {
     /// The folders asked about, the most recent last.
     order: Vec<String>,
     pending_tags: Vec<TagsAsk>,
+    pending_whole: Vec<(u64, Vec<TagsAsk>)>,
     pending_media: Vec<MediaAsk>,
     /// A task is reading (or about to): it takes whatever is pending when it looks.
     flushing: bool,
@@ -304,6 +316,7 @@ impl RowFacts {
             stores: HashMap::new(),
             order: Vec::new(),
             pending_tags: Vec::new(),
+            pending_whole: Vec::new(),
             pending_media: Vec::new(),
             flushing: false,
             next_ticket: 0,
@@ -336,7 +349,7 @@ impl RowFacts {
                 ask_media(store, folder, entry, &mut media);
             }
         }
-        self.queue(tags, media, cx);
+        self.queue(tags, Vec::new(), media, cx);
     }
 
     /// [`RowFacts::ask`] for tags only, by path: the items a menu will be about (the selection), which may be
@@ -348,7 +361,7 @@ impl RowFacts {
         for path in paths {
             ask_tags(store, folder, path, ticket, &mut tags);
         }
-        self.queue(tags, Vec::new(), cx);
+        self.queue(tags, Vec::new(), Vec::new(), cx);
     }
 
     /// The folder's store, made if it is new, and now the most recently used; the oldest beyond [`KEEP_FOLDERS`]
@@ -366,11 +379,18 @@ impl RowFacts {
     }
 
     /// Puts the reads to make in line, and starts the task that makes them if none is running.
-    fn queue(&mut self, tags: Vec<TagsAsk>, media: Vec<MediaAsk>, cx: &mut Context<Self>) {
-        if tags.is_empty() && media.is_empty() {
+    fn queue(
+        &mut self,
+        tags: Vec<TagsAsk>,
+        whole: Vec<(u64, Vec<TagsAsk>)>,
+        media: Vec<MediaAsk>,
+        cx: &mut Context<Self>,
+    ) {
+        if tags.is_empty() && whole.is_empty() && media.is_empty() {
             return;
         }
         self.pending_tags.extend(tags);
+        self.pending_whole.extend(whole);
         self.pending_media.extend(media);
         if self.flushing {
             return;
@@ -384,8 +404,16 @@ impl RowFacts {
             let Some(batch) = batch else { return };
             for part in batch.tags.chunks(TAGS_BATCH) {
                 let paths = part.iter().map(|ask| ask.path.clone()).collect();
-                let read = core_bridge::run(batch.backend.read(paths)).await.and_then(|r| r);
+                let read = core_bridge::run(batch.backend.read_marks(paths)).await.and_then(|r| r);
                 if this.update(cx, |this, cx| this.tags_arrived(part, read, cx)).is_err() {
+                    return;
+                }
+            }
+            // A folder read whole is one call, however long (core reads a long list on every core).
+            for (ticket, asks) in &batch.whole {
+                let paths = asks.iter().map(|ask| ask.path.clone()).collect();
+                let read = core_bridge::run(batch.backend.read_marks(paths)).await.and_then(|r| r);
+                if this.update(cx, |this, cx| this.whole_arrived(*ticket, asks, read, cx)).is_err() {
                     return;
                 }
             }
@@ -402,12 +430,13 @@ impl RowFacts {
 
     /// Takes the reads waiting. With none, the task is over (and the next ask starts another).
     fn take(&mut self, cx: &mut Context<Self>) -> Option<Batch> {
-        if self.pending_tags.is_empty() && self.pending_media.is_empty() {
+        if self.pending_tags.is_empty() && self.pending_whole.is_empty() && self.pending_media.is_empty() {
             self.flushing = false;
             return None;
         }
         Some(Batch {
             tags: std::mem::take(&mut self.pending_tags),
+            whole: std::mem::take(&mut self.pending_whole),
             media: std::mem::take(&mut self.pending_media),
             backend: tags::hub(cx).read(cx).backend(),
             source: self.source.clone(),
@@ -416,12 +445,41 @@ impl RowFacts {
 
     // ---- What came back -------------------------------------------------------------------------------
 
-    fn tags_arrived(&mut self, asked: &[TagsAsk], read: Result<Vec<Vec<String>>, String>, cx: &mut Context<Self>) {
+    fn tags_arrived(&mut self, asked: &[TagsAsk], read: Result<Vec<Marks>, String>, cx: &mut Context<Self>) {
+        if self.keep_marks(asked, read) {
+            cx.notify();
+        }
+    }
+
+    /// A folder read whole landed: its marks are kept, and the folder counts as read whole unless it was listed
+    /// again or a mark in it changed meanwhile.
+    fn whole_arrived(
+        &mut self,
+        ticket: u64,
+        asked: &[TagsAsk],
+        read: Result<Vec<Marks>, String>,
+        cx: &mut Context<Self>,
+    ) {
+        let mut changed = self.keep_marks(asked, read);
+        if let Some(store) = asked.first().and_then(|ask| self.stores.get_mut(&ask.folder)) {
+            if store.whole_inflight == Some(ticket) {
+                store.whole_inflight = None;
+                store.whole = true;
+                changed = true;
+            }
+        }
+        if changed {
+            cx.notify();
+        }
+    }
+
+    /// Keeps what a read answered for the paths asked; whether anything shown is different now.
+    fn keep_marks(&mut self, asked: &[TagsAsk], read: Result<Vec<Marks>, String>) -> bool {
         let mut lists = read.unwrap_or_default().into_iter();
         let mut changed = false;
         for ask in asked {
             // A failed or short answer says nothing for the paths it lacks.
-            let tags = lists.next().unwrap_or_default();
+            let marks = lists.next().unwrap_or_default();
             let Some(store) = self.stores.get_mut(&ask.folder) else {
                 continue;
             };
@@ -431,18 +489,12 @@ impl RowFacts {
             }
             store.tags_inflight.remove(&ask.path);
             store.trim();
-            let shown = store
-                .tags
-                .get(&ask.path)
-                .map(|read| read.tags.as_slice())
-                .unwrap_or(&[]);
-            changed |= shown != tags.as_slice();
+            let shown = store.tags.get(&ask.path).map(|read| &read.marks);
+            changed |= shown.unwrap_or(&Marks::default()) != &marks;
             let epoch = store.epoch;
-            store.tags.insert(ask.path.clone(), TagsRead { tags, epoch });
+            store.tags.insert(ask.path.clone(), TagsRead { marks, epoch });
         }
-        if changed {
-            cx.notify();
-        }
+        changed
     }
 
     fn media_arrived(
@@ -488,6 +540,8 @@ impl RowFacts {
         store.epoch += 1;
         // Reads under way may predate the listing: they are asked again.
         store.tags_inflight.clear();
+        store.whole = false;
+        store.whole_inflight = None;
         cx.notify();
     }
 
@@ -495,10 +549,16 @@ impl RowFacts {
     fn tags_changed(&mut self, paths: &[String], cx: &mut Context<Self>) {
         let named: HashSet<String> = paths.iter().map(|path| path.to_lowercase()).collect();
         for store in self.stores.values_mut() {
+            let mut touched = false;
             for (path, read) in store.tags.iter_mut() {
                 if named.contains(&path.to_lowercase()) {
                     read.epoch = 0;
+                    touched = true;
                 }
+            }
+            if touched {
+                store.whole = false;
+                store.whole_inflight = None;
             }
             store
                 .tags_inflight
@@ -511,21 +571,49 @@ impl RowFacts {
 
     /// The tags read for `path` in `folder`, or None while they are unread. Empty for an item with none.
     pub fn tags_of(&self, folder: &str, path: &str) -> Option<&[String]> {
-        self.stores.get(folder)?.tags.get(path).map(|read| read.tags.as_slice())
+        self.stores.get(folder)?.tags.get(path).map(|read| read.marks.tags.as_slice())
     }
 
     /// The marks read for `path` in `folder` (docs/gpui/marks), or None while they are unread (draw nothing).
     pub fn marks_of(&self, folder: &str, path: &str) -> Option<&Marks> {
-        // S0: card D1 fills this in.
-        let _ = (folder, path);
-        None
+        self.stores.get(folder)?.tags.get(path).map(|read| &read.marks)
+    }
+
+    /// Whether every mark of `folder` was read in one go (`ask_all`) and is still good: false again once the
+    /// folder is listed again or a mark in it changes, until the next `ask_all` lands.
+    pub fn has_all(&self, folder: &str) -> bool {
+        self.stores.get(folder).is_some_and(|store| store.whole)
     }
 
     /// Reads the marks of every entry of `folder` on core's now lane, for a list sorted, grouped or filtered by a
     /// mark (M5); the rows are built again once they are in.
+    ///
+    /// Everything `ask` would read marks for and that is neither fresh nor on its way is read in one call. Asking
+    /// again while that read is on its way, or when everything is fresh, calls nothing.
     pub fn ask_all(&mut self, folder: &str, entries: &[FileEntry], cx: &mut Context<Self>) {
-        // S0: card D1 fills this in.
-        let _ = (folder, entries, cx);
+        let ticket = &mut self.next_ticket;
+        let store = Self::store_for(&mut self.stores, &mut self.order, folder);
+        if store.whole || store.whole_inflight.is_some() {
+            return;
+        }
+        let mut asks = Vec::new();
+        for entry in entries {
+            if on_this_disk(entry) && !on_network(&entry.path) {
+                ask_tags(store, folder, &entry.path, ticket, &mut asks);
+            }
+        }
+        if asks.is_empty() {
+            // Nothing left to read: if no batch is still on its way, every row is read.
+            if store.tags_inflight.is_empty() {
+                store.whole = true;
+                cx.notify();
+            }
+            return;
+        }
+        *ticket += 1;
+        store.whole_inflight = Some(*ticket);
+        let whole = vec![(*ticket, asks)];
+        self.queue(Vec::new(), whole, Vec::new(), cx);
     }
 
     /// What `entry` says of itself, as read for its current version: None while unread (draw nothing), Some(None)
@@ -535,6 +623,18 @@ impl RowFacts {
         (read.modified == entry.modified).then_some(read.facts.as_ref())
     }
 
+    /// The marks read for these paths in any folder, by path in lower case. Paths not read are left out.
+    pub fn marks_among<'a>(&self, paths: impl IntoIterator<Item = &'a str>) -> HashMap<String, Marks> {
+        let mut found = HashMap::new();
+        for path in paths {
+            let read = self.stores.values().find_map(|store| store.tags.get(path));
+            if let Some(read) = read {
+                found.insert(path.to_lowercase(), read.marks.clone());
+            }
+        }
+        found
+    }
+
     /// The tags read for these paths in any folder, by path in lower case (what the menus read as
     /// `MenuData::tags`). Paths not read are left out.
     pub fn tags_among<'a>(&self, paths: impl IntoIterator<Item = &'a str>) -> HashMap<String, Vec<String>> {
@@ -542,7 +642,7 @@ impl RowFacts {
         for path in paths {
             let read = self.stores.values().find_map(|store| store.tags.get(path));
             if let Some(read) = read {
-                found.insert(path.to_lowercase(), read.tags.clone());
+                found.insert(path.to_lowercase(), read.marks.tags.clone());
             }
         }
         found
@@ -770,6 +870,67 @@ pub(crate) mod fake {
                 }
             }
             Box::pin(async { Ok(Vec::new()) })
+        }
+    }
+
+    /// A backend that knows marks: it answers `read_marks` from a map (by path in lower case), logging each call's
+    /// paths, and counts the tags-only `read`s it should never be asked.
+    #[derive(Default)]
+    pub(crate) struct MarksBackend {
+        pub marks: Mutex<HashMap<String, Marks>>,
+        pub reads: Mutex<Vec<Vec<String>>>,
+        pub tags_reads: Mutex<usize>,
+    }
+
+    impl MarksBackend {
+        pub(crate) fn with(items: &[(&str, Marks)]) -> Arc<Self> {
+            let fake = MarksBackend::default();
+            for (path, marks) in items {
+                fake.put(path, marks.clone());
+            }
+            Arc::new(fake)
+        }
+
+        pub(crate) fn put(&self, path: &str, marks: Marks) {
+            if let Ok(mut map) = self.marks.lock() {
+                map.insert(path.to_lowercase(), marks);
+            }
+        }
+
+        /// The paths of each `read_marks` so far.
+        pub(crate) fn calls(&self) -> Vec<Vec<String>> {
+            self.reads.lock().map(|r| r.clone()).unwrap_or_default()
+        }
+
+        pub(crate) fn paths_read(&self) -> usize {
+            self.calls().iter().map(Vec::len).sum()
+        }
+    }
+
+    impl Backend for MarksBackend {
+        fn read(&self, paths: Vec<String>) -> Fut<Vec<Vec<String>>> {
+            if let Ok(mut n) = self.tags_reads.lock() {
+                *n += 1;
+            }
+            let _ = paths;
+            Box::pin(async { Ok(Vec::new()) })
+        }
+
+        fn set(&self, _: Vec<String>, _: Vec<String>, _: Vec<String>) -> Fut<Vec<(String, String)>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+
+        fn read_marks(&self, paths: Vec<String>) -> Fut<Vec<Marks>> {
+            let known = self.marks.lock().map(|m| m.clone()).unwrap_or_default();
+            if let Ok(mut reads) = self.reads.lock() {
+                reads.push(paths.clone());
+            }
+            Box::pin(async move {
+                Ok(paths
+                    .iter()
+                    .map(|p| known.get(&p.to_lowercase()).cloned().unwrap_or_default())
+                    .collect())
+            })
         }
     }
 
@@ -1195,5 +1356,207 @@ mod tests {
         );
         assert_eq!(data.tags.get("c:\\x\\f0000.jpg"), Some(&vec!["Red".to_string()]));
         assert!(!data.tags.contains_key("c:\\x\\f0002.jpg"), "not read: left out");
+    }
+
+    // ---- Marks ------------------------------------------------------------------------------------------
+
+    fn marked(label: Option<&str>, tags: &[&str], comment: Option<&str>) -> Marks {
+        Marks {
+            label: label.map(String::from),
+            tags: tags.iter().map(|t| t.to_string()).collect(),
+            comment: comment.map(String::from),
+        }
+    }
+
+    /// The shared model on a backend that knows marks.
+    fn marks_app(cx: &mut TestAppContext, backend: &Arc<fake::MarksBackend>) -> Entity<RowFacts> {
+        cx.executor().allow_parking();
+        cx.update(testing::init);
+        let backend: Arc<dyn Backend> = backend.clone();
+        let media: Arc<dyn MediaSource> = fake::Media::with(vec![]);
+        cx.update(|cx| {
+            tags::init_with(cx, backend);
+            init_with(cx, media);
+            shared(cx)
+        })
+    }
+
+    fn marks_are(facts: &Entity<RowFacts>, cx: &mut TestAppContext, path: &str, wanted: &Marks) -> bool {
+        facts.read_with(cx, |f, _| f.marks_of(DIR, path) == Some(wanted))
+    }
+
+    fn changed(cx: &mut TestAppContext, paths: &[&str]) {
+        let hub = cx.update(tags::hub);
+        let paths = paths.iter().map(|p| p.to_string()).collect();
+        hub.update(cx, |_, cx| cx.emit(TagsChanged { paths }));
+    }
+
+    #[gpui_kit::test]
+    fn marks_are_none_until_read_and_then_a_label_tags_and_a_comment_and_an_item_with_none_reads_empty(
+        cx: &mut TestAppContext,
+    ) {
+        let _guard = testing::lock();
+        let full = marked(Some("Red"), &["Work", "Blue"], Some("see the totals"));
+        let backend = fake::MarksBackend::with(&[("C:\\x\\f0001.jpg", full.clone())]);
+        let facts = marks_app(cx, &backend);
+        let list = entries(3);
+        facts.read_with(cx, |f, _| {
+            assert_eq!(f.marks_of(DIR, "C:\\x\\f0001.jpg"), None, "unread: draw nothing");
+            assert_eq!(f.tags_of(DIR, "C:\\x\\f0001.jpg"), None);
+        });
+        facts.update(cx, |f, cx| f.ask(DIR, list.iter(), tags_only(), cx));
+        fake::settle(cx, |_| backend.paths_read() == 3);
+        fake::settle(cx, |cx| marks_are(&facts, cx, "C:\\x\\f0001.jpg", &full));
+        facts.read_with(cx, |f, _| {
+            assert_eq!(f.tags_of(DIR, "C:\\x\\f0001.jpg"), Some(&["Work".to_string(), "Blue".to_string()][..]));
+            assert_eq!(f.marks_of(DIR, "C:\\x\\f0002.jpg"), Some(&Marks::default()), "none: empty, not unread");
+            assert_eq!(f.tags_of(DIR, "C:\\x\\f0002.jpg"), Some(&[][..]));
+        });
+    }
+
+    #[gpui_kit::test]
+    fn a_frames_rows_are_read_with_one_read_marks_call_and_read_is_never_asked(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let backend = fake::MarksBackend::with(&[]);
+        let facts = marks_app(cx, &backend);
+        let list = entries(5);
+        facts.update(cx, |f, cx| {
+            f.ask(DIR, list.iter().take(2), tags_only(), cx);
+            f.ask(DIR, list.iter(), tags_only(), cx);
+        });
+        fake::settle(cx, |_| backend.paths_read() == 5);
+        assert_eq!(backend.calls().len(), 1, "one call for the frame");
+        assert_eq!(*backend.tags_reads.lock().unwrap(), 0, "read is never asked");
+    }
+
+    #[gpui_kit::test]
+    fn a_tags_only_backend_reads_the_same_rows_with_one_read_call_as_before(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let list = entries(5);
+        let tags = fake::Tags::with(&[("C:\\x\\f0001.jpg", &["Red"])]);
+        let media = fake::Media::with(vec![]);
+        let plain = app(cx, &tags, &media);
+        plain.update(cx, |f, cx| f.ask(DIR, list.iter(), tags_only(), cx));
+        fake::settle(cx, |_| tags.paths_read() == 5);
+        assert_eq!(tags.calls().len(), 1);
+        fake::settle(cx, |cx| tags_are(&plain, cx, "C:\\x\\f0001.jpg", &["Red"]));
+    }
+
+    #[gpui_kit::test]
+    fn a_mark_changed_is_read_again_and_the_old_marks_show_until_the_new_ones_arrive(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let (red, blue) = (marked(Some("Red"), &[], None), marked(Some("Blue"), &["x"], None));
+        let backend = fake::MarksBackend::with(&[("C:\\x\\f0000.jpg", red.clone())]);
+        let facts = marks_app(cx, &backend);
+        let list = entries(2);
+        facts.update(cx, |f, cx| f.ask(DIR, list.iter(), tags_only(), cx));
+        fake::settle(cx, |_| backend.paths_read() == 2);
+        fake::settle(cx, |cx| marks_are(&facts, cx, "C:\\x\\f0000.jpg", &red));
+        backend.put("C:\\x\\f0000.jpg", blue.clone());
+        changed(cx, &["c:\\X\\F0000.JPG"]);
+        assert!(marks_are(&facts, cx, "C:\\x\\f0000.jpg", &red), "no blink");
+        facts.update(cx, |f, cx| f.ask(DIR, list.iter(), tags_only(), cx));
+        fake::settle(cx, |_| backend.paths_read() == 3);
+        assert_eq!(backend.calls()[1], ["C:\\x\\f0000.jpg"], "only the path that changed");
+        fake::settle(cx, |cx| marks_are(&facts, cx, "C:\\x\\f0000.jpg", &blue));
+    }
+
+    #[gpui_kit::test]
+    fn a_failed_or_short_answer_says_nothing_for_the_paths_it_lacks(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let tags = fake::Tags::with(&[]);
+        if let Ok(mut fails) = tags.fails.lock() {
+            *fails = true;
+        }
+        let media = fake::Media::with(vec![]);
+        let facts = app(cx, &tags, &media);
+        let list = entries(2);
+        facts.update(cx, |f, cx| f.ask(DIR, list.iter(), tags_only(), cx));
+        fake::settle(cx, |_| tags.paths_read() == 2);
+        fake::settle(cx, |cx| tags_are(&facts, cx, "C:\\x\\f0000.jpg", &[]));
+        facts.read_with(cx, |f, _| assert_eq!(f.marks_of(DIR, "C:\\x\\f0001.jpg"), Some(&Marks::default())));
+    }
+
+    /// Entries of a folder that are asked for (a long list), and four that never are.
+    fn mixed(count: usize) -> (Vec<FileEntry>, Vec<String>) {
+        let mut list = entries(count);
+        let asked: Vec<String> = list.iter().map(|e| e.path.clone()).collect();
+        let mut inside = file("C:\\z.zip", "a.txt", 1, 0);
+        inside.attrs |= attr::IN_ARCHIVE;
+        let mut gone = file("C:\\x", "gone.txt", 1, 0);
+        gone.attrs |= attr::RECYCLED;
+        list.extend([inside, gone, file(r"\\server\share", "net.txt", 1, 0)]);
+        (list, asked)
+    }
+
+    #[gpui_kit::test]
+    fn ask_all_reads_every_entry_in_one_call_says_when_it_landed_and_asks_nothing_twice(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let red = marked(Some("Red"), &[], None);
+        let backend = fake::MarksBackend::with(&[("C:\\x\\f0999.jpg", red.clone())]);
+        let facts = marks_app(cx, &backend);
+        let (list, asked) = mixed(1000);
+        facts.update(cx, |f, cx| f.ask_all(DIR, &list, cx));
+        assert!(!facts.read_with(cx, |f, _| f.has_all(DIR)), "not before it lands");
+        // Asking again while it is on its way calls nothing.
+        facts.update(cx, |f, cx| f.ask_all(DIR, &list, cx));
+        fake::settle(cx, |cx| facts.read_with(cx, |f, _| f.has_all(DIR)));
+        assert_eq!(backend.calls(), [asked], "one call, with all of them and only them");
+        assert!(marks_are(&facts, cx, "C:\\x\\f0999.jpg", &red));
+        // Everything is fresh: nothing is called.
+        facts.update(cx, |f, cx| f.ask_all(DIR, &list, cx));
+        cx.run_until_parked();
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        cx.run_until_parked();
+        assert_eq!(backend.calls().len(), 1);
+        // The folder listed again: not whole any more, and asked for again.
+        facts.update(cx, |f, cx| f.listed_again(DIR, cx));
+        assert!(!facts.read_with(cx, |f, _| f.has_all(DIR)));
+        facts.update(cx, |f, cx| f.ask_all(DIR, &list, cx));
+        fake::settle(cx, |cx| facts.read_with(cx, |f, _| f.has_all(DIR)));
+        assert_eq!(backend.calls().len(), 2);
+        assert_eq!(backend.calls()[1].len(), 1000);
+        // A mark in it changes: not whole until the next read lands, which reads only what changed.
+        changed(cx, &["C:\\x\\f0003.jpg"]);
+        assert!(!facts.read_with(cx, |f, _| f.has_all(DIR)));
+        facts.update(cx, |f, cx| f.ask_all(DIR, &list, cx));
+        fake::settle(cx, |cx| facts.read_with(cx, |f, _| f.has_all(DIR)));
+        assert_eq!(backend.calls()[2], ["C:\\x\\f0003.jpg"]);
+    }
+
+    #[gpui_kit::test]
+    fn a_folder_read_whole_keeps_more_than_most_per_folder_reads(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let (first, last) = ("C:\\x\\f0000.jpg", format!("C:\\x\\f{:04}.jpg", MOST_PER_FOLDER + 99));
+        let backend = fake::MarksBackend::with(&[
+            (first, marked(Some("First"), &[], None)),
+            (&last, marked(Some("Last"), &[], None)),
+        ]);
+        let facts = marks_app(cx, &backend);
+        let list = entries(MOST_PER_FOLDER + 100);
+        facts.update(cx, |f, cx| f.ask_all(DIR, &list, cx));
+        fake::settle(cx, |cx| facts.read_with(cx, |f, _| f.has_all(DIR)));
+        facts.read_with(cx, |f, _| {
+            assert_eq!(f.marks_of(DIR, first).and_then(|m| m.label.as_deref()), Some("First"));
+            assert_eq!(f.marks_of(DIR, &last).and_then(|m| m.label.as_deref()), Some("Last"));
+        });
+    }
+
+    #[gpui_kit::test]
+    fn marks_among_gives_the_marks_read_by_path_in_lower_case_and_leaves_out_the_unread(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let red = marked(Some("Red"), &["Work"], None);
+        let backend = fake::MarksBackend::with(&[("C:\\x\\f0001.jpg", red.clone())]);
+        let facts = marks_app(cx, &backend);
+        let list = entries(2);
+        facts.update(cx, |f, cx| f.ask(DIR, list.iter(), tags_only(), cx));
+        fake::settle(cx, |_| backend.paths_read() == 2);
+        fake::settle(cx, |cx| marks_are(&facts, cx, "C:\\x\\f0001.jpg", &red));
+        let asked = ["C:\\x\\f0001.jpg", "C:\\x\\f0000.jpg", "C:\\x\\nope.jpg"];
+        let got = facts.read_with(cx, |f, _| f.marks_among(asked));
+        assert_eq!(got.len(), 2);
+        assert_eq!(got.get("c:\\x\\f0001.jpg"), Some(&red));
+        assert_eq!(got.get("c:\\x\\f0000.jpg"), Some(&Marks::default()));
+        assert_eq!(got.get("c:\\x\\nope.jpg"), None);
     }
 }

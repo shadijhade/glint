@@ -336,7 +336,7 @@ pub fn top_rows(nodes: &[Node]) -> usize {
 fn primary_keys(nodes: &[Node]) -> Vec<String> {
     nodes
         .iter()
-        .skip_while(|node| matches!(node, Node::Strip(_) | Node::Head(_)))
+        .skip_while(|node| matches!(node, Node::Strip(_) | Node::Swatches(_) | Node::Head(_)))
         .take_while(|node| !matches!(node, Node::Separator | Node::Heading(_)))
         .filter_map(|node| match node {
             Node::Item(entry) => entry.run.key(),

@@ -72,10 +72,13 @@ fn is_word(term: &str) -> bool {
         return false;
     }
     match term.split_once(':') {
+        // A marks term (`label:red`, `!tag:old`, `has:comment`) is never text to look for.
+        Some((key, _)) if glint_model::marks::KEYS.contains(&key.trim_start_matches('!').to_ascii_lowercase().as_str()) => {
+            false
+        }
         Some((key, _)) => !matches!(
             key.to_ascii_lowercase().as_str(),
             "ext"
-                | "tag"
                 | "path"
                 | "size"
                 | "dm"
@@ -569,6 +572,15 @@ pub(super) fn drop_inside_files(find: &mut FindRun) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_marks_term_is_never_text_to_look_for_inside_files() {
+        for term in ["label:red", "LBL:red", "!tag:old", "tag:work", "has:comment", "cmt:x", "comment:lacp"] {
+            assert_eq!(inside_words(&format!("{term} budget")), "budget", "{term}");
+            assert_eq!(inside_filters(term), "", "{term}");
+        }
+        assert_eq!(inside_words("ext:pdf budget"), "budget");
+    }
 
     #[test]
     fn the_words_looked_for_inside_files_leave_out_filters_paths_and_wildcards() {

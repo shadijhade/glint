@@ -76,16 +76,17 @@ fn tiles_show_their_tags_as_dots_and_ask_for_each_tile_once(cx: &mut TestAppCont
     });
     let mut env = env(cx, &disk(0), plain());
     for _ in 0..400 {
-        if dots(&mut env).len() == 2 {
+        if dots(&mut env).len() == 1 {
             break;
         }
         std::thread::sleep(Duration::from_millis(5));
     }
-    // Unread tiles show nothing; the tagged ones have their dots, named for a screen reader.
-    assert_eq!(dots(&mut env), ["Tags: Blue", "Tags: Red, Work"]);
+    // Unread tiles show nothing; the tagged one has its dots, named for a screen reader. Red and Blue are labels
+    // since the marks (docs/gpui/marks, 5.6): a tile shows them as its name's pill, not as dots.
+    assert_eq!(dots(&mut env), ["Tags: Work"]);
     env.visual.update(|window, _| {
         assert_eq!(
-            window.try_find_by_label("Tags: Red, Work").and_then(|dots| dots.role()),
+            window.try_find_by_label("Tags: Work").and_then(|dots| dots.role()),
             Some(Role::Group)
         );
     });

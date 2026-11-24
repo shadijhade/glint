@@ -642,6 +642,161 @@ pub struct Filters {
     pub props: Vec<Prop>,
     /// Glint's tags (`tag:work`, `tag:red;blue`): each group needs one of its tags (any case).
     pub tags: Vec<Vec<String>>,
+    /// `label:`, `tag:`, `comment:` and `has:`, and their `!` forms: asked of the record's marks.
+    pub marks: MarksFilter,
+}
+
+/// What `has:` asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Has {
+    Label,
+    Tag,
+    Comment,
+    Mark,
+}
+
+/// One side of a marks filter: every term of it must hold.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct MarkTerms {
+    /// `label:`: groups of names, any one of which will do.
+    pub labels: Vec<Vec<String>>,
+    /// `tag:`: groups the same way; a label answers too.
+    pub tags: Vec<Vec<String>>,
+    /// `comment:`: words or phrases, every one in the comment.
+    pub words: Vec<String>,
+    pub has: Vec<Has>,
+}
+
+impl MarkTerms {
+    fn is_empty(&self) -> bool {
+        self.labels.is_empty() && self.tags.is_empty() && self.words.is_empty() && self.has.is_empty()
+    }
+}
+
+/// `label:`, `tag:`, `comment:` and `has:` (`yes`), and the same after `!` (`no`). Every name, word and phrase is
+/// kept folded, so `accepts` folds only the item's side.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct MarksFilter {
+    pub yes: MarkTerms,
+    pub no: MarkTerms,
+}
+
+impl MarksFilter {
+    pub fn is_empty(&self) -> bool {
+        self.yes.is_empty() && self.no.is_empty()
+    }
+
+    /// Whether an item with these marks is wanted: `label` and `comment` are "" for none, `tags` one a line.
+    pub fn accepts(&self, label: &str, tags: &str, comment: &str) -> bool {
+        if self.is_empty() {
+            return true;
+        }
+        let label = fold(label.trim());
+        let tags: Vec<String> = tags.lines().map(|t| fold(t.trim())).filter(|t| !t.is_empty()).collect();
+        let comment = fold(comment);
+        let (yes, no) = (&self.yes, &self.no);
+        let label_in = |group: &Vec<String>| !label.is_empty() && group.contains(&label);
+        let tag_in = |group: &Vec<String>| label_in(group) || tags.iter().any(|t| group.contains(t));
+        let has = |h: &Has| match h {
+            Has::Label => !label.is_empty(),
+            Has::Tag => !tags.is_empty(),
+            Has::Comment => !comment.is_empty(),
+            Has::Mark => !label.is_empty() || !tags.is_empty() || !comment.is_empty(),
+        };
+        let word = |w: &String| comment.contains(w.as_str());
+        yes.labels.iter().all(label_in)
+            && yes.tags.iter().all(tag_in)
+            && yes.words.iter().all(word)
+            && yes.has.iter().all(has)
+            && !no.labels.iter().any(label_in)
+            && !no.tags.iter().any(tag_in)
+            && !no.words.iter().any(word)
+            && !no.has.iter().any(has)
+    }
+
+    /// This filter with the names nothing has replaced by the nearest that something has; None when none is.
+    pub fn nearest(&self, labels: &[&str], tags: &[&str]) -> Option<MarksFilter> {
+        let labels: Vec<String> = labels.iter().map(|l| fold(l)).collect();
+        // A tag: also answers to a label.
+        let tags: Vec<String> = tags.iter().map(|t| fold(t)).chain(labels.iter().cloned()).collect();
+        let mut out = self.clone();
+        let a = near_groups(&mut out.yes.labels, &labels);
+        let b = near_groups(&mut out.yes.tags, &tags);
+        (a || b).then_some(out)
+    }
+}
+
+/// Replaces each group none of whose names is known by the known names nearest to its names; whether any changed.
+fn near_groups(groups: &mut [Vec<String>], known: &[String]) -> bool {
+    let mut changed = false;
+    for group in groups {
+        if group.iter().any(|n| known.contains(n)) {
+            continue;
+        }
+        let mut next: Vec<String> = Vec::new();
+        for name in group.iter() {
+            let near = nearest_names(name, known);
+            if near.is_empty() {
+                next.push(name.clone());
+            } else {
+                changed = true;
+                next.extend(near);
+            }
+        }
+        next.dedup();
+        *group = next;
+    }
+    changed
+}
+
+/// The known names within the allowance of `name`, those at the smallest distance only.
+fn nearest_names(name: &str, known: &[String]) -> Vec<String> {
+    let a: Vec<char> = name.chars().collect();
+    let allowed = usize::from(edits(a.len()));
+    let mut best = usize::MAX;
+    let mut found: Vec<String> = Vec::new();
+    for k in known {
+        let b: Vec<char> = k.chars().collect();
+        if allowed == 0 || a.len().abs_diff(b.len()) > allowed || a.len() > MAX_NEAR || b.len() > MAX_NEAR {
+            continue;
+        }
+        let Some(d) = name_distance(&a, &b).filter(|&d| d <= allowed) else { continue };
+        if d < best {
+            best = d;
+            found.clear();
+        }
+        if d == best && !found.contains(k) {
+            found.push(k.clone());
+        }
+    }
+    found
+}
+
+/// The fewest of inserting a letter, dropping one, changing one or swapping two neighbours that turn `a` into
+/// `b`; None when their first letters differ (unless the first two are swapped).
+fn name_distance(a: &[char], b: &[char]) -> Option<usize> {
+    let (a0, a1, b0, b1) = (a.first(), a.get(1), b.first(), b.get(1));
+    if a0 != b0 && !(a0 == b1 && a1 == b0 && a0.is_some()) {
+        return None;
+    }
+    let mut d = vec![vec![0usize; b.len() + 1]; a.len() + 1];
+    for (i, row) in d.iter_mut().enumerate() {
+        row[0] = i;
+    }
+    for (j, cell) in d[0].iter_mut().enumerate() {
+        *cell = j;
+    }
+    for i in 1..=a.len() {
+        for j in 1..=b.len() {
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            let mut best = (d[i - 1][j] + 1).min(d[i][j - 1] + 1).min(d[i - 1][j - 1] + cost);
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                best = best.min(d[i - 2][j - 2] + 1);
+            }
+            d[i][j] = best;
+        }
+    }
+    Some(d[a.len()][b.len()])
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -703,7 +858,8 @@ impl Filters {
         self.kind == Some(Kind::Files) || self.min_size.is_some() || self.max_size.is_some() || !self.props.is_empty()
     }
 
-    /// Whether an item passes. `folded` is its name's lowercase form when the name isn't ASCII, and
+    /// Whether an item passes by name, size and date. Marks are asked of `marks`, with the record's.
+    /// `folded` is its name's lowercase form when the name isn't ASCII, and
     /// `age` how many seconds ago it was modified.
     pub fn accepts(&self, name: &[u8], folded: Option<&[u8]>, dir: bool, size: u64, age: i64) -> bool {
         if (dir && self.files_only()) || (!dir && self.kind == Some(Kind::Folders)) {
@@ -730,6 +886,49 @@ pub fn parse(query: &str) -> Result<(Vec<String>, Filters), String> {
             names.push(term);
             continue;
         };
+        let (not, mark_key) = match key.strip_prefix('!') {
+            Some(k) => (true, k),
+            None => (false, key),
+        };
+        let mark_key = mark_key.to_ascii_lowercase();
+        if MARK_KEYS.contains(&mark_key.as_str()) {
+            let side = if not { &mut filters.marks.no } else { &mut filters.marks.yes };
+            match mark_key.as_str() {
+                "label" | "lbl" => {
+                    let any: Vec<String> = value.split(';').map(|l| fold(l.trim().trim_matches('"').trim())).filter(|l| !l.is_empty()).collect();
+                    if any.is_empty() {
+                        return Err("“label:”: give a label, like label:important or label:red;orange".into());
+                    }
+                    side.labels.push(any);
+                }
+                "tag" | "tags" => {
+                    let any: Vec<String> = value.split([';', ',']).map(|t| fold(t.trim().trim_matches('"'))).filter(|t| !t.is_empty()).collect();
+                    if any.is_empty() {
+                        return Err("“tag:”: give a tag, like tag:work or tag:red;blue".into());
+                    }
+                    if !not {
+                        filters.tags.push(value.split([';', ',']).map(|t| t.trim().trim_matches('"').to_string()).filter(|t| !t.is_empty()).collect());
+                    }
+                    let side = if not { &mut filters.marks.no } else { &mut filters.marks.yes };
+                    side.tags.push(any);
+                }
+                "comment" | "cmt" => {
+                    let word = fold(value.trim());
+                    if word.is_empty() {
+                        return Err("“comment:”: give a word, like comment:invoice or comment:\"second draft\"".into());
+                    }
+                    side.words.push(word);
+                }
+                _ => side.has.push(match fold(value.trim()).as_str() {
+                    "label" => Has::Label,
+                    "tag" | "tags" => Has::Tag,
+                    "comment" => Has::Comment,
+                    "mark" | "marks" => Has::Mark,
+                    _ => return Err(format!("“{term}”: has: takes label, tag, comment or mark")),
+                }),
+            }
+            continue;
+        }
         match key.to_ascii_lowercase().as_str() {
             "ext" => filters.exts.extend(value.split([';', ',']).map(|e| e.trim().trim_start_matches('.').to_lowercase()).filter(|e| !e.is_empty())),
             "size" => {
@@ -774,6 +973,9 @@ pub fn parse(query: &str) -> Result<(Vec<String>, Filters), String> {
     }
     Ok((names, filters))
 }
+
+/// The keys of the marks filter (each also after `!`).
+const MARK_KEYS: &[&str] = &["label", "lbl", "tag", "tags", "comment", "cmt", "has"];
 
 /// How a property filter goes, for one that doesn't read right.
 fn prop_help(key: &str) -> &'static str {
@@ -897,6 +1099,17 @@ pub fn without_tags(query: &str) -> String {
     terms(query)
         .into_iter()
         .filter(|t| !t.split_once(':').is_some_and(|(key, _)| matches!(key.to_ascii_lowercase().as_str(), "tag" | "tags")))
+        .map(|t| if t.contains(char::is_whitespace) { format!("\"{t}\"") } else { t })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The query without its marks terms (`label:`, `tag:`, `comment:`, `has:`, with or without `!`), for what can't
+/// read marks (fd).
+pub fn without_marks(query: &str) -> String {
+    terms(query)
+        .into_iter()
+        .filter(|t| !t.split_once(':').is_some_and(|(key, _)| MARK_KEYS.contains(&key.strip_prefix('!').unwrap_or(key).to_ascii_lowercase().as_str())))
         .map(|t| if t.contains(char::is_whitespace) { format!("\"{t}\"") } else { t })
         .collect::<Vec<_>>()
         .join(" ")
@@ -1266,4 +1479,78 @@ mod tests {
         assert!(!contains_ascii(b"", b"a"));
         assert!(!contains_ascii(b"ba", b"ab"));
     }
+
+    const MARKS_FIXTURE: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/marks-filter.txt"));
+
+    fn marks(query: &str) -> MarksFilter {
+        let (names, filters) = parse(query).unwrap();
+        assert!(names.is_empty(), "{query}");
+        filters.marks
+    }
+
+    #[test]
+    fn the_marks_fixture_cases_all_hold() {
+        let mut ran = 0;
+        for (n, line) in MARKS_FIXTURE.lines().enumerate() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let f: Vec<&str> = line.split('|').map(str::trim).collect();
+            assert_eq!(f.len(), 5, "line {}", n + 1);
+            let (names, filters) = parse(f[0]).unwrap_or_else(|e| panic!("line {}: {e}", n + 1));
+            assert!(names.is_empty(), "line {}", n + 1);
+            let (tags, comment) = (f[2].replace(',', "\n"), f[3].replace("\\n", "\n"));
+            assert_eq!(filters.marks.accepts(f[1], &tags, &comment), f[4] == "yes", "line {}: {line}", n + 1);
+            ran += 1;
+        }
+        assert!(ran >= 60, "only {ran} cases ran");
+    }
+
+    #[test]
+    fn parse_reads_marks_keys_and_leaves_other_bangs_alone() {
+        let (names, filters) = parse("!ext:pdf").unwrap();
+        assert_eq!(names, vec!["!ext:pdf".to_string()]);
+        assert!(filters.is_empty());
+        assert_eq!(marks("LABEL:Red"), marks("label:red"));
+        assert_eq!(marks("LABEL:Red").yes.labels, vec![vec!["red".to_string()]]);
+        for bad in ["label:", "!comment:", "has:size"] {
+            let e = parse(bad).unwrap_err();
+            assert!(e.contains(bad.trim_start_matches('!')), "{e}");
+        }
+        assert_eq!(parse("tag:work").unwrap().1.tags, vec![vec!["work".to_string()]]);
+        assert!(parse("!tag:work").unwrap().1.tags.is_empty());
+        assert!(!parse("has:comment").unwrap().1.is_empty());
+    }
+
+    #[test]
+    fn without_marks_keeps_the_rest_in_order() {
+        assert_eq!(without_marks("report label:red !tag:old \"my file\" has:comment ext:pdf"), "report \"my file\" ext:pdf");
+        assert_eq!(without_marks("a \"b c\" ext:pdf"), "a \"b c\" ext:pdf");
+    }
+
+    #[test]
+    fn nearest_swaps_typos_for_the_names_that_exist() {
+        let (labels, tags) = (["Important", "Pending"], ["work", "workshop", "netplan"]);
+        let near = |q: &str| marks(q).nearest(&labels, &tags);
+        assert_eq!(near("tag:wrok").unwrap().yes.tags, vec![vec!["work".to_string()]]);
+        assert_eq!(near("tag:netpaln").unwrap().yes.tags, vec![vec!["netplan".to_string()]]);
+        assert_eq!(near("label:importnat").unwrap().yes.labels, vec![vec!["important".to_string()]]);
+        assert_eq!(near("tag:importnat").unwrap().yes.tags, vec![vec!["important".to_string()]]);
+        for q in ["tag:work", "tag:abc", "tag:xyzw", "!tag:wrok", "tag:wrok;netplan"] {
+            assert_eq!(near(q), None, "{q}");
+        }
+    }
+
+    #[test]
+    fn an_empty_marks_filter_accepts_anything_and_odd_text_does_not_panic() {
+        let none = MarksFilter::default();
+        assert!(none.accepts("", "", ""));
+        assert!(none.accepts("Red", "a\nb", "x"));
+        let f = marks("label:red tag:work comment:x has:mark !tag:\u{0645}\u{0647}\u{0645}");
+        assert!(!f.accepts("", "", ""));
+        assert!(!f.accepts("\u{0645}\u{0647}\u{0645}", "\u{0645}\u{0647}\u{0645}", &"x".repeat(4096)));
+        assert!(marks("comment:x").accepts("", "", &"x".repeat(4096)));
+    }
+
 }

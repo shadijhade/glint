@@ -440,6 +440,9 @@ impl Volume {
             size: parsed.size.unwrap_or(0),
             names: parsed.names.into_iter().map(|n| (n.parent, n.name)).collect(),
             tags: parsed.tags,
+            label: parsed.label,
+            comment: parsed.comment,
+            far: parsed.far,
         };
         let mut size = parsed.size;
         // Names and the data stream can sit in extension records, listed in the attribute list.
@@ -457,6 +460,9 @@ impl Volume {
             state.names.extend(parsed.names.into_iter().map(|n| (n.parent, n.name)));
             size = size.or(parsed.size);
             state.tags = state.tags.take().or(parsed.tags);
+            state.label = state.label.take().or(parsed.label);
+            state.comment = state.comment.take().or(parsed.comment);
+            state.far |= parsed.far;
         }
         state.size = size.unwrap_or(0);
         Ok(Some(state))
@@ -621,6 +627,15 @@ fn merge(builder: &mut Builder, number: u64, parsed: Parsed) {
     }
     if let Some(tags) = parsed.tags {
         builder.tags(owner, tags);
+    }
+    if let Some(label) = parsed.label {
+        builder.label(owner, label);
+    }
+    if let Some(comment) = parsed.comment {
+        builder.comment(owner, comment);
+    }
+    if parsed.far {
+        builder.far(owner);
     }
     for name in parsed.names {
         builder.name(owner, name.parent, &name.name);

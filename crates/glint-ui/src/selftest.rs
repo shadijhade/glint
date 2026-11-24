@@ -110,7 +110,9 @@ pub(crate) fn start(cx: &mut App) {
     // the pane goes from one place to the next (`crate::stage`). Steps: `in:<n>` opens the n-th folder shown,
     // `select:<n>` selects the n-th item, `up`, `back`, `forward`, `thispc`, `grid`, `list`, `bigger`, `smaller`,
     // `bump` (the zoom with nowhere to go), `palette` (Ctrl+K), `look` (Quick Look, and again to close it), `wait`,
-    // `quit`; and the pointer, made up (the real one is left
+    // `quit`; the marks (docs/gpui/marks): `menu` (the item menu, as the menu key opens it), `tags` and `comment`
+    // (Alt+T, Alt+N), `filter:<text>`, `sort:<key>`, `group:<by>` (as settings name them: `label`, `tags`…); and
+    // the pointer, made up (the real one is left
     // alone): `point:<x>;<y>` moves it there, `wheel:<lines>` turns the wheel with Ctrl held (3 is a notch toward
     // bigger), `pinch:<by>` spreads the fingers (0.5 is half as far again). `GLINT_SELFTEST_PAUSE` is the moment,
     // in milliseconds (1200 unless given).
@@ -192,17 +194,35 @@ fn fly_step(step: &str, cx: &mut App) {
         });
         return;
     }
-    if matches!(step, "bump" | "palette" | "look") {
+    if matches!(step, "bump" | "palette" | "look" | "menu" | "tags" | "comment") {
         if let (Some(main), Some(workspace)) = (startup::main_window(cx), startup::main_workspace(cx)) {
             let _ = main.update(cx, |_, window, cx| match step {
                 "bump" => workspace.update(cx, |workspace, cx| workspace.nudge(0, true, window, cx)),
                 "look" => crate::components::preview::quick_look::toggle(window, cx),
+                "menu" => window.dispatch_action(Box::new(actions::ShowItemMenu), cx),
+                "tags" => window.dispatch_action(Box::new(actions::EditTags), cx),
+                "comment" => window.dispatch_action(Box::new(actions::EditComment), cx),
                 _ => window.dispatch_action(Box::new(actions::CommandPalette), cx),
             });
         }
         return;
     }
+    // A name as settings write it (`label`, `tags`…) read as the sort key or the grouping it names.
+    fn named<T: serde::de::DeserializeOwned>(name: &str) -> Option<T> {
+        serde_json::from_value(serde_json::Value::String(name.to_string())).ok()
+    }
     explorer::explorer(cx).update(cx, |e, cx| match step.split_once(':') {
+        Some(("filter", text)) => e.set_filter(text, None, cx),
+        Some(("sort", key)) => {
+            if let Some(key) = named(key) {
+                e.set_sort(glint_model::entries::Sort { key, desc: false }, cx);
+            }
+        }
+        Some(("group", by)) => {
+            if let Some(by) = named(by) {
+                e.set_group(by, cx);
+            }
+        }
         Some(("select", nth)) => {
             let nth: usize = nth.parse().unwrap_or(0);
             let path = e

@@ -257,7 +257,7 @@ fn nothing_the_old_menus_had_for_these_kinds_is_lost() {
         "cmd:quick-look",
         "do:copy-to-choose",
         "do:move-to-choose",
-        "do:tags",
+        // `do:tags` stays a key in smart.rs, but no row has it now: the dots and Marks have replaced the colors.
         "do:edit-tags",
         "do:compress:zip",
         "do:compress:7z",
@@ -569,4 +569,38 @@ fn a_pdf_has_one_make_smaller_and_a_mixed_selection_keeps_the_generic_one() {
     assert!(find(&mixed, "Make smaller…").is_some());
     let picture = item_menu(&[text("a.jpg")], &ctx());
     assert!(top(&picture).len() <= 12);
+}
+
+#[gpui_kit::test]
+fn read_tags_fills_tags_marks_and_labels_from_what_the_rows_hold_and_reads_nothing_more(cx: &mut TestAppContext) {
+    use crate::components::row_facts::{self, fake};
+    use crate::dialogs::tags::{self, Backend};
+    use glint_model::marks::Marks;
+    use std::sync::Arc;
+    let _guard = crate::testing::lock();
+    let red = Marks {
+        label: Some("Red".into()),
+        tags: vec!["Work".into()],
+        comment: Some("note".into()),
+    };
+    let backend = fake::MarksBackend::with(&[("C:\\x\\f0000.jpg", red.clone())]);
+    cx.executor().allow_parking();
+    cx.update(crate::testing::init);
+    let dynamic: Arc<dyn Backend> = backend.clone();
+    let facts = cx.update(|cx| {
+        tags::init_with(cx, dynamic);
+        row_facts::init_with(cx, fake::Media::with(vec![]));
+        row_facts::shared(cx)
+    });
+    facts.update(cx, |f, cx| f.ask_tags_of("dir:C:\\x", ["C:\\x\\f0000.jpg"], cx));
+    fake::settle(cx, |_| backend.paths_read() == 1);
+    fake::settle(cx, |cx| facts.read_with(cx, |f, _| f.marks_of("dir:C:\\x", "C:\\x\\f0000.jpg").is_some()));
+    let reads = backend.calls();
+    let mut data = MenuData::default();
+    cx.update(|cx| data.read_tags(cx, ["C:\\x\\f0000.jpg", "C:\\x\\f0001.jpg"]));
+    assert_eq!(data.marks.get("c:\\x\\f0000.jpg"), Some(&red));
+    assert_eq!(data.tags.get("c:\\x\\f0000.jpg"), Some(&vec!["Work".to_string()]));
+    assert!(!data.marks.contains_key("c:\\x\\f0001.jpg"), "not read: left out");
+    assert_eq!(data.labels, cx.update(|cx| crate::state::settings(cx).labels.clone()));
+    assert_eq!(backend.calls(), reads, "opening a menu reads nothing");
 }

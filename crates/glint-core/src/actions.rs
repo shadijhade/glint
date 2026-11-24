@@ -184,10 +184,20 @@ where
     results.sort_by_key(|(i, _)| *i);
 
     let mut report = Report { stopped, ..Report::default() };
+    // The marks of an original that is about to be recycled, for the file that takes its place (G6).
+    let mut kept: Vec<(usize, glint_model::marks::Marks)> = Vec::new();
     // In their place: the files of the jobs that worked are recycled together first, so their names are free.
     if *output == Output::Replace {
         let originals: Vec<String> = results.iter().filter(|(_, made)| made.is_ok()).flat_map(|(i, _)| jobs[*i].inputs.iter().map(|p| p.to_string_lossy().into_owned())).collect();
         if !originals.is_empty() {
+            for (i, made) in &results {
+                if let (true, [only]) = (made.is_ok(), jobs[*i].inputs.as_slice()) {
+                    let marks = crate::marks::carry::taken(&only.to_string_lossy());
+                    if !marks.is_empty() {
+                        kept.push((*i, marks));
+                    }
+                }
+            }
             crate::host::previews::release(&originals);
             if let Ok(performed) = crate::shell::recycle(owner, originals) {
                 report.recycled = performed.items.into_iter().filter_map(|item| Some(Recycled { path: item.from, bin: item.to? })).collect();
@@ -209,6 +219,12 @@ where
                             failure = Some(why);
                             break;
                         }
+                    }
+                }
+                // A file in the original's place, once the original is in the Recycle Bin, has its marks.
+                if let ([only], Some((_, marks))) = (placed.as_slice(), kept.iter().find(|(k, _)| *k == i)) {
+                    if report.recycled.iter().any(|r| r.path.eq_ignore_ascii_case(&first)) {
+                        crate::marks::carry::given(only, marks);
                     }
                 }
                 report.after += placed.iter().map(|p| fs::metadata(p).map_or(0, |m| m.len())).sum::<u64>();

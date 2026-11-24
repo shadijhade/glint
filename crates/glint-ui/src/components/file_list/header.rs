@@ -558,3 +558,50 @@ impl HeaderMenu {
         (nodes, picks)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_columns_menu_lists_label_tags_and_comment_and_group_by_lists_label() {
+        let menu = HeaderMenu {
+            columns: vec![ColumnId::Modified],
+            sort: Sort {
+                key: SortKey::Name,
+                desc: false,
+            },
+            group: GroupBy::None,
+            fixed: false,
+            like_others: None,
+        };
+        let (nodes, _) = menu.nodes();
+        let top: Vec<String> = nodes
+            .iter()
+            .filter_map(|node| match node {
+                Node::Item(entry) => Some(entry.label.to_string()),
+                _ => None,
+            })
+            .collect();
+        for column in ["Label", "Tags", "Comment"] {
+            assert!(top.iter().any(|label| label == column), "{column} in {top:?}");
+        }
+        let group_by: Vec<String> = nodes
+            .iter()
+            .find_map(|node| match node {
+                Node::Menu { label, items, .. } if label.as_ref() == "Group by" => Some(items),
+                _ => None,
+            })
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|node| match node {
+                        Node::Item(entry) => Some(entry.label.to_string()),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(group_by.iter().any(|label| label == "Label"), "{group_by:?}");
+    }
+}

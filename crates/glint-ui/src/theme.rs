@@ -661,6 +661,22 @@ pub fn selected_fill(cx: &App, hovered: bool) -> gpui_kit::Background {
     if hovered { t.selected_hover } else { t.selected }.into()
 }
 
+/// A label's own color (`0xRRGGBB`, the same in both themes: docs/gpui/marks), for its dot and its name's pill.
+pub fn label_tone(color: u32) -> Hsla {
+    gpui_kit::rgb(color).into()
+}
+
+/// How a label washes its row in the list and fills the pill under a tile's name: its own color, see-through, so
+/// that the row's states (selected, under the pointer, dropped on) keep their one fill over it and a label never
+/// reads as a state (M11). **The one place its strength is set**: tune it here, in both themes, in the real app.
+pub fn label_wash(color: u32, cx: &App) -> Hsla {
+    // The same in both themes until it has been looked at on a screen.
+    let _ = cx;
+    let mut wash = label_tone(color);
+    wash.a = 0.18;
+    wash
+}
+
 /// The material Windows can draw: Mica Alt (as File Explorer has) from Windows 11 22H2, Mica on the first
 /// Windows 11, nothing before. Ported from appearance.rs's `backdrop`.
 fn supported_material() -> Option<WindowBackgroundAppearance> {

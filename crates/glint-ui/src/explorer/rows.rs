@@ -12,9 +12,10 @@
 
 use super::types::{Hit, Hits};
 use glint_model::entries::{
-    by_name, entry_order_by, is_hidden, matcher, FileEntry, GitMarks, Reads, SizeOf, Sort, SortKey,
+    by_name, entry_order_by, is_hidden, matcher, matcher_marks, FileEntry, GitMarks, MarkReads, MarksOf, Reads,
+    SizeOf, Sort, SortKey,
 };
-use glint_model::groups::{group_order, GroupBy, GroupHeader, GroupedOrder, SizeOf as GroupSizeOf};
+use glint_model::groups::{group_order_marked, GroupBy, GroupHeader, GroupedOrder, SizeOf as GroupSizeOf};
 use glint_model::natural::NameKeys;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
@@ -53,6 +54,21 @@ pub struct RowMarks {
 impl PartialEq for RowMarks {
     fn eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.marks, &other.marks) || self.marks == other.marks
+    }
+}
+
+/// The marks of the tab's entries (by the path the listing gave) and this PC's labels, which a sort or a group by
+/// a mark and the marks filters read (docs/gpui/marks, 6.1). Equal when they are the very same maps, so a spec
+/// compare walks nothing.
+#[derive(Clone, Debug)]
+pub struct RowFileMarks {
+    pub marks: Arc<std::collections::HashMap<String, glint_model::marks::Marks>>,
+    pub labels: Arc<[glint_model::marks::Label]>,
+}
+
+impl PartialEq for RowFileMarks {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.marks, &other.marks) && Arc::ptr_eq(&self.labels, &other.labels)
     }
 }
 
@@ -117,6 +133,9 @@ pub struct RowSpec {
     pub inside: Option<RowInside>,
     /// Active OKLab color filter and cached palettes for sorting matching photos closest-first.
     pub color: Option<RowColor>,
+    /// The entries' marks, set only while the filter holds a marks key or the sort or the group is by a mark, and
+    /// once every row's marks are read (`explorer::marked`).
+    pub marked: Option<RowFileMarks>,
 }
 
 impl Default for RowSpec {
@@ -136,6 +155,7 @@ impl Default for RowSpec {
             diffs: None,
             inside: None,
             color: None,
+            marked: None,
         }
     }
 }
@@ -422,6 +442,19 @@ pub fn reads_git(filter: &str, group: GroupBy) -> bool {
     group == GroupBy::Git || filter.to_lowercase().contains("git:")
 }
 
+/// Whether a filter, a sort or a grouping reads the entries' marks (`tag:`… in the box, a sort by label, tags or
+/// comment, Group by Label): only then are the marks read and handed to the rows.
+pub fn reads_marks(filter: &str, sort: Sort, group: GroupBy) -> bool {
+    group == GroupBy::Label
+        || glint_model::columns::MARK_SORTS.contains(&sort.key)
+        || glint_model::entries::has_marks_filter(filter)
+}
+
+/// An entry's marks out of the map handed in (by its path); one not in it has none known.
+fn marks_reader(map: &std::collections::HashMap<String, glint_model::marks::Marks>) -> Box<MarksOf<'_>> {
+    Box::new(move |entry| map.get(&entry.path))
+}
+
 /// Makes the rows for `entries` under `spec`. `now` is the time for Group by date (ms since the epoch).
 ///
 /// The same steps as the TypeScript's three memos, in order: sort (skipped for the engine's own order),
@@ -430,7 +463,12 @@ pub fn build_rows(entries: &Arc<[FileEntry]>, spec: &RowSpec, now: i64) -> Rows 
     let by_default = spec.presorted && spec.folders_first && spec.sort.key == SortKey::Name && !spec.sort.desc;
     // `matcher` is `None` for text that filters nothing (empty, or asking the models).
     let marks = spec.git.as_ref().map(|git| &*git.marks);
-    let test = matcher(&spec.filter, marks, None);
+    let of = spec.marked.as_ref().map(|m| marks_reader(&m.marks));
+    let mark_reads = spec.marked.as_ref().zip(of.as_deref()).map(|(m, of)| MarkReads { of, labels: &m.labels });
+    let test = match &of {
+        Some(of) => matcher_marks(&spec.filter, marks, None, Some(&**of), now),
+        None => matcher(&spec.filter, marks, None),
+    };
     let mut hidden = 0usize;
     let diffs = spec.diffs.as_ref().map(|d| &d.comparison.diffs);
     let max_color_dist_sq = spec.color.as_ref().map(|rc| rc.filter.max_dist * rc.filter.max_dist);
@@ -514,7 +552,7 @@ pub fn build_rows(entries: &Arc<[FileEntry]>, spec: &RowSpec, now: i64) -> Rows 
     } else if !by_default {
         if let Some(order) = order.as_mut() {
             let size_of = measured.as_ref().map(|f| f as &SizeOf);
-            sort_order(entries, order, spec, size_of);
+            sort_order(entries, order, spec, size_of, mark_reads);
         }
     }
 
@@ -543,12 +581,13 @@ pub fn build_rows(entries: &Arc<[FileEntry]>, spec: &RowSpec, now: i64) -> Rows 
         headers,
         lines,
         line_of,
-    } = group_order(
+    } = group_order_marked(
         &shown,
         spec.group,
         now,
         group_size.as_ref().map(|f| f as &GroupSizeOf),
         marks,
+        mark_reads,
     );
     let in_entries = |at: usize| -> u32 {
         match &sorted.order {
@@ -583,7 +622,13 @@ pub fn build_rows(entries: &Arc<[FileEntry]>, spec: &RowSpec, now: i64) -> Rows 
 /// A sort that compares names (by name, or any sort whose ties go by name) makes every name's natural-order key
 /// once and compares those: reading each name's digit runs again at every comparison cost most of the time of
 /// sorting a big folder.
-fn sort_order(entries: &[FileEntry], order: &mut Vec<u32>, spec: &RowSpec, size_of: Option<&SizeOf>) {
+fn sort_order(
+    entries: &[FileEntry],
+    order: &mut Vec<u32>,
+    spec: &RowSpec,
+    size_of: Option<&SizeOf>,
+    marks: Option<MarkReads>,
+) {
     /// A row on its way into place: its entry, where it is in `entries`, and where it started in the sort.
     struct Slot<'e> {
         entry: &'e FileEntry,
@@ -612,6 +657,7 @@ fn sort_order(entries: &[FileEntry], order: &mut Vec<u32>, spec: &RowSpec, size_
         size_of,
         taken_of: None,
         facts_of: None,
+        marks,
     };
     let compare = entry_order_by(
         spec.sort,
@@ -1128,6 +1174,210 @@ mod tests {
         assert!(reads_git("", GroupBy::Git));
         assert!(reads_git("x GIT:new", GroupBy::None));
         assert!(!reads_git("report", GroupBy::Kind));
+    }
+
+    // ---- Marks (docs/gpui/marks, 6.1) ----
+
+    fn labels_of(names: &[&str]) -> Arc<[glint_model::marks::Label]> {
+        names
+            .iter()
+            .map(|name| glint_model::marks::Label {
+                name: name.to_string(),
+                color: 0,
+                was: Vec::new(),
+            })
+            .collect()
+    }
+
+    fn marked_with(items: &[(&str, Option<&str>, &[&str])], labels: &[&str]) -> RowFileMarks {
+        let map: HashMap<String, glint_model::marks::Marks> = items
+            .iter()
+            .map(|(name, label, tags)| {
+                (
+                    format!("C:\\x\\{name}"),
+                    glint_model::marks::Marks {
+                        label: label.map(String::from),
+                        tags: tags.iter().map(|t| t.to_string()).collect(),
+                        comment: None,
+                    },
+                )
+            })
+            .collect();
+        RowFileMarks {
+            marks: Arc::new(map),
+            labels: labels_of(labels),
+        }
+    }
+
+    fn marks_listing() -> Arc<[FileEntry]> {
+        Arc::from(vec![
+            folder("dir"),
+            file("a.txt", 1, 1),
+            file("b.txt", 1, 1),
+            file("c.txt", 1, 1),
+            file("d.txt", 1, 1),
+            file("report.txt", 1, 1),
+        ])
+    }
+
+    fn sample_marks() -> RowFileMarks {
+        marked_with(
+            &[
+                ("a.txt", Some("Blue"), &[]),
+                ("b.txt", Some("Red"), &[]),
+                ("c.txt", Some("Zed"), &["home"]),
+                ("d.txt", Some("Alpha"), &[]),
+                ("report.txt", None, &["work"]),
+            ],
+            &["Red", "Blue"],
+        )
+    }
+
+    #[test]
+    fn marks_filters_keep_what_the_marks_say_and_without_marks_they_keep_every_row() {
+        let entries = marks_listing();
+        let kept = |filter: &str, marked: Option<RowFileMarks>| {
+            names(&build_rows(
+                &entries,
+                &RowSpec {
+                    filter: filter.into(),
+                    marked,
+                    ..Default::default()
+                },
+                0,
+            ))
+        };
+        let marks = marked_with(
+            &[("a.txt", None, &["work"]), ("b.txt", Some("Work"), &[]), ("c.txt", Some("Red"), &["home"])],
+            &["Work", "Red"],
+        );
+        assert_eq!(kept("tag:work", Some(marks.clone())), ["a.txt", "b.txt"]);
+        assert_eq!(
+            kept("!has:label", Some(marks.clone())),
+            ["dir", "a.txt", "d.txt", "report.txt"]
+        );
+        let with_report = marked_with(&[("a.txt", None, &["work"]), ("report.txt", None, &["work"])], &[]);
+        assert_eq!(kept("report tag:work", Some(with_report)), ["report.txt"]);
+        assert_eq!(kept("tag:work", None).len(), entries.len(), "left to the search");
+    }
+
+    #[test]
+    fn sorted_by_label_the_labels_order_comes_first_then_unknown_ones_by_name_then_none_and_descending_reverses() {
+        let entries = marks_listing();
+        let by = |desc: bool| {
+            names(&build_rows(
+                &entries,
+                &RowSpec {
+                    sort: Sort { key: SortKey::Label, desc },
+                    marked: Some(sample_marks()),
+                    ..Default::default()
+                },
+                0,
+            ))
+        };
+        assert_eq!(by(false), ["dir", "b.txt", "a.txt", "d.txt", "c.txt", "report.txt"]);
+        assert_eq!(by(true), ["dir", "report.txt", "c.txt", "d.txt", "a.txt", "b.txt"]);
+    }
+
+    #[test]
+    fn grouped_by_label_the_headers_follow_the_labels_with_no_label_last_and_rows_keep_their_order() {
+        let entries = marks_listing();
+        let rows = build_rows(
+            &entries,
+            &RowSpec {
+                group: GroupBy::Label,
+                marked: Some(marked_with(
+                    &[("a.txt", Some("Blue"), &[]), ("b.txt", Some("Red"), &[]), ("c.txt", Some("Blue"), &[])],
+                    &["Red", "Blue"],
+                )),
+                ..Default::default()
+            },
+            0,
+        );
+        let layout = rows.groups.as_ref().expect("grouped");
+        let heads: Vec<(&str, usize)> = layout.headers.iter().map(|h| (h.label.as_str(), h.count)).collect();
+        assert_eq!(heads, [("Red", 1), ("Blue", 2), ("No label", 3)]);
+        assert_eq!(
+            names(&rows),
+            ["b.txt", "a.txt", "c.txt", "dir", "d.txt", "report.txt"]
+        );
+    }
+
+    #[test]
+    fn specs_with_the_very_same_marks_are_equal_and_with_other_maps_are_not() {
+        let one = sample_marks();
+        let a = RowSpec {
+            marked: Some(one.clone()),
+            ..Default::default()
+        };
+        assert_eq!(a, RowSpec { marked: Some(one.clone()), ..Default::default() });
+        let other = marked_with(&[("a.txt", None, &["x"])], &["Red", "Blue"]);
+        assert_ne!(a, RowSpec { marked: Some(other), ..Default::default() });
+        let other_labels = RowFileMarks {
+            labels: labels_of(&["Blue"]),
+            ..one
+        };
+        assert_ne!(a, RowSpec { marked: Some(other_labels), ..Default::default() });
+        assert_ne!(a, RowSpec::default());
+    }
+
+    #[test]
+    fn a_filter_a_sort_or_a_group_by_a_mark_reads_marks_and_nothing_else_does() {
+        let by_name = Sort { key: SortKey::Name, desc: false };
+        assert!(reads_marks("x label:red", by_name, GroupBy::None));
+        assert!(reads_marks("", Sort { key: SortKey::Tags, desc: false }, GroupBy::None));
+        assert!(reads_marks("", Sort { key: SortKey::Label, desc: true }, GroupBy::None));
+        assert!(reads_marks("", by_name, GroupBy::Label));
+        assert!(!reads_marks("x ext:pdf", by_name, GroupBy::None));
+        assert!(!reads_marks("", Sort { key: SortKey::Size, desc: false }, GroupBy::Kind));
+    }
+
+    /// Sorts and filters of a 10,000-row folder by names and sizes (M5), then by label with every row marked. By hand:
+    /// `cargo test --release -p glint-ui --lib explorer::rows::tests::building_ten_thousand_rows -- --ignored --nocapture`
+    #[test]
+    #[ignore = "timing: run in release"]
+    fn building_ten_thousand_rows_costs_the_same_without_marks_and_this_much_by_label() {
+        let entries = tricky_listing(10_000);
+        let median = |spec: &RowSpec| {
+            let mut times: Vec<f64> = (0..11)
+                .map(|_| {
+                    let started = std::time::Instant::now();
+                    std::hint::black_box(build_rows(&entries, spec, 0).len());
+                    started.elapsed().as_secs_f64() * 1000.0
+                })
+                .collect();
+            times.sort_by(f64::total_cmp);
+            times[5]
+        };
+        let sort = |key, desc| RowSpec {
+            sort: Sort { key, desc },
+            presorted: false,
+            ..RowSpec::default()
+        };
+        println!("default spec: {:.2} ms", median(&RowSpec::default()));
+        println!("name descending: {:.2} ms", median(&sort(SortKey::Name, true)));
+        println!("size: {:.2} ms", median(&sort(SortKey::Size, false)));
+        let map: HashMap<String, glint_model::marks::Marks> = entries
+            .iter()
+            .enumerate()
+            .map(|(i, e)| {
+                (
+                    e.path.clone(),
+                    glint_model::marks::Marks {
+                        label: Some(["Red", "Blue", "Zed"][i % 3].to_string()),
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect();
+        let by_label = RowSpec {
+            marked: Some(RowFileMarks {
+                marks: Arc::new(map),
+                labels: labels_of(&["Red", "Blue"]),
+            }),
+            ..sort(SortKey::Label, false)
+        };
+        println!("label, every row marked: {:.2} ms", median(&by_label));
     }
 
     /// Names that are hard for a key: digit runs and leading zeros, case, accents, scripts, a long shared start

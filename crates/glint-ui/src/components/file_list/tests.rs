@@ -1017,7 +1017,8 @@ fn the_headers_menu_is_a_menu_view_that_closes_after_a_choice(cx: &mut TestAppCo
         })
         .collect();
     assert_eq!(shape, vec!["heading Columns", "submenu Sort by", "submenu Group by"]);
-    assert!(nodes.len() <= 12, "{} rows", nodes.len());
+    // (Eleven columns since the marks' three: docs/gpui/marks.)
+    assert!(nodes.len() <= 15, "{} rows", nodes.len());
     ui.visual.update(|window, cx| window.click(("menu-row", 1usize), cx));
     ui.frame();
     assert!(ui
@@ -2063,6 +2064,7 @@ fn a_folder_row_shows_its_measured_size_and_an_ellipsis_while_it_is_measured(cx:
 
 mod facts;
 mod find_states;
+mod marks;
 
 #[gpui_kit::test]
 fn a_folder_read_ahead_says_what_it_holds_in_its_row(cx: &mut TestAppContext) {

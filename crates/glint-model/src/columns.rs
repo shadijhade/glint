@@ -209,9 +209,8 @@ pub const DESCENDING: [SortKey; 5] = [
     SortKey::Duration,
 ];
 
-/// The order columns show in, whichever are chosen. The marks' columns are not in it until their cells draw
-/// (docs/gpui/marks, card E1), so none can be chosen or shown before then.
-pub const COLUMN_ORDER: [ColumnId; 8] = [
+/// The order columns show in, whichever are chosen. The marks' three (docs/gpui/marks) stand before the size.
+pub const COLUMN_ORDER: [ColumnId; 11] = [
     ColumnId::Modified,
     ColumnId::Taken,
     ColumnId::Type,
@@ -219,6 +218,9 @@ pub const COLUMN_ORDER: [ColumnId; 8] = [
     ColumnId::Duration,
     ColumnId::Artist,
     ColumnId::Album,
+    ColumnId::Label,
+    ColumnId::Tags,
+    ColumnId::Comment,
     ColumnId::Size,
 ];
 
