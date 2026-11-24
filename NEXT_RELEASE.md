@@ -8,13 +8,17 @@ The plan for 0.12 that was here is in git history (`git show df1245a:NEXT_RELEAS
 before it (`git show 47c33fa:NEXT_RELEASE.md`), and 0.13's own plan, the menu and the dock that know the selection,
 is [docs/gpui/aware/PLAN.md](docs/gpui/aware/PLAN.md) with its task cards beside it.*
 
-## In 0.17.0: a label, tags and a comment that stay with the file (not released yet)
+## In 0.17.0: a label, tags and a comment that stay with the file (released 2026-11-24)
 
 *[Issue #8](https://github.com/shadijhade/glint/issues/8), Label, Tags and Comment as in XYplorer, and XYplorer's own brought along.
 Built as the Marks wave, [its plan](docs/gpui/marks/PLAN.md) and task cards beside it: the plan and its contracts (`f107938`),
 waves 1 to 3 (`e26c229`), 4 (`ff4f387`), 5 (`6c537c6`) and 6 (`c6b9e6a`: the docs, the last fixes and the checks). The waves'
 reports name the commits of the branch they were built on (`00cf486`, `12a6e5e`, `c6a4c8b`), which master doesn't have.
-[docs/marks.md](docs/marks.md) has the formats, PowerShell and what follows a file.*
+[docs/marks.md](docs/marks.md) has the formats, PowerShell and what follows a file.
+Released 2026-11-24 from `84612e8` ([its release](https://github.com/shadijhade/glint/releases/tag/v0.17.0)) by `ship`,
+after two fixes the release build found: `parquet` 60.2.0 for a new advisory, RUSTSEC-2026-0595 (`a9610a1`), and the
+three Win32 calls the marks brought added to the Windows 10 import list (`84612e8`). Scoop has it, winget's pull request
+is microsoft/winget-pkgs#488505, and the Store's package was left for Partner Center's pages.*
 
 ### What it is
 
