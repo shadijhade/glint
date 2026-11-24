@@ -497,13 +497,15 @@ Add-Check 'search-history' 'a folder opened from search results: Backspace bring
 # ------------------------------------------------------------------------------------------------ marks
 
 # Everything a row says to a screen reader besides its file name: its own name, help text and description, and the
-# names of the elements inside it, in one string. The label of an item is spoken there ("label Red"); which of these
-# carries it is what the first run of the marks check shows.
+# names of the elements inside it, in one string. The label of an item is spoken in its description ("label Red"),
+# as the first run of the marks check found.
 function Get-RowSaid {
     param([string]$Name)
     $row = Get-Row -Name $Name
     if (-not $row) { return '' }
-    $parts = @($row.Current.Name, $row.Current.HelpText)
+    # A row says its kind, size, date and marks in its description ("TXT file, 13 B, Today 9:31 PM, label Red"),
+    # which UI Automation keeps as FullDescription: the managed client can't read it, Native.cs asks for it.
+    $parts = @($row.Current.Name, $row.Current.HelpText, [GlintE2E.Uia]::Description([System.Windows.Automation.AutomationElement]$row))
     foreach ($e in (Find-Els -Root $row)) { $parts += $e.Current.Name; $parts += $e.Current.HelpText }
     return (($parts | Where-Object { $_ }) -join ' | ')
 }

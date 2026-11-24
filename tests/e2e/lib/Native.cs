@@ -593,4 +593,29 @@ namespace GlintE2E
             Retry<bool>(delegate { Clipboard.SetDataObject(s, true); return true; }, false);
         }
     }
+
+    // An element's description as UI Automation's core has it (UIA_FullDescriptionPropertyId). AccessKit puts what
+    // GPUI calls an element's description there (a file row's "TXT file, 12 B, Today 9:31 PM, label Red"), and the
+    // managed client knows no such property (LookupById gives null, and a property registered by hand is refused as
+    // unsupported), so it is asked of UIAutomationCore for the element's own node.
+    public static class Uia
+    {
+        const int UIA_FullDescriptionPropertyId = 30159;
+
+        [DllImport("UIAutomationCore.dll")]
+        static extern int UiaGetPropertyValue(SafeHandle hnode, int propertyId, [MarshalAs(UnmanagedType.Struct)] out object value);
+
+        /// The description of `element` (a System.Windows.Automation.AutomationElement); "" when it has none.
+        public static string Description(object element)
+        {
+            if (element == null) return "";
+            System.Reflection.FieldInfo field = element.GetType().GetField("_hnode",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            SafeHandle node = field == null ? null : field.GetValue(element) as SafeHandle;
+            if (node == null || node.IsInvalid) return "";
+            object value;
+            if (UiaGetPropertyValue(node, UIA_FullDescriptionPropertyId, out value) != 0) return "";
+            return value as string ?? "";
+        }
+    }
 }
