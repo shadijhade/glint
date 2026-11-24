@@ -223,6 +223,9 @@ struct Store {
     whole: bool,
     /// The ticket of the whole read on its way.
     whole_inflight: Option<u64>,
+    /// How many entries the last whole read was asked with: a list that has more since (a search's results come in
+    /// batches under one view) isn't whole until what came after is read too.
+    whole_count: usize,
     /// Counts the times the folder was listed again; starts at 1 so that 0 can mean "stale".
     epoch: u64,
 }
@@ -236,6 +239,7 @@ impl Store {
             media_inflight: HashMap::new(),
             whole: false,
             whole_inflight: None,
+            whole_count: 0,
             epoch: 1,
         }
     }
@@ -602,9 +606,12 @@ impl RowFacts {
     pub fn ask_all(&mut self, folder: &str, entries: &[FileEntry], cx: &mut Context<Self>) {
         let ticket = &mut self.next_ticket;
         let store = Self::store_for(&mut self.stores, &mut self.order, folder);
-        if store.whole || store.whole_inflight.is_some() {
+        if store.whole_inflight.is_some() || (store.whole && store.whole_count == entries.len()) {
             return;
         }
+        // Not whole until what is asked now has landed (the entries that came since the last whole read, if any).
+        store.whole = false;
+        store.whole_count = entries.len();
         let mut asks = Vec::new();
         for entry in entries {
             if !on_this_disk(entry) || on_network(&entry.path) || store.tags_inflight.contains_key(&entry.path) {
@@ -1632,6 +1639,29 @@ mod tests {
         facts.update(cx, |f, cx| f.ask_all(DIR, &list, cx));
         fake::settle(cx, |cx| facts.read_with(cx, |f, _| f.has_all(DIR)));
         assert_eq!(backend.calls()[2], ["C:\\x\\f0003.jpg"]);
+    }
+
+    /// A search's results come in batches under one view: asked first with none, the view was read whole at once,
+    /// and the file that came next was never read, so `label:red` in the box hid what the search had found.
+    #[gpui_kit::test]
+    fn entries_that_come_after_a_whole_read_are_read_before_it_is_whole_again(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let red = marked(Some("Red"), &[], None);
+        let backend = fake::MarksBackend::with(&[("C:\\x\\found.txt", red.clone())]);
+        let facts = marks_app(cx, &backend);
+        let view = "find:7";
+        facts.update(cx, |f, cx| f.ask_all(view, &[], cx));
+        assert!(facts.read_with(cx, |f, _| f.has_all(view)), "nothing to read yet");
+        let found = vec![file("C:\\x", "found.txt", 1, 0)];
+        facts.update(cx, |f, cx| f.ask_all(view, &found, cx));
+        assert!(!facts.read_with(cx, |f, _| f.has_all(view)), "not whole while the new entry is read");
+        fake::settle(cx, |cx| facts.read_with(cx, |f, _| f.has_all(view)));
+        assert_eq!(backend.calls(), [["C:\\x\\found.txt"]]);
+        assert_eq!(facts.read_with(cx, |f, _| f.marks_of(view, "C:\\x\\found.txt").cloned()), Some(red));
+        // The same entries again: nothing more is called.
+        facts.update(cx, |f, cx| f.ask_all(view, &found, cx));
+        cx.run_until_parked();
+        assert_eq!(backend.calls().len(), 1);
     }
 
     #[gpui_kit::test]
