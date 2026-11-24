@@ -260,6 +260,38 @@ fn the_header_offers_the_marks_sorts_in_a_folder_and_not_in_the_gallery_and_labe
     }
 }
 
+/// A pane too narrow for every sort scrolls the bar sideways, and the sort in force is in view: after the pane
+/// narrows under it (the first frame can be laid out wider than the window ends up) and when another is chosen.
+#[gpui_kit::test]
+fn a_narrow_pane_keeps_the_sort_in_force_in_view_on_the_bar(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut env = env(cx, &disk(0), plain());
+    let in_view = |env: &mut Env, name: &str| {
+        env.frame();
+        env.frame();
+        env.visual.update(|window, _| {
+            let bar = window.find_by_label("Sort by").bounds();
+            let key = window.find_by_label(name).bounds();
+            key.left() >= bar.left() && key.right() <= bar.right()
+        })
+    };
+    let sort_by = |env: &mut Env, key: SortKey| {
+        let explorer = env.explorer.clone();
+        env.visual
+            .update(|_, cx| explorer.update(cx, |e, cx| e.set_sort(Sort { key, desc: false }, cx)));
+    };
+    env.visual.simulate_resize(size(px(1000.), px(700.)));
+    sort_by(&mut env, SortKey::Comment);
+    assert!(in_view(&mut env, "Name") && in_view(&mut env, "Size"), "every sort fits a wide pane");
+
+    env.visual.simulate_resize(size(px(330.), px(700.)));
+    assert!(in_view(&mut env, "Comment"), "the sort in force, once the pane narrowed");
+    assert!(!in_view(&mut env, "Name"), "the bar scrolled to get there");
+
+    sort_by(&mut env, SortKey::Name);
+    assert!(in_view(&mut env, "Name"), "a sort chosen in the narrow pane");
+}
+
 #[gpui_kit::test]
 fn click_ctrl_click_and_shift_click_select_as_the_list_does(cx: &mut TestAppContext) {
     let _guard = testing::lock();

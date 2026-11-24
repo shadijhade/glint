@@ -304,6 +304,11 @@ pub struct FileGrid {
     scroll_ahead: ahead::ScrollAhead,
     /// The thumbnail size drawn last, logical pixels.
     thumb: f32,
+    /// The "Sort by" bar scrolls sideways when the pane is too narrow for every key, and is brought to the sort in
+    /// force when that changes or the bar's width does (the key and the width it was last brought into view at:
+    /// the first frame is laid out before the window has its size, where every key may fit).
+    sort_bar: ScrollHandle,
+    sort_bar_shows: Option<(SortKey, Pixels)>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -392,6 +397,8 @@ impl FileGrid {
             scrub: scrub::ScrubSlot::default(),
             rename: None,
             thumb: 0.,
+            sort_bar: ScrollHandle::new(),
+            sort_bar_shows: None,
             _subscriptions: subscriptions,
         }
     }
@@ -1414,17 +1421,8 @@ impl FileGrid {
 
     // ---- Drawing ----------------------------------------------------------------------------------
 
-    /// The "Sort by" header (`Header`): the sort in force, and a click sorts by that.
-    fn header(
-        &self,
-        sort: Sort,
-        recycled: bool,
-        located: bool,
-        gallery: bool,
-        marked: bool,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let t = theme::tokens(cx).clone();
+    /// The keys the "Sort by" header offers, in order, with their words.
+    fn sort_keys(recycled: bool, located: bool, gallery: bool, marked: bool) -> Vec<(SortKey, SharedString)> {
         let date = if recycled {
             t!("Date deleted")
         } else if gallery {
@@ -1448,6 +1446,30 @@ impl FileGrid {
             ]);
         }
         columns.push((SortKey::Size, t!("Size")));
+        columns
+    }
+
+    /// The "Sort by" header (`Header`): the sort in force, and a click sorts by that. In a pane too narrow for every
+    /// key it scrolls sideways (the wheel moves it), and the sort in force is brought into view when it changes.
+    fn header(
+        &mut self,
+        sort: Sort,
+        recycled: bool,
+        located: bool,
+        gallery: bool,
+        marked: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let t = theme::tokens(cx).clone();
+        let columns = Self::sort_keys(recycled, located, gallery, marked);
+        let shows = (sort.key, self.sort_bar.bounds().size.width);
+        if self.sort_bar_shows != Some(shows) {
+            self.sort_bar_shows = Some(shows);
+            // Child 0 is the "Sort by" words. Nothing moves when the key is in view already.
+            if let Some(at) = columns.iter().position(|(key, _)| *key == sort.key) {
+                self.sort_bar.scroll_to_item(at + 1);
+            }
+        }
 
         row_start()
             .id("file-grid-header")
@@ -1458,7 +1480,8 @@ impl FileGrid {
             .h(space(8.))
             .px(space(3.))
             .gap(space(4.))
-            .overflow_hidden()
+            .overflow_x_scroll()
+            .track_scroll(&self.sort_bar)
             .border_b_1()
             .border_color(t.border)
             .text_size(theme::size::XS)
