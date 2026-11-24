@@ -363,7 +363,7 @@ fn search_files(args: &Value) -> Result<Value, String> {
         });
     }
     if !left.is_empty() && found.len() < limit {
-        let options = crate::find::FindOptions { hidden, respect_ignore: false, exclude, max_results: Some(limit - found.len()), fuzzy: false, rank: false };
+        let options = crate::find::FindOptions { hidden, respect_ignore: false, exclude, max_results: Some(limit - found.len()), fuzzy: false, rank: false, marks: false };
         let mut fd = crate::proc::tool("fd")?;
         fd.args(crate::find::fd_args(&query, &left, &options)?)
             // fd prints "/" separators when it thinks it runs under MSYS.

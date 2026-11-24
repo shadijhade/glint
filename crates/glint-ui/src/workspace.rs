@@ -1552,6 +1552,8 @@ impl Workspace {
             MenuEvent::CopyMarks { path } => crate::marking::copy_marks(path, window, cx),
             MenuEvent::PasteMarks { paths } => crate::marking::paste_marks(paths.clone(), window, cx),
             MenuEvent::ClearMarks { paths } => crate::marking::clear_marks(paths.clone(), window, cx),
+            MenuEvent::ImportMarks { source } => dialogs::marks_import::open(window, cx, source.clone()),
+            MenuEvent::ExportMarks { folder } => dialogs::marks_export::open(window, cx, folder.clone()),
             MenuEvent::EditConnection { id } => dialogs::remote::open_edit(window, cx, id.clone()),
             MenuEvent::RemoveConnection { id } => dialogs::remote::remove_remote(window, cx, id.clone()),
             MenuEvent::SearchText { folder } => self.search_in(folder, window, cx),

@@ -17,6 +17,12 @@ use std::sync::Mutex;
 const HOME: &str = "C:\\Users\\me";
 const DOCS: &str = "C:\\Users\\me\\Documents";
 
+/// Names with how many items have each.
+type Counted = Vec<(String, u64)>;
+
+/// A change of tags the backend was asked for: the paths, the tags added and the tags taken off.
+type TagsChange = (Vec<String>, Vec<String>, Vec<String>);
+
 /// What the fake sources know, and what they were asked.
 struct Fakes {
     folders: Mutex<HashMap<String, Vec<Subfolder>>>,
@@ -26,6 +32,12 @@ struct Fakes {
     /// The tags instant search lists (an error where it is off), and how many times it was asked.
     tags: Mutex<Result<Vec<(String, u64)>, String>>,
     tags_asked: Mutex<usize>,
+    /// The labels and tags the index and the ledger count (an error where marks can't be counted), and what has a tag.
+    marks: Mutex<Result<(Counted, Counted), String>>,
+    tagged: Mutex<Result<Vec<String>, String>>,
+    /// The tags asked of the `tagged` source, and the tags changes the backend was asked for: (paths, add, remove).
+    tagged_asked: Mutex<Vec<String>>,
+    sets: Mutex<Vec<TagsChange>>,
     /// The portals mounted, what was done to them ("refresh:id", "unmount:id"), and where core's change notice goes.
     portals: Mutex<Vec<PortalItem>>,
     portal_log: Mutex<Vec<String>>,
@@ -41,6 +53,10 @@ impl Default for Fakes {
             count: Mutex::default(),
             tags: Mutex::new(Err("Instant search is off".to_string())),
             tags_asked: Mutex::default(),
+            marks: Mutex::new(Err("Marks can't be counted".to_string())),
+            tagged: Mutex::new(Err("Nothing can be searched".to_string())),
+            tagged_asked: Mutex::default(),
+            sets: Mutex::default(),
             portals: Mutex::default(),
             portal_log: Mutex::default(),
             portal_tx: Mutex::default(),
@@ -48,15 +64,16 @@ impl Default for Fakes {
     }
 }
 
-/// glint-core's tags, as the tests need them: nothing has any tags, and setting them works.
-struct NoTags;
+/// glint-core's tags, as the tests need them: nothing has any tags, and setting them works (and is written down).
+struct NoTags(Arc<Fakes>);
 
 impl tags::Backend for NoTags {
     fn read(&self, paths: Vec<String>) -> tags::Fut<Vec<Vec<String>>> {
         Box::pin(async move { Ok(paths.iter().map(|_| Vec::new()).collect()) })
     }
 
-    fn set(&self, _: Vec<String>, _: Vec<String>, _: Vec<String>) -> tags::Fut<Vec<(String, String)>> {
+    fn set(&self, paths: Vec<String>, add: Vec<String>, remove: Vec<String>) -> tags::Fut<Vec<(String, String)>> {
+        self.0.sets.lock().unwrap().push((paths, add, remove));
         Box::pin(async { Ok(Vec::new()) })
     }
 }
@@ -65,6 +82,7 @@ impl Fakes {
     fn sources(self: &Arc<Self>) -> Sources {
         let (a, b, c, d) = (self.clone(), self.clone(), self.clone(), self.clone());
         let (e, f, g, h) = (self.clone(), self.clone(), self.clone(), self.clone());
+        let (i, j) = (self.clone(), self.clone());
         Sources {
             portals: Arc::new(move || e.portals.lock().unwrap().clone()),
             portal_changes: Arc::new(move || {
@@ -111,6 +129,17 @@ impl Fakes {
                 Box::pin(async move {
                     *d.tags_asked.lock().unwrap() += 1;
                     d.tags.lock().unwrap().clone()
+                })
+            }),
+            marks: Arc::new(move || {
+                let i = i.clone();
+                Box::pin(async move { i.marks.lock().unwrap().clone() })
+            }),
+            tagged: Arc::new(move |tag| {
+                let j = j.clone();
+                Box::pin(async move {
+                    j.tagged_asked.lock().unwrap().push(tag);
+                    j.tagged.lock().unwrap().clone()
                 })
             }),
         }
@@ -225,12 +254,15 @@ fn world(cx: &mut TestAppContext, name: &str) -> World {
         vec![file(&format!("{DOCS}\\Reports"), "q1.txt", 1, 1)],
     );
     disk.folder("C:\\", vec![folder("C:\\", "Windows")]);
+    let fakes = Arc::new(Fakes::default());
     cx.update(|cx| {
         init_with(cx, disk.source());
         persistence::init_at(cx, state_file(name));
-        tags::init_with(cx, Arc::new(NoTags));
+        tags::init_with(cx, Arc::new(NoTags(fakes.clone())));
+        // Settings start with the seven labels, which would add a section to every list below: the tests of
+        // labels set their own.
+        state::update(cx, |s| s.labels.clear());
     });
-    let fakes = Arc::new(Fakes::default());
     fakes.set(HOME, &[("Documents", Some(true)), ("Pictures", Some(false))]);
     fakes.set(DOCS, &[("Reports", None)]);
     fakes.set("C:\\", &[("Windows", Some(true))]);
@@ -310,6 +342,7 @@ impl World {
                 Row::Folder(f) => format!("{}> {}", " ".repeat(f.depth), f.name),
                 Row::Note { .. } => "!".to_string(),
                 Row::Search(s) => format!("? {}", s.query),
+                Row::Label(l) => format!("~ {}", l.name),
                 Row::Tag(t) => format!("# {}", t.name),
                 Row::Portal(p) => format!("@ {}", p.name),
                 Row::AddConnection => "+ add".to_string(),
@@ -803,8 +836,8 @@ fn with_no_tags_from_instant_search_the_recent_ones_show_and_setting_a_tag_adds_
     });
     w.settle(|w| w.tag_rows() == [("Work".to_string(), None)]);
     assert!(w.has("Work"));
-    // Asked again when the recent tags changed.
-    assert!(*w.fakes.tags_asked.lock().unwrap() >= 2);
+    // Asked again when the recent tags changed (after marks were asked and failed).
+    w.settle(|w| *w.fakes.tags_asked.lock().unwrap() >= 2);
     // Instant search answers now: its list wins, with counts.
     *w.fakes.tags.lock().unwrap() = Ok(vec![("Work".to_string(), 7), ("Home".to_string(), 2)]);
     w.cx.update(|window, cx| {
@@ -836,6 +869,326 @@ fn an_arabic_tag_draws_with_its_name_and_the_mirrored_row_still_fills_the_sideba
     assert_eq!(english.size.width, mirrored.size.width);
     assert_eq!(w.role_of("ضريبة"), Some(Role::Button));
     testing::set_rtl(false);
+}
+
+fn mark_label(name: &str, color: u32, was: &[&str]) -> glint_model::marks::Label {
+    glint_model::marks::Label {
+        name: name.into(),
+        color,
+        was: was.iter().map(|w| (*w).to_string()).collect(),
+    }
+}
+
+const FILE_A: &str = "C:\\Users\\me\\a.txt";
+const FILE_B: &str = "D:\\work\\b.txt";
+
+impl World {
+    fn set_labels(&mut self, labels: Vec<glint_model::marks::Label>) {
+        self.cx.update(|_, cx| state::update(cx, |s| s.labels = labels));
+        self.cx.run_until_parked();
+    }
+
+    /// The label rows, in order, with their counts.
+    fn label_rows(&mut self) -> Vec<(String, Option<u64>)> {
+        self.rows()
+            .iter()
+            .filter_map(|r| match r {
+                Row::Label(l) => Some((l.name.clone(), l.count)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Tells the sidebar what the index and the ledger count, and waits for it to be listed.
+    fn count_marks(&mut self, labels: &[(&str, u64)], tags: &[(&str, u64)]) {
+        let own = |list: &[(&str, u64)]| list.iter().map(|(n, c)| ((*n).to_string(), *c)).collect::<Vec<_>>();
+        *self.fakes.marks.lock().unwrap() = Ok((own(labels), own(tags)));
+        self.sidebar.update(&mut self.cx, |s, cx| s.read_tags(cx));
+        self.settle(|w| w.fakes.marks.lock().unwrap().is_ok());
+        self.cx.run_until_parked();
+    }
+
+    /// The keyboard on the tag's row, and its menu opened with the menu key.
+    fn open_tag_menu_by_key(&mut self, tag: &str) {
+        self.focus();
+        let ix = self.row_of(format!("t:{tag}"));
+        self.sidebar.update(&mut self.cx, |s, cx| s.set_cursor(Some(ix), cx));
+        self.press("menu");
+        self.frame();
+    }
+
+    fn dialog_open(&mut self) -> bool {
+        self.cx.update(|window, cx| window.has_active_dialog(cx))
+    }
+
+    fn type_into_dialog(&mut self, text: &str) {
+        self.cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.press("ctrl-a", cx);
+            if text.is_empty() {
+                window.press("backspace", cx);
+            } else {
+                window.input(text, cx);
+            }
+        });
+        self.cx.run_until_parked();
+    }
+
+    fn sets(&mut self) -> Vec<TagsChange> {
+        self.fakes.sets.lock().unwrap().clone()
+    }
+}
+
+#[gpui_kit::test]
+fn labels_come_above_tags_in_the_settings_order_with_their_counts_and_a_tag_named_as_one_is_counted_with_it(
+    cx: &mut TestAppContext,
+) {
+    let _guard = testing::lock();
+    let mut w = world(cx, "labels-counts");
+    w.set_labels(vec![
+        mark_label("Important", 0xef4444, &["Red"]),
+        mark_label("Later", 0x3b82f6, &[]),
+        mark_label("ضريبة", 0x22c55e, &[]),
+    ]);
+    // Important has 3 under its name and 5 under the one it was; Later has none but a 0.16 tag of its name has 2.
+    w.count_marks(
+        &[("Important", 3), ("red", 5), ("ضريبة", 4)],
+        &[("Work", 9), ("Later", 2), ("Red", 1)],
+    );
+    w.settle(|w| w.label_rows().iter().any(|(_, count)| count.is_some()));
+    assert_eq!(
+        w.label_rows(),
+        [
+            ("Important".to_string(), Some(9)),
+            ("Later".to_string(), Some(2)),
+            ("ضريبة".to_string(), Some(4)),
+        ]
+    );
+    // Above Tags, after Pinned; and a tag that is a label (or was one) is not in Tags.
+    let names = w.names();
+    let at = |what: &str| names.iter().position(|n| n == what).unwrap();
+    assert!(at("Documents") < at("# Labels") && at("# Labels") < at("# Tags") && at("# Tags") < at("# This PC"));
+    assert_eq!(&names[at("# Labels")..at("# Tags") + 2], ["# Labels", "~ Important", "~ Later", "~ ضريبة", "# Tags", "# Work"]);
+    assert_eq!(w.tag_rows(), [("Work".to_string(), Some(9))]);
+    // Every row has a role and a name.
+    assert_eq!(w.role_of("Labels"), Some(Role::Heading));
+    assert_eq!(w.role_of("Label Important, 9"), Some(Role::Button));
+    assert_eq!(w.role_of("Label ضريبة, 4"), Some(Role::Button));
+}
+
+#[gpui_kit::test]
+fn with_no_counts_known_the_labels_have_no_numbers_and_with_no_labels_there_is_no_section(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut w = world(cx, "labels-bare");
+    // Marks can't be counted and neither can the tags: the seven of Settings are listed, each without a number.
+    w.set_labels(glint_model::marks::default_labels());
+    let labels = w.label_rows();
+    assert_eq!(labels.len(), 7);
+    assert_eq!(labels[0], ("Red".to_string(), None));
+    assert!(labels.iter().all(|(_, count)| count.is_none()));
+    assert_eq!(w.role_of("Label Red"), Some(Role::Button));
+    // Marks fail, so the tags are asked of instant search as before, and a tag of a label's name counts for it.
+    *w.fakes.tags.lock().unwrap() = Ok(vec![("Work".to_string(), 4), ("red".to_string(), 6)]);
+    w.sidebar.update(&mut w.cx, |s, cx| s.read_tags(cx));
+    w.settle(|w| w.tag_rows() == [("Work".to_string(), Some(4))]);
+    assert_eq!(w.label_rows()[0], ("Red".to_string(), Some(6)));
+    // No label in Settings: no section, no title.
+    w.set_labels(Vec::new());
+    assert!(w.label_rows().is_empty());
+    assert!(!w.names().contains(&"# Labels".to_string()));
+}
+
+#[gpui_kit::test]
+fn a_press_on_a_label_finds_what_has_it_at_this_pc_by_the_mouse_and_by_enter(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut w = world(cx, "labels-press");
+    w.set_labels(vec![mark_label("Important", 0xef4444, &[]), mark_label("Later", 0x3b82f6, &[])]);
+    w.count_marks(&[("Important", 3)], &[]);
+    w.settle(|w| w.label_rows()[0].1 == Some(3));
+    w.click("Label Important, 3");
+    assert_eq!(
+        w.events.borrow().last(),
+        Some(&SidebarEvent::RunSavedSearch(SavedSearch {
+            query: "label:\"Important\"".into(),
+            folder: THIS_PC.into(),
+        }))
+    );
+    // The keyboard walks label rows as it walks tag rows: Down from one lands on the next, Enter finds it.
+    w.focus();
+    let first = w.row_of("l:Important".to_string());
+    w.sidebar.update(&mut w.cx, |s, cx| s.set_cursor(Some(first), cx));
+    w.press("down");
+    assert_eq!(w.cursor_row().as_deref(), Some("l:Later"));
+    w.press("enter");
+    assert_eq!(
+        w.events.borrow().last(),
+        Some(&SidebarEvent::RunSavedSearch(rows::label_search("Later")))
+    );
+    // Down again: past the last label the keyboard reaches what follows (a tag, else the next place).
+    w.press("down");
+    assert_ne!(w.cursor_row().as_deref(), Some("l:Later"));
+}
+
+#[gpui_kit::test]
+fn the_mirrored_rows_of_a_label_and_a_tag_with_arabic_names_still_fill_the_sidebar(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut w = world(cx, "labels-arabic");
+    w.set_labels(vec![mark_label("مهم", 0xef4444, &[])]);
+    w.count_marks(&[("مهم", 2)], &[("ضريبة", 4)]);
+    w.settle(|w| w.label_rows() == [("مهم".to_string(), Some(2))] && w.tag_rows().len() == 1);
+    let label_ix = w.row_of("l:مهم".to_string());
+    let tag_ix = w.row_of("t:ضريبة".to_string());
+    let english = (w.bounds_of(("label", label_ix)), w.bounds_of(("tag", tag_ix)));
+    testing::set_rtl(true);
+    w.frame();
+    let mirrored = (w.bounds_of(("label", label_ix)), w.bounds_of(("tag", tag_ix)));
+    assert_eq!(english.0.size.width, mirrored.0.size.width);
+    assert_eq!(english.1.size.width, mirrored.1.size.width);
+    assert_eq!(w.role_of("Label مهم, 2"), Some(Role::Button));
+    assert_eq!(w.role_of("ضريبة"), Some(Role::Button));
+    testing::set_rtl(false);
+}
+
+/// A world with the tag "Work" listed, and two files that have it.
+fn world_with_work(cx: &mut TestAppContext, name: &str) -> World {
+    let mut w = world(cx, name);
+    w.count_marks(&[], &[("Work", 2)]);
+    w.settle(|w| w.tag_rows() == [("Work".to_string(), Some(2))]);
+    *w.fakes.tagged.lock().unwrap() = Ok(vec![FILE_A.to_string(), FILE_B.to_string()]);
+    w
+}
+
+#[gpui_kit::test]
+fn the_menu_key_on_a_tags_row_opens_its_two_rows_and_not_the_shared_menu(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut w = world_with_work(cx, "tag-menu");
+    let before = w.rows();
+    w.open_tag_menu_by_key("Work");
+    assert!(w.has("Rename everywhere…") && w.has("Take off every file…"));
+    assert!(w.requests.borrow().is_empty(), "the shared folder menu was not asked for");
+    // Nothing is searched until a row is chosen; Escape closes it and changes nothing.
+    assert!(w.fakes.tagged_asked.lock().unwrap().is_empty());
+    w.press("escape");
+    assert!(!w.has("Rename everywhere…"));
+    assert_eq!(w.rows(), before);
+    // Shift+F10 and the pointer open it as well.
+    w.press("shift-f10");
+    w.frame();
+    assert!(w.has("Take off every file…"));
+    w.press("escape");
+    let id = w.id_of("Work");
+    w.cx.update(|window, cx| window.right_click(id, cx));
+    w.frame();
+    assert!(w.has("Rename everywhere…"));
+}
+
+#[gpui_kit::test]
+fn rename_everywhere_asks_set_tags_once_with_the_paths_found_and_an_empty_or_unchanged_name_asks_nothing(
+    cx: &mut TestAppContext,
+) {
+    let _guard = testing::lock();
+    let mut w = world_with_work(cx, "tag-rename");
+    w.open_tag_menu_by_key("Work");
+    w.click("Rename everywhere…");
+    w.settle(|w| w.dialog_open());
+    assert_eq!(*w.fakes.tagged_asked.lock().unwrap(), ["Work".to_string()]);
+    assert!(w.has("New name"));
+    // Empty, the same, the same in another case: refused in the dialog, which stays.
+    for refused in ["", "Work", "  work "] {
+        w.type_into_dialog(refused);
+        w.press("enter");
+        w.cx.run_until_parked();
+        assert!(w.dialog_open(), "{refused:?} is refused");
+        assert!(w.has("Give the tag another name"));
+        assert!(w.sets().is_empty(), "{refused:?} asks nothing");
+    }
+    // A new name: one change over what the source gave, adding it and taking the old one off.
+    w.type_into_dialog("Projects");
+    w.press("enter");
+    w.settle(|w| !w.sets().is_empty());
+    assert_eq!(
+        w.sets(),
+        [(
+            vec![FILE_A.to_string(), FILE_B.to_string()],
+            vec!["Projects".to_string()],
+            vec!["Work".to_string()]
+        )]
+    );
+    assert!(!w.dialog_open(), "Rename closes the dialog");
+}
+
+#[gpui_kit::test]
+fn take_off_every_file_asks_with_the_number_and_yes_takes_the_tag_off_those_paths_and_no_does_nothing(
+    cx: &mut TestAppContext,
+) {
+    let _guard = testing::lock();
+    let mut w = world_with_work(cx, "tag-take-off");
+    // No: nothing is changed.
+    w.open_tag_menu_by_key("Work");
+    w.click("Take off every file…");
+    w.settle(|w| w.dialog_open());
+    assert!(w.has("Take off “Work”"), "the dialog is about the tag");
+    let said = w.cx.update(|window, _| {
+        window
+            .try_find_by_label("Take off “Work”")
+            .and_then(|e| e.description().map(str::to_string))
+    });
+    assert_eq!(said.as_deref(), Some("Take “Work” off 2 items?"));
+    w.click("Cancel");
+    w.cx.run_until_parked();
+    assert!(!w.dialog_open());
+    assert!(w.sets().is_empty());
+    // Yes: the tag comes off every path the source gave, as one change.
+    w.open_tag_menu_by_key("Work");
+    w.click("Take off every file…");
+    w.settle(|w| w.dialog_open());
+    w.click("Take off");
+    w.settle(|w| !w.sets().is_empty());
+    assert_eq!(
+        w.sets(),
+        [(
+            vec![FILE_A.to_string(), FILE_B.to_string()],
+            Vec::new(),
+            vec!["Work".to_string()]
+        )]
+    );
+}
+
+#[gpui_kit::test]
+fn a_source_that_finds_nothing_says_so_and_opens_no_dialog(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut w = world_with_work(cx, "tag-nothing");
+    let notices = |w: &mut World| {
+        w.frame();
+        w.cx.update(|window, cx| window.notifications(cx).len())
+    };
+    for found in [Ok(Vec::new()), Err("The index is off".to_string())] {
+        *w.fakes.tagged.lock().unwrap() = found.clone();
+        for row in ["Rename everywhere…", "Take off every file…"] {
+            let before = notices(&mut w);
+            w.open_tag_menu_by_key("Work");
+            w.click(row);
+            // One notice more, and no dialog.
+            w.settle(|w| notices(w) == before + 1);
+            assert!(!w.dialog_open(), "{found:?}: {row} opened nothing");
+        }
+    }
+    assert!(w.sets().is_empty());
+}
+
+#[gpui_kit::test]
+fn setting_a_tag_reads_the_counts_again_labels_included(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut w = world(cx, "labels-changed");
+    w.set_labels(vec![mark_label("Important", 0xef4444, &[])]);
+    w.count_marks(&[("Important", 1)], &[]);
+    w.settle(|w| w.label_rows() == [("Important".to_string(), Some(1))]);
+    // Something was marked: the index now counts more, and TagsChanged makes the sidebar ask again.
+    *w.fakes.marks.lock().unwrap() = Ok((vec![("Important".to_string(), 5)], vec![("Work".to_string(), 2)]));
+    w.cx.update(|window, cx| {
+        tags::set_tags(window, cx, vec![FILE_A.to_string()], vec!["Work".to_string()], Vec::new())
+    });
+    w.settle(|w| w.label_rows() == [("Important".to_string(), Some(5))] && w.tag_rows().len() == 1);
 }
 
 #[gpui_kit::test]

@@ -373,9 +373,13 @@ impl MenuHost {
             (None, true) => aware::places_for(cx, ""),
             _ => Vec::new(),
         };
-        let usual: Vec<Node> = send_to::usual_row(&paths, &ctx.places, ext.as_deref(), folders_only, &ctx.folder)
+        let mut usual: Vec<Node> = send_to::usual_row(&paths, &ctx.places, ext.as_deref(), folders_only, &ctx.folder)
             .into_iter()
             .collect();
+        // A marks file on this PC's disks offers to bring its marks in (card P1).
+        if let ([only], true) = (chosen, movable) {
+            usual.extend(smart::import_marks_row(&only.path, &only.name).filter(|_| !only.dir));
+        }
         let nodes = item_menu(chosen, ctx);
         let facts = aware::facts(cx, chosen);
         let one = match chosen {

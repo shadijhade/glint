@@ -103,6 +103,7 @@ mod find;
 mod find_types;
 mod freeze;
 mod history;
+mod in_comments;
 mod inside;
 pub mod marked;
 mod memory;

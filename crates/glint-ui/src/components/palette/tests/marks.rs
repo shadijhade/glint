@@ -96,8 +96,9 @@ fn a_label_renamed_in_the_settings_is_listed_and_found_under_its_new_name() {
     assert!(!all.iter().any(|c| c.label.as_ref() == "Label: Red"));
     let found = commands::rank(&all, "important");
     assert_eq!(found[0].label.as_ref(), "Label: Important");
+    // (Export marks… says "comments" in its words, so it may come first: Edit comment… is among them.)
     let found = commands::rank(&all, "comment");
-    assert_eq!(found[0].label.as_ref(), "Edit comment…");
+    assert!(found.iter().any(|c| c.label.as_ref() == "Edit comment…"));
     let found = commands::rank(&all, "tag");
     assert!(found.iter().any(|c| c.label.as_ref() == "Edit tags…"));
 }
@@ -193,4 +194,65 @@ fn an_arabic_label_is_listed_found_by_typing_it_and_mirrors_like_the_other_rows(
     assert!(w.has("Label: عاجل"));
     w.press("escape");
     testing::set_rtl(false);
+}
+
+fn selected_in(folder: &str, entries: Vec<glint_model::entries::FileEntry>) -> Inputs {
+    Inputs {
+        path: folder.into(),
+        tabs: 1,
+        chosen: !entries.is_empty(),
+        selected: entries.iter().map(|e| e.path.clone()).collect(),
+        chosen_entries: entries,
+        ..Inputs::default()
+    }
+}
+
+fn import_source(inputs: &Inputs) -> Option<String> {
+    match event(find(&commands::actions_with(inputs, &[]), "import-marks")) {
+        MenuEvent::ImportMarks { source } => source,
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn import_marks_is_always_listed_and_carries_the_file_only_when_one_marks_file_is_selected() {
+    let _guard = testing::lock();
+    let nothing = selected_in(HERE, Vec::new());
+    assert_eq!(import_source(&nothing), None);
+    let dat = selected_in(HERE, vec![file(HERE, "tag.dat", 10, 0)]);
+    assert_eq!(import_source(&dat).as_deref(), Some(r"C:\work\tag.dat"));
+    assert_eq!(import_source(&selected_in(HERE, vec![file(HERE, "notes.txt", 10, 0)])), None);
+    assert_eq!(import_source(&selected_in(HERE, vec![file(HERE, "tag.dat", 1, 0), file(HERE, "b.txt", 1, 0)])), None);
+    assert!(import_source(&selected_in(HERE, vec![file(HERE, "تقرير.glint-marks.jsonl", 1, 0)])).is_some());
+    let all = commands::actions_with(&dat, &[]);
+    assert_eq!(find(&all, "import-marks").label.as_ref(), "Import marks…");
+    assert_eq!(find(&all, "export-marks").label.as_ref(), "Export marks…");
+}
+
+#[test]
+fn export_marks_takes_the_tabs_folder_or_the_one_selected_folder_and_not_where_marks_cannot_be() {
+    let _guard = testing::lock();
+    let folder_of = |inputs: &Inputs| match event(find(&commands::actions_with(inputs, &[]), "export-marks")) {
+        MenuEvent::ExportMarks { folder } => folder,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(folder_of(&selected_in(HERE, Vec::new())), HERE);
+    assert_eq!(folder_of(&selected_in(HERE, vec![file(HERE, "a.txt", 1, 0)])), HERE);
+    let sub = crate::explorer::fake::folder(HERE, "مشروع");
+    assert_eq!(folder_of(&selected_in(HERE, vec![sub.clone()])), sub.path);
+    let missing = |inputs: Inputs| !commands::actions_with(&inputs, &[]).iter().any(|c| c.id == "export-marks");
+    assert!(missing(Inputs { in_archive: true, ..selected_in(HERE, Vec::new()) }));
+    assert!(missing(Inputs { finding: true, ..selected_in(HERE, Vec::new()) }));
+    assert!(missing(selected_in(r"remote:abc\x", Vec::new())));
+    assert!(missing(selected_in("", Vec::new())));
+}
+
+#[test]
+fn xyplorer_finds_both_commands() {
+    let _guard = testing::lock();
+    let all = commands::all(&selected_in(HERE, Vec::new()));
+    let found: Vec<String> = commands::rank(&all, "xyplorer").iter().map(|c| c.label.to_string()).collect();
+    assert!(found.contains(&"Import marks…".to_string()) && found.contains(&"Export marks…".to_string()), "{found:?}");
+    let found = commands::rank(&all, "tag.dat");
+    assert!(found.iter().any(|c| c.id == "import-marks"));
 }

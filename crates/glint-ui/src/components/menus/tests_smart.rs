@@ -671,3 +671,37 @@ fn suggested_never_copies_a_dot_and_the_marks_events_keep_their_keys() {
         assert_eq!(Run::Ask(event).key().as_deref(), Some(key));
     }
 }
+
+// ---- A marks file's own row (card P1 of docs/gpui/marks) --------------------------------------------------
+
+#[test]
+fn a_marks_file_is_known_by_its_name_alone() {
+    for yes in ["tag.dat", "TAG.DAT", "XYplorerTag.dat", "Ops.glint-marks.jsonl"] {
+        assert!(smart::is_marks_file(yes), "{yes}");
+    }
+    for no in ["tag.data", "notes.jsonl", ".glint-marks", "تقرير.dat"] {
+        assert!(!smart::is_marks_file(no), "{no}");
+    }
+}
+
+#[test]
+fn import_marks_leads_suggested_for_a_marks_file_and_has_its_key_and_a_name() {
+    let _guard = english();
+    let row = smart::import_marks_row("C:\\x\\tag.dat", "tag.dat").expect("a marks file");
+    assert!(smart::import_marks_row("C:\\x\\notes.txt", "notes.txt").is_none());
+    let Node::Item(entry) = &row else { panic!("an item") };
+    assert_eq!(entry.label, "Import marks…");
+    assert!(matches!(&entry.run, Run::Ask(MenuEvent::ImportMarks { source: Some(p) }) if p == "C:\\x\\tag.dat"));
+    assert_eq!(entry.run.key().as_deref(), Some("do:import-marks"));
+    // Ahead of what Aware picked, which the menu's rows hold.
+    let menu = vec![
+        plain_item("Open", Run::Command(Command::Copy)),
+        Node::Separator,
+        plain_item("Extract here", extract()),
+    ];
+    let picks = [pick("do:extract-here", Why::Plain)];
+    let zone = zone(&menu, &picks, Shape::Data, vec![row]);
+    assert!(matches!(&zone[0], Node::Heading(h) if h == "Suggested"));
+    assert!(matches!(&zone[1], Node::Item(e) if e.label == "Import marks…"), "{:?}", labels(&zone));
+    assert!(matches!(&zone[2], Node::Item(e) if e.label == "Extract here"), "{:?}", labels(&zone));
+}

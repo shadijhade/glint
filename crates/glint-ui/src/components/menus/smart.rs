@@ -132,6 +132,8 @@ fn event_key(event: &MenuEvent) -> Option<String> {
         MenuEvent::CopyMarks { .. } => "do:copy-marks",
         MenuEvent::PasteMarks { .. } => "do:paste-marks",
         MenuEvent::ClearMarks { .. } => "do:clear-marks",
+        MenuEvent::ImportMarks { .. } => "do:import-marks",
+        MenuEvent::ExportMarks { .. } => "do:export-marks",
         MenuEvent::CheckSums { .. } => "do:check-sums",
         MenuEvent::FolderSizes => "do:folder-sizes",
         MenuEvent::NewTextDocument => "do:new-text-document",
@@ -381,6 +383,29 @@ fn usual(shape: Shape) -> SharedString {
     }
 }
 
+/// Whether a file is one marks come in from, by its name alone (a menu reads nothing): XYplorer's `tag.dat` or
+/// `XYplorerTag.dat`, or what Export marks… names its file (`*.glint-marks.jsonl`).
+pub fn is_marks_file(name: &str) -> bool {
+    let name = name.to_lowercase();
+    name == "tag.dat" || name == "xyplorertag.dat" || name.ends_with(".glint-marks.jsonl")
+}
+
+/// The row a marks file's menu is given under Suggested: Import marks… from that file.
+pub fn import_marks_row(path: &str, name: &str) -> Option<Node> {
+    if !is_marks_file(name) {
+        return None;
+    }
+    let mut entry = Entry::ask(
+        t!("Import marks…"),
+        IconName::FileUp,
+        MenuEvent::ImportMarks {
+            source: Some(path.to_string()),
+        },
+    );
+    entry.smart = true;
+    Some(Node::Item(entry))
+}
+
 /// The Suggested section: its heading and at most `most` rows (`picks`' rows, then `extra`). Empty with no row.
 pub fn zone(nodes: &[Node], picks: &[Pick], shape: Shape, extra: Vec<Node>) -> Vec<Node> {
     zone_of(nodes, picks, shape, extra, MOST)
@@ -388,8 +413,12 @@ pub fn zone(nodes: &[Node], picks: &[Pick], shape: Shape, extra: Vec<Node>) -> V
 
 /// [`zone`] with room for `most` rows.
 pub fn zone_of(nodes: &[Node], picks: &[Pick], shape: Shape, extra: Vec<Node>, most: usize) -> Vec<Node> {
-    let extra: Vec<Node> = extra.into_iter().take(most).collect();
-    let room = most - extra.len();
+    // Import marks… from the file the menu is about leads the section, ahead of what Aware picked.
+    let (lead, extra): (Vec<Node>, Vec<Node>) = extra
+        .into_iter()
+        .take(most)
+        .partition(|node| matches!(node, Node::Item(entry) if entry.run.key().as_deref() == Some("do:import-marks")));
+    let room = most - lead.len() - extra.len();
     let mut rows: Vec<Node> = Vec::new();
     // What the menu leads with is already in reach: it isn't suggested again.
     let primary = primary_keys(nodes);
@@ -405,6 +434,7 @@ pub fn zone_of(nodes: &[Node], picks: &[Pick], shape: Shape, extra: Vec<Node>, m
             rows.push(Node::Item(row));
         }
     }
+    rows.splice(0..0, lead);
     rows.extend(extra);
     if rows.is_empty() {
         return Vec::new();

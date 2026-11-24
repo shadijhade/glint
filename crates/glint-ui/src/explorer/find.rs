@@ -78,6 +78,8 @@ struct Progress {
     /// The run still shows the older search's results (same folder searched again): the first results replace them.
     kept: bool,
     pending: Vec<FileEntry>,
+    /// What the index found by a comment or a tag (`in_comments.rs`).
+    flagged: super::in_comments::Flagged,
 }
 
 /// Which search a tab runs in core: the tab's own lane.
@@ -334,6 +336,8 @@ impl Explorer {
             fuzzy: !flat,
             rank: !flat,
             exclude: exclude.clone(),
+            // Plain words also look in tags and comments, as they are typed too: the index answers from memory.
+            marks: !flat && !super::inside::inside_words(query).is_empty(),
         };
         let mut skipped = exclude;
         if respect_ignore {
@@ -402,6 +406,7 @@ impl Explorer {
             let mut progress = Progress {
                 kept,
                 pending: Vec::new(),
+                flagged: Default::default(),
             };
             while let Ok(first) = stream.recv().await {
                 let mut batch = vec![first];
@@ -564,9 +569,12 @@ impl Explorer {
         };
         let mut ended = false;
         let mut slow_without_index = false;
+        // The files this batch says were found by a comment or a tag, whose marks are to be read.
+        let mut to_read: Vec<(String, u8)> = Vec::new();
         for event in batch {
             match event {
                 Found::Started { engine } => run.engine = engine,
+                Found::Marked(marked) => to_read.append(&mut progress.flagged.note(marked)),
                 Found::Entries(mut entries) => {
                     if std::mem::replace(&mut progress.kept, false) {
                         drop_kept(&mut run);
@@ -603,7 +611,9 @@ impl Explorer {
             }
         }
         let failed = !run.error.is_empty();
+        let words = if failed { String::new() } else { super::inside::inside_words(&run.query) };
         self.update_tab(tab, |t| t.find = Some(run));
+        self.read_flagged(tab, id, words, to_read, cx);
         if failed {
             self.inside_left(tab);
         }
@@ -734,6 +744,13 @@ fn add_pending(run: &mut FindRun, progress: &mut Progress) {
     if progress.pending.is_empty() {
         return;
     }
+    // The files the index found by a comment or a tag go under their own header, with no line until read.
+    let flagged: Vec<String> = progress
+        .pending
+        .iter()
+        .filter(|entry| progress.flagged.has(&entry.path))
+        .map(|entry| entry.path.clone())
+        .collect();
     // A file found by what is in it has its row already: found by its name too, it is no longer "inside only".
     if !run.inside.only.is_empty() {
         let mut only = (*run.inside.only).clone();
@@ -746,6 +763,7 @@ fn add_pending(run: &mut FindRun, progress: &mut Progress) {
     all.extend(run.entries.iter().cloned());
     all.append(&mut progress.pending);
     run.entries = all.into();
+    super::in_comments::mark_rows(run, flagged);
 }
 
 /// The older search's results, kept on screen until this one's first came, go: all but the files this search has

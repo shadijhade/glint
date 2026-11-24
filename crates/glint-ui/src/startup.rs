@@ -80,6 +80,8 @@ pub(crate) fn start(cx: &mut App, request: launch::Request) {
     crate::components::git::init(cx);
     // The rows' marks, read whole only while a filter, a sort or a group is by a mark (docs/gpui/marks).
     explorer::marked::init(cx);
+    // XYplorer's tag.dat, followed once it was brought in and the setting says so (docs/gpui/marks, F30).
+    crate::marks_follow::init(cx);
     explorer::explorer(cx).update(cx, |e, cx| e.refresh_on_demand(cx).detach());
     // The saved remote connections, handed to core so their folders open (`initRemotes`).
     crate::dialogs::remote::push_to_core(cx);

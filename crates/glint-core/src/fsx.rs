@@ -154,6 +154,8 @@ fn read_listing(path: String) -> Result<Listing, ListError> {
         },
     };
     sort_entries(&mut entries);
+    // Marks that waited for an item of this folder move into it now (docs/gpui/marks, F31): nothing while none waits.
+    crate::marks::wake::listed(&path);
     Ok(Listing::Folder { path, entries, elapsed: ms_since(started), from_index, remote: false, archive: None })
 }
 

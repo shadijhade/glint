@@ -100,6 +100,8 @@ fn found_from(event: glint_core::find::FindEvent, collector: &Mutex<Collector>) 
             let mut collector = collector.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             Found::Results(collector.add(rows))
         }
+        // Quick search never asks for marks, so this doesn't come; if it did, the ranking so far stands.
+        FindEvent::Marked(_) => Found::Results(collector.lock().unwrap_or_else(|p| p.into_inner()).add(Vec::new())),
         FindEvent::Error { message } => Found::Error(message),
         FindEvent::Finished {
             count,
@@ -166,6 +168,7 @@ impl Source for CoreSource {
                 max_results: Some(ASKED),
                 fuzzy: true,
                 rank: true,
+                marks: false,
             };
             glint_core::find::find_files(state, roots, query, options, channel, LANE.to_string()).await
         });

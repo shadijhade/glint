@@ -8,7 +8,7 @@
 
 use crate::actions::{self, Binding};
 use crate::components::menus::kinds::*;
-use crate::components::menus::{CompressFormat, MediaTool, MenuEvent, PdfTool};
+use crate::components::menus::{smart, CompressFormat, MediaTool, MenuEvent, PdfTool};
 use crate::explorer::{Drive, KnownId, TabId};
 use crate::kit::prelude::*;
 use crate::{i18n, t};
@@ -892,6 +892,9 @@ pub fn actions_with(inputs: &Inputs, labels: &[String]) -> Vec<Command> {
     for command in marks(inputs, &place, labels) {
         push(true, command);
     }
+    for command in marks_files(inputs, &place) {
+        push(true, command);
+    }
     push(
         in_folder,
         Command::action("copy-path", t!("Copy this folder's path"), I::ClipboardCopy, || {
@@ -1533,6 +1536,33 @@ fn marks(inputs: &Inputs, place: &Place, labels: &[String]) -> Vec<Command> {
         I::BrushCleaning,
         MenuEvent::ClearMarks { paths },
     ));
+    out
+}
+
+/// Import marks… and Export marks… (docs/gpui/marks F25). Import is always offered, with the file when exactly one
+/// marks file on disk is selected (named like one: nothing is read); Export is for a folder on this PC, the selected one
+/// else the one the tab shows.
+fn marks_files(inputs: &Inputs, place: &Place) -> Vec<Command> {
+    use IconName as I;
+    let on_disk = !inputs.in_archive && !place.remote && !place.bin && !place.closed_items;
+    let source = match inputs.chosen_entries.as_slice() {
+        [only] if on_disk && !only.dir && !is_archived(only) && smart::is_marks_file(&only.name) => {
+            Some(only.path.clone())
+        }
+        _ => None,
+    };
+    let mut import = menu("import-marks", t!("Import marks…"), I::FileUp, MenuEvent::ImportMarks { source });
+    import.detail = Some(t!("From XYplorer's tag.dat or a Glint marks file"));
+    let mut out = vec![import];
+    if place.in_folder && !inputs.in_archive && !place.remote && !place.bin && !inputs.finding {
+        let folder = match inputs.chosen_entries.as_slice() {
+            [only] if only.dir && !is_archived(only) => only.path.clone(),
+            _ => inputs.path.clone(),
+        };
+        let mut export = menu("export-marks", t!("Export marks…"), I::FileDown, MenuEvent::ExportMarks { folder });
+        export.detail = Some(t!("Labels, tags and comments into one file, for XYplorer too"));
+        out.push(export);
+    }
     out
 }
 

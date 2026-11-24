@@ -354,6 +354,12 @@ impl SettingsView {
             return;
         }
         cx.spawn_in(window, async move |this, cx| {
+            // F27: XYplorer's tag.dat is asked here too, and kept for `Facts::from_settings`.
+            let xyplorer = cx.update(|_, cx| suggestions::ask_xyplorer(cx)).ok();
+            let xyplorer = match xyplorer {
+                Some(asked) => asked.await,
+                None => None,
+            };
             let drives = crate::core_bridge::run(glint_core::fsx::list_drives())
                 .await
                 .ok()
@@ -370,6 +376,7 @@ impl SettingsView {
                         .collect::<Vec<_>>()
                 });
             this.update(cx, |this, cx| {
+                suggestions::know_xyplorer(cx, xyplorer);
                 this.drives = drives;
                 cx.notify();
             })

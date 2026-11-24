@@ -306,6 +306,28 @@ mod tests {
         f.items.iter().find(|i| i.path.ends_with(name)).unwrap()
     }
 
+    /// The one fixture XYplorer itself wrote (from issue 8's author; tests/fixtures/marks/README.md): a first line
+    /// that goes on after the version, labels named in its own language, a text color left empty.
+    #[test]
+    fn a_tag_dat_that_xyplorer_wrote_reads_as_it_is() {
+        let f = read(fixture!("real-v5-zh.dat")).unwrap();
+        assert_eq!((f.version, f.storage, f.labels.len(), f.extras.len(), f.items.len()), (5, 0, 7, 16, 2));
+        assert_eq!(f.labels[0], XyLabel { name: "红色".into(), text: 0xFFFF00, back: 0xFC7268 });
+        assert_eq!(f.labels[1], XyLabel { name: "橙色".into(), text: 0x000000, back: 0xF6AB46 });
+        assert_eq!(f.labels[6], XyLabel { name: "天蓝色".into(), text: 0x0969DA, back: 0xDDF4FF });
+        // Sixteen extra fields nobody named: they bring nothing.
+        assert!(f.extras.iter().all(|e| e.caption.is_empty() && e.kind == XyKind::Text));
+        let (bin, other) = (&f.items[0], &f.items[1]);
+        assert_eq!((bin.path.as_str(), bin.label, bin.comment.as_str()), ("C:\\$Recycle.Bin", 1, "comment1¶lala"));
+        assert_eq!(
+            marks_of(&f, bin, true),
+            Marks { label: Some("红色".into()), tags: vec!["tag1".into()], comment: Some("comment1\nlala".into()) }
+        );
+        // The last line has no line end after it.
+        assert_eq!((other.path.as_str(), other.label), ("C:\\Documents and Settings", 0));
+        assert_eq!(marks_of(&f, other, true), Marks { label: None, tags: vec!["tag2".into()], comment: None });
+    }
+
     #[test]
     fn the_first_fixture_reads_as_the_readme_says() {
         let f = first();

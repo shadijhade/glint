@@ -211,14 +211,14 @@ fn the_header_names_the_sorts_and_a_click_sorts_by_it(cx: &mut TestAppContext) {
     let mut env = env(cx, &disk(0), plain());
     env.frame();
     env.visual.update(|window, _| {
-        for name in ["Name", "Date modified", "Date taken", "Type", "Size"] {
+        for name in ["Name", "Date modified", "Date taken", "Type", "Label", "Tags", "Comment", "Size"] {
             assert_eq!(window.find_by_label(name).role(), Some(Role::Button), "{name}");
         }
         assert_eq!(window.find_by_label("Sort by").role(), Some(Role::Toolbar));
     });
     // Size sorts largest first; a second click flips it.
     env.visual
-        .update(|window, cx| window.click(("file-grid-sort", 4_usize), cx));
+        .update(|window, cx| window.click(("file-grid-sort", 7_usize), cx));
     let sort = |env: &Env| {
         env.explorer
             .read_with(&env.visual, |e, _| e.pane_tab(0).map(|t| t.sort))
@@ -232,8 +232,32 @@ fn the_header_names_the_sorts_and_a_click_sorts_by_it(cx: &mut TestAppContext) {
     );
     assert_eq!(env.tile_names()[..2], ["docs", "تقرير الربع.pdf"]);
     env.visual
-        .update(|window, cx| window.click(("file-grid-sort", 4_usize), cx));
+        .update(|window, cx| window.click(("file-grid-sort", 7_usize), cx));
     assert_eq!(sort(&env).map(|s| s.desc), Some(false));
+}
+
+#[gpui_kit::test]
+fn the_header_offers_the_marks_sorts_in_a_folder_and_not_in_the_gallery_and_label_sorts_by_label(
+    cx: &mut TestAppContext,
+) {
+    let _guard = testing::lock();
+    let disk = disk(0);
+    disk.folder(glint_model::paths::GALLERY, vec![]);
+    let mut env = env(cx, &disk, plain());
+    env.frame();
+    let found = |env: &mut Env, name: &str| env.visual.update(|window, _| window.try_find_by_label(name).is_some());
+    for name in ["Label", "Tags", "Comment"] {
+        assert!(found(&mut env, name), "{name} in a folder");
+    }
+    env.visual
+        .update(|window, cx| window.click(("file-grid-sort", 4_usize), cx));
+    let key = env.explorer.read_with(&env.visual, |e, _| e.pane_tab(0).map(|t| t.sort.key));
+    assert_eq!(key, Some(SortKey::Label));
+    env.go(glint_model::paths::GALLERY);
+    env.frame();
+    for name in ["Label", "Tags", "Comment"] {
+        assert!(!found(&mut env, name), "{name} in the Gallery");
+    }
 }
 
 #[gpui_kit::test]
@@ -1663,7 +1687,8 @@ mod marked_tiles {
         let mut env = marked_env(cx, &[("C:\\x\\b.txt", marks(None, &[], Some("see the totals\nand the notes")))]);
         env.settle(|env| env.visual.update(|window, _| window.try_find(("file-grid-note", 2usize)).is_some()));
         env.visual.update(|window, _| {
-            let note = window.find_by_label("Comment");
+            // (The header has a Comment sort too: ask for the tile's note by its id.)
+            let note = window.try_find(("file-grid-note", 2usize)).expect("the note");
             assert_eq!(note.role(), Some(Role::Image));
             assert_eq!(note.description(), Some("see the totals\nand the notes"));
             assert!(window.try_find(("file-grid-note", 1usize)).is_none());

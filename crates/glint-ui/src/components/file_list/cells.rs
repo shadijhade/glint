@@ -269,8 +269,9 @@ impl FileList {
             .into_any_element()
     }
 
-    /// The header of one of a search's two parts: "Names" with how many, or "Inside files" with how many lines
-    /// matched in how many files, a spinner and Stop while that is still being searched.
+    /// The header of one of a search's parts: "Names" with how many, "In comments" with how many (the files found
+    /// by a comment or a tag), or "Inside files" with how many lines matched in how many files, a spinner and Stop
+    /// while that is still being searched.
     fn section_header(
         &self,
         frame: &Frame,
@@ -281,7 +282,15 @@ impl FileList {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let info: &InsideInfo = &frame.inside;
-        let (glyph, name, counted): (IconName, SharedString, SharedString) = if inside {
+        let items = if header.count == 1 {
+            t!("1 item")
+        } else {
+            t!("{n} items", n = format_count(header.count))
+        };
+        let in_comments = frame.rows.sections().is_some_and(|sections| sections.comments == Some(index));
+        let (glyph, name, counted): (IconName, SharedString, SharedString) = if in_comments {
+            (IconName::MessageSquare, t!("In comments"), items)
+        } else if inside {
             let lines = if info.matches == 1 {
                 t!("1 line")
             } else {
@@ -298,11 +307,6 @@ impl FileList {
                 t!("{lines} in {files}", lines = lines, files = files),
             )
         } else {
-            let items = if header.count == 1 {
-                t!("1 item")
-            } else {
-                t!("{n} items", n = format_count(header.count))
-            };
             (IconName::Search, t!("Names"), items)
         };
         let tab = frame.tab;

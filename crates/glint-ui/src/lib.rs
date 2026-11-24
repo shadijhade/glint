@@ -29,6 +29,8 @@ pub mod i18n;
 pub mod kit;
 /// Marking what is selected, from the keys, the menus and the palette (docs/gpui/marks).
 pub mod marking;
+/// Following XYplorer's `tag.dat` once it was brought in (docs/gpui/marks, F30).
+pub mod marks_follow;
 pub mod notices;
 /// The old app's settings, read from WebView2's localStorage at the first start (wave 16).
 pub mod old_settings;

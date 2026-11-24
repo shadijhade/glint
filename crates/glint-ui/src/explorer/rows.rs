@@ -171,11 +171,13 @@ pub struct HitLine {
     pub more: u32,
 }
 
-/// The headers of the two parts a search's results are in when it found files by their contents: by name (none
-/// when no name matched), then inside files. Indices into [`GroupLayout::headers`].
+/// The headers of the parts a search's results are in when it found files by their contents or by a comment or a tag:
+/// by name (none when no name matched), in comments (none when none was found so), then inside files (`usize::MAX`
+/// when no file was found so). Indices into [`GroupLayout::headers`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Sections {
     pub names: Option<usize>,
+    pub comments: Option<usize>,
     pub inside: usize,
 }
 
@@ -672,9 +674,9 @@ fn sort_order(
 }
 
 /// `rows` with what a search found inside files: each file's matching lines under its row (the first
-/// [`HITS_SHOWN`], then a count of the rest). Rows that aren't grouped are put in the search's two parts, each
-/// under its header: the files found by name (in their order), then the ones found by their contents alone. A
-/// grouped list keeps its groups.
+/// [`HITS_SHOWN`], then a count of the rest). Rows that aren't grouped are put in the search's parts, each under
+/// its header: the files found by name (in their order), then the ones found by a comment or a tag (`in_comments.rs`
+/// marks them), then the ones found by their contents alone. A grouped list keeps its groups.
 fn with_hits(rows: Rows, inside: &RowInside) -> Rows {
     let count = rows.len();
     let index_of = |i: usize| -> u32 {
@@ -704,41 +706,48 @@ fn with_hits(rows: Rows, inside: &RowInside) -> Rows {
             }
         }
         None => {
-            let (mut named, mut found): (Vec<u32>, Vec<u32>) = (Vec::new(), Vec::new());
+            let (mut named, mut commented, mut found): (Vec<u32>, Vec<u32>, Vec<u32>) =
+                (Vec::new(), Vec::new(), Vec::new());
             for i in 0..count {
-                let by_contents = rows.get(i).is_some_and(|entry| inside.only.contains(&entry.path));
-                if by_contents {
+                let entry = rows.get(i);
+                let by_contents = entry.is_some_and(|entry| inside.only.contains(&entry.path));
+                let by_comment =
+                    by_contents && entry.is_some_and(|entry| inside.only.contains(&super::in_comments::key(&entry.path)));
+                if by_comment {
+                    commented.push(index_of(i));
+                } else if by_contents {
                     found.push(index_of(i));
                 } else {
                     named.push(index_of(i));
                 }
             }
-            if found.is_empty() {
+            if found.is_empty() && commented.is_empty() {
                 slots.extend((0..count).map(Slot::Row));
             } else {
-                let names = (!named.is_empty()).then(|| {
+                // Each part: its header (when it has rows), then its rows, which follow one another in the new order.
+                let mut part = |label: &str, rows: usize, first: usize| -> Option<usize> {
+                    if rows == 0 {
+                        return None;
+                    }
                     headers.push(GroupHeader {
-                        label: "Names".to_string(),
-                        count: named.len(),
+                        label: label.to_string(),
+                        count: rows,
                         size: 0,
-                        first: 0,
+                        first,
                     });
-                    slots.push(Slot::Header(0));
-                    0
-                });
-                slots.extend((0..named.len()).map(Slot::Row));
-                headers.push(GroupHeader {
-                    label: "Inside files".to_string(),
-                    count: found.len(),
-                    size: 0,
-                    first: named.len(),
-                });
-                slots.push(Slot::Header(headers.len() - 1));
-                slots.extend((named.len()..count).map(Slot::Row));
+                    slots.push(Slot::Header(headers.len() - 1));
+                    slots.extend((first..first + rows).map(Slot::Row));
+                    Some(headers.len() - 1)
+                };
+                let names = part("Names", named.len(), 0);
+                let comments = part("In comments", commented.len(), named.len());
+                let inside_files = part("Inside files", found.len(), named.len() + commented.len());
                 sections = Some(Sections {
                     names,
-                    inside: headers.len() - 1,
+                    comments,
+                    inside: inside_files.unwrap_or(usize::MAX),
                 });
+                named.append(&mut commented);
                 named.append(&mut found);
                 order = Some(Arc::from(named));
             }

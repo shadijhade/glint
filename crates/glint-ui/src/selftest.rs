@@ -194,6 +194,37 @@ fn fly_step(step: &str, cx: &mut App) {
         });
         return;
     }
+    // The marks' dialogs and keys: `import:<file>`, `export` (of the folder shown), `settings:<section>`,
+    // `key:<keystroke>` (made up, as the pointer is: `key:enter`, `key:escape`).
+    let head: (&str, &str) = step.split_once(':').unwrap_or((step, ""));
+    if matches!(head.0, "import" | "export" | "settings" | "key") {
+        let Some(main) = startup::main_window(cx) else {
+            return;
+        };
+        let folder = explorer::explorer(cx).read(cx).current_path().to_string();
+        let _ = main.update(cx, |_, window, cx| match head {
+            ("import", file) => crate::dialogs::marks_import::open(window, cx, Some(file.to_string())),
+            ("export", _) => crate::dialogs::marks_export::open(window, cx, folder),
+            ("settings", section) => {
+                // The page keeps the name: a debug tour's few words may live as long as the app.
+                let section: &'static str = Box::leak(section.to_string().into_boxed_str());
+                let view = crate::components::settings::open_at(window, cx, Some(section));
+                // A section after a page's first is only found once a frame has laid the page out.
+                cx.spawn(async move |cx| {
+                    cx.background_executor().timer(std::time::Duration::from_millis(600)).await;
+                    view.update(cx, |view, cx| view.scroll_to(section, cx));
+                })
+                .detach();
+            }
+            (_, key) => {
+                let key: &'static str = Box::leak(key.to_string().into_boxed_str());
+                if let Ok(keystroke) = gpui_kit::gpui::Keystroke::parse(key) {
+                    window.dispatch_keystroke(keystroke, cx);
+                }
+            }
+        });
+        return;
+    }
     if matches!(step, "bump" | "palette" | "look" | "menu" | "tags" | "comment") {
         if let (Some(main), Some(workspace)) = (startup::main_window(cx), startup::main_workspace(cx)) {
             let _ = main.update(cx, |_, window, cx| match step {

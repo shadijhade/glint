@@ -22,6 +22,8 @@ pub struct FindOptions {
     pub fuzzy: bool,
     /// The index sends the best `max_results` of every drive's matches, best first.
     pub rank: bool,
+    /// Plain words also look in tags and comments (the index says which files it found that way: [`Found::Marked`]).
+    pub marks: bool,
 }
 
 /// One thing a running search says (`FindEvent` in fs.ts).
@@ -31,6 +33,9 @@ pub enum Found {
     Started { engine: String },
     /// A batch of results, each with its size, date and attributes. Batches add to each other.
     Entries(Vec<FileEntry>),
+    /// The paths of the batch that comes next (or came) that were found by a comment or a tag, each with the bits
+    /// the index flagged it with (`HIT_BY_COMMENT` 2, `HIT_BY_TAG` 4). Only a search with `marks` says it.
+    Marked(Vec<(String, u8)>),
     /// The search failed (a bad filter, fd could not start…). What was found so far is dropped.
     Error(String),
     /// The search ended. `count` is all it found; `limited` says it stopped at the result limit; `fuzzy` says

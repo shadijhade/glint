@@ -166,7 +166,8 @@ fn a_search_looks_below_the_folder_and_shows_what_it_finds(cx: &mut TestAppConte
             exclude: vec!["node_modules".into(), ".git".into()],
             max_results: Some(50_000),
             fuzzy: true,
-            rank: true
+            rank: true,
+            marks: true
         }
     );
     // The tab shows the search, not the folder: its columns are the search's, nothing is selected.
@@ -882,4 +883,347 @@ fn a_slow_search_does_not_offer_instant_search_when_it_is_already_on(cx: &mut Te
     cx.foreground_executor().block_test(waiting);
     cx.run_until_parked();
     assert!(r.found_events().is_empty());
+}
+
+
+// ---- In comments: a plain word also finds what has it in its comment or tags -------------------------------------
+
+mod in_comments {
+    use super::*;
+    use crate::dialogs::tags::{Backend, Fut};
+    use glint_model::groups::GroupBy;
+    use glint_model::marks::Marks;
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::thread::ThreadId;
+
+    const BOND: &str = "C:\\ops\\bond0.conf";
+    const NOTES: &str = "C:\\ops\\lacp-notes.txt";
+
+    /// A marks backend over a map (by path in lower case): it logs each `read_marks` call's paths and the thread
+    /// that ran it, and holds its answers back while its gate is shut.
+    type Reads = Vec<(Vec<String>, ThreadId)>;
+
+    struct FakeMarks {
+        marks: Arc<Mutex<HashMap<String, Marks>>>,
+        reads: Arc<Mutex<Reads>>,
+        open: Arc<AtomicBool>,
+    }
+
+    impl FakeMarks {
+        fn new(items: &[(&str, Marks)]) -> Arc<Self> {
+            let fake = FakeMarks {
+                marks: Arc::default(),
+                reads: Arc::default(),
+                open: Arc::new(AtomicBool::new(true)),
+            };
+            for (path, marks) in items {
+                fake.put(path, marks.clone());
+            }
+            Arc::new(fake)
+        }
+
+        fn put(&self, path: &str, marks: Marks) {
+            self.marks.lock().expect("lock").insert(path.to_lowercase(), marks);
+        }
+
+        fn calls(&self) -> Vec<Vec<String>> {
+            self.reads.lock().expect("lock").iter().map(|(paths, _)| paths.clone()).collect()
+        }
+    }
+
+    impl Backend for FakeMarks {
+        fn read(&self, paths: Vec<String>) -> Fut<Vec<Vec<String>>> {
+            Box::pin(async move { Ok(vec![Vec::new(); paths.len()]) })
+        }
+
+        fn set(&self, _: Vec<String>, _: Vec<String>, _: Vec<String>) -> Fut<Vec<(String, String)>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+
+        fn read_marks(&self, paths: Vec<String>) -> Fut<Vec<Marks>> {
+            let (marks, reads, open) = (self.marks.clone(), self.reads.clone(), self.open.clone());
+            Box::pin(async move {
+                // Runs where core runs it: never the thread of the window.
+                reads.lock().expect("lock").push((paths.clone(), std::thread::current().id()));
+                for _ in 0..3000 {
+                    if open.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                let known = marks.lock().expect("lock").clone();
+                Ok(paths.iter().map(|p| known.get(&p.to_lowercase()).cloned().unwrap_or_default()).collect())
+            })
+        }
+    }
+
+    fn comment(text: &str) -> Marks {
+        Marks { comment: Some(text.to_string()), ..Marks::default() }
+    }
+
+    /// `C:\ops` with a note named for the word, a file found by its comment, one found inside, and one nothing finds.
+    fn marked(cx: &mut TestAppContext, items: &[(&str, Marks)]) -> (Rig, Arc<FakeMarks>) {
+        // Core's runtime answers the reads on its own threads.
+        cx.executor().allow_parking();
+        let r = rig(cx);
+        let fake = FakeMarks::new(items);
+        let backend: Arc<dyn Backend> = fake.clone();
+        cx.update(|cx| crate::dialogs::tags::init_with(cx, backend));
+        r.disk.folder("C:\\", vec![folder("C:\\", "ops")]);
+        r.disk.folder(
+            "C:\\ops",
+            vec![
+                file("C:\\ops", "bond0.conf", 2, 2),
+                file("C:\\ops", "lacp-notes.txt", 1, 1),
+                file("C:\\ops", "other.txt", 3, 3),
+                file("C:\\ops", "run.sh", 4, 4),
+            ],
+        );
+        r.go(cx, "C:\\ops");
+        (r, fake)
+    }
+
+    /// Types `query` in the box and searches names (what is inside files is left alone), the search saying what the
+    /// test sends it.
+    fn search(r: &Rig, cx: &mut TestAppContext, query: &str) -> (async_channel::Sender<Found>, gpui_kit::Task<()>) {
+        let live = r.disk.live_find(query);
+        let task = r.explorer.update(cx, |e, cx| {
+            e.set_filter(query, None, cx);
+            e.run_find(query, Wider::default().names_only(), cx)
+        });
+        cx.run_until_parked();
+        (live, task)
+    }
+
+    fn settle(cx: &mut TestAppContext, mut done: impl FnMut(&TestAppContext) -> bool) {
+        for _ in 0..400 {
+            cx.run_until_parked();
+            if done(cx) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("the marks never came");
+    }
+
+    /// Lets everything in flight land, for a test of what does not happen.
+    fn idle(cx: &mut TestAppContext) {
+        for _ in 0..30 {
+            cx.run_until_parked();
+            std::thread::sleep(Duration::from_millis(3));
+        }
+    }
+
+    impl Rig {
+        /// The list's lines as words: a header as "# name (n)", a row by its name, a line under it as "  text".
+        fn lines(&self, cx: &TestAppContext) -> Vec<String> {
+            self.read(cx, |e| {
+                let rows = &e.active_tab().expect("a tab").rows;
+                (0..rows.line_count())
+                    .map(|line| match rows.line(line) {
+                        Line::Row(i) => rows.get(i).map(|entry| entry.name.clone()).unwrap_or_default(),
+                        Line::Header(_, header) => format!("# {} ({})", header.label, header.count),
+                        Line::Hit(at) if at.more > 0 => format!("  +{}", at.more),
+                        Line::Hit(at) => match rows.hit(at) {
+                            Some((_, hit)) => {
+                                let text: String = hit.parts.iter().map(|p| p.text.as_str()).collect();
+                                match hit.line {
+                                    Some(n) => format!("  {n}: {text}"),
+                                    None => format!("  {text}"),
+                                }
+                            }
+                            None => "  ?".to_string(),
+                        },
+                        Line::Blank => String::new(),
+                    })
+                    .collect()
+            })
+        }
+    }
+
+    fn batch(by: &[(&str, u8)], files: &[&str]) -> [Found; 2] {
+        let marked = by.iter().map(|(path, bits)| (path.to_string(), *bits)).collect();
+        let entries = files
+            .iter()
+            .map(|path| {
+                let (dir, name) = path.rsplit_once('\\').expect("a path");
+                file(dir, name, 1, 1)
+            })
+            .collect();
+        [Found::Marked(marked), Found::Entries(entries)]
+    }
+
+    #[gpui_kit::test]
+    fn a_file_found_by_its_comment_is_listed_after_the_names_with_the_line_that_holds_the_word(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let (r, fake) = marked(cx, &[(BOND, comment("bond over two NICs\nLACP rate fast\nend"))]);
+        let (live, waiting) = search(&r, cx, "lacp");
+        for event in batch(&[(BOND, 2)], &[NOTES, BOND]) {
+            live.try_send(event).expect("open");
+        }
+        live.try_send(finished(2)).expect("open");
+        cx.foreground_executor().block_test(waiting);
+        settle(cx, |cx| r.lines(cx).len() == 5);
+        assert_eq!(
+            r.lines(cx),
+            ["# Names (1)", "lacp-notes.txt", "# In comments (1)", "bond0.conf", "  LACP rate fast"],
+            "the second line of the comment, not the first"
+        );
+        // The service was asked for marks as the words were typed.
+        let call = r.disk.finds().pop().expect("a search was started");
+        assert!(call.options.marks);
+        assert_eq!(fake.calls(), [vec![BOND.to_string()]]);
+    }
+
+    #[gpui_kit::test]
+    fn a_file_found_by_a_tag_alone_says_its_tags(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let tagged = Marks { tags: vec!["bond".into(), "lacp".into()], ..Marks::default() };
+        let (r, _fake) = marked(cx, &[(BOND, tagged)]);
+        let (live, waiting) = search(&r, cx, "lacp");
+        for event in batch(&[(BOND, 4)], &[BOND]) {
+            live.try_send(event).expect("open");
+        }
+        live.try_send(finished(1)).expect("open");
+        cx.foreground_executor().block_test(waiting);
+        settle(cx, |cx| r.lines(cx).len() == 3);
+        assert_eq!(r.lines(cx), ["# In comments (1)", "bond0.conf", "  tags: bond, lacp"].map(String::from));
+    }
+
+    #[gpui_kit::test]
+    fn names_then_comments_then_inside_files_are_three_parts_in_that_order(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let (r, _fake) = marked(cx, &[(BOND, comment("LACP rate fast"))]);
+        r.disk.live_inside();
+        let live = r.disk.live_find("lacp");
+        let waiting = r.explorer.update(cx, |e, cx| {
+            e.set_filter("lacp", None, cx);
+            e.run_find("lacp", Wider::default(), cx)
+        });
+        cx.run_until_parked();
+        for event in batch(&[(BOND, 2)], &[NOTES, BOND]) {
+            live.try_send(event).expect("open");
+        }
+        live.try_send(finished(2)).expect("open");
+        cx.foreground_executor().block_test(waiting);
+        let id = r.disk.inside_searches().last().map(|(_, request)| request.id.clone()).expect("a content search");
+        let heard = inside_event(
+            &id,
+            glint_core::TextSaid::Matches(vec![inside_match("C:\\ops\\run.sh", "start lacp\n", 3, 6, 10)]),
+        );
+        r.explorer.update(cx, |e, cx| e.inside_heard(&heard, cx));
+        settle(cx, |cx| r.lines(cx).len() == 8);
+        assert_eq!(
+            r.lines(cx),
+            [
+                "# Names (1)",
+                "lacp-notes.txt",
+                "# In comments (1)",
+                "bond0.conf",
+                "  LACP rate fast",
+                "# Inside files (1)",
+                "run.sh",
+                "  3: start lacp"
+            ]
+            .map(String::from)
+        );
+    }
+
+    #[gpui_kit::test]
+    fn the_row_has_no_line_until_its_marks_are_read_and_none_when_they_no_longer_hold_the_word(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let (r, fake) = marked(cx, &[(BOND, comment("LACP rate fast"))]);
+        fake.open.store(false, Ordering::SeqCst);
+        let (live, waiting) = search(&r, cx, "lacp");
+        for event in batch(&[(BOND, 2)], &[BOND]) {
+            live.try_send(event).expect("open");
+        }
+        live.try_send(finished(1)).expect("open");
+        cx.foreground_executor().block_test(waiting);
+        settle(cx, |_| !fake.calls().is_empty());
+        idle(cx);
+        assert_eq!(r.lines(cx), ["# In comments (1)", "bond0.conf"].map(String::from), "no line, no placeholder");
+        fake.open.store(true, Ordering::SeqCst);
+        settle(cx, |cx| r.lines(cx).len() == 3);
+        assert_eq!(r.lines(cx)[2], "  LACP rate fast");
+
+        // Changed since the index saw it: the row stays, with nothing under it.
+        fake.put(BOND, comment("something else"));
+        let (live, waiting) = search(&r, cx, "lacp ");
+        for event in batch(&[(BOND, 2)], &[BOND]) {
+            live.try_send(event).expect("open");
+        }
+        live.try_send(finished(1)).expect("open");
+        cx.foreground_executor().block_test(waiting);
+        settle(cx, |_| fake.calls().len() == 2);
+        idle(cx);
+        assert_eq!(r.lines(cx), ["# In comments (1)", "bond0.conf"].map(String::from));
+    }
+
+    #[gpui_kit::test]
+    fn only_flagged_paths_are_read_in_one_call_a_batch_off_the_window_thread(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let (r, fake) = marked(cx, &[(BOND, comment("LACP")), (NOTES, comment("LACP again"))]);
+        // No hit flagged: nothing is read.
+        let (live, waiting) = search(&r, cx, "lacp");
+        live.try_send(Found::Entries(vec![file("C:\\ops", "lacp-notes.txt", 1, 1)])).expect("open");
+        live.try_send(finished(1)).expect("open");
+        cx.foreground_executor().block_test(waiting);
+        idle(cx);
+        assert!(fake.calls().is_empty());
+
+        // Two batches, each with its flagged ones (and a hit by name between them).
+        let (live, waiting) = search(&r, cx, "lacp ");
+        for event in batch(&[(BOND, 2)], &[BOND, "C:\\ops\\other.txt"]) {
+            live.try_send(event).expect("open");
+        }
+        cx.run_until_parked();
+        idle(cx);
+        for event in batch(&[(NOTES, 4)], &[NOTES]) {
+            live.try_send(event).expect("open");
+        }
+        live.try_send(finished(3)).expect("open");
+        cx.foreground_executor().block_test(waiting);
+        settle(cx, |_| fake.calls().len() == 2);
+        assert_eq!(fake.calls(), [vec![BOND.to_string()], vec![NOTES.to_string()]]);
+        let here = std::thread::current().id();
+        assert!(fake.reads.lock().expect("lock").iter().all(|(_, thread)| *thread != here), "never the UI thread");
+    }
+
+    #[gpui_kit::test]
+    fn grouped_by_something_else_there_are_no_parts_and_the_line_follows_its_row(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let (r, _fake) = marked(cx, &[(BOND, comment("LACP rate fast"))]);
+        let (live, waiting) = search(&r, cx, "lacp");
+        for event in batch(&[(BOND, 2)], &[NOTES, BOND]) {
+            live.try_send(event).expect("open");
+        }
+        live.try_send(finished(2)).expect("open");
+        cx.foreground_executor().block_test(waiting);
+        settle(cx, |cx| r.lines(cx).iter().any(|line| line == "  LACP rate fast"));
+        r.explorer.update(cx, |e, cx| e.set_group(GroupBy::Type, cx));
+        cx.run_until_parked();
+        let lines = r.lines(cx);
+        assert!(lines.iter().all(|line| !line.starts_with("# Names") && !line.starts_with("# In comments")), "{lines:?}");
+        let at = lines.iter().position(|line| line == "bond0.conf").expect("the file is a row");
+        assert_eq!(lines[at + 1], "  LACP rate fast");
+    }
+
+    #[gpui_kit::test]
+    fn a_comment_in_arabic_matches_and_its_line_is_shown(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        testing::set_rtl(true);
+        let (r, _fake) = marked(cx, &[(BOND, comment("إعداد الشبكة\nتجميع الروابط بالبروتوكول lacp\nنهاية"))]);
+        let (live, waiting) = search(&r, cx, "الروابط");
+        for event in batch(&[(BOND, 2)], &[BOND]) {
+            live.try_send(event).expect("open");
+        }
+        live.try_send(finished(1)).expect("open");
+        cx.foreground_executor().block_test(waiting);
+        settle(cx, |cx| r.lines(cx).len() == 3);
+        assert_eq!(r.lines(cx), ["# In comments (1)", "bond0.conf", "  تجميع الروابط بالبروتوكول lacp"].map(String::from));
+        testing::set_rtl(false);
+    }
 }

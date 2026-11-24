@@ -34,6 +34,9 @@ pub struct FindOptions {
     /// The index sends the best `max_results` of every drive's matches, best first, instead of the first
     /// ones it comes to (quick search's and Files' order; fd's stays its own).
     pub rank: bool,
+    /// Plain words also look in tags and comments (a hit says which it was: [`FindEvent::Marked`]). Sent only to a
+    /// service that is this app's version, which is the one that knows it.
+    pub marks: bool,
 }
 
 /// What a search sends as it goes: who answers, what it found (in batches, each with its own path), how it ended.
@@ -42,6 +45,13 @@ pub enum FindEvent {
     /// Who answers: "index", "fd", or "index + fd" when the index covers only some of the folders.
     Started { engine: &'static str },
     Found(Vec<Entry>),
+    /// The paths of a batch found by a comment or a tag, with their bits ([`HIT_BY_COMMENT`], [`HIT_BY_TAG`]), sent
+    /// right before the `Found` batch that holds them (with property filters, before the checked ones follow).
+    /// A search without `marks`, and fd, send none.
+    ///
+    /// [`HIT_BY_COMMENT`]: shadui_index::proto::HIT_BY_COMMENT
+    /// [`HIT_BY_TAG`]: shadui_index::proto::HIT_BY_TAG
+    Marked(Vec<(String, u8)>),
     Error { message: String },
     /// `fuzzy`: nothing matched as typed, and the index found these close matches.
     Finished { count: usize, elapsed: f64, limited: bool, fuzzy: bool },
@@ -315,11 +325,28 @@ struct Out<'a> {
     check: Option<mpsc::SyncSender<(Entry, bool)>>,
     /// Set while fd's results are sent: they are checked against the marks filter by the same threads.
     marks: bool,
+    /// Found by a comment or a tag since the last flush: sent as `Marked` just before the batch holding them.
+    marked: Vec<(String, u8)>,
 }
 
 impl<'a> Out<'a> {
     fn new(channel: &'a Channel<FindEvent>, check: Option<mpsc::SyncSender<(Entry, bool)>>) -> Self {
-        Out { channel, batch: Vec::new(), sent: Instant::now(), count: 0, started: false, check, marks: false }
+        Out { channel, batch: Vec::new(), sent: Instant::now(), count: 0, started: false, check, marks: false, marked: Vec::new() }
+    }
+
+    /// An entry the index found, with how (0: by its name).
+    #[cfg(windows)]
+    fn push_hit(&mut self, entry: Entry, by: u8) {
+        if let Some(path) = entry.path.as_ref().filter(|_| by != 0) {
+            self.marked.push((path.clone(), by));
+        }
+        self.push(entry);
+    }
+
+    fn flush_marked(&mut self) {
+        if !self.marked.is_empty() {
+            let _ = self.channel.send(FindEvent::Marked(std::mem::take(&mut self.marked)));
+        }
     }
 
     fn started(&mut self, engine: &'static str) {
@@ -332,6 +359,9 @@ impl<'a> Out<'a> {
         self.count += 1;
         if let Some(check) = &self.check {
             let _ = check.send((entry, self.marks));
+            if self.marked.len() >= 1000 {
+                self.flush_marked();
+            }
             return;
         }
         self.batch.push(entry);
@@ -341,6 +371,7 @@ impl<'a> Out<'a> {
     }
 
     fn flush(&mut self) {
+        self.flush_marked();
         if !self.batch.is_empty() {
             let _ = self.channel.send(FindEvent::Found(std::mem::take(&mut self.batch)));
             self.sent = Instant::now();
@@ -360,16 +391,7 @@ struct Answered {
 #[cfg(windows)]
 fn search_index(roots: &[String], query: &str, options: &FindOptions, stop: &AtomicBool, cancel: &IndexCancel, out: &mut Out) -> Option<Answered> {
     use shadui_index::client::{self, Event};
-    let request = shadui_index::proto::SearchRequest {
-        query: query.to_string(),
-        roots: roots.to_vec(),
-        hidden: options.hidden,
-        exclude: options.exclude.clone(),
-        max_results: options.max_results,
-        fuzzy: options.fuzzy,
-        rank: options.rank,
-        marks: false,
-    };
+    let request = index_request(roots, query, options, options.marks && same_service());
     let mut answered = None;
     // A failure halfway keeps what arrived; one before the plan leaves everything to fd.
     let _ = client::search_until(&request, cancel, |event| {
@@ -384,12 +406,7 @@ fn search_index(roots: &[String], query: &str, options: &FindOptions, stop: &Ato
                 out.started(if skipped.is_empty() { "index" } else { "index + fd" });
                 answered = Some(Answered { skipped, limited: false, fuzzy: false });
             }
-            Event::Hits(hits) => {
-                for hit in hits {
-                    let name = hit.path.rsplit('\\').next().unwrap_or(&hit.path).to_string();
-                    out.push(Entry { name, path: Some(hit.path), dir: hit.dir, size: hit.size, modified: hit.modified, attrs: hit.attrs });
-                }
-            }
+            Event::Hits(hits) => add_hits(hits, out),
             Event::Done { limited, fuzzy, .. } => {
                 if let Some(answered) = answered.as_mut() {
                     (answered.limited, answered.fuzzy) = (limited, fuzzy);
@@ -399,6 +416,31 @@ fn search_index(roots: &[String], query: &str, options: &FindOptions, stop: &Ato
         true
     });
     answered
+}
+
+/// The request for the index. `marks` is whether the service is known to read it.
+#[cfg(windows)]
+fn index_request(roots: &[String], query: &str, options: &FindOptions, marks: bool) -> shadui_index::proto::SearchRequest {
+    shadui_index::proto::SearchRequest {
+        query: query.to_string(),
+        roots: roots.to_vec(),
+        hidden: options.hidden,
+        exclude: options.exclude.clone(),
+        max_results: options.max_results,
+        fuzzy: options.fuzzy,
+        rank: options.rank,
+        marks,
+    }
+}
+
+/// A batch of the index's hits becomes entries; the ones found by a comment or a tag are told as `Marked`.
+#[cfg(windows)]
+fn add_hits(hits: Vec<shadui_index::proto::Hit>, out: &mut Out) {
+    for hit in hits {
+        let name = hit.path.rsplit('\\').next().unwrap_or(&hit.path).to_string();
+        let by = hit.by;
+        out.push_hit(Entry { name, path: Some(hit.path), dir: hit.dir, size: hit.size, modified: hit.modified, attrs: hit.attrs }, by);
+    }
 }
 
 /// Whether the running service is this app's version (so it reads every filter this app knows). Asked before
@@ -665,7 +707,7 @@ mod tests {
     use super::*;
 
     fn options() -> FindOptions {
-        FindOptions { hidden: false, respect_ignore: false, exclude: vec!["node_modules".into(), " ".into()], max_results: Some(100), fuzzy: false, rank: false }
+        FindOptions { hidden: false, respect_ignore: false, exclude: vec!["node_modules".into(), " ".into()], max_results: Some(100), fuzzy: false, rank: false, marks: false }
     }
 
     #[test]
@@ -745,6 +787,49 @@ mod tests {
         let (plain, none) = fd_side("report 2026");
         assert_eq!((plain.as_str(), none.is_empty()), ("report 2026", true));
         assert!(fd_args(&fd, &["C:\\".to_string()], &options()).is_ok());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_request_says_marks_only_when_asked_to() {
+        let roots = vec![r"C:\".to_string()];
+        let plain = index_request(&roots, "lacp", &options(), false);
+        assert!(!plain.marks);
+        assert_eq!((plain.query.as_str(), plain.fuzzy, plain.rank, plain.max_results), ("lacp", false, false, Some(100)));
+        assert!(index_request(&roots, "lacp", &options(), true).marks);
+    }
+
+    #[cfg(windows)]
+    fn sent(hits: Vec<shadui_index::proto::Hit>) -> Vec<FindEvent> {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let seen = events.clone();
+        let channel = Channel::new(move |event| {
+            seen.lock().unwrap_or_else(|e| e.into_inner()).push(event);
+            Ok(())
+        });
+        let mut out = Out::new(&channel, None);
+        add_hits(hits, &mut out);
+        out.flush();
+        let events = events.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        events
+    }
+
+    #[cfg(windows)]
+    fn hit(path: &str, by: u8) -> shadui_index::proto::Hit {
+        shadui_index::proto::Hit { path: path.into(), dir: false, size: 1, modified: 0, attrs: 0, by }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_batch_with_a_hit_by_comment_says_so_before_it_is_found_and_one_without_only_found() {
+        use shadui_index::proto::{HIT_BY_COMMENT, HIT_BY_TAG};
+        let events = sent(vec![hit(r"C:\a\notes.txt", 0), hit(r"C:\a\bond0.conf", HIT_BY_COMMENT), hit(r"C:\a\x.md", HIT_BY_COMMENT | HIT_BY_TAG)]);
+        let [FindEvent::Marked(marked), FindEvent::Found(found)] = events.as_slice() else { panic!("{events:?}") };
+        assert_eq!(marked, &[(r"C:\a\bond0.conf".to_string(), HIT_BY_COMMENT), (r"C:\a\x.md".to_string(), HIT_BY_COMMENT | HIT_BY_TAG)]);
+        assert_eq!(found.len(), 3);
+
+        let events = sent(vec![hit(r"C:\a\notes.txt", 0)]);
+        assert!(matches!(events.as_slice(), [FindEvent::Found(found)] if found.len() == 1), "{events:?}");
     }
 
     #[test]

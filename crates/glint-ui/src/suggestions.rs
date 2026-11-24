@@ -11,17 +11,21 @@
 //! | Start with Windows      | Glint stays in the tray but doesn't start at sign-in          | Start with Windows     |
 //! | Match Windows' mode     | a theme chosen by hand isn't Windows' light or dark mode      | Follow Windows         |
 //! | Connect a cloud         | rclone is installed and no cloud is connected                 | Connect a cloud        |
+//! | XYplorer's marks        | a `tag.dat` is found that was not brought in yet              | Import marks…          |
 //!
 //! **Not a nag.** A notification comes at most once per start, [`OFFER_AFTER`] in, and only for the first three
-//! kinds (the rest wait in the Overview); one shown is not shown again for [`QUIET_FOR`] days, and "Don't suggest
+//! kinds and XYplorer's marks (the rest wait in the Overview); one shown is not shown again for [`QUIET_FOR`] days, and "Don't suggest
 //! this again" puts it away for good (on the notification or the Overview's cross). What was shown and put away is
 //! kept in the saved state's notices (`suggest-<id>`), as the first-run notices are.
 
 use crate::components::settings::IndexState;
 use crate::kit::prelude::*;
 use crate::{persistence, state, t};
-use glint_model::format::format_size;
+use glint_model::format::{format_size, plural};
 use glint_model::store::Theme;
+use std::future::Future;
+use std::pin::Pin;
+use std::rc::Rc;
 use std::time::Duration;
 
 /// How long after start a suggestion may come up as a notification: once the first folders and the service's
@@ -36,6 +40,7 @@ pub enum Kind {
     IndexAllDrives,
     FullDrive,
     ToolUpdates,
+    XyplorerMarks,
     ShortcutNeedsTray,
     StartWithWindows,
     MatchWindowsTheme,
@@ -49,6 +54,7 @@ impl Kind {
             Kind::IndexAllDrives => "index-all-drives",
             Kind::FullDrive => "full-drive",
             Kind::ToolUpdates => "tool-updates",
+            Kind::XyplorerMarks => "xyplorer-marks",
             Kind::ShortcutNeedsTray => "shortcut-needs-tray",
             Kind::StartWithWindows => "start-with-windows",
             Kind::MatchWindowsTheme => "match-windows-theme",
@@ -58,7 +64,10 @@ impl Kind {
 
     /// Whether it may come up as a notification (the others wait in Settings' Overview).
     pub fn may_notify(self) -> bool {
-        matches!(self, Kind::IndexAllDrives | Kind::FullDrive | Kind::ToolUpdates)
+        matches!(
+            self,
+            Kind::IndexAllDrives | Kind::FullDrive | Kind::ToolUpdates | Kind::XyplorerMarks
+        )
     }
 
     pub fn icon(self) -> IconName {
@@ -66,6 +75,7 @@ impl Kind {
             Kind::IndexAllDrives => IconName::Zap,
             Kind::FullDrive => IconName::HardDrive,
             Kind::ToolUpdates => IconName::Download,
+            Kind::XyplorerMarks => IconName::Tag,
             Kind::ShortcutNeedsTray => IconName::Keyboard,
             Kind::StartWithWindows => IconName::Power,
             Kind::MatchWindowsTheme => IconName::SunMoon,
@@ -81,7 +91,7 @@ pub struct Suggestion {
     pub title: SharedString,
     pub body: SharedString,
     pub button: SharedString,
-    /// The drive, for a nearly full one ("C:\").
+    /// The drive, for a nearly full one ("C:\"); the `tag.dat` found, for XYplorer's marks.
     pub drive: Option<String>,
 }
 
@@ -113,6 +123,9 @@ pub struct Facts {
     pub rclone: Option<bool>,
     /// How many clouds are connected.
     pub clouds: Option<usize>,
+    /// The XYplorer `tag.dat` found and how many items it marks: None while unknown, when none is found or when it
+    /// was brought in already.
+    pub xyplorer: Option<(String, u64)>,
 }
 
 impl Facts {
@@ -128,9 +141,53 @@ impl Facts {
                 cx.window_appearance(),
                 WindowAppearance::Dark | WindowAppearance::VibrantDark
             ),
+            xyplorer: cx.try_global::<XyplorerKnown>().and_then(|known| known.0.clone()),
             ..Facts::default()
         }
     }
+}
+
+/// What was last learned of XYplorer's `tag.dat` (by the Overview or the offer), for [`Facts::from_settings`].
+struct XyplorerKnown(Option<(String, u64)>);
+impl Global for XyplorerKnown {}
+
+/// How the `tag.dat` fact is asked: a test replaces it.
+struct XyplorerAsk(Rc<dyn Fn() -> XyplorerFuture>);
+impl Global for XyplorerAsk {}
+
+type XyplorerFuture = Pin<Box<dyn Future<Output = Option<(String, u64)>>>>;
+
+/// Replaces how the `tag.dat` fact is asked (tests).
+#[cfg(test)]
+fn ask_xyplorer_with(cx: &mut App, ask: impl Fn() -> XyplorerFuture + 'static) {
+    cx.set_global(XyplorerAsk(Rc::new(ask)));
+}
+
+/// Asks for the `tag.dat` found and not brought in yet, off the UI thread (reading only). None when unknown.
+pub fn ask_xyplorer(cx: &App) -> XyplorerFuture {
+    if let Some(ask) = cx.try_global::<XyplorerAsk>() {
+        return (ask.0)();
+    }
+    if !cx.has_global::<crate::core_bridge::Core>() {
+        return Box::pin(async { None });
+    }
+    Box::pin(async {
+        let found = crate::core_bridge::run(async {
+            glint_core::fsx::blocking(|| {
+                Ok(glint_core::marks::xyplorer_found()
+                    .filter(|found| !glint_core::marks::apply::brought_in(&found.path))
+                    .map(|found| (found.path, found.items)))
+            })
+            .await
+        })
+        .await;
+        found.ok().and_then(Result::ok).flatten()
+    })
+}
+
+/// Keeps what [`ask_xyplorer`] answered, for the Overview's list.
+pub fn know_xyplorer(cx: &mut App, found: Option<(String, u64)>) {
+    cx.set_global(XyplorerKnown(found));
 }
 
 /// A drive is nearly full: under a tenth and under 15 GB free (a big drive with 100 GB left is fine).
@@ -184,6 +241,18 @@ pub fn all(facts: &Facts) -> Vec<Suggestion> {
             t!("Newer versions Glint is tested with are ready: each is checked before it replaces the old one."),
             if n == 1 { t!("Update it") } else { t!("Update them") },
             None,
+        );
+    }
+    if let Some((path, items)) = &facts.xyplorer {
+        add(
+            Kind::XyplorerMarks,
+            t!("Bring your XYplorer labels, tags and comments"),
+            t!(
+                "{n} marked in XYplorer, kept as they are there",
+                n = plural(usize::try_from(*items).unwrap_or(usize::MAX), "item")
+            ),
+            t!("Import marks…"),
+            Some(path.clone()),
         );
     }
     if facts.quick_shortcut && !facts.keep_in_tray {
@@ -310,6 +379,13 @@ pub fn act(suggestion: &Suggestion, window: &mut Window, cx: &mut App) {
         Kind::ConnectCloud => {
             crate::components::settings::open_at(window, cx, Some("clouds"));
         }
+        Kind::XyplorerMarks => {
+            if let Some(path) = &suggestion.drive {
+                #[cfg(test)]
+                tests::OPENED.with(|opened| opened.borrow_mut().push(path.clone()));
+                crate::dialogs::marks_import::open(window, cx, Some(path.clone()));
+            }
+        }
     }
 }
 
@@ -330,6 +406,7 @@ pub fn offer(window: &mut Window, cx: &mut App) {
     }
     cx.set_global(Offered);
     let status = crate::notices::index_status(cx);
+    let xyplorer = ask_xyplorer(cx);
     window
         .spawn(cx, async move |cx| {
             cx.background_executor().timer(OFFER_AFTER).await;
@@ -354,11 +431,14 @@ pub fn offer(window: &mut Window, cx: &mut App) {
                     })
                     .collect::<Vec<_>>()
             });
+            let xyplorer = xyplorer.await;
             let _ = cx.update(|window, cx| {
+                know_xyplorer(cx, xyplorer.clone());
                 let facts = Facts {
                     index,
                     tool_updates,
                     drives,
+                    xyplorer,
                     ..Facts::from_settings(cx)
                 };
                 let day = today();
@@ -413,6 +493,9 @@ fn notification(suggestion: Suggestion) -> Notification {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing;
+    use gpui_kit::TestAppContext;
+    use std::cell::RefCell;
 
     fn kinds(facts: &Facts) -> Vec<Kind> {
         all(facts).into_iter().map(|s| s.kind).collect()
@@ -506,5 +589,127 @@ mod tests {
         assert!(Kind::IndexAllDrives.may_notify() && Kind::FullDrive.may_notify() && Kind::ToolUpdates.may_notify());
         assert!(!Kind::StartWithWindows.may_notify() && !Kind::MatchWindowsTheme.may_notify());
         assert!(!Kind::ConnectCloud.may_notify() && !Kind::ShortcutNeedsTray.may_notify());
+    }
+
+    // ---- XYplorer's marks (F27) ----
+
+    thread_local! {
+        /// The paths `act` asked the import to open for (the dialog itself is another card's).
+        pub(super) static OPENED: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    fn found() -> Facts {
+        Facts {
+            xyplorer: Some(("C:\\Users\\me\\AppData\\Roaming\\XYplorer\\tag.dat".to_string(), 1284)),
+            ..Facts::default()
+        }
+    }
+
+    struct Host;
+
+    impl Render for Host {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full()
+        }
+    }
+
+    fn state_file(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("glint-suggestions-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("state.json")
+    }
+
+    #[test]
+    fn a_tag_dat_found_is_suggested_with_its_count_and_none_is_not() {
+        let facts = found();
+        assert_eq!(kinds(&facts), [Kind::XyplorerMarks]);
+        let found = all(&facts);
+        assert_eq!(found[0].title, "Bring your XYplorer labels, tags and comments");
+        assert_eq!(found[0].body, "1,284 items marked in XYplorer, kept as they are there");
+        assert_eq!(found[0].button, "Import marks…");
+        assert_eq!(found[0].drive.as_deref(), Some("C:\\Users\\me\\AppData\\Roaming\\XYplorer\\tag.dat"));
+        assert!(kinds(&Facts::default()).is_empty(), "unknown, none found or brought in: nothing");
+        let order = Facts {
+            tool_updates: Some(1),
+            quick_shortcut: true,
+            ..facts
+        };
+        assert_eq!(kinds(&order), [Kind::ToolUpdates, Kind::XyplorerMarks, Kind::ShortcutNeedsTray]);
+    }
+
+    #[test]
+    fn the_xyplorer_suggestion_has_its_own_id_and_may_notify() {
+        let ids = [
+            Kind::IndexAllDrives,
+            Kind::FullDrive,
+            Kind::ToolUpdates,
+            Kind::XyplorerMarks,
+            Kind::ShortcutNeedsTray,
+            Kind::StartWithWindows,
+            Kind::MatchWindowsTheme,
+            Kind::ConnectCloud,
+        ]
+        .map(Kind::id);
+        assert_eq!(Kind::XyplorerMarks.id(), "xyplorer-marks");
+        assert_eq!(ids.iter().filter(|id| **id == "xyplorer-marks").count(), 1);
+        let mut sorted = ids.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), ids.len(), "no two kinds share an id");
+        assert!(Kind::XyplorerMarks.may_notify());
+    }
+
+    #[gpui_kit::test]
+    fn dismissed_the_xyplorer_suggestion_stays_away(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let file = state_file("dismissed");
+        cx.update(|cx| {
+            testing::init(cx);
+            crate::persistence::init_at(cx, file.clone());
+            assert_eq!(current(&found(), cx).len(), 1);
+            dismiss(cx, Kind::XyplorerMarks);
+            assert!(dismissed(cx, Kind::XyplorerMarks));
+            assert!(current(&found(), cx).is_empty(), "put away for good");
+            assert!(to_offer(&found(), cx, 20_000).is_none());
+        });
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
+    }
+
+    #[gpui_kit::test]
+    fn its_button_opens_the_import_for_that_path(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        cx.update(testing::init);
+        let (mut visual, _) = testing::open_window(cx, |_, cx| cx.new(|_| Host));
+        let suggestion = all(&found()).remove(0);
+        OPENED.with(|opened| opened.borrow_mut().clear());
+        visual.update(|window, cx| act(&suggestion, window, cx));
+        visual.run_until_parked();
+        OPENED.with(|opened| {
+            assert_eq!(*opened.borrow(), ["C:\\Users\\me\\AppData\\Roaming\\XYplorer\\tag.dat"]);
+        });
+    }
+
+    #[gpui_kit::test]
+    fn the_fact_is_asked_through_what_a_test_replaces_and_kept_for_the_settings(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        cx.update(testing::init);
+        let (mut visual, _) = testing::open_window(cx, |_, cx| cx.new(|_| Host));
+        visual.update(|_, cx| {
+            ask_xyplorer_with(cx, || Box::pin(async { Some(("D:\\tag.dat".to_string(), 3)) }));
+        });
+        let answer = Rc::new(RefCell::new(None));
+        let sink = answer.clone();
+        visual.update(|_, cx| {
+            let asked = ask_xyplorer(cx);
+            cx.spawn(async move |_| *sink.borrow_mut() = Some(asked.await)).detach();
+        });
+        visual.run_until_parked();
+        let answer = answer.borrow().clone().flatten();
+        assert_eq!(answer, Some(("D:\\tag.dat".to_string(), 3)));
+        visual.update(|_, cx| {
+            assert!(Facts::from_settings(cx).xyplorer.is_none(), "unknown until it is kept");
+            know_xyplorer(cx, answer);
+            assert_eq!(Facts::from_settings(cx).xyplorer.map(|(_, n)| n), Some(3));
+        });
     }
 }

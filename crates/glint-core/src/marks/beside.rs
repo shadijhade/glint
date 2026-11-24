@@ -70,3 +70,166 @@ pub fn change(folder: &Path, changes: &[(String, Marks)], at: i64) -> Result<(),
     crate::actions::hide(&path);
     Ok(())
 }
+
+/// How many items of `folder` have their marks in its `.glint-marks` though the drive keeps streams (F23): what
+/// the pane's head offers to move into the files. 0 where there is no such file or the drive keeps none.
+pub fn waiting_in(folder: &str) -> u64 {
+    waiting(Path::new(folder)).len() as u64
+}
+
+/// The lines of `folder`'s `.glint-marks` that wait to move: an item that is there, holds marks, and whose own
+/// streams hold none (a stream wins over a line: that line is stale, not waiting). Empty where the drive keeps no
+/// streams. M10: names were refused by `read` when they leave the folder; the path is only `folder` and a name.
+fn waiting(folder: &Path) -> Vec<(String, Marks)> {
+    if !super::caps::has_streams(&folder.to_string_lossy()) {
+        return Vec::new();
+    }
+    let Some(side) = read(folder) else { return Vec::new() };
+    side.lines
+        .into_iter()
+        .filter(|l| !l.marks.is_empty())
+        .filter(|l| {
+            let path = folder.join(&l.name);
+            std::fs::symlink_metadata(&path).is_ok() && super::streams::read(&path.to_string_lossy()).is_none()
+        })
+        .map(|l| (l.name, l.marks))
+        .collect()
+}
+
+/// Moves those marks into the files' own streams, each line taken out as its stream is written; how many moved.
+///
+/// An item that can't be written (read-only, in use) keeps its line and isn't counted. A line also holds keys a
+/// later version wrote (`Line::rest`): they leave with the line, since the streams have no place for them.
+pub fn move_in(folder: &str) -> Result<u64, String> {
+    let folder = Path::new(folder);
+    let mut moved: Vec<(String, Marks)> = Vec::new();
+    for (name, marks) in waiting(folder) {
+        if super::streams::write(&folder.join(&name).to_string_lossy(), &marks).is_ok() {
+            moved.push((name, Marks::default()));
+        }
+    }
+    if moved.is_empty() {
+        return Ok(0);
+    }
+    // One write of the sidecar for all of them; it goes when no line is left.
+    change(folder, &moved, 0)?;
+    Ok(moved.len() as u64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::marks::{caps, streams};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn folder() -> std::path::PathBuf {
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let d = std::env::temp_dir().join(format!("glint-beside-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+        let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::create_dir_all(&d);
+        d
+    }
+
+    fn marks(label: &str) -> Marks {
+        Marks { label: Some(label.into()), tags: vec!["x".into(), "y".into()], comment: Some("note".into()) }
+    }
+
+    fn path(dir: &Path, name: &str) -> String {
+        dir.join(name).to_string_lossy().into_owned()
+    }
+
+    /// `a.txt` waits, `b.txt` has marks in its streams already (its line is stale), `gone.txt` is gone.
+    fn three_lines(dir: &Path) {
+        for n in ["a.txt", "b.txt", "gone.txt"] {
+            std::fs::write(dir.join(n), b"hello").unwrap();
+        }
+        let all: Vec<(String, Marks)> = ["a.txt", "b.txt", "gone.txt"].iter().map(|n| (n.to_string(), marks(n))).collect();
+        change(dir, &all, 5).unwrap();
+        streams::write(&path(dir, "b.txt"), &marks("Own")).unwrap();
+        std::fs::remove_file(dir.join("gone.txt")).unwrap();
+    }
+
+    fn names(dir: &Path) -> Vec<String> {
+        read(dir).map(|b| b.lines.into_iter().map(|l| l.name).collect()).unwrap_or_default()
+    }
+
+    #[test]
+    fn a_line_waits_only_when_its_item_is_there_and_its_streams_hold_nothing() {
+        let dir = folder();
+        if !caps::has_streams(&dir.to_string_lossy()) {
+            return;
+        }
+        three_lines(&dir);
+        assert_eq!(waiting_in(&dir.to_string_lossy()), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn moving_in_writes_the_streams_keeps_dates_and_contents_and_takes_only_that_line_out() {
+        let dir = folder();
+        if !caps::has_streams(&dir.to_string_lossy()) {
+            return;
+        }
+        three_lines(&dir);
+        let a = path(&dir, "a.txt");
+        let before = std::fs::metadata(&a).unwrap().modified().unwrap();
+        assert_eq!(move_in(&dir.to_string_lossy()), Ok(1));
+        assert_eq!(streams::read(&a), Some(marks("a.txt")));
+        assert_eq!(std::fs::metadata(&a).unwrap().modified().unwrap(), before);
+        assert_eq!(std::fs::read(&a).unwrap(), b"hello");
+        assert_eq!(streams::read(&path(&dir, "b.txt")), Some(marks("Own")));
+        assert_eq!(names(&dir), vec!["b.txt".to_string()], "the stale line stays, the gone one goes with change");
+        assert_eq!(waiting_in(&dir.to_string_lossy()), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn when_every_line_moved_the_sidecar_is_gone() {
+        let dir = folder();
+        if !caps::has_streams(&dir.to_string_lossy()) {
+            return;
+        }
+        std::fs::write(dir.join("a.txt"), b"x").unwrap();
+        change(&dir, &[("a.txt".into(), marks("A"))], 5).unwrap();
+        assert!(dir.join(BESIDE_NAME).exists());
+        assert_eq!(move_in(&dir.to_string_lossy()), Ok(1));
+        assert!(!dir.join(BESIDE_NAME).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_read_only_file_keeps_its_line_and_is_not_counted_and_the_others_still_move() {
+        let dir = folder();
+        if !caps::has_streams(&dir.to_string_lossy()) {
+            return;
+        }
+        for n in ["a.txt", "b.txt"] {
+            std::fs::write(dir.join(n), b"x").unwrap();
+        }
+        change(&dir, &[("a.txt".into(), marks("A")), ("b.txt".into(), marks("B"))], 5).unwrap();
+        let b = dir.join("b.txt");
+        let mut perms = std::fs::metadata(&b).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&b, perms.clone()).unwrap();
+        let answer = move_in(&dir.to_string_lossy());
+        #[allow(clippy::permissions_set_readonly_false)] // a test's own file, so it can be removed
+        perms.set_readonly(false);
+        std::fs::set_permissions(&b, perms).unwrap();
+        assert_eq!(answer, Ok(1));
+        assert_eq!(streams::read(&path(&dir, "a.txt")), Some(marks("A")));
+        assert_eq!(streams::read(&path(&dir, "b.txt")), None);
+        assert_eq!(names(&dir), vec!["b.txt".to_string()]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_folder_with_no_sidecar_has_nothing_waiting_and_move_in_writes_nothing() {
+        let dir = folder();
+        std::fs::write(dir.join("a.txt"), b"x").unwrap();
+        assert_eq!(waiting_in(&dir.to_string_lossy()), 0);
+        assert_eq!(move_in(&dir.to_string_lossy()), Ok(0));
+        assert!(!dir.join(BESIDE_NAME).exists());
+        assert_eq!(streams::read(&path(&dir, "a.txt")), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

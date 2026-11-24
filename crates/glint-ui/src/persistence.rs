@@ -24,6 +24,7 @@
 //! `EBWebView`): when there is no `state.json` yet, [`init`] first asks [`crate::old_settings`] to write one from
 //! it, read-only, and then loads that file like any other. See that module.
 
+use glint_model::marks::{label_of, Label, MAX_LABELS};
 use glint_model::rank::Visit;
 use glint_model::store::{
     load_persisted, persisted_json, AppState, FolderRule, FolderView, HistoryItem, OrderedMap, RemoteConnection,
@@ -704,13 +705,12 @@ pub enum Part {
     History,
     Visits,
     FolderViews,
-    /// The labels, with the tags used lately (docs/gpui/marks, F26). Not in [`ALL_PARTS`] until card G1 writes and
-    /// reads it.
+    /// The labels, with the tags used lately (docs/gpui/marks, F26).
     Labels,
 }
 
 /// Every part, in order.
-pub const ALL_PARTS: [Part; 8] = [
+pub const ALL_PARTS: [Part; 9] = [
     Part::Settings,
     Part::Pinned,
     Part::SavedSearches,
@@ -719,10 +719,11 @@ pub const ALL_PARTS: [Part; 8] = [
     Part::History,
     Part::Visits,
     Part::FolderViews,
+    Part::Labels,
 ];
 
 /// What a part is called in the dialog and what is to know about it (`PARTS`): `(part, label, note)`.
-pub const PARTS: [(Part, &str, Option<&str>); 8] = [
+pub const PARTS: [(Part, &str, Option<&str>); 9] = [
     (Part::Settings, "Settings", Some("every option here")),
     (Part::Pinned, "Pinned folders", None),
     (Part::SavedSearches, "Saved searches", None),
@@ -739,7 +740,13 @@ pub const PARTS: [(Part, &str, Option<&str>); 8] = [
         "Folders' own views",
         Some("their columns, sort and list or grid"),
     ),
+    (Part::Labels, "Labels", Some("with the tags used lately")),
 ];
+
+/// How many tags used lately a PC keeps (the tags dialog's `MOST_RECENT`).
+const KEPT_RECENT_TAGS: usize = 20;
+/// The longest a label's name or a tag can be in a file taken.
+const LONGEST_NAME: usize = 64;
 
 /// A settings file as written: never a secret (connections' passwords and keys stay in Windows Credential
 /// Manager, clouds' sign-ins in rclone's configuration). Parts not chosen are left out.
@@ -752,8 +759,9 @@ pub struct SettingsFileOut<'a> {
     pub exported: String,
     /// From which version of Glint.
     pub app: &'static str,
+    /// The settings as JSON, less their `labels` (the Labels part's).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub settings: Option<&'a Settings>,
+    pub settings: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pinned: Option<&'a Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -768,6 +776,16 @@ pub struct SettingsFileOut<'a> {
     pub visits: Option<&'a OrderedMap<Visit>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub folder_views: Option<&'a OrderedMap<FolderView>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub labels: Option<LabelsOut<'a>>,
+}
+
+/// The Labels part as written.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LabelsOut<'a> {
+    pub labels: &'a [Label],
+    pub recent_tags: &'a [String],
 }
 
 /// Milliseconds since 1970 as `2026-11-10T12:00:00.000Z` (what `Date.toISOString` gives).
@@ -797,12 +815,21 @@ pub fn iso_date(unix_ms: i64) -> String {
 /// The text of a settings file holding `parts` of `state` (`settingsFile()` + `JSON.stringify(.., null, 2)`).
 pub fn export_settings(state: &AppState, parts: &[Part], now_ms: i64) -> Result<String, String> {
     let has = |p: Part| parts.contains(&p);
+    let settings = if has(Part::Settings) {
+        let mut value = serde_json::to_value(&state.settings).map_err(|e| format!("couldn't encode the settings file: {e}"))?;
+        if let Value::Object(map) = &mut value {
+            map.remove("labels");
+        }
+        Some(value)
+    } else {
+        None
+    };
     let file = SettingsFileOut {
         glint: "settings",
         version: 1,
         exported: iso_date(now_ms),
         app: env!("CARGO_PKG_VERSION"),
-        settings: has(Part::Settings).then_some(&state.settings),
+        settings,
         pinned: has(Part::Pinned).then_some(&state.pinned),
         saved_searches: has(Part::SavedSearches).then_some(&state.saved_searches),
         remotes: has(Part::Remotes).then_some(&state.remotes),
@@ -810,6 +837,10 @@ pub fn export_settings(state: &AppState, parts: &[Part], now_ms: i64) -> Result<
         history: has(Part::History).then_some(&state.history),
         visits: has(Part::Visits).then_some(&state.visits),
         folder_views: has(Part::FolderViews).then_some(&state.folder_views),
+        labels: has(Part::Labels).then_some(LabelsOut {
+            labels: &state.settings.labels,
+            recent_tags: &state.recent_tags,
+        }),
     };
     serde_json::to_string_pretty(&file).map_err(|e| format!("couldn't encode the settings file: {e}"))
 }
@@ -878,6 +909,12 @@ impl SettingsFile {
     pub fn count_of(&self, part: Part) -> usize {
         if part == Part::Settings {
             return known_settings(self.part_value(part)).len();
+        }
+        if part == Part::Labels {
+            return match self.part_value(part) {
+                Some(Value::Object(map)) => map.get("labels").and_then(Value::as_array).map_or(0, Vec::len),
+                _ => 0,
+            };
         }
         match self.part_value(part) {
             Some(Value::Array(items)) => items.len(),
@@ -951,6 +988,36 @@ fn is_str(map: &Map<String, Value>, key: &str) -> bool {
     map.get(key).is_some_and(Value::is_string)
 }
 
+/// A name (a label's, an old name's, a tag) from a file: trimmed, and none that is empty, long or broken in lines.
+fn clean_name(value: &Value) -> Option<String> {
+    let name = value.as_str()?.trim();
+    let fine = !name.is_empty() && name.chars().count() <= LONGEST_NAME && !name.contains(['\n', '\r']);
+    fine.then(|| name.to_string())
+}
+
+/// The labels a file holds, each one valid, no two alike in any case, at most `MAX_LABELS`: the file is data.
+fn read_labels(value: Option<&Value>) -> Vec<Label> {
+    let Some(Value::Array(items)) = value else {
+        return Vec::new();
+    };
+    let mut out: Vec<Label> = Vec::new();
+    for item in items {
+        let Value::Object(map) = item else { continue };
+        let Some(name) = map.get("name").and_then(clean_name) else { continue };
+        if out.len() >= MAX_LABELS || out.iter().any(|l| l.name.to_lowercase() == name.to_lowercase()) {
+            continue;
+        }
+        // A saturating cast, then the low 24 bits: no number in a file can panic here.
+        let color = map.get("color").and_then(Value::as_f64).map_or(0, |c| (c as u64 & 0xff_ffff) as u32);
+        let was = match map.get("was") {
+            Some(Value::Array(names)) => names.iter().filter_map(clean_name).collect(),
+            _ => Vec::new(),
+        };
+        out.push(Label { name, color, was });
+    }
+    out
+}
+
 /// `existing` (or nothing when replacing) followed by the `incoming` items that `is_new` says aren't there.
 fn merged<T: Clone>(existing: &[T], replace: bool, incoming: &[T], is_new: impl Fn(&[T], &T) -> bool) -> Vec<T> {
     let kept: Vec<T> = if replace { Vec::new() } else { existing.to_vec() };
@@ -968,9 +1035,17 @@ pub fn import_settings(state: &mut AppState, file: &SettingsFile, parts: &[Part]
     let mut did = Vec::new();
     // The history's size follows the settings as they were before this import, as the old code read them.
     let max_history = state.settings.max_history_items.max(10) as usize;
+    let labels_here = state.settings.labels.clone();
+    // A file from before the Labels part carried its labels inside its Settings part.
+    let mut old_labels = None;
 
     if has(Part::Settings) {
-        let known = known_settings(file.part_value(Part::Settings));
+        let mut known = known_settings(file.part_value(Part::Settings));
+        if let Some(labels) = known.remove("labels") {
+            if file.part_value(Part::Labels).is_none() {
+                old_labels = Some(labels);
+            }
+        }
         let base = if replace {
             Settings::default()
         } else {
@@ -982,7 +1057,38 @@ pub fn import_settings(state: &mut AppState, file: &SettingsFile, parts: &[Part]
                 state.settings = settings;
             }
         }
+        // The Settings part leaves the labels to the Labels part (or to an old file's own, below).
+        state.settings.labels = labels_here.clone();
         did.push("settings".to_string());
+    }
+    if has(Part::Labels) || old_labels.is_some() {
+        let given = file.part_value(Part::Labels);
+        let from_file = match &old_labels {
+            Some(labels) => read_labels(Some(labels)),
+            None => read_labels(given.and_then(|g| g.get("labels"))),
+        };
+        // A file whose labels are all damaged leaves the PC's as they are.
+        if !from_file.is_empty() {
+            let mut all = if replace { Vec::new() } else { labels_here };
+            for label in &from_file {
+                if all.len() < MAX_LABELS && (replace || label_of(&all, &label.name).is_none()) {
+                    all.push(label.clone());
+                }
+            }
+            state.settings.labels = all;
+        }
+        if has(Part::Labels) {
+            let tags: Vec<String> = match given.and_then(|g| g.get("recentTags")) {
+                Some(Value::Array(items)) => items.iter().filter_map(clean_name).collect(),
+                _ => Vec::new(),
+            };
+            let mut seen = std::collections::HashSet::new();
+            let mut all: Vec<String> = tags.iter().chain(state.recent_tags.iter()).cloned().collect();
+            all.retain(|t| seen.insert(t.to_lowercase()));
+            all.truncate(KEPT_RECENT_TAGS);
+            state.recent_tags = all;
+            did.push(format!("{} labels", from_file.len()));
+        }
     }
     if has(Part::Pinned) {
         let pins: Vec<String> = match file.part_value(Part::Pinned) {
@@ -1315,6 +1421,147 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+
+    // ---- The Labels part (docs/gpui/marks, F26) ----
+
+    fn labelled() -> AppState {
+        let mut s = sample();
+        s.settings.labels = vec![
+            Label { name: "Important".into(), color: 0xef4444, was: vec!["Red".into()] },
+            Label { name: "Blue".into(), color: 0x3b82f6, was: Vec::new() },
+        ];
+        s.recent_tags = vec!["Work".into(), "blue".into()];
+        s
+    }
+
+    fn file_of(text: &str) -> SettingsFile {
+        SettingsFile::parse(text).expect("parses")
+    }
+
+    #[test]
+    fn the_labels_part_is_written_with_the_recent_tags_and_the_settings_part_has_no_labels() {
+        let state = labelled();
+        let text = export_settings(&state, &ALL_PARTS, 0).expect("exports");
+        let value: Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(value["labels"]["labels"][0]["name"], "Important");
+        assert_eq!(value["labels"]["labels"][0]["was"][0], "Red");
+        assert!(value["labels"]["labels"][1].get("was").is_none());
+        assert_eq!(value["labels"]["recentTags"], serde_json::json!(["Work", "blue"]));
+        assert!(value["settings"].get("labels").is_none());
+        let at = |k: &str| text.find(&format!("\n  \"{k}\"")).unwrap_or(0);
+        assert!(at("folderViews") < at("labels"), "last");
+        let without = export_settings(&state, &[Part::Settings, Part::Pinned], 0).expect("exports");
+        let without: Value = serde_json::from_str(&without).expect("json");
+        assert!(without.get("labels").is_none() && without["settings"].get("labels").is_none());
+        assert_eq!(ALL_PARTS.len(), PARTS.len());
+        assert_eq!(file_of(&text).count_of(Part::Labels), 2);
+        assert_eq!(file_of(&without.to_string()).count_of(Part::Labels), 0);
+    }
+
+    #[test]
+    fn replacing_puts_the_files_labels_in_place_of_the_pcs() {
+        let file = file_of(&export_settings(&labelled(), &[Part::Labels], 0).expect("exports"));
+        let mut pc = sample();
+        pc.settings.labels = vec![Label { name: "Mine".into(), color: 1, was: Vec::new() }];
+        let did = import_settings(&mut pc, &file, &[Part::Labels], true);
+        assert_eq!(pc.settings.labels, labelled().settings.labels);
+        assert_eq!(did, vec!["2 labels".to_string()]);
+    }
+
+    #[test]
+    fn merging_adds_what_no_label_is_or_was_called_and_stops_at_the_most() {
+        let file = file_of(
+            r#"{"glint":"settings","version":1,"labels":{"labels":[
+                {"name":"Red","color":1},{"name":"IMPORTANT","color":2},{"name":"Fresh","color":3}]}}"#,
+        );
+        let mut pc = labelled();
+        import_settings(&mut pc, &file, &[Part::Labels], false);
+        let names: Vec<&str> = pc.settings.labels.iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(names, ["Important", "Blue", "Fresh"], "Red was Important; the other is the same in other letters");
+        // Past the most, nothing more.
+        let mut full = sample();
+        full.settings.labels = (0..MAX_LABELS - 1)
+            .map(|i| Label { name: format!("L{i}"), color: 0, was: Vec::new() })
+            .collect();
+        import_settings(&mut full, &file, &[Part::Labels], false);
+        assert_eq!(full.settings.labels.len(), MAX_LABELS);
+        assert_eq!(full.settings.labels.last().map(|l| l.name.as_str()), Some("Red"));
+    }
+
+    #[test]
+    fn a_file_from_before_the_part_still_brings_its_labels_with_its_settings_part() {
+        let file = file_of(
+            r#"{"glint":"settings","version":1,"settings":{"theme":"light","labels":[{"name":"Old","color":5}]}}"#,
+        );
+        assert_eq!(file.count_of(Part::Labels), 0);
+        let mut pc = sample();
+        import_settings(&mut pc, &file, &[Part::Settings], true);
+        assert_eq!(pc.settings.labels.iter().map(|l| l.name.as_str()).collect::<Vec<_>>(), ["Old"]);
+        assert_eq!(pc.settings.theme, Theme::Light);
+        // A new file's Settings part leaves the PC's labels alone, replacing or not.
+        let new = file_of(r#"{"glint":"settings","version":1,"settings":{"theme":"light"}}"#);
+        let mut pc = labelled();
+        import_settings(&mut pc, &new, &[Part::Settings], true);
+        assert_eq!(pc.settings.labels, labelled().settings.labels);
+    }
+
+    #[test]
+    fn damaged_labels_never_panic_and_what_is_kept_is_valid() {
+        let long = "x".repeat(10_000);
+        let many: Vec<Value> = (0..200).map(|i| serde_json::json!({"name": format!("n{i}"), "color": i})).collect();
+        let texts = [
+            format!(
+                r#"{{"glint":"settings","version":1,"labels":{{"labels":[{{"color":1}},{{"name":""}},{{"name":"{long}"}},
+                {{"name":"a\nb"}},{{"name":"Max","color":4294967295}},{{"name":"neg","color":-5}},7,{{"name":"Ok","was":[1,"",null,"old"]}}],
+                "recentTags":[3,"","t"]}}}}"#
+            ),
+            r#"{"glint":"settings","version":1,"labels":"nope"}"#.to_string(),
+            r#"{"glint":"settings","version":1,"labels":{"labels":"nope","recentTags":5}}"#.to_string(),
+            serde_json::json!({"glint":"settings","version":1,"labels":{"labels":many}}).to_string(),
+        ];
+        for text in texts {
+            let file = file_of(&text);
+            let mut pc = AppState::default();
+            import_settings(&mut pc, &file, &[Part::Labels, Part::Settings], true);
+            assert!(pc.settings.labels.len() <= MAX_LABELS);
+            for l in &pc.settings.labels {
+                assert!(!l.name.is_empty() && l.name.chars().count() <= 64 && !l.name.contains('\n'));
+                assert!(l.color <= 0xff_ffff);
+            }
+        }
+        let file = file_of(&texts_first(&long));
+        let mut pc = AppState::default();
+        import_settings(&mut pc, &file, &[Part::Labels], true);
+        let kept: Vec<(&str, u32)> = pc.settings.labels.iter().map(|l| (l.name.as_str(), l.color)).collect();
+        assert_eq!(kept, [("Max", 0xff_ffff), ("neg", 0), ("Ok", 0)]);
+        assert_eq!(pc.settings.labels[2].was, ["old"]);
+        let mut pc = AppState::default();
+        import_settings(&mut pc, &file_of(r#"{"glint":"settings","version":1,"labels":{"labels":[{"name":""}]}}"#), &[Part::Labels], true);
+        assert_eq!(pc.settings.labels, AppState::default().settings.labels, "nothing valid leaves the PC's");
+    }
+
+    fn texts_first(long: &str) -> String {
+        format!(
+            r#"{{"glint":"settings","version":1,"labels":{{"labels":[{{"color":1}},{{"name":"{long}"}},{{"name":"Max","color":4294967295}},
+            {{"name":"neg","color":-5}},{{"name":"Ok","was":[1,"",null,"old"]}}]}}}}"#
+        )
+    }
+
+    #[test]
+    fn the_recent_tags_come_in_at_the_front_one_of_each_in_any_case() {
+        let file = file_of(
+            r#"{"glint":"settings","version":1,"labels":{"labels":[],"recentTags":["New","BLUE","new","Old2"]}}"#,
+        );
+        let mut pc = labelled();
+        pc.recent_tags = vec!["Work".into(), "blue".into(), "Old".into()];
+        import_settings(&mut pc, &file, &[Part::Labels], false);
+        assert_eq!(pc.recent_tags, ["New", "BLUE", "Old2", "Work", "Old"]);
+        pc.recent_tags = (0..30).map(|i| format!("t{i}")).collect();
+        import_settings(&mut pc, &file, &[Part::Labels], false);
+        assert_eq!(pc.recent_tags.len(), KEPT_RECENT_TAGS);
+        assert_eq!(pc.recent_tags[0], "New");
+    }
+
     #[test]
     fn iso_dates_match_to_iso_string() {
         assert_eq!(iso_date(0), "1970-01-01T00:00:00.000Z");
@@ -1342,6 +1589,7 @@ mod tests {
             "history",
             "visits",
             "folderViews",
+            "labels",
         ];
         want.sort_unstable();
         assert_eq!(keys, want);
@@ -1397,10 +1645,10 @@ mod tests {
         assert_eq!(file.count_of(Part::Visits), 1);
         let options = serde_json::to_value(Settings::default()).map_or(0, |v| v.as_object().map_or(0, Map::len));
         assert!(options > 40);
-        assert_eq!(file.count_of(Part::Settings), options);
+        assert_eq!(file.count_of(Part::Settings), options - 1, "all but the labels, which are the Labels part's");
         let mut target = AppState::default();
         let did = import_settings(&mut target, &file, &ALL_PARTS, true);
-        assert_eq!(did.len(), 8);
+        assert_eq!(did.len(), 9);
         assert_eq!(target.settings, state.settings);
         assert_eq!(target.pinned, state.pinned);
         assert_eq!(target.saved_searches, state.saved_searches);

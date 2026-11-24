@@ -39,6 +39,7 @@ mod rows;
 mod tree;
 pub mod workspaces;
 
+use crate::components::tab_strip::menu as tab_menu;
 use crate::core_bridge;
 use crate::dialogs::tags;
 use crate::explorer::{explorer, Explorer, NavOptions};
@@ -49,11 +50,14 @@ use crate::state::UiState;
 use crate::{drops, persistence, state, t, theme};
 use glint_model::entries::{with_details, FileEntry, RawEntry};
 use glint_model::file_types::kind_of;
+use glint_model::format::plural;
+use glint_model::marks::Label as MarkLabel;
 use glint_model::paths::{same_path, RECYCLE_BIN, THIS_PC};
 use glint_model::store::{RemoteConnection, RemoteKind, SavedSearch};
 use portals::{PortalChanges, PortalWork, PortalsSource};
 use rows::{
-    build_rows, count_key, reads_files, shown_tags, tag_search, Glyph, Inputs, Label, Place, PortalItem, Row, Space,
+    build_rows, count_key, is_label, label_search, reads_files, shown_labels, shown_tags, tag_search, Glyph, Inputs,
+    Label, LabelRow, Place, PortalItem, Row, Space,
 };
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -124,6 +128,22 @@ pub type SavedCountSource = Arc<
 pub type TagsSource =
     Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Result<Vec<(String, u64)>, String>> + Send>> + Send + Sync>;
 
+/// Every label and every tag in use, each with how many items have it (glint-core's `marks_all`: the index's counts
+/// with the ledger's), most used first: `(labels, tags)`. An error where marks can't be counted; the tags are asked
+/// of [`TagsSource`] then.
+pub type MarksSource = Arc<
+    dyn Fn() -> Pin<Box<dyn Future<Output = Result<(Vec<(String, u64)>, Vec<(String, u64)>), String>> + Send>>
+        + Send
+        + Sync,
+>;
+
+/// The paths that have a tag, on every drive that can be searched (at most [`MOST_TAGGED`]).
+pub type TaggedSource =
+    Arc<dyn Fn(String) -> Pin<Box<dyn Future<Output = Result<Vec<String>, String>> + Send>> + Send + Sync>;
+
+/// The most paths a tag's menu works on.
+pub const MOST_TAGGED: usize = 100_000;
+
 /// Where the sidebar reads what is not in the explorer or the saved state: glint-core in the app, fakes in tests.
 #[derive(Clone)]
 pub struct Sources {
@@ -135,6 +155,10 @@ pub struct Sources {
     pub saved_count: SavedCountSource,
     /// The tags on the drives instant search covers.
     pub tags: TagsSource,
+    /// The labels and tags in use, with their counts: asked first, `tags` only when this fails.
+    pub marks: MarksSource,
+    /// What has a tag (its menu's *Rename everywhere…* and *Take off every file…*).
+    pub tagged: TaggedSource,
     /// The live portals mounted now.
     pub portals: PortalsSource,
     /// Told whenever one is mounted or unmounted.
@@ -179,7 +203,69 @@ impl Sources {
                 })
             }),
             tags: Arc::new(|| Box::pin(glint_core::tags::tags_all())),
+            marks: Arc::new(|| {
+                Box::pin(async {
+                    glint_core::marks::marks_all()
+                        .await
+                        .map(|counts| (counts.labels, counts.tags))
+                })
+            }),
+            // Needs the app handle, which `Sidebar::new` gives it ([`Sources::core_tagged`]).
+            tagged: Arc::new(|_| Box::pin(async { Err("Glint's search isn't ready yet".to_string()) })),
         }
+    }
+
+    /// What has a tag, from glint-core's search (`find_files`, as the address bar's): `tag:"name"` on every fixed and
+    /// removable drive, at most [`MOST_TAGGED`] paths. An error where the search fails.
+    pub fn core_tagged(app: glint_core::host::AppHandle) -> TaggedSource {
+        use glint_core::find::{find_files, FindEvent, FindOptions};
+        Arc::new(move |tag| {
+            let app = app.clone();
+            let (sender, receiver) = async_channel::unbounded::<FindEvent>();
+            // Runs on core's search thread; the paths are collected below, off the UI thread.
+            let channel = glint_core::host::ipc::Channel::new(move |event| {
+                sender
+                    .try_send(event)
+                    .map_err(|_| glint_core::host::Error::from("the search was left"))
+            });
+            let running = core_bridge::run(async move {
+                use glint_core::host::Manager as _;
+                let state = app
+                    .try_state::<glint_core::AppState>()
+                    .ok_or_else(|| "Glint's search isn't ready yet".to_string())?;
+                let roots: Vec<String> = glint_core::fsx::list_drives()
+                    .await?
+                    .into_iter()
+                    .filter(|d| matches!(d.kind, "fixed" | "removable"))
+                    .map(|d| d.path)
+                    .collect();
+                let options = FindOptions {
+                    hidden: true,
+                    respect_ignore: false,
+                    exclude: Vec::new(),
+                    max_results: Some(MOST_TAGGED),
+                    fuzzy: false,
+                    rank: false,
+                    marks: false,
+                };
+                let query = tag_search(&tag).query;
+                find_files(state, roots, query, options, channel, "sidebar-tag".to_string()).await
+            });
+            Box::pin(async move {
+                running.await.and_then(|started| started)?;
+                let mut paths = Vec::new();
+                while let Ok(event) = receiver.recv().await {
+                    match event {
+                        FindEvent::Found(entries) => paths.extend(entries.into_iter().filter_map(|e| e.path)),
+                        FindEvent::Error { message } => return Err(message),
+                        FindEvent::Finished { .. } => break,
+                        FindEvent::Started { .. } | FindEvent::Marked(_) => {}
+                    }
+                }
+                paths.truncate(MOST_TAGGED);
+                Ok(paths)
+            })
+        })
     }
 }
 
@@ -198,6 +284,7 @@ struct Seen {
     saved: Vec<SavedSearch>,
     remotes: Vec<RemoteConnection>,
     portals: Vec<PortalItem>,
+    labels: Vec<MarkLabel>,
 }
 
 /// The active tab's listing, when it is a folder the tree can hold (not in an archive, not on a remote).
@@ -227,7 +314,11 @@ pub struct Sidebar {
     /// Every tag instant search lists, with its count (empty where it lists none), and how many times it was asked
     /// (an older answer arriving late is dropped).
     indexed_tags: Vec<(String, u64)>,
+    /// Every label the index and the ledger count, with its count (empty where they count none).
+    indexed_labels: Vec<(String, u64)>,
     tags_asked: u64,
+    /// A tag's menu while it is open.
+    tag_menu: Option<tab_menu::Popup>,
     // What the last refresh saw, to do each thing once per change (the TypeScript's effect dependencies).
     last_hidden: bool,
     last_reveal: Option<(bool, bool, String)>,
@@ -268,7 +359,11 @@ impl Sidebar {
     /// The sidebar, reading from glint-core. Needs the explorer ([`crate::explorer::init`]) to exist. Put it in the
     /// resizable panel at the start edge; it fills it.
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        Self::with_sources(Sources::core(), window, cx)
+        let mut sources = Sources::core();
+        if let Some(core) = cx.try_global::<core_bridge::Core>() {
+            sources.tagged = Sources::core_tagged(core.app.clone());
+        }
+        Self::with_sources(sources, window, cx)
     }
 
     /// [`Sidebar::new`] reading from `sources` (tests, tools).
@@ -308,7 +403,9 @@ impl Sidebar {
             asking: HashSet::new(),
             counts: HashMap::new(),
             indexed_tags: Vec::new(),
+            indexed_labels: Vec::new(),
             tags_asked: 0,
+            tag_menu: None,
             last_hidden: state::settings(cx).show_hidden,
             last_reveal: None,
             last_listing: None,
@@ -384,6 +481,7 @@ impl Sidebar {
             let s = state::settings(cx);
             (s.folder_tree, s.tree_follows, s.show_hidden)
         };
+        let labels = state::settings(cx).labels.clone();
         let (pinned, saved, remotes) = persistence::app(cx)
             .map(|a| (a.pinned.clone(), a.saved_searches.clone(), a.remotes.clone()))
             .unwrap_or_default();
@@ -441,7 +539,22 @@ impl Sidebar {
         }
 
         // Instant search's tags, else the ones used here lately.
-        let shown = shown_tags(&self.indexed_tags, tags::hub(cx).read(cx).recent());
+        // A tag that is a label's name is listed under Labels, so it doesn't take a place among the twelve.
+        let indexed: Vec<(String, u64)> = self
+            .indexed_tags
+            .iter()
+            .filter(|(name, _)| !is_label(&labels, name))
+            .cloned()
+            .collect();
+        let recent: Vec<String> = tags::hub(cx)
+            .read(cx)
+            .recent()
+            .iter()
+            .filter(|name| !is_label(&labels, name))
+            .cloned()
+            .collect();
+        let shown = shown_tags(&indexed, &recent);
+        let label_rows = shown_labels(&labels, &self.indexed_labels, &self.indexed_tags);
         let built = build_rows(&Inputs {
             path: &path,
             known: &known,
@@ -450,6 +563,7 @@ impl Sidebar {
             saved: &saved,
             remotes: &remotes,
             portals: &self.portals,
+            labels: &label_rows,
             tags: &shown,
             folder_tree,
             tree: &self.tree,
@@ -473,6 +587,7 @@ impl Sidebar {
             saved,
             remotes,
             portals: self.portals.clone(),
+            labels,
         });
     }
 
@@ -500,6 +615,7 @@ impl Sidebar {
         };
         kept && seen.portals == self.portals
             && same_listing
+            && seen.labels == s.labels
             && seen.path == e.current_path()
             && Arc::ptr_eq(&seen.known, e.known_folders())
             && Arc::ptr_eq(&seen.drives, e.drives())
@@ -658,21 +774,30 @@ impl Sidebar {
         }
     }
 
-    /// Asks instant search for every tag it lists, with its count (`allTags`, asked again whenever the recent tags
-    /// change). Where it can't (it is off, or from before tags) the recent tags show instead.
+    /// Asks for every label and tag in use, with its count (`marks_all`, asked again whenever the recent tags
+    /// change). Where marks can't be counted the tags are asked of instant search as before (`allTags`), and where
+    /// it can't either (it is off, or from before tags) the recent tags show instead.
     fn read_tags(&mut self, cx: &mut Context<Self>) {
         self.tags_asked += 1;
         let asked = self.tags_asked;
-        let reading = (self.sources.tags)();
+        let marks = (self.sources.marks)();
+        let tags = (self.sources.tags)();
         cx.spawn(async move |this, cx| {
-            let found = core_bridge::run(reading).await.and_then(|inner| inner);
+            let found = match core_bridge::run(marks).await.and_then(|inner| inner) {
+                Ok(counted) => counted,
+                Err(_) => (
+                    Vec::new(),
+                    core_bridge::run(tags).await.and_then(|inner| inner).unwrap_or_default(),
+                ),
+            };
             let _ = this.update(cx, |this, cx| {
                 if this.tags_asked != asked {
                     return;
                 }
-                let listed = found.unwrap_or_default();
-                if this.indexed_tags != listed {
-                    this.indexed_tags = listed;
+                let (labels, tags) = found;
+                if this.indexed_tags != tags || this.indexed_labels != labels {
+                    this.indexed_tags = tags;
+                    this.indexed_labels = labels;
                     this.refresh(cx);
                 }
             });
@@ -698,6 +823,7 @@ impl Sidebar {
                 query: s.query,
                 folder: s.folder,
             })),
+            Row::Label(label) => cx.emit(SidebarEvent::RunSavedSearch(label_search(&label.name))),
             Row::Tag(tag) => cx.emit(SidebarEvent::RunSavedSearch(tag_search(&tag.name))),
             Row::AddConnection => cx.emit(SidebarEvent::AddConnection),
             Row::Portal(p) => self
@@ -781,7 +907,7 @@ impl Sidebar {
 
     /// Asks for the shared folder menu on row `ix` (a place or a tree folder) at `position`.
     fn open_menu(&mut self, ix: usize, position: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
-        if self.open_portal_menu(ix, position, window, cx) {
+        if self.open_portal_menu(ix, position, window, cx) || self.open_tag_menu(ix, position, window, cx) {
             return;
         }
         if let Some(path) = self
@@ -795,6 +921,61 @@ impl Sidebar {
                 position,
             });
         }
+    }
+
+    /// Opens row `ix`'s menu at `at`, when it is a tag: *Rename everywhere…* and *Take off every file…*.
+    fn open_tag_menu(&mut self, ix: usize, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(Row::Tag(tag)) = self.rows.get(ix) else {
+            return false;
+        };
+        let name = tag.name.clone();
+        let nodes = vec![
+            tab_menu::row(t!("Rename everywhere…"), IconName::Tag, "rename", name.clone()).node(),
+            tab_menu::row(t!("Take off every file…"), IconName::Eraser, "take-off", name).node(),
+        ];
+        self.portal_menu = None;
+        self.workspace_menu = None;
+        self.tag_menu = tab_menu::Popup::open(
+            nodes.into_iter().flatten().collect(),
+            t!("Tag"),
+            at,
+            window,
+            cx,
+            |this, chose, window, cx| {
+                this.tag_menu = None;
+                // The keyboard comes back to the row it was on.
+                window.focus(&this.focus, cx);
+                if let Some(chose) = chose {
+                    this.tag_chose(&chose.tag, chose.arg, window, cx);
+                }
+                cx.notify();
+            },
+        );
+        cx.notify();
+        true
+    }
+
+    /// A row of a tag's menu was chosen: finds what has the tag (off the UI thread), and asks, or says that nothing
+    /// is found.
+    fn tag_chose(&mut self, what: &str, tag: String, window: &mut Window, cx: &mut Context<Self>) {
+        let rename = match what {
+            "rename" => true,
+            "take-off" => false,
+            _ => return,
+        };
+        let finding = (self.sources.tagged)(tag.clone());
+        cx.spawn_in(window, async move |this, cx| {
+            let found = core_bridge::run(finding).await.and_then(|inner| inner);
+            let _ = this.update_in(cx, |_, window, cx| match found {
+                Ok(paths) if !paths.is_empty() && rename => rename_tag(tag, paths, window, cx),
+                Ok(paths) if !paths.is_empty() => take_tag_off(tag, paths, window, cx),
+                _ => window.push_notification(
+                    Notification::info(t!("Nothing has the tag “{tag}” where Glint can search", tag = tag)),
+                    cx,
+                ),
+            });
+        })
+        .detach();
     }
 
     /// A right-click on row `ix`: the keyboard moves there and the menu is asked for at the pointer.
@@ -1032,6 +1213,7 @@ impl Sidebar {
             Row::Folder(f) => self.draw_folder(ix, f, &t, Look { focused, dropping }, cx),
             Row::Note { depth, reason } => self.draw_note(ix, *depth, reason, &t),
             Row::Search(s) => self.draw_search(ix, s, &t, focused, cx),
+            Row::Label(label) => self.draw_label(ix, label, &t, focused, cx),
             Row::Tag(tag) => self.draw_tag(ix, tag, &t, focused, cx),
             Row::Portal(portal) => self.draw_portal(ix, portal, &t, focused, cx),
             Row::AddConnection => self.draw_add(ix, &t, focused, cx),
@@ -1537,6 +1719,56 @@ impl Sidebar {
             .into_any_element()
     }
 
+    /// A label: its own color's dot, its name, and how many items have it where the index says. A click finds what
+    /// has it, on every drive. The name stays in the text's color: a label is not a state.
+    fn draw_label(&self, ix: usize, label: &LabelRow, t: &Tokens, focused: bool, cx: &mut Context<Self>) -> AnyElement {
+        let name = SharedString::from(label.name.clone());
+        let named = match label.count {
+            Some(n) => t!("Label {name}, {n}", name = label.name.clone(), n = n),
+            None => t!("Label {name}", name = label.name.clone()),
+        };
+        let title = t!("What's labeled “{label}”", label = label.name.clone());
+        let (accent, pressed) = (t.accent, t.pressed);
+        let button = row_start()
+            .id(("label", ix))
+            .role(Role::Button)
+            .aria_label(named)
+            .aria_description(title.clone())
+            .test_support()
+            .w_full()
+            .gap(space(2.5))
+            .px(space(2.))
+            .py(space(1.5))
+            .rounded(theme::size::RADIUS_ROW)
+            .border_1()
+            .border_color(ring(t, focused))
+            .cursor_pointer()
+            .text_color(t.foreground.opacity(0.9))
+            .hover(move |s| s.bg(accent))
+            .active(move |s| s.bg(pressed))
+            .on_click(cx.listener(move |this, _, window, cx| this.click(ix, window, cx)))
+            .tooltip(tooltip_of(title, SharedString::default()))
+            .child(
+                div()
+                    .size(space(4.))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(div().size(space(2.5)).rounded_full().bg(theme::label_tone(label.color))),
+            )
+            .child(div().flex_1().min_w_0().truncate().child(isolate(name)))
+            .children(label.count.map(|count| {
+                div()
+                    .flex_none()
+                    .text_size(theme::size::XS)
+                    .text_color(t.muted_foreground)
+                    .child(SharedString::from(count.to_string()))
+            }));
+        let button = self.hop(button, ix, label.name.clone(), cx);
+        div().w_full().pb(space(0.25)).child(button).into_any_element()
+    }
+
     /// A tag: its color's dot, its name, and how many items have it where instant search says. A click finds what
     /// has it, on every drive.
     fn draw_tag(&self, ix: usize, tag: &rows::Tag, t: &Tokens, focused: bool, cx: &mut Context<Self>) -> AnyElement {
@@ -1565,6 +1797,12 @@ impl Sidebar {
             .hover(move |s| s.bg(accent))
             .active(move |s| s.bg(pressed))
             .on_click(cx.listener(move |this, _, window, cx| this.click(ix, window, cx)))
+            .on_mouse_up(
+                MouseButton::Right,
+                cx.listener(move |this, event: &MouseUpEvent, window, cx| {
+                    this.right_click(ix, event.position, window, cx)
+                }),
+            )
             .tooltip(tooltip_of(title, SharedString::default()))
             .child(
                 div()
@@ -1663,6 +1901,129 @@ fn row_name(row: &Row) -> String {
         Row::Folder(f) => f.name.to_string(),
         _ => String::new(),
     }
+}
+
+/// *Rename everywhere…*: a small dialog over the items that have the tag.
+struct RenameTag {
+    tag: String,
+    paths: Vec<String>,
+    input: Entity<InputState>,
+    said: Option<SharedString>,
+    _enter: Subscription,
+}
+
+/// Why `new` can't be the name of `old`'s replacement: it is empty, the same (in any case: tags are compared so) or has
+/// a line break. `new` is the box as it is, before trimming.
+fn refused(old: &str, new: &str) -> Option<SharedString> {
+    let trimmed = new.trim();
+    (new.contains(['\n', '\r']) || trimmed.is_empty() || trimmed.to_lowercase() == old.to_lowercase())
+        .then(|| t!("Give the tag another name"))
+}
+
+impl RenameTag {
+    fn new(tag: String, paths: Vec<String>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let input = cx.new(|cx| InputState::new(window, cx).default_value(tag.clone()));
+        // Enter in the box saves, as the button does.
+        let enter = cx.subscribe_in(&input, window, |this, _, event: &InputEvent, window, cx| {
+            if matches!(event, InputEvent::PressEnter { .. }) {
+                this.save(window, cx);
+            }
+        });
+        Self {
+            tag,
+            paths,
+            input,
+            said: None,
+            _enter: enter,
+        }
+    }
+
+    /// Renames: one change over every item, so one Undo step. A name that is refused is said in the dialog.
+    fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let typed = self.input.read(cx).value().to_string();
+        if let Some(why) = refused(&self.tag, &typed) {
+            self.said = Some(why);
+            cx.notify();
+            return;
+        }
+        window.close_dialog(cx);
+        tags::set_tags(
+            window,
+            cx,
+            self.paths.clone(),
+            vec![typed.trim().to_string()],
+            vec![self.tag.clone()],
+        );
+    }
+}
+
+impl Render for RenameTag {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = theme::tokens(cx).clone();
+        let title = t!("Rename the tag “{tag}”", tag = isolate(self.tag.clone()));
+        crate::dialogs::main_action(cx, true, |this, window, cx| this.save(window, cx));
+        col()
+            .id("rename-tag")
+            .role(Role::Group)
+            .aria_label(title)
+            .test_support()
+            .gap(space(3.))
+            .text_size(theme::size::SM)
+            // The dialog layer is outside the workspace's tree, so the start-aligned text is set here too.
+            .text_start()
+            .pt(space(1.))
+            .child(Input::new(&self.input).aria_label(t!("New name")))
+            .children(self.said.clone().map(|said| {
+                div()
+                    .id("rename-tag-said")
+                    .role(Role::Alert)
+                    .aria_label(said.clone())
+                    .test_support()
+                    .text_size(theme::size::XS)
+                    .text_color(t.destructive)
+                    .child(said)
+            }))
+            .child(
+                row_start()
+                    .justify_end()
+                    .gap(space(2.))
+                    .child(
+                        Button::new("rename-tag-cancel")
+                            .ghost()
+                            .label(t!("Cancel"))
+                            .on_click(|_, window, cx| window.close_dialog(cx)),
+                    )
+                    .child(
+                        Button::new("rename-tag-ok")
+                            .primary()
+                            .label(t!("Rename"))
+                            .on_click(cx.listener(|this, _, window, cx| this.save(window, cx))),
+                    ),
+            )
+    }
+}
+
+/// Opens the rename dialog for `tag`, over `paths`.
+fn rename_tag(tag: String, paths: Vec<String>, window: &mut Window, cx: &mut App) {
+    let title = t!("Rename the tag “{tag}”", tag = isolate(tag.clone()));
+    let view = cx.new(|cx| RenameTag::new(tag, paths, window, cx));
+    let input = view.read(cx).input.clone();
+    crate::dialogs::show(window, cx, title, px(420.), view);
+    input.update(cx, |input, cx| input.focus(window, cx));
+}
+
+/// Asks, with the number, before taking `tag` off `paths`; one change, one Undo step.
+fn take_tag_off(tag: String, paths: Vec<String>, window: &mut Window, cx: &mut App) {
+    let shown = isolate(tag.clone());
+    crate::dialogs::confirm(
+        window,
+        cx,
+        t!("Take off “{tag}”", tag = shown.clone()),
+        t!("Take “{tag}” off {n}?", tag = shown, n = plural(paths.len(), "item")),
+        t!("Take off"),
+        false,
+        move |window, cx| tags::set_tags(window, cx, paths.clone(), Vec::new(), vec![tag.clone()]),
+    );
 }
 
 impl Render for Sidebar {
@@ -1776,6 +2137,7 @@ impl Render for Sidebar {
                     .as_ref()
                     .map(crate::components::tab_strip::menu::Popup::element),
             )
+            .children(self.tag_menu.as_ref().map(tab_menu::Popup::element))
     }
 }
 

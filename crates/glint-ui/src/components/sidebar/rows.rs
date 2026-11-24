@@ -9,6 +9,7 @@
 
 use super::tree::{Kids, Tree};
 use crate::explorer::{drive_name, Drive, DriveKind, KnownFolder, KnownId};
+use glint_model::marks::{label_of, Label as MarkLabel};
 use glint_model::paths::{
     base_name, in_archive_path, is_gallery, is_recent, is_remote_path, join_path, same_path, GALLERY, RECENT,
     RECYCLE_BIN, REMOTE, THIS_PC,
@@ -163,6 +164,50 @@ pub fn tag_search(name: &str) -> SavedSearch {
     }
 }
 
+/// A label of Settings, in the sidebar: a click finds what has it on every drive.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LabelRow {
+    pub name: String,
+    /// `0xRRGGBB`: the label's own color, for its dot.
+    pub color: u32,
+    /// How many items have it, where the index and the ledger say; none when nothing is known to have it.
+    pub count: Option<u64>,
+}
+
+/// The labels to show: every one of Settings, in its order. Its count is its own, the counts of its `was` names, and
+/// a tag of its name (a 0.16 color tag is that label); `labels` and `tags` are what `marks_all` counted.
+pub fn shown_labels(labels: &[MarkLabel], counted_labels: &[(String, u64)], counted_tags: &[(String, u64)]) -> Vec<LabelRow> {
+    labels
+        .iter()
+        .map(|label| {
+            let own = std::slice::from_ref(label);
+            let n = counted_labels
+                .iter()
+                .chain(counted_tags)
+                .filter(|(name, _)| label_of(own, name).is_some())
+                .fold(0u64, |sum, (_, n)| sum.saturating_add(*n));
+            LabelRow {
+                name: label.name.clone(),
+                color: label.color,
+                count: (n > 0).then_some(n),
+            }
+        })
+        .collect()
+}
+
+/// Whether `tag` is a label's name (or one it `was`): such a tag is listed under Labels, not Tags.
+pub fn is_label(labels: &[MarkLabel], tag: &str) -> bool {
+    label_of(labels, tag).is_some()
+}
+
+/// What a click on a label searches for: what has it, on every drive (`label:"name"` at This PC).
+pub fn label_search(name: &str) -> SavedSearch {
+    SavedSearch {
+        query: format!("label:\"{name}\""),
+        folder: THIS_PC.to_string(),
+    }
+}
+
 /// One row of the sidebar.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Row {
@@ -181,6 +226,8 @@ pub enum Row {
         reason: String,
     },
     Search(Search),
+    /// A label of Settings.
+    Label(LabelRow),
     /// A tag.
     Tag(Tag),
     /// A live portal.
@@ -207,6 +254,7 @@ impl Row {
             Row::Folder(f) => format!("f:{}", f.path),
             Row::Note { depth, .. } => format!("n:{depth}"),
             Row::Search(s) => format!("s:{}\n{}", s.folder, s.query),
+            Row::Label(l) => format!("l:{}", l.name),
             Row::Tag(t) => format!("t:{}", t.name),
             Row::Portal(p) => format!("o:{}", p.id),
             Row::AddConnection => "add".to_string(),
@@ -262,6 +310,8 @@ pub struct Inputs<'a> {
     pub remotes: &'a [RemoteConnection],
     /// The live portals mounted now.
     pub portals: &'a [PortalItem],
+    /// The labels to list ([`shown_labels`]).
+    pub labels: &'a [LabelRow],
     /// The tags to list ([`shown_tags`]).
     pub tags: &'a [Tag],
     /// The "Folder tree" setting.
@@ -361,7 +411,8 @@ pub fn remote_where(r: &RemoteConnection) -> String {
     }
 }
 
-/// Whether a search's filters read the files, which the index can't count (`READS_FILES`).
+/// Whether a search's filters read the files, which the index can't count (`READS_FILES`). `tag:` and `label:` are not
+/// among them: the index answers marks itself.
 pub fn reads_files(query: &str) -> bool {
     let lower = query.to_lowercase();
     [
@@ -372,7 +423,6 @@ pub fn reads_files(query: &str) -> bool {
         "duration:",
         "artist:",
         "album:",
-        "tag:",
     ]
     .iter()
     .any(|filter| lower.contains(filter))
@@ -457,6 +507,11 @@ pub fn build_rows(i: &Inputs) -> Vec<Row> {
                 push_kids(&mut rows, i, p, 0);
             }
         }
+    }
+
+    if !i.labels.is_empty() {
+        rows.push(heading("Labels"));
+        rows.extend(i.labels.iter().cloned().map(Row::Label));
     }
 
     if !i.tags.is_empty() {
@@ -647,6 +702,7 @@ mod tests {
         saved: Vec<SavedSearch>,
         remotes: Vec<RemoteConnection>,
         portals: Vec<PortalItem>,
+        labels: Vec<LabelRow>,
         tags: Vec<Tag>,
         tree: Tree,
         spaces: HashMap<String, Space>,
@@ -672,6 +728,7 @@ mod tests {
                 }],
                 remotes: vec![remote("nas", "My NAS", RemoteKind::Sftp)],
                 portals: Vec::new(),
+                labels: Vec::new(),
                 tags: Vec::new(),
                 tree: Tree::default(),
                 spaces: HashMap::new(),
@@ -688,6 +745,7 @@ mod tests {
                 saved: &self.saved,
                 remotes: &self.remotes,
                 portals: &self.portals,
+                labels: &self.labels,
                 tags: &self.tags,
                 folder_tree,
                 tree: &self.tree,
@@ -708,6 +766,7 @@ mod tests {
                 Row::Folder(f) => format!("{}> {}", " ".repeat(f.depth), f.name),
                 Row::Note { reason, .. } => format!("! {reason}"),
                 Row::Search(s) => format!("? {}", s.query),
+                Row::Label(l) => format!("~ {}", l.name),
                 Row::Tag(t) => format!("# {}", t.name),
                 Row::Portal(p) => format!("@ {}", p.name),
                 Row::AddConnection => "+ add".to_string(),
@@ -844,6 +903,67 @@ mod tests {
         assert!(shown_tags(&[], &[]).is_empty());
     }
 
+    fn mark(name: &str, color: u32, was: &[&str]) -> MarkLabel {
+        MarkLabel {
+            name: name.into(),
+            color,
+            was: was.iter().map(|w| (*w).to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn labels_come_above_tags_in_the_settings_order_with_their_counts_and_a_renamed_one_keeps_its_old_names_count() {
+        let labels = [mark("Important", 0xef4444, &["Red"]), mark("Later", 0x3b82f6, &[]), mark("ضريبة", 1, &[])];
+        // Important's own 3, Red's 5 (what it was), and a tag of its name (a 0.16 color tag) 2; Later has nothing.
+        let shown = shown_labels(
+            &labels,
+            &[("Important".to_string(), 3), ("red".to_string(), 5), ("ضريبة".to_string(), 4)],
+            &[("Red".to_string(), 2), ("Work".to_string(), 9)],
+        );
+        let counted: Vec<_> = shown.iter().map(|l| (l.name.as_str(), l.count)).collect();
+        assert_eq!(counted, [("Important", Some(10)), ("Later", None), ("ضريبة", Some(4))]);
+        assert_eq!(shown[0].color, 0xef4444);
+        // Nothing counted: the labels are all there, without a number.
+        assert!(shown_labels(&labels, &[], &[]).iter().all(|l| l.count.is_none()));
+        assert!(shown_labels(&[], &[("x".to_string(), 1)], &[]).is_empty());
+        let mut world = World::new();
+        world.labels = shown;
+        world.tags = shown_tags(&[("Work".to_string(), 9)], &[]);
+        let text = describe(&world.rows("", true));
+        let at = |what: &str| text.iter().position(|t| t == what).unwrap();
+        assert_eq!(&text[at("# Labels")..at("# Labels") + 4], ["# Labels", "~ Important", "~ Later", "~ ضريبة"]);
+        assert!(at("# Pinned") < at("# Labels") && at("# Labels") < at("# Tags") && at("# Tags") < at("# Searches"));
+        // No labels in Settings: no section.
+        world.labels.clear();
+        assert!(!describe(&world.rows("", true)).contains(&"# Labels".to_string()));
+    }
+
+    #[test]
+    fn a_tag_named_as_a_label_or_as_one_of_its_old_names_is_not_listed_as_a_tag() {
+        let labels = [mark("Important", 0xef4444, &["Red"])];
+        assert!(is_label(&labels, "important") && is_label(&labels, "RED"));
+        assert!(!is_label(&labels, "Work"));
+    }
+
+    #[test]
+    fn a_label_finds_what_has_it_on_every_drive_and_its_row_is_focusable_with_a_key() {
+        assert_eq!(
+            label_search("Important"),
+            SavedSearch {
+                query: "label:\"Important\"".into(),
+                folder: THIS_PC.into()
+            }
+        );
+        assert!(!reads_files(&label_search("Important").query));
+        let row = Row::Label(LabelRow {
+            name: "Important".into(),
+            color: 1,
+            count: None,
+        });
+        assert!(row.focusable() && row.target().is_none());
+        assert_eq!(row.key(), "l:Important");
+    }
+
     #[test]
     fn a_tag_finds_what_has_it_on_every_drive() {
         assert_eq!(
@@ -853,8 +973,8 @@ mod tests {
                 folder: THIS_PC.into()
             }
         );
-        // The count can't be had from the index for such a search (it reads the tags of the files).
-        assert!(reads_files(&tag_search("Work").query));
+        // The index answers `tag:` now, so such a search is counted.
+        assert!(!reads_files(&tag_search("Work").query));
         let row = Row::Tag(Tag {
             name: "Work".into(),
             count: None,
@@ -1058,7 +1178,9 @@ mod tests {
     #[test]
     fn searches_that_read_the_files_cannot_be_counted_by_the_index() {
         assert!(reads_files("Width:>1000 cat"));
-        assert!(reads_files("tag:\"Work\""));
+        assert!(!reads_files("tag:\"Work\""), "the index counts tags now");
+        assert!(!reads_files("label:red"));
+        assert!(reads_files("width:>1000"));
         assert!(!reads_files("invoice kind:pdf"));
         assert!(!reads_files("shows up"), "needs the colon");
     }

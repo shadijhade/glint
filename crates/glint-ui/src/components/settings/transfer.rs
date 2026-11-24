@@ -369,4 +369,18 @@ mod tests {
         assert_eq!(parse_iso_ms("not a date"), None);
         assert_eq!(parse_iso_ms("2026-13-01"), None);
     }
+
+    #[test]
+    fn the_labels_part_is_offered_when_the_file_has_labels_and_not_otherwise() {
+        let offer = |text: &str| {
+            let mut transfer = Transfer::new(Arc::new(super::super::tests::Fake::new()));
+            transfer.offer("a.json".into(), SettingsFile::parse(text).expect("parses"));
+            transfer.ticked()
+        };
+        let with = offer(r#"{"glint":"settings","version":1,"labels":{"labels":[{"name":"A","color":1}],"recentTags":[]}}"#);
+        assert_eq!(with, [Part::Labels]);
+        assert!(offer(r#"{"glint":"settings","version":1,"labels":{"labels":[],"recentTags":["x"]}}"#).is_empty());
+        assert!(offer(r#"{"glint":"settings","version":1}"#).is_empty());
+        assert_eq!(part_label(Part::Labels), "Labels");
+    }
 }

@@ -9,6 +9,7 @@
 //!
 //! The S0 contracts: the bodies that do nothing are filled by the wave's cards (PLAN.md section 9).
 
+pub mod apply;
 pub mod beside;
 pub mod caps;
 pub mod carry;
@@ -16,8 +17,10 @@ pub mod export;
 pub mod import;
 pub mod ledger;
 pub mod streams;
+pub mod wake;
 pub mod xy_find;
 
+pub use apply::{follow, import_take_back, last_import, Followed, LastImport};
 pub use carry::carry;
 pub use export::{marks_export, Format};
 pub use glint_model::marks::{Change, Home, Marks, Outcome, Wanted};
@@ -315,6 +318,47 @@ fn merge(index: Counts, lines: impl Iterator<Item = Line>) -> Counts {
         v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.to_lowercase().cmp(&b.0.to_lowercase())).then_with(|| a.0.cmp(&b.0)));
     }
     Counts { labels, tags, comments }
+}
+
+/// One marked item right inside a folder, as the index has it. Never a comment's text: the service sends none.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MarkedIn {
+    pub name: String,
+    pub label: Option<String>,
+    pub tags: Vec<String>,
+    /// It has a comment.
+    pub comment: bool,
+}
+
+/// The marked items right inside `folder`, from the index's memory (the head's chips, a sort from the index):
+/// None where instant search doesn't cover the folder, isn't running or is older than marks.
+pub async fn marks_in(folder: String) -> Result<Option<Vec<MarkedIn>>, String> {
+    blocking(move || {
+        #[cfg(windows)]
+        let items = shadui_index::client::marks_in(&folder).ok().map(|items| {
+            items
+                .into_iter()
+                .map(|c| MarkedIn { name: c.name, label: Some(c.label).filter(|l| !l.is_empty()), tags: c.tags, comment: c.comment })
+                .collect()
+        });
+        #[cfg(not(windows))]
+        let items = {
+            let _ = folder;
+            None
+        };
+        Ok(items)
+    })
+    .await
+}
+
+/// How many items of `folder` have their marks beside them though the drive keeps streams (F23).
+pub async fn marks_beside(folder: String) -> Result<u64, String> {
+    blocking(move || Ok(beside::waiting_in(&folder))).await
+}
+
+/// Moves the marks beside the files of `folder` into the files (F23); how many moved.
+pub async fn marks_move_in(folder: String) -> Result<u64, String> {
+    blocking(move || beside::move_in(&folder)).await
 }
 
 /// Every label and tag in use, and how many items have a comment.

@@ -37,6 +37,8 @@ mod backend;
 pub mod clouds;
 mod general;
 pub mod instant;
+/// The labels and the marks' two rows (docs/gpui/marks).
+mod labels;
 pub mod integration;
 mod overview;
 pub mod pages;
@@ -56,6 +58,8 @@ pub(crate) mod tests;
 mod tests_aware;
 #[cfg(test)]
 mod tests_general;
+#[cfg(test)]
+mod tests_labels;
 #[cfg(test)]
 mod tests_services;
 

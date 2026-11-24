@@ -109,20 +109,15 @@ pub fn shared_tags(lists: &[Vec<String>]) -> Vec<String> {
         .collect()
 }
 
-/// The tags the dialog offers: the color tags, then those used lately, `MOST_OFFERED` in all.
-pub fn offered(recent: &[String]) -> Vec<String> {
-    COLOR_TAGS
+/// The tags the dialog offers: those used lately that are not a label's name (colors are labels now, 5.6: the
+/// labels have their own place in the dialog), `MOST_OFFERED` at most.
+pub fn offered(recent: &[String], labels: &[glint_model::marks::Label]) -> Vec<String> {
+    recent
         .iter()
-        .map(|(name, _)| (*name).to_string())
-        .chain(recent.iter().filter(|t| !has_tag_name(t)).cloned())
+        .filter(|t| glint_model::marks::label_of(labels, t).is_none())
         .take(MOST_OFFERED)
+        .cloned()
         .collect()
-}
-
-/// Whether `tag` is one of the color tags.
-fn has_tag_name(tag: &str) -> bool {
-    let lower = tag.to_lowercase();
-    COLOR_TAGS.iter().any(|(name, _)| name.to_lowercase() == lower)
 }
 
 // ---- The dots a row shows -----------------------------------------------------------------------------
@@ -842,7 +837,7 @@ impl Render for TagsDialog {
         let t = theme::tokens(cx).clone();
         let typed = self.typed(cx);
         let state = self.model.read(cx).state().clone();
-        let chips = offered(self.tags.read(cx).recent());
+        let chips = offered(self.tags.read(cx).recent(), &crate::state::settings(cx).labels);
         let suggested = self.suggestions(cx);
         let picked = self.picked;
         super::main_action(cx, state != State::Loading, |this, window, cx| this.save(window, cx));
@@ -1186,13 +1181,21 @@ mod tests {
         assert!(shared_tags(&[]).is_empty());
         assert_eq!(toggled(&strings(&["Red"]), "red"), Vec::<String>::new());
         assert_eq!(toggled(&strings(&["Red"]), "Blue"), ["Red", "Blue"]);
-        // The color tags first, then recent ones that aren't color tags, at most 16.
+        // Recent tags that aren't a label's name (or one it was), at most 16; the colors are labels, not offered.
+        let labels = glint_model::marks::default_labels();
         let recent: Vec<String> = (0..30).map(|i| format!("t{i}")).chain(strings(&["green"])).collect();
-        let offer = offered(&recent);
+        let offer = offered(&recent, &labels);
         assert_eq!(offer.len(), 16);
-        assert_eq!(&offer[..2], ["Red", "Orange"]);
-        assert_eq!(offer[7], "t0");
-        assert!(!offered(&strings(&["green"])).contains(&"green".to_string()));
+        assert_eq!(&offer[..2], ["t0", "t1"]);
+        assert!(!offered(&strings(&["green"]), &labels).contains(&"green".to_string()));
+        assert_eq!(offered(&strings(&["work", "Red", "netplan"]), &labels), ["work", "netplan"]);
+        assert!(offered(&[], &labels).is_empty());
+        let renamed = vec![glint_model::marks::Label {
+            name: "Urgent".into(),
+            color: 0xef4444,
+            was: strings(&["Red"]),
+        }];
+        assert_eq!(offered(&strings(&["Red", "Urgent", "x"]), &renamed), ["x"]);
     }
 
     #[test]
@@ -1210,10 +1213,15 @@ mod tests {
     fn the_box_starts_with_what_the_items_share_and_save_adds_and_removes(cx: &mut TestAppContext) {
         let _guard = testing::lock();
         let fake = Fake::new(&[
-            ("C:\\a\\one.txt", &["Work", "Red"]),
-            ("C:\\a\\two.txt", &["red", "work", "Only two"]),
+            ("C:\\a\\one.txt", &["Work", "Old"]),
+            ("C:\\a\\two.txt", &["old", "work", "Only two"]),
         ]);
         let mut visual = window(cx, &fake);
+        // The chips are the tags used lately (the colors are labels, not offered): Old, then Later.
+        visual.update(|_, cx| {
+            let tags = hub(cx);
+            tags.update(cx, |t, _| t.remember(&strings(&["Later", "Old"])));
+        });
         open_dialog_for_test(&mut visual, strings(&["C:\\a\\one.txt", "C:\\a\\two.txt"]));
         // Loading: saving waits until the files have said what they have.
         visual.update(|window, cx| {
@@ -1221,20 +1229,20 @@ mod tests {
             assert!(window.has_active_dialog(cx));
             assert_eq!(window.find("tags-save").disabled(), Some(true));
         });
-        settle(&mut visual, |cx| box_text(cx) == "Work, Red");
+        settle(&mut visual, |cx| box_text(cx) == "Work, Old");
         assert_eq!(role_of(&mut visual, "Tags"), Some(Role::Group));
         assert_eq!(
             role_of(&mut visual, "Tags, with commas between them"),
             Some(Role::TextInput)
         );
-        // Red is on (pressed), Blue is not; clicking Blue adds it, clicking Red takes it off.
+        // Old is on (pressed), Later is not; clicking Later adds it, clicking Old takes it off.
         visual.update(|window, cx| {
             window.render_frame(cx);
-            window.click(("tags-chip", 4_usize), cx);
             window.click(("tags-chip", 0_usize), cx);
+            window.click(("tags-chip", 1_usize), cx);
         });
         visual.run_until_parked();
-        assert_eq!(box_text(&mut visual), "Work, Blue");
+        assert_eq!(box_text(&mut visual), "Work, Later");
         visual.update(|window, cx| {
             window.render_frame(cx);
             window.click("tags-save", cx);
@@ -1247,15 +1255,15 @@ mod tests {
             calls,
             vec![(
                 strings(&["C:\\a\\one.txt", "C:\\a\\two.txt"]),
-                strings(&["Work", "Blue"]),
-                strings(&["Red"])
+                strings(&["Work", "Later"]),
+                strings(&["Old"])
             )]
         );
         visual.update(|window, cx| assert!(!window.has_active_dialog(cx), "Save closes the dialog"));
         // What was added is recent now.
         settle(&mut visual, |cx| {
             let tags = cx.update(|_, cx| hub(cx));
-            tags.read_with(cx, |t, _| t.recent() == ["Work", "Blue"])
+            tags.read_with(cx, |t, _| t.recent().starts_with(&strings(&["Work", "Later"])))
         });
     }
 

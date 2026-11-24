@@ -55,6 +55,10 @@ pub mod locks;
 pub mod media;
 /// Media tools for several files (MediaTools.tsx).
 pub mod media_tools;
+/// Export marks… (docs/gpui/marks, F24).
+pub mod marks_export;
+/// Import marks… (docs/gpui/marks, F25).
+pub mod marks_import;
 /// A file's metadata, read and cleaned (MetadataDialog.tsx).
 pub mod metadata;
 /// A password asked for or set (PasswordDialog.tsx).

@@ -665,6 +665,7 @@ impl Source for CoreSource {
                 max_results: options.max_results,
                 fuzzy: options.fuzzy,
                 rank: options.rank,
+                marks: options.marks,
             };
             glint_core::find::find_files(state, roots, query, options, channel, lane).await
         });
@@ -943,6 +944,7 @@ fn found_from(event: glint_core::find::FindEvent) -> Found {
                 .map(|entry| core_bridge::file_entry(entry, "", None))
                 .collect(),
         ),
+        FindEvent::Marked(marked) => Found::Marked(marked),
         FindEvent::Error { message } => Found::Error(message),
         FindEvent::Finished {
             count,

@@ -2,6 +2,7 @@
 //! files by name, Quick search, Search text, Text search skips, Terminal, Check and History. Each control reads
 //! `state::settings` and writes through `state::update`, as the TypeScript's `set({..})` did.
 
+use super::labels;
 use super::shortcut;
 use super::widgets::{self, named, setting_row, Named};
 use super::SettingsView;
@@ -214,6 +215,8 @@ impl SettingsView {
         Some(match slot {
             "appearance" => self.appearance(&s, t, cx),
             "files" => self.files(&s, t, cx),
+            "labels" => labels::panels(cx).0.into_any_element(),
+            "marks" => labels::panels(cx).1.into_any_element(),
             "instant-search" => widgets::section(
                 "instant-search",
                 t!("Instant search"),

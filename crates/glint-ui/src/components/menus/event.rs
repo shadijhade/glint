@@ -150,6 +150,10 @@ pub enum MenuEvent {
     PasteMarks { paths: Vec<String> },
     /// "Clear marks": no label, no tags, no comment.
     ClearMarks { paths: Vec<String> },
+    /// "Import marks…" (F25): from this file, or one asked for.
+    ImportMarks { source: Option<String> },
+    /// "Export marks…" (F24): everything marked below this folder.
+    ExportMarks { folder: String },
 
     // ---- Making and changing files ----
     /// "Folder sizes" (`calcSizes`).

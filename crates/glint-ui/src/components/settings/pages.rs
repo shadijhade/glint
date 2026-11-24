@@ -167,7 +167,7 @@ impl Page {
         match self {
             Page::Overview => &["overview"],
             Page::Appearance => &["appearance"],
-            Page::Files => &["files"],
+            Page::Files => &["files", "labels", "marks"],
             Page::History => &["history"],
             Page::Terminal => &["terminal"],
             Page::Instant => &["instant-search"],
@@ -246,6 +246,10 @@ pub const SEARCH: &[Entry] = &[
         "delete confirm recycle bin trash",
     ),
     entry(Page::Files, "Gallery folders", "photos pictures gallery"),
+    entry(Page::Files, "Labels", "label colors names rename tags marks"),
+    entry(Page::Files, "Add a label", "new label color"),
+    entry(Page::Files, "Keep following XYplorer", "xyplorer tag.dat marks follow import"),
+    entry(Page::Files, "Take back the last import", "undo import xyplorer marks"),
     // History
     entry(Page::History, "Save search history", "searches history privacy"),
     entry(Page::History, "Keep up to", "history length limit"),

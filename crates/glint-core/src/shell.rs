@@ -485,6 +485,277 @@ pub async fn rotate_image(path: String, clockwise: bool) -> Result<(), String> {
     blocking(move || imp::rotate_image(&path, clockwise)).await
 }
 
+/// The folders inside a folder that Windows copied or moved to another drive (marks wave, B4): its engine takes a
+/// file's streams along and never a folder's, so the marks of the folders inside are read and given here.
+mod inner {
+    use glint_model::marks::Marks;
+    use std::path::{Path, PathBuf};
+
+    /// A source's folders that hold marks of their own, by path under the source.
+    pub type Inside = Vec<(String, Vec<(PathBuf, Marks)>)>;
+
+    /// The walk stops at this many folders a source.
+    // ponytail: 50,000 folders a source, then the rest keep nothing; a background pass if that is ever short.
+    const WALK_MAX: usize = 50_000;
+
+    /// Another computer's path (`\\\\server\\share`, `\\\\?\\UNC\\...`): a walk there is a slow round trip a folder,
+    /// so it is not started.
+    fn is_remote(path: &Path) -> bool {
+        let s = path.to_string_lossy();
+        let local_prefix = s.starts_with("\\\\?\\") && !s.to_ascii_uppercase().starts_with("\\\\?\\UNC\\");
+        s.starts_with("\\\\") && !local_prefix && !s.starts_with("\\\\.\\")
+    }
+
+    /// Whether the entry is a real folder: never a symlink, a junction or any other reparse point.
+    fn plain_dir(entry: &std::fs::DirEntry) -> bool {
+        let Ok(kind) = entry.file_type() else { return false };
+        if !kind.is_dir() || kind.is_symlink() {
+            return false;
+        }
+        !reparse_point(entry)
+    }
+
+    #[cfg(windows)]
+    fn reparse_point(entry: &std::fs::DirEntry) -> bool {
+        use std::os::windows::fs::MetadataExt;
+        const REPARSE_POINT: u32 = 0x400;
+        entry.metadata().map_or(true, |m| m.file_attributes() & REPARSE_POINT != 0)
+    }
+
+    #[cfg(not(windows))]
+    fn reparse_point(_: &std::fs::DirEntry) -> bool {
+        false
+    }
+
+    /// The folders under `root` (not `root` itself) with marks of their own, as `read` says.
+    fn walk(root: &Path, read: &dyn Fn(&str) -> Marks) -> Vec<(PathBuf, Marks)> {
+        let mut found = Vec::new();
+        if is_remote(root) {
+            return found;
+        }
+        let (mut stack, mut seen) = (vec![PathBuf::new()], 0usize);
+        while let Some(under) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(root.join(&under)) else { continue };
+            for entry in entries.flatten().filter(plain_dir) {
+                seen += 1;
+                if seen > WALK_MAX {
+                    return found;
+                }
+                let rel = under.join(entry.file_name());
+                let marks = read(&root.join(&rel).to_string_lossy());
+                if !marks.is_empty() {
+                    found.push((rel.clone(), marks));
+                }
+                stack.push(rel);
+            }
+        }
+        found
+    }
+
+    /// The marks of the folders inside each of `roots` that is a folder (the roots' own are carried elsewhere).
+    pub fn read_inside(roots: &[&str], read: &dyn Fn(&str) -> Marks) -> Inside {
+        roots
+            .iter()
+            .filter(|r| Path::new(r).is_dir())
+            .map(|r| (r.to_string(), walk(Path::new(r), read)))
+            .filter(|(_, folders)| !folders.is_empty())
+            .collect()
+    }
+
+    /// A move's reading, before the engine runs: only the `(source, destination folder)` pairs on different
+    /// volumes (on one a move is a rename and nothing is lost: it costs nothing there, M5).
+    pub fn read_before_move(
+        moves: &[(&str, &str)],
+        same_volume: &dyn Fn(&str, &str) -> bool,
+        read: &dyn Fn(&str) -> Marks,
+    ) -> Inside {
+        let far: Vec<&str> = moves.iter().filter(|(from, to)| !same_volume(from, to)).map(|(from, _)| *from).collect();
+        read_inside(&far, read)
+    }
+
+    /// Gives each folder under a pair's destination, at the place it had under the source, the marks it had, where
+    /// that folder is there and `read` finds it none (a folder merged into, or one that kept its streams).
+    pub fn give_inside(pairs: &[(String, String)], inside: &Inside, read: &dyn Fn(&str) -> Marks, give: &dyn Fn(&str, &Marks)) {
+        let same = |a: &str, b: &str| a.trim_end_matches('\\').eq_ignore_ascii_case(b.trim_end_matches('\\'));
+        for (from, to) in pairs {
+            let Some((_, folders)) = inside.iter().find(|(root, _)| same(root, from)) else { continue };
+            for (rel, marks) in folders {
+                let target = Path::new(to).join(rel);
+                if target.is_dir() {
+                    let target = target.to_string_lossy();
+                    if read(&target).is_empty() {
+                        give(&target, marks);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Whether two paths are on one volume, by the volume serial number of a handle on each (or on its folder when
+    /// it isn't there yet). A handle is on the volume the path really leads to, so a mounted folder is on the
+    /// volume mounted there; two shares are told apart by their serials (one share is one volume). When either
+    /// can't be asked the answer is no: the folders are read, which costs a walk and loses nothing.
+    #[cfg(windows)]
+    pub fn same_volume(a: &str, b: &str) -> bool {
+        use std::os::windows::fs::OpenOptionsExt;
+        use std::os::windows::io::AsRawHandle;
+        use windows::Win32::Foundation::HANDLE;
+        use windows::Win32::Storage::FileSystem::{GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION};
+        const FILE_READ_ATTRIBUTES: u32 = 0x80;
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        let serial = |path: &str| -> Option<u32> {
+            let path = Path::new(path);
+            let open = |p: &Path| {
+                std::fs::OpenOptions::new().access_mode(FILE_READ_ATTRIBUTES).custom_flags(FILE_FLAG_BACKUP_SEMANTICS).open(p).ok()
+            };
+            let file = path.ancestors().take(2).find_map(open)?;
+            let mut info = BY_HANDLE_FILE_INFORMATION::default();
+            // SAFETY: the handle is open for the call and `info` is a live local.
+            unsafe { GetFileInformationByHandle(HANDLE(file.as_raw_handle()), &mut info) }.ok()?;
+            Some(info.dwVolumeSerialNumber)
+        };
+        matches!((serial(a), serial(b)), (Some(x), Some(y)) if x == y)
+    }
+
+    #[cfg(not(windows))]
+    pub fn same_volume(_: &str, _: &str) -> bool {
+        false
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::cell::RefCell;
+        use std::collections::HashMap;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        fn folder() -> PathBuf {
+            static N: AtomicUsize = AtomicUsize::new(0);
+            let d = std::env::temp_dir().join(format!("glint-inner-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+            let _ = std::fs::remove_dir_all(&d);
+            let _ = std::fs::create_dir_all(&d);
+            d
+        }
+
+        fn marked(label: &str) -> Marks {
+            Marks { label: Some(label.into()), ..Marks::default() }
+        }
+
+        /// Marks by lowercase path, standing for the real homes.
+        #[derive(Default)]
+        struct Fake(RefCell<HashMap<String, Marks>>);
+
+        impl Fake {
+            fn put(&self, path: &Path, marks: Marks) {
+                self.0.borrow_mut().insert(path.to_string_lossy().to_lowercase(), marks);
+            }
+            fn read(&self, path: &str) -> Marks {
+                self.0.borrow().get(&path.to_lowercase()).cloned().unwrap_or_default()
+            }
+            fn give(&self, path: &str, marks: &Marks) {
+                self.0.borrow_mut().insert(path.to_lowercase(), marks.clone());
+            }
+        }
+
+        fn pair(a: &Path, b: &Path) -> (String, String) {
+            (a.to_string_lossy().into_owned(), b.to_string_lossy().into_owned())
+        }
+
+        /// `src\a\b\c` with a label on `b` and a comment on `c`.
+        fn tree(fake: &Fake) -> PathBuf {
+            let src = folder();
+            std::fs::create_dir_all(src.join("a").join("b").join("c")).unwrap();
+            fake.put(&src.join("a").join("b"), marked("Red"));
+            fake.put(&src.join("a").join("b").join("c"), Marks { comment: Some("note".into()), ..Marks::default() });
+            src
+        }
+
+        #[test]
+        fn the_folders_inside_a_copy_get_their_marks_and_one_that_has_its_own_keeps_them() {
+            let fake = Fake::default();
+            let (src, dst) = (tree(&fake), folder());
+            let (from, to) = (src.join("a"), dst.join("a"));
+            std::fs::create_dir_all(to.join("b").join("c")).unwrap();
+            fake.put(&to.join("b").join("c"), marked("Theirs"));
+            let inside = read_inside(&[&from.to_string_lossy()], &|p| fake.read(p));
+            give_inside(&[pair(&from, &to)], &inside, &|p| fake.read(p), &|p, m| fake.give(p, m));
+            assert_eq!(fake.read(&to.join("b").to_string_lossy()), marked("Red"));
+            assert_eq!(fake.read(&to.join("b").join("c").to_string_lossy()), marked("Theirs"));
+            assert_eq!(fake.read(&from.join("b").to_string_lossy()), marked("Red"), "a copy leaves the original");
+            let _ = std::fs::remove_dir_all(&src);
+            let _ = std::fs::remove_dir_all(&dst);
+        }
+
+        #[test]
+        fn a_move_reads_before_the_source_goes_and_gives_under_where_it_went() {
+            let fake = Fake::default();
+            let (src, dst) = (tree(&fake), folder());
+            let (from, to) = (src.join("a"), dst.join("a"));
+            let far = |_: &str, _: &str| false;
+            let inside = read_before_move(&[(&from.to_string_lossy(), &dst.to_string_lossy())], &far, &|p| fake.read(p));
+            std::fs::rename(&from, &to).unwrap();
+            fake.0.borrow_mut().clear();
+            give_inside(&[pair(&from, &to)], &inside, &|p| fake.read(p), &|p, m| fake.give(p, m));
+            assert_eq!(fake.read(&to.join("b").to_string_lossy()), marked("Red"));
+            assert_eq!(fake.read(&to.join("b").join("c").to_string_lossy()).comment.as_deref(), Some("note"));
+            let _ = std::fs::remove_dir_all(&src);
+            let _ = std::fs::remove_dir_all(&dst);
+        }
+
+        #[test]
+        fn two_paths_on_one_volume_are_told_so_and_for_them_a_move_reads_nothing() {
+            let fake = Fake::default();
+            let (src, dst) = (tree(&fake), folder());
+            let (from, there) = (src.join("a").to_string_lossy().into_owned(), dst.join("not-yet").to_string_lossy().into_owned());
+            if !same_volume(&from, &there) {
+                // Not an answer this run can give (the volume can't be asked): nothing to assert.
+                return;
+            }
+            let reads = RefCell::new(0);
+            let counted = |p: &str| {
+                *reads.borrow_mut() += 1;
+                fake.read(p)
+            };
+            let inside = read_before_move(&[(&from, &dst.to_string_lossy())], &same_volume, &counted);
+            assert!(inside.is_empty());
+            assert_eq!(*reads.borrow(), 0);
+            let _ = std::fs::remove_dir_all(&src);
+            let _ = std::fs::remove_dir_all(&dst);
+        }
+
+        #[test]
+        fn another_computers_paths_are_not_walked() {
+            assert!(is_remote(Path::new("\\\\server\\share\\a")));
+            assert!(is_remote(Path::new("\\\\?\\UNC\\server\\share\\a")));
+            assert!(!is_remote(Path::new("\\\\?\\C:\\a")));
+            assert!(!is_remote(Path::new("C:\\a")));
+        }
+
+        #[test]
+        fn a_junction_inside_the_source_is_not_walked_into() {
+            let fake = Fake::default();
+            let src = tree(&fake);
+            let outside = folder();
+            std::fs::create_dir(outside.join("deep")).unwrap();
+            fake.put(&outside.join("deep"), marked("Elsewhere"));
+            let link = src.join("a").join("link");
+            let made = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J", &link.to_string_lossy(), &outside.to_string_lossy()])
+                .output()
+                .is_ok_and(|o| o.status.success());
+            if made {
+                let found = walk(&src.join("a"), &|p| fake.read(p));
+                let names: Vec<String> = found.iter().map(|(r, _)| r.to_string_lossy().into_owned()).collect();
+                assert_eq!(names.len(), 2, "{names:?}");
+                assert!(names.iter().all(|n| !n.contains("link")), "{names:?}");
+                let _ = std::fs::remove_dir(&link);
+            } // else a junction can't be made here (not Windows, or no right): nothing to assert
+            let _ = std::fs::remove_dir_all(&src);
+            let _ = std::fs::remove_dir_all(&outside);
+        }
+    }
+}
+
 #[cfg(windows)]
 mod imp {
     use super::{Clip, ClipboardFiles, Done, FileOp, Performed};
@@ -633,6 +904,14 @@ mod imp {
             .map(|path| (path.to_string(), crate::marks::carry::taken(path)))
             .filter(|(_, marks)| !marks.is_empty())
             .collect();
+        // The folders inside a moved folder lose theirs the same way, but only when the move leaves the volume (on one
+        // it is a rename and costs nothing here): read now, for afterwards the source is gone.
+        let going: Vec<(&str, &str)> = match &op {
+            FileOp::Move { sources, dest } => sources.iter().map(|s| (s.as_str(), dest.as_str())).collect(),
+            FileOp::MoveBack { items } => items.iter().map(|back| (back.path.as_str(), back.folder.as_str())).collect(),
+            _ => Vec::new(),
+        };
+        let inside = super::inner::read_before_move(&going, &super::inner::same_volume, &crate::marks::carry::taken);
         let performed = in_sta(move || unsafe { perform(owner, op) })?;
         if let Some(moved) = moved {
             let pairs: Vec<(String, String)> = performed.items.iter().filter_map(|done| Some((done.from.clone(), done.to.clone()?))).collect();
@@ -644,6 +923,14 @@ mod imp {
                     crate::marks::carry::given(to, marks);
                 }
             }
+            // A copy: the folders inside the originals, still there, give theirs to the copies' folders.
+            let inside = if moved {
+                inside
+            } else {
+                let roots: Vec<&str> = pairs.iter().map(|(from, _)| from.as_str()).collect();
+                super::inner::read_inside(&roots, &crate::marks::carry::taken)
+            };
+            super::inner::give_inside(&pairs, &inside, &crate::marks::carry::taken, &crate::marks::carry::given);
         }
         Ok(performed)
     }

@@ -9,7 +9,9 @@
 //! NOTE(port): the TypeScript comparators returned a number; the Rust ones return `Ordering`.
 
 use std::cmp::Ordering;
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use chrono::{Datelike, Days, Local, Months, NaiveDate, TimeZone};
 use regex::Regex;
@@ -422,6 +424,9 @@ pub struct Reads<'a, 'f> {
     pub marks: Option<MarkReads<'a, 'f>>,
 }
 
+/// What a sort by a mark keeps of a row: what is shown, and the comment's first line.
+type MarkKey = (Shown, Option<String>);
+
 /// [`entry_order`] over any items that stand for entries: `entry` says which, and `name_order` compares two
 /// items by name (natural order, ties by the name as written, as `by_name` does), so that a caller that has made
 /// the names' keys ([`crate::natural::NameKeys`]) compares those instead of reading each name again.
@@ -443,19 +448,30 @@ where
         facts_of,
         marks,
     } = reads;
-    // ponytail: what is shown is worked out again at every comparison; keys made once per sort if a folder of
-    // 100,000 rows sorted by label proves slow.
-    let shown_of = move |e: &FileEntry| -> Option<Shown> {
-        marks.map(|m| shown(m.labels, (m.of)(e).unwrap_or(&Marks::default())))
+    // What a row is shown as is worked out the first time a comparison asks for it, by the entry's path (an
+    // entry's address won't do: a sort moves its items), and kept for the rest of the sort.
+    let kept: RefCell<HashMap<String, Rc<MarkKey>>> = RefCell::new(HashMap::new());
+    let key_of = move |e: &FileEntry| -> Option<Rc<MarkKey>> {
+        let m = marks?;
+        if let Some(found) = kept.borrow().get(e.path.as_str()) {
+            return Some(found.clone());
+        }
+        let own = (m.of)(e);
+        let first_line = own
+            .and_then(|o| o.comment.as_deref())
+            .and_then(|c| c.lines().next())
+            .filter(|l| !l.is_empty())
+            .map(String::from);
+        let made = Rc::new((shown(m.labels, own.unwrap_or(&Marks::default())), first_line));
+        kept.borrow_mut().insert(e.path.clone(), made.clone());
+        Some(made)
     };
     let by_mark = move |key: SortKey, a: &FileEntry, b: &FileEntry| -> Ordering {
-        let (Some(x), Some(y)) = (shown_of(a), shown_of(b)) else {
+        let (Some(kx), Some(ky)) = (key_of(a), key_of(b)) else {
             return Ordering::Equal;
         };
-        let first_line = |e: &FileEntry| -> Option<String> {
-            let c = (marks?.of)(e)?.comment.as_deref()?;
-            c.lines().next().filter(|l| !l.is_empty()).map(String::from)
-        };
+        let (x, y) = (&kx.0, &ky.0);
+        let first_line = |k: &Rc<MarkKey>| k.1.clone();
         // Something sorts before nothing.
         let some_first = |p: Option<&str>, q: Option<&str>| match (p, q) {
             (Some(p), Some(q)) => compare_base_numeric(p, q),
@@ -472,9 +488,9 @@ where
             },
             SortKey::Tags => {
                 let join = |s: &Shown| (!s.tags.is_empty()).then(|| s.tags.join(", "));
-                some_first(join(&x).as_deref(), join(&y).as_deref())
+                some_first(join(x).as_deref(), join(y).as_deref())
             }
-            _ => some_first(first_line(a).as_deref(), first_line(b).as_deref()),
+            _ => some_first(first_line(&kx).as_deref(), first_line(&ky).as_deref()),
         }
     };
     let group = move |e: &FileEntry| usize::from(!(folders_first && e.dir));
@@ -2145,5 +2161,67 @@ mod tests {
         for key in [SortKey::Label, SortKey::Tags, SortKey::Comment] {
             assert_eq!(order_by(key, false, None, &["b", "a", "c"]), ["a", "b", "c"]);
         }
+    }
+
+    /// `n` rows with a label (cycling the starting ones, some unknown, every seventh none), two tags and a comment, and their marks.
+    fn many_marked(n: usize) -> (Vec<FileEntry>, HashMap<String, Marks>) {
+        let names = ["Red", "Orange", "Zeta", "Green", "Alpha", "blue"];
+        let list: Vec<FileEntry> = (0..n).map(|i| entry(&format!("f{:05}", (i * 7919) % n))).collect();
+        let map = list
+            .iter()
+            .enumerate()
+            .map(|(i, e)| {
+                let marks = Marks {
+                    label: (i % 7 != 0).then(|| names[i % names.len()].to_string()),
+                    tags: vec![format!("t{}", i % 13), "x".into()],
+                    comment: Some(format!("c{}\nmore", i % 31)),
+                };
+                (e.name.clone(), marks)
+            })
+            .collect();
+        (list, map)
+    }
+
+    #[test]
+    fn a_sort_by_label_asks_for_a_rows_marks_once_a_row_not_once_a_comparison() {
+        let (mut list, map) = many_marked(1_000);
+        let asked = std::cell::Cell::new(0_usize);
+        let of = |e: &FileEntry| {
+            asked.set(asked.get() + 1);
+            map.get(&e.name)
+        };
+        let labels = labels();
+        let reads = Reads {
+            size_of: None,
+            taken_of: None,
+            facts_of: None,
+            marks: Some(MarkReads { of: &of, labels: &labels }),
+        };
+        let cmp = entry_order_by(Sort { key: SortKey::Label, desc: false }, false, false, reads, entry_itself, by_name);
+        list.sort_by(&cmp);
+        assert_eq!(asked.get(), 1_000, "once a row");
+        // And the order is the one the unmemoized sort gave: this PC's labels first, in their order.
+        let first = |e: &FileEntry| map.get(&e.name).and_then(|m| m.label.clone());
+        assert_eq!(first(&list[0]).as_deref(), Some("Red"));
+        assert_eq!(first(&list[999]), None);
+    }
+
+    /// Prints the milliseconds of 10,000 marked rows sorted by label.
+    #[test]
+    #[ignore = "a measurement"]
+    fn how_long_ten_thousand_marked_rows_take_to_sort_by_label() {
+        let (mut list, map) = many_marked(10_000);
+        let of = reader(&map);
+        let labels = labels();
+        let reads = Reads {
+            size_of: None,
+            taken_of: None,
+            facts_of: None,
+            marks: Some(MarkReads { of: &*of, labels: &labels }),
+        };
+        let cmp = entry_order_by(Sort { key: SortKey::Label, desc: false }, false, false, reads, entry_itself, by_name);
+        let start = std::time::Instant::now();
+        list.sort_by(&cmp);
+        println!("10,000 marked rows by label: {} ms", start.elapsed().as_millis());
     }
 }

@@ -1421,6 +1421,7 @@ impl FileGrid {
         recycled: bool,
         located: bool,
         gallery: bool,
+        marked: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let t = theme::tokens(cx).clone();
@@ -1437,6 +1438,14 @@ impl FileGrid {
         }
         if !located {
             columns.push((SortKey::Type, t!("Type")));
+        }
+        // The marks' sorts, as the list's header words them; not where rows read no marks.
+        if marked {
+            columns.extend([
+                (SortKey::Label, t!("Label")),
+                (SortKey::Tags, t!("Tags")),
+                (SortKey::Comment, t!("Comment")),
+            ]);
         }
         columns.push((SortKey::Size, t!("Size")));
 
@@ -1534,6 +1543,8 @@ impl Render for FileGrid {
         let cut = explorer.cut_paths().clone();
         let saved = explorer.saved_scroll(tab_id, &format!("{view_key}:grid"));
         let located = search || recycled;
+        // Rows read marks in a folder, a search or Recent; not in the Recycle Bin, the Gallery, an archive or a remote.
+        let marked = !(recycled || gallery || archive || is_remote_path(&tab.path));
         // The sizes "Folder sizes" measured for this folder (a search's results come from many folders).
         let run = explorer.size_run(&tab.path).filter(|_| !search);
         let (sizes, measuring) = (run.map(|run| run.sizes.clone()), run.is_some_and(|run| run.running));
@@ -1883,7 +1894,7 @@ impl Render for FileGrid {
             .on_drop(cx.listener(|this, drop: &ExternalPaths, window, cx| {
                 this.files_dropped(drop, window.mouse_position(), cx)
             }))
-            .child(self.header(sort, recycled, located, gallery, cx))
+            .child(self.header(sort, recycled, located, gallery, marked, cx))
             .child(body)
             .children((drop_over == Some(DropOver::Pane) && !search).then(|| {
                 // `bg-primary/5 outline-2 outline-dashed outline-primary/60`
