@@ -119,7 +119,9 @@ reports name the commits of the branch they were built on (`00cf486`, `12a6e5e`,
     title and the keys along a line), clippy clean, and looked at in a debug copy in dark and light, as tiles and as
     a list, folded and open, with pinned folders, tags and saved searches. The tests caught one thing the look had
     not yet: a drive's line read the list's width while the list drew it, which panics as 0.16.0 did on a scroll;
-    the width is read in `render` now. Not run after this: the end-to-end checks.
+    the width is read in `render` now. Then the end-to-end checks on the commit (`43a7bce`), no Glint running and
+    the version at 0.17.0 for the run: **22 of 22**, `tabs-sidebar` (a place opened from the tiles) and `settings`
+    among them.
 
 ### Not tried for real
 
