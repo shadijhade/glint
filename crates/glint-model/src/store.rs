@@ -438,6 +438,11 @@ pub struct Settings {
     /// Glint puts forward, as you work, what would help with what you are doing (`glint_ui::suggestions`): a
     /// setting that fits, a quicker way. Off, the same things only wait in Settings' Overview.
     pub tips: bool,
+    /// The sidebar's Quick access as tiles, two to a line; off, one place a line, each with the folder tree's
+    /// arrow.
+    pub sidebar_tiles: bool,
+    /// The sidebar's sections that are folded to their title, by that title as the code names it ("Tags").
+    pub sidebar_folded: Vec<String>,
 }
 
 impl Default for Settings {
@@ -553,6 +558,8 @@ impl Default for Settings {
             labels: default_labels(),
             follow_xyplorer: false,
             tips: true,
+            sidebar_tiles: true,
+            sidebar_folded: Vec::new(),
         }
     }
 }
@@ -951,6 +958,8 @@ lenient_deserialize!(Settings {
     "labels" => labels,
     "followXyplorer" => follow_xyplorer,
     "tips" => tips,
+    "sidebarTiles" => sidebar_tiles,
+    "sidebarFolded" => sidebar_folded,
 });
 /// Kinds of remote connection Glint no longer has: a paired PC's folders ("device"), gone with paired devices in
 /// 0.12. A saved one loads as nothing ([`load_persisted`] drops it); any other kind it doesn't know loads as S3.
@@ -1367,7 +1376,7 @@ mod tests {
                 r#""labels":[{{"name":"Red","color":15680580}},{{"name":"Orange","color":16347926}},"#,
                 r#"{{"name":"Yellow","color":15381256}},{{"name":"Green","color":2278750}},"#,
                 r#"{{"name":"Blue","color":3900150}},{{"name":"Purple","color":11032055}},"#,
-                r#"{{"name":"Gray","color":10265519}}],"followXyplorer":false,"tips":true}}"#
+                r#"{{"name":"Gray","color":10265519}}],"followXyplorer":false,"tips":true,"sidebarTiles":true,"sidebarFolded":[]}}"#
             ),
             DEFAULT_EXCLUSIONS
         );

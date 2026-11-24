@@ -371,6 +371,16 @@ impl SettingsView {
                 t,
             )
             .into_any_element(),
+            widgets::switch_row(
+                "sidebar-tiles",
+                t!("Quick access as tiles"),
+                Some(t!("Two places to a line in the sidebar. Off, one to a line, each opening its folders with its arrow")),
+                s.sidebar_tiles,
+                false,
+                |on, _, cx| state::update(cx, |s| s.sidebar_tiles = on),
+                t,
+            )
+            .into_any_element(),
         ];
         rows.extend(self.gallery_folders(s, t, cx));
         rows.extend([

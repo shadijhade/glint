@@ -66,6 +66,8 @@ pub struct Place {
     pub remote: Option<String>,
     /// The sidebar has room for the tree's arrows (the "Folder tree" setting): places keep clear of them.
     pub gutter: bool,
+    /// Drawn as a tile, two to a line (Quick access, unless it is shown as a list).
+    pub tile: bool,
 }
 
 /// A folder in the tree below a place.
@@ -217,6 +219,11 @@ pub enum Row {
         link: Option<String>,
         active: bool,
         first: bool,
+        /// Whether the section is folded to this title; `None` for one that doesn't fold (the labels: they are
+        /// one line already).
+        folded: Option<bool>,
+        /// Quick access's: whether its places are tiles (its title has the switch).
+        tiles: Option<bool>,
     },
     Place(Place),
     Folder(Folder),
@@ -237,10 +244,11 @@ pub enum Row {
 }
 
 impl Row {
-    /// What the keyboard can land on: places, the tree's folders, searches, the add button and titles that open.
+    /// What the keyboard can land on: places, the tree's folders, searches, the add button, and the titles that
+    /// open something or fold their section (Left folds one, Right opens it again, as a folder of the tree).
     pub fn focusable(&self) -> bool {
         match self {
-            Row::Heading { link, .. } => link.is_some(),
+            Row::Heading { link, folded, .. } => link.is_some() || folded.is_some(),
             Row::Note { .. } => false,
             _ => true,
         }
@@ -316,6 +324,10 @@ pub struct Inputs<'a> {
     pub tags: &'a [Tag],
     /// The "Folder tree" setting.
     pub folder_tree: bool,
+    /// Quick access as tiles (`settings.sidebar_tiles`).
+    pub tiles: bool,
+    /// The sections folded to their titles (`settings.sidebar_folded`).
+    pub folded: &'a [String],
     pub tree: &'a Tree,
     /// Cloud space by connection id.
     pub spaces: &'a HashMap<String, Space>,
@@ -428,7 +440,8 @@ pub fn reads_files(query: &str) -> bool {
     .any(|filter| lower.contains(filter))
 }
 
-/// The rows, top to bottom.
+/// The rows, top to bottom: where you go first (Quick access, the pinned folders, the drives), then what finds things
+/// (the labels, the tags, the saved searches), then what is mounted and connected. A folded section is its title.
 pub fn build_rows(i: &Inputs) -> Vec<Row> {
     let here = |p: &str| i.path != THIS_PC && same_path(p, i.path);
     let tree_of = |path: &str| -> Option<Opens> {
@@ -437,60 +450,75 @@ pub fn build_rows(i: &Inputs) -> Vec<Row> {
             loading: i.tree.is_loading(path),
         })
     };
+    let is_folded = |title: &str| i.folded.iter().any(|f| f == title);
     let mut rows: Vec<Row> = Vec::new();
 
-    // Quick access: Recent, Gallery, then the known folders.
+    // Quick access: Recent, Gallery, then the known folders. As tiles they are two to a line and have no tree
+    // (a tile has no room to hang folders from); as a list each opens its folders as a drive does.
+    let quick_folded = is_folded("Quick access");
     rows.push(Row::Heading {
         title: "Quick access",
         link: None,
         active: false,
         first: true,
+        folded: Some(quick_folded),
+        tiles: Some(i.tiles),
     });
-    rows.push(Row::Place(Place {
-        glyph: Glyph::Recent,
-        label: Label::Fixed("Recent"),
-        path: RECENT.to_string(),
-        active: is_recent(i.path),
-        detail: "The files you opened lately, here or in any app, newest first".into(),
-        tree: None,
-        capacity: None,
-        eject: None,
-        remote: None,
-        gutter: i.folder_tree,
-    }));
-    rows.push(Row::Place(Place {
-        glyph: Glyph::Gallery,
-        label: Label::Fixed("Gallery"),
-        path: GALLERY.to_string(),
-        active: is_gallery(i.path),
-        detail: "Your photos and videos, newest first by when each was taken".into(),
-        tree: None,
-        capacity: None,
-        eject: None,
-        remote: None,
-        gutter: i.folder_tree,
-    }));
-    for k in i.known {
-        rows.push(Row::Place(Place {
-            glyph: Glyph::Known(k.id),
-            label: Label::Fixed(k.name),
-            path: k.path.clone(),
-            active: here(&k.path),
-            detail: k.path.clone().into(),
-            tree: tree_of(&k.path),
-            capacity: None,
-            eject: None,
-            remote: None,
-            gutter: i.folder_tree,
-        }));
-        if tree_of(&k.path).is_some() {
-            push_kids(&mut rows, i, &k.path, 0);
+    if !quick_folded {
+        let view = |glyph: Glyph, name: &'static str, path: &str, active: bool, detail: &'static str| {
+            Row::Place(Place {
+                glyph,
+                label: Label::Fixed(name),
+                path: path.to_string(),
+                active,
+                detail: detail.into(),
+                tree: None,
+                capacity: None,
+                eject: None,
+                remote: None,
+                gutter: i.folder_tree && !i.tiles,
+                tile: i.tiles,
+            })
+        };
+        rows.push(view(
+            Glyph::Recent,
+            "Recent",
+            RECENT,
+            is_recent(i.path),
+            "The files you opened lately, here or in any app, newest first",
+        ));
+        rows.push(view(
+            Glyph::Gallery,
+            "Gallery",
+            GALLERY,
+            is_gallery(i.path),
+            "Your photos and videos, newest first by when each was taken",
+        ));
+        for k in i.known {
+            let tree = if i.tiles { None } else { tree_of(&k.path) };
+            rows.push(Row::Place(Place {
+                glyph: Glyph::Known(k.id),
+                label: Label::Fixed(k.name),
+                path: k.path.clone(),
+                active: here(&k.path),
+                detail: k.path.clone().into(),
+                tree,
+                capacity: None,
+                eject: None,
+                remote: None,
+                gutter: i.folder_tree && !i.tiles,
+                tile: i.tiles,
+            }));
+            if tree.is_some() {
+                push_kids(&mut rows, i, &k.path, 0);
+            }
         }
     }
 
     if !i.pinned.is_empty() {
-        rows.push(heading("Pinned"));
-        for p in i.pinned {
+        let folded = is_folded("Pinned");
+        rows.push(heading("Pinned", Some(folded)));
+        for p in i.pinned.iter().filter(|_| !folded) {
             rows.push(Row::Place(Place {
                 glyph: Glyph::Folder,
                 label: Label::Plain(base_name(p).to_string().into()),
@@ -502,6 +530,7 @@ pub fn build_rows(i: &Inputs) -> Vec<Row> {
                 eject: None,
                 remote: None,
                 gutter: i.folder_tree,
+                tile: false,
             }));
             if tree_of(p).is_some() {
                 push_kids(&mut rows, i, p, 0);
@@ -509,47 +538,18 @@ pub fn build_rows(i: &Inputs) -> Vec<Row> {
         }
     }
 
-    if !i.labels.is_empty() {
-        rows.push(heading("Labels"));
-        rows.extend(i.labels.iter().cloned().map(Row::Label));
-    }
-
-    if !i.tags.is_empty() {
-        rows.push(heading("Tags"));
-        rows.extend(i.tags.iter().cloned().map(Row::Tag));
-    }
-
-    if !i.saved.is_empty() {
-        rows.push(heading("Searches"));
-        for s in i.saved {
-            rows.push(Row::Search(Search {
-                query: s.query.clone(),
-                folder: s.folder.clone(),
-                count: i.counts.get(&count_key(s)).cloned(),
-            }));
-        }
-    }
-
-    // Live portals: archives, searches, commits and backups mounted as folders. Like Searches, only when there
-    // are some.
-    if !i.portals.is_empty() {
-        rows.push(heading("Portals"));
-        for p in i.portals {
-            rows.push(Row::Portal(PortalItem {
-                active: i.path != THIS_PC && is_inside(&p.path, i.path),
-                ..p.clone()
-            }));
-        }
-    }
-
-    // This PC: its title opens it; the drives; the Recycle Bin.
+    // This PC: its title opens it; the drives; the Recycle Bin. Above what finds things, so the drives are in
+    // sight without a scroll.
+    let pc_folded = is_folded("This PC");
     rows.push(Row::Heading {
         title: "This PC",
         link: Some(THIS_PC.to_string()),
         active: i.path == THIS_PC,
         first: false,
+        folded: Some(pc_folded),
+        tiles: None,
     });
-    for d in i.drives {
+    for d in i.drives.iter().filter(|_| !pc_folded) {
         let name = drive_name(d);
         let free = crate::kit::free_of(d.total, d.free);
         let ejectable = matches!(d.kind, DriveKind::Removable | DriveKind::Cdrom);
@@ -568,27 +568,73 @@ pub fn build_rows(i: &Inputs) -> Vec<Row> {
             eject: ejectable.then(|| name.clone()),
             remote: None,
             gutter: i.folder_tree,
+            tile: false,
         }));
         if d.kind != DriveKind::Wsl && tree_of(&d.path).is_some() {
             push_kids(&mut rows, i, &d.path, 0);
         }
     }
-    rows.push(Row::Place(Place {
-        glyph: Glyph::RecycleBin,
-        label: Label::Fixed("Recycle Bin"),
-        path: RECYCLE_BIN.to_string(),
-        active: here(RECYCLE_BIN),
-        detail: "What you deleted, to restore or delete for good. Files dropped here are deleted.".into(),
-        tree: None,
-        capacity: None,
-        eject: None,
-        remote: None,
-        gutter: i.folder_tree,
-    }));
+    if !pc_folded {
+        rows.push(Row::Place(Place {
+            glyph: Glyph::RecycleBin,
+            label: Label::Fixed("Recycle Bin"),
+            path: RECYCLE_BIN.to_string(),
+            active: here(RECYCLE_BIN),
+            detail: "What you deleted, to restore or delete for good. Files dropped here are deleted.".into(),
+            tree: None,
+            capacity: None,
+            eject: None,
+            remote: None,
+            gutter: i.folder_tree,
+            tile: false,
+        }));
+    }
 
-    // Remote connections.
-    rows.push(heading("Remote"));
-    for r in i.remotes {
+    // The labels are one line of dots under their title (the view lays them so), so there is nothing to fold.
+    if !i.labels.is_empty() {
+        rows.push(heading("Labels", None));
+        rows.extend(i.labels.iter().cloned().map(Row::Label));
+    }
+
+    if !i.tags.is_empty() {
+        let folded = is_folded("Tags");
+        rows.push(heading("Tags", Some(folded)));
+        if !folded {
+            rows.extend(i.tags.iter().cloned().map(Row::Tag));
+        }
+    }
+
+    if !i.saved.is_empty() {
+        let folded = is_folded("Searches");
+        rows.push(heading("Searches", Some(folded)));
+        for s in i.saved.iter().filter(|_| !folded) {
+            rows.push(Row::Search(Search {
+                query: s.query.clone(),
+                folder: s.folder.clone(),
+                count: i.counts.get(&count_key(s)).cloned(),
+            }));
+        }
+    }
+
+    // Live portals: archives, searches, commits and backups mounted as folders. Like Searches, only when there
+    // are some.
+    if !i.portals.is_empty() {
+        let folded = is_folded("Portals");
+        rows.push(heading("Portals", Some(folded)));
+        for p in i.portals.iter().filter(|_| !folded) {
+            rows.push(Row::Portal(PortalItem {
+                active: i.path != THIS_PC && is_inside(&p.path, i.path),
+                ..p.clone()
+            }));
+        }
+    }
+
+    // Remote connections: a title only once there is one. The way to add one is always the last row.
+    let remote_folded = is_folded("Remote");
+    if !i.remotes.is_empty() {
+        rows.push(heading("Remote", Some(remote_folded)));
+    }
+    for r in i.remotes.iter().filter(|_| !remote_folded) {
         let path = remote_path(r);
         let space = i.spaces.get(&r.id).copied();
         let where_ = remote_where(r);
@@ -606,10 +652,96 @@ pub fn build_rows(i: &Inputs) -> Vec<Row> {
             eject: None,
             remote: Some(r.id.clone()),
             gutter: i.folder_tree,
+            tile: false,
         }));
     }
     rows.push(Row::AddConnection);
     rows
+}
+
+/// One line of the sidebar's list: the rows it draws, by their places in the rows. Most rows are a line each;
+/// tiles go two to a line, the labels are one line of dots after their title, and the tags are chips after theirs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Line {
+    One(usize),
+    /// Two tiles side by side; a last odd one has the line's first half to itself.
+    Pair(usize, Option<usize>),
+    /// The labels' title and their dots: rows `from..to`.
+    Dots { heading: usize, from: usize, to: usize },
+    /// The tags' title and their chips: rows `from..to`.
+    Chips { heading: usize, from: usize, to: usize },
+}
+
+impl Line {
+    /// The rows the line draws, in order.
+    pub fn rows(&self) -> Vec<usize> {
+        match self {
+            Line::One(ix) => vec![*ix],
+            Line::Pair(a, b) => std::iter::once(*a).chain(*b).collect(),
+            Line::Dots { heading, from, to } | Line::Chips { heading, from, to } => {
+                std::iter::once(*heading).chain(*from..*to).collect()
+            }
+        }
+    }
+
+    /// Whether row `ix` is drawn in this line.
+    pub fn holds(&self, ix: usize) -> bool {
+        match self {
+            Line::One(a) => *a == ix,
+            Line::Pair(a, b) => *a == ix || *b == Some(ix),
+            Line::Dots { heading, from, to } | Line::Chips { heading, from, to } => {
+                *heading == ix || (*from..*to).contains(&ix)
+            }
+        }
+    }
+}
+
+/// The lines `rows` are drawn in, top to bottom.
+pub fn lines(rows: &[Row]) -> Vec<Line> {
+    let mut out = Vec::new();
+    let mut ix = 0;
+    while ix < rows.len() {
+        // How many rows from `from` on are of the kind `is`.
+        let run = |from: usize, is: fn(&Row) -> bool| rows[from..].iter().take_while(|r| is(r)).count();
+        match &rows[ix] {
+            Row::Heading { title: "Labels", .. } => {
+                let n = run(ix + 1, |r| matches!(r, Row::Label(_)));
+                if n == 0 {
+                    out.push(Line::One(ix));
+                } else {
+                    out.push(Line::Dots {
+                        heading: ix,
+                        from: ix + 1,
+                        to: ix + 1 + n,
+                    });
+                }
+                ix += 1 + n;
+            }
+            Row::Heading { title: "Tags", .. } => {
+                let n = run(ix + 1, |r| matches!(r, Row::Tag(_)));
+                if n == 0 {
+                    out.push(Line::One(ix));
+                } else {
+                    out.push(Line::Chips {
+                        heading: ix,
+                        from: ix + 1,
+                        to: ix + 1 + n,
+                    });
+                }
+                ix += 1 + n;
+            }
+            Row::Place(place) if place.tile => {
+                let next = matches!(rows.get(ix + 1), Some(Row::Place(p)) if p.tile).then_some(ix + 1);
+                out.push(Line::Pair(ix, next));
+                ix += 1 + usize::from(next.is_some());
+            }
+            _ => {
+                out.push(Line::One(ix));
+                ix += 1;
+            }
+        }
+    }
+    out
 }
 
 /// Whether `path` is `folder` or somewhere below it.
@@ -622,12 +754,14 @@ fn is_inside(folder: &str, path: &str) -> bool {
     path.strip_prefix(&folder).is_some_and(|rest| rest.starts_with('\\'))
 }
 
-fn heading(title: &'static str) -> Row {
+fn heading(title: &'static str, folded: Option<bool>) -> Row {
     Row::Heading {
         title,
         link: None,
         active: false,
         first: false,
+        folded,
+        tiles: None,
     }
 }
 
@@ -707,6 +841,9 @@ mod tests {
         tree: Tree,
         spaces: HashMap<String, Space>,
         counts: HashMap<String, String>,
+        /// Quick access as tiles (a list unless a test says so: the tree's tests hang folders from its places).
+        tiles: bool,
+        folded: Vec<String>,
     }
 
     impl World {
@@ -733,6 +870,8 @@ mod tests {
                 tree: Tree::default(),
                 spaces: HashMap::new(),
                 counts: HashMap::new(),
+                tiles: false,
+                folded: Vec::new(),
             }
         }
 
@@ -748,6 +887,8 @@ mod tests {
                 labels: &self.labels,
                 tags: &self.tags,
                 folder_tree,
+                tiles: self.tiles,
+                folded: &self.folded,
                 tree: &self.tree,
                 spaces: &self.spaces,
                 counts: &self.counts,
@@ -775,7 +916,7 @@ mod tests {
     }
 
     #[test]
-    fn the_sections_come_in_the_typescripts_order() {
+    fn the_sections_come_in_the_order_they_are_reached_for() {
         let world = World::new();
         assert_eq!(
             describe(&world.rows("C:\\Users\\me", true)),
@@ -787,13 +928,14 @@ mod tests {
                 "Documents",
                 "# Pinned",
                 "تقارير",
-                "# Searches",
-                "? invoice",
+                // The drives before what finds things: in sight without a scroll.
                 "# This PC",
                 "Local Disk (C:)",
                 "Photos (E:)",
                 "Ubuntu (WSL)",
                 "Recycle Bin",
+                "# Searches",
+                "? invoice",
                 "# Remote",
                 "My NAS",
                 "+ add",
@@ -843,7 +985,7 @@ mod tests {
             &text[at("# Portals")..at("# Portals") + 3],
             ["# Portals", "@ pack.zip", "@ تقارير"]
         );
-        assert!(at("# Searches") < at("# Portals") && at("# Portals") < at("# This PC"));
+        assert!(at("# This PC") < at("# Searches") && at("# Searches") < at("# Portals"));
     }
 
     #[test]
@@ -1186,6 +1328,141 @@ mod tests {
     }
 
     #[test]
+    fn quick_access_as_tiles_has_no_tree_and_goes_two_to_a_line() {
+        let mut world = World::new();
+        world.tiles = true;
+        world.tree.set_open("C:\\Users\\me", true);
+        let read = world.tree.begin_read("C:\\Users\\me");
+        world.tree.finish_read(
+            "C:\\Users\\me",
+            read,
+            Ok(vec![Subfolder {
+                name: "Music".into(),
+                children: None,
+            }]),
+        );
+        let rows = world.rows("", true);
+        // Recent, Gallery, Home and Documents: tiles, none with an arrow or room kept for one, and nothing hangs
+        // from Home though the tree has it open.
+        let tiles: Vec<&Place> = rows
+            .iter()
+            .filter_map(|r| match r {
+                Row::Place(p) if p.tile => Some(p),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(tiles.len(), 4);
+        assert!(tiles.iter().all(|p| p.tree.is_none() && !p.gutter));
+        assert!(!describe(&rows).contains(&"> Music".to_string()));
+        assert!(matches!(&rows[0], Row::Heading { tiles: Some(true), .. }), "its title has the switch");
+        // The pinned folder and the drives are rows as ever, with their trees.
+        assert!(rows.iter().any(|r| matches!(r, Row::Place(p) if !p.tile && p.tree.is_some())));
+        // Two to a line; a fifth has the first half of its line.
+        assert_eq!(&lines(&rows)[..3], [Line::One(0), Line::Pair(1, Some(2)), Line::Pair(3, Some(4))]);
+        world.known.push(known(KnownId::Pictures, "C:\\Users\\me\\Pictures"));
+        assert_eq!(lines(&world.rows("", true))[3], Line::Pair(5, None));
+        // As a list every row has a line of its own, and Home's folder is back.
+        world.tiles = false;
+        let rows = world.rows("", true);
+        assert!(lines(&rows).iter().all(|line| matches!(line, Line::One(_))));
+        assert!(describe(&rows).contains(&"> Music".to_string()));
+        assert!(matches!(&rows[0], Row::Heading { tiles: Some(false), .. }));
+    }
+
+    #[test]
+    fn a_folded_section_is_its_title_and_nothing_else_goes() {
+        let mut world = World::new();
+        world.tags = vec![Tag {
+            name: "work".into(),
+            count: None,
+        }];
+        world.labels = vec![LabelRow {
+            name: "Red".into(),
+            color: 0xef4444,
+            count: None,
+        }];
+        let all = describe(&world.rows("", true));
+        // Each section that folds, and something of its own that goes with it.
+        for (title, own) in [
+            ("Quick access", "Recent"),
+            ("Pinned", "تقارير"),
+            ("This PC", "Recycle Bin"),
+            ("Tags", "# work"),
+            ("Searches", "? invoice"),
+            ("Remote", "My NAS"),
+        ] {
+            world.folded = vec![title.to_string()];
+            let rows = world.rows("", true);
+            let text = describe(&rows);
+            let at = text.iter().position(|t| *t == format!("# {title}")).expect(title);
+            assert!(matches!(&rows[at], Row::Heading { folded: Some(true), .. }), "{title}");
+            assert!(all.contains(&own.to_string()) && !text.contains(&own.to_string()), "{title}");
+            // Every title is still there, and the way to add a connection.
+            assert_eq!(
+                text.iter().filter(|t| t.starts_with("# ") && *t != "# work").count(),
+                all.iter().filter(|t| t.starts_with("# ") && *t != "# work").count(),
+                "{title}"
+            );
+            assert_eq!(text.last().map(String::as_str), Some("+ add"));
+        }
+        // The labels don't fold (one line), and an unknown title folds nothing.
+        world.folded = vec!["Labels".into(), "Nothing".into()];
+        let rows = world.rows("", true);
+        assert_eq!(describe(&rows), all);
+        assert!(rows.iter().any(|r| matches!(r, Row::Heading { title: "Labels", folded: None, .. })));
+    }
+
+    #[test]
+    fn remote_has_a_title_only_once_there_is_a_connection() {
+        let mut world = World::new();
+        assert!(describe(&world.rows("", true)).contains(&"# Remote".to_string()));
+        world.remotes.clear();
+        let text = describe(&world.rows("", true));
+        assert!(!text.contains(&"# Remote".to_string()));
+        assert_eq!(text.last().map(String::as_str), Some("+ add"), "the way to add one is always there");
+    }
+
+    #[test]
+    fn the_labels_are_one_line_after_their_title_and_the_tags_another() {
+        let mut world = World::new();
+        let label = |name: &str| LabelRow {
+            name: name.into(),
+            color: 0xef4444,
+            count: None,
+        };
+        let tag = |name: &str| Tag {
+            name: name.into(),
+            count: Some(1),
+        };
+        world.labels = vec![label("Red"), label("Blue")];
+        world.tags = vec![tag("a"), tag("b"), tag("c")];
+        let rows = world.rows("", true);
+        let text = describe(&rows);
+        let at = |what: &str| text.iter().position(|t| t == what).unwrap();
+        let (labels, tags) = (at("# Labels"), at("# Tags"));
+        let laid = lines(&rows);
+        assert!(laid.contains(&Line::Dots {
+            heading: labels,
+            from: labels + 1,
+            to: labels + 3
+        }));
+        assert!(laid.contains(&Line::Chips {
+            heading: tags,
+            from: tags + 1,
+            to: tags + 4
+        }));
+        // Every row is drawn in one line, and in order.
+        let drawn: Vec<usize> = laid.iter().flat_map(Line::rows).collect();
+        assert_eq!(drawn, (0..rows.len()).collect::<Vec<_>>());
+        assert!(laid.iter().enumerate().all(|(n, line)| line.rows().iter().all(|ix| laid[n].holds(*ix))));
+        // Folded, the tags' title is a line of its own.
+        world.folded = vec!["Tags".into()];
+        let rows = world.rows("", true);
+        let tags = describe(&rows).iter().position(|t| t == "# Tags").unwrap();
+        assert!(lines(&rows).contains(&Line::One(tags)));
+    }
+
+    #[test]
     fn rows_know_what_the_keyboard_can_do_with_them() {
         let mut world = World::new();
         world.tree.set_open("C:\\Users\\me", true);
@@ -1198,8 +1475,15 @@ mod tests {
                 children: Some(false),
             }]),
         );
+        world.labels = vec![LabelRow {
+            name: "Red".into(),
+            color: 0xef4444,
+            count: None,
+        }];
         let rows = world.rows("", true);
-        assert!(!rows[0].focusable(), "a plain title");
+        assert!(rows[0].focusable(), "a title that folds its section");
+        let labels = rows.iter().find(|r| matches!(r, Row::Heading { title: "Labels", .. })).unwrap();
+        assert!(!labels.focusable(), "a plain title: the labels are one line already");
         assert!(rows
             .iter()
             .any(|r| matches!(r, Row::Heading { link: Some(_), .. } if r.focusable())));

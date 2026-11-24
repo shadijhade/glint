@@ -99,6 +99,27 @@ reports name the commits of the branch they were built on (`00cf486`, `12a6e5e`,
     rows' *Move up*, *Move down* and *Remove* are quiet signs with tooltips. Edit tags… had an empty band where no
     tag was used lately. Export marks…' two formats cut their own descriptions short. Edit comment… says that
     `Ctrl+Enter` saves. The import's notice had *What happened* floating in its middle.
+14. **A sidebar that is all in sight** (`glint-ui/src/components/sidebar`). On a new PC it was some 29 rows of 36
+    pixels, half of them the seven labels and things few reach for, and the drives were under the fold. Now:
+    - **Quick access is tiles**, two to a line, nine places in five lines. The switch at its title (or **Settings →
+      Files → Quick access as tiles**) makes it a list again, each place with the tree's arrow: a tile has no room to
+      hang folders from.
+    - **The drives come before what finds things**, so they are in sight; a wide rail says how much is free on each.
+    - **The labels are one line of dots** after their title, **the tags are chips** after theirs, and a saved search
+      is one line (what, then where).
+    - **A section folds to its title** (a press on it, or its arrow; kept in the settings), and Remote has no title
+      until there is a connection: the row that adds one is all there is of it.
+    - **Rows are 30 pixels** (they were 36), as the tabs above them always were.
+    - **The keyboard**: the arrows move by lines, Left and Right along a line of tiles, dots or chips; a title that
+      folds is a stop, and Left and Right fold and open it.
+    On this PC's default profile the whole rail is 600 pixels tall where it was about 1,040, in a window of 713.
+    Nothing a row does changed: a row is still a row to the keyboard, a click, a drop, its menu and Hop, wherever
+    it is drawn (`rows::lines`). Checked: `cargo test --workspace --no-fail-fast`, none failed (core 536, model 428,
+    ui 2,900, index 160; the sidebar's 76, eight of them new, the others as they were but for the order, Remote's
+    title and the keys along a line), clippy clean, and looked at in a debug copy in dark and light, as tiles and as
+    a list, folded and open, with pinned folders, tags and saved searches. The tests caught one thing the look had
+    not yet: a drive's line read the list's width while the list drew it, which panics as 0.16.0 did on a scroll;
+    the width is read in `render` now. Not run after this: the end-to-end checks.
 
 ### Not tried for real
 
@@ -139,8 +160,11 @@ After items 10 to 13: `cargo test --workspace --no-fail-fast` passed with none f
 warnings` is clean. Looked at in a debug copy (1,382 by 891 at 125%, dark and light): every suggestion's notification, the
 one-press import of a made-up XYplorer of twelve items in English and in Chinese (*Marked 11 · 1 not found*, its labels
 renamed 红色…), following one that marks nothing, `label：红色` typed into the box, the Gallery naming a real folder of
-photos outside it, and Settings opening at Labels. **Not run: the end-to-end checks** (a Glint was running, and they
-want none), and the list a `label:` search answers in the live app (the dev-build trap above).
+photos outside it, and Settings opening at Labels. Then the end-to-end checks on the commit (`77bd2b6`), no Glint
+running and the version at 0.17.0 for the run: **22 of 22**, `marks` among them (the user's own Glint files untouched, the
+clipboard put back). Not looked at: the list a search typed with a full-width colon answers in the live app (a dev
+build numbered 0.16.1 sends it to the installed service, as above; the address bar's test holds what reaches the
+explorer).
 
 ## 0.16.1: scrolling the sidebar no longer closes Glint
 

@@ -29,9 +29,16 @@
 //! their menu, and a change notice from glint-core) and the Workspaces button at the top ([`workspaces`]: the
 //! window's tabs and panes kept under a name, switched to from its menu or from Ctrl+K).
 //!
-//! **Not in the TypeScript, and so not here:** sections do not collapse (the TypeScript never let them); the
-//! "rail" below the `md` breakpoint (a 48 px icon-only sidebar) is the window width's business in CSS, and the
-//! GPUI workspace resizes the sidebar between fixed limits instead.
+//! **Compact, since 0.17.** The list's items are [`rows::Line`]s, not rows: Quick access is tiles, two to a line
+//! (or a list again, from the switch at its title: a tile has no room for the folder tree); the labels are one
+//! line of dots after their title and the tags are chips after theirs; a section folds to its title (kept in
+//! `settings.sidebar_folded`); and This PC comes before what finds things, so the drives are in sight without a
+//! scroll. A row is still a row to everything that acts on one (the keyboard, a click, a drop, its menu, Hop):
+//! only where it is drawn changed. The arrows move by lines, and Left and Right along a line of tiles, dots or
+//! chips.
+//!
+//! **Not in the TypeScript, and so not here:** the "rail" below the `md` breakpoint (a 48 px icon-only sidebar) is
+//! the window width's business in CSS, and the GPUI workspace resizes the sidebar between fixed limits instead.
 
 mod drop;
 mod portals;
@@ -50,14 +57,14 @@ use crate::state::UiState;
 use crate::{drops, persistence, state, t, theme};
 use glint_model::entries::{with_details, FileEntry, RawEntry};
 use glint_model::file_types::kind_of;
-use glint_model::format::plural;
+use glint_model::format::{format_size, plural};
 use glint_model::marks::Label as MarkLabel;
 use glint_model::paths::{same_path, RECYCLE_BIN, THIS_PC};
 use glint_model::store::{RemoteConnection, RemoteKind, SavedSearch};
 use portals::{PortalChanges, PortalWork, PortalsSource};
 use rows::{
-    build_rows, count_key, is_label, label_search, reads_files, shown_labels, shown_tags, tag_search, Glyph, Inputs,
-    Label, LabelRow, Place, PortalItem, Row, Space,
+    build_rows, count_key, is_label, label_search, lines as lay_out, reads_files, shown_labels, shown_tags,
+    tag_search, Glyph, Inputs, Label, LabelRow, Line, Place, PortalItem, Row, Space,
 };
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -76,6 +83,15 @@ const OVERDRAW: Pixels = px(300.);
 
 /// A tree folder's text (`text-[13px]`): between the theme's `XS` and `SM`.
 const TREE_TEXT: Rems = rems(0.8125);
+
+/// Spacing units above and below a row's words: with them a row is 30 px at the usual text size (it was 36), and
+/// the whole rail of a new PC is in sight without a scroll.
+pub(super) const ROW_PAD: f32 = 1.;
+
+/// The rail's width, in rems, from which a drive's line has room for how much is free on it after its whole name
+/// (at the width the rail starts with, the number would cut "New Volume (D:)" before its letter; the bar says how
+/// full it is at any width, and the tooltip the numbers).
+const FREE_SHOWN_FROM: f32 = 17.;
 
 /// Spacing units ([`space`]): how far in a tree folder's icon is below a place (`pl-[38px]`), and a step a level.
 const TREE_INDENT: f32 = 9.5;
@@ -280,6 +296,9 @@ struct Seen {
     folder_tree: bool,
     tree_follows: bool,
     show_hidden: bool,
+    /// Quick access as tiles, and the sections folded (the settings').
+    tiles: bool,
+    folded: Vec<String>,
     pinned: Vec<String>,
     saved: Vec<SavedSearch>,
     remotes: Vec<RemoteConnection>,
@@ -302,6 +321,8 @@ pub struct Sidebar {
     focus: FocusHandle,
     list: ListState,
     rows: Vec<Row>,
+    /// The lines the rows are drawn in: the list's items ([`rows::lines`]).
+    lines: Vec<Line>,
     /// The row the keyboard is on (the TypeScript's DOM focus), drawn with a ring while the sidebar has focus.
     cursor: Option<usize>,
     tree: Tree,
@@ -330,6 +351,9 @@ pub struct Sidebar {
     portal_menu: Option<crate::components::tab_strip::menu::Popup>,
     /// Whether the list had more below its last row at the last frame: the edge fades while it has.
     fade_below: bool,
+    /// Whether the rail was wide enough at the last frame for a drive's line to say how much is free. Read in
+    /// `render`, never while the list draws: the list holds its own state then (reading it there panics).
+    roomy: bool,
     /// The Workspaces menu while it is open.
     workspace_menu: Option<crate::components::tab_strip::menu::Popup>,
     /// Where the Workspaces trigger sits so mouse and keyboard open the menu flush beneath it.
@@ -396,6 +420,7 @@ impl Sidebar {
             focus,
             list: ListState::new(0, ListAlignment::Top, OVERDRAW),
             rows: Vec::new(),
+            lines: Vec::new(),
             cursor: None,
             tree: Tree::default(),
             spaces: HashMap::new(),
@@ -416,6 +441,7 @@ impl Sidebar {
             workspace_menu: None,
             workspace_bounds: Rc::default(),
             fade_below: false,
+            roomy: true,
             seen: None,
             #[cfg(test)]
             built: 0,
@@ -477,9 +503,15 @@ impl Sidebar {
                 listing,
             )
         };
-        let (folder_tree, tree_follows, show_hidden) = {
+        let (folder_tree, tree_follows, show_hidden, tiles, folded) = {
             let s = state::settings(cx);
-            (s.folder_tree, s.tree_follows, s.show_hidden)
+            (
+                s.folder_tree,
+                s.tree_follows,
+                s.show_hidden,
+                s.sidebar_tiles,
+                s.sidebar_folded.clone(),
+            )
         };
         let labels = state::settings(cx).labels.clone();
         let (pinned, saved, remotes) = persistence::app(cx)
@@ -566,6 +598,8 @@ impl Sidebar {
             labels: &label_rows,
             tags: &shown,
             folder_tree,
+            tiles,
+            folded: &folded,
             tree: &self.tree,
             spaces: &self.spaces,
             counts: &self.counts,
@@ -583,6 +617,8 @@ impl Sidebar {
             folder_tree,
             tree_follows,
             show_hidden,
+            tiles,
+            folded,
             pinned,
             saved,
             remotes,
@@ -620,27 +656,42 @@ impl Sidebar {
             && Arc::ptr_eq(&seen.known, e.known_folders())
             && Arc::ptr_eq(&seen.drives, e.drives())
             && (seen.folder_tree, seen.tree_follows, seen.show_hidden) == (s.folder_tree, s.tree_follows, s.show_hidden)
+            && seen.tiles == s.sidebar_tiles
+            && seen.folded == s.sidebar_folded
     }
 
     /// Replaces the rows, and the part of the list that differs. The keyboard's row stays on the same thing.
     fn set_rows(&mut self, built: Vec<Row>, cx: &mut Context<Self>) {
         if built != self.rows {
-            let old = self.rows.len();
-            let new = built.len();
-            let same_start = self.rows.iter().zip(&built).take_while(|(a, b)| a == b).count();
-            let same_end = self
-                .rows
-                .iter()
-                .rev()
-                .zip(built.iter().rev())
-                .take(old.min(new) - same_start)
-                .take_while(|(a, b)| a == b)
-                .count();
+            let laid = lay_out(&built);
+            // The list's items are lines. A line is the same while it draws the same rows the same way, wherever
+            // in the list those rows now are.
+            let (same_start, same_end) = {
+                let same = |a: &Line, b: &Line| {
+                    let (was, is) = (a.rows(), b.rows());
+                    std::mem::discriminant(a) == std::mem::discriminant(b)
+                        && was.len() == is.len()
+                        && was.iter().zip(&is).all(|(o, n)| self.rows.get(*o) == built.get(*n))
+                };
+                let (old, new) = (self.lines.len(), laid.len());
+                let same_start = self.lines.iter().zip(&laid).take_while(|(a, b)| same(a, b)).count();
+                let same_end = self
+                    .lines
+                    .iter()
+                    .rev()
+                    .zip(laid.iter().rev())
+                    .take(old.min(new) - same_start)
+                    .take_while(|(a, b)| same(a, b))
+                    .count();
+                (same_start, same_end)
+            };
+            let (old, new) = (self.lines.len(), laid.len());
             let kept = self
                 .cursor
                 .and_then(|c| self.rows.get(c))
                 .map(|r| (r.key(), self.cursor.unwrap_or(0)));
             self.rows = built;
+            self.lines = laid;
             self.list
                 .splice(same_start..old - same_end, new - same_start - same_end);
             self.cursor = kept.and_then(|(key, at)| {
@@ -654,9 +705,29 @@ impl Sidebar {
         if self.scroll_to_current {
             if let Some(at) = self.rows.iter().position(|r| matches!(r, Row::Folder(f) if f.active)) {
                 self.scroll_to_current = false;
-                self.list.scroll_to_reveal_item(at);
+                self.list.scroll_to_reveal_item(self.line_of(at));
             }
         }
+    }
+
+    /// The line row `ix` is drawn in.
+    fn line_of(&self, ix: usize) -> usize {
+        self.lines.iter().position(|line| line.holds(ix)).unwrap_or(0)
+    }
+
+    /// Folds the section titled `title` to its title, or opens it again (kept in the settings).
+    fn toggle_fold(&mut self, title: &'static str, cx: &mut Context<Self>) {
+        state::update(cx, |s| match s.sidebar_folded.iter().position(|f| f == title) {
+            Some(at) => {
+                s.sidebar_folded.remove(at);
+            }
+            None => s.sidebar_folded.push(title.to_string()),
+        });
+    }
+
+    /// Quick access as tiles, or as a list whose places open their folders.
+    fn toggle_tiles(&mut self, cx: &mut Context<Self>) {
+        state::update(cx, |s| s.sidebar_tiles = !s.sidebar_tiles);
     }
 
     // ---- The folder tree --------------------------------------------------------------------------------
@@ -829,6 +900,10 @@ impl Sidebar {
             Row::Portal(p) => self
                 .explorer
                 .update(cx, |e, cx| e.navigate(p.path, NavOptions::default(), cx)),
+            // A title that opens nothing folds its section, where it folds.
+            Row::Heading {
+                title, folded: Some(_), ..
+            } => self.toggle_fold(title, cx),
             Row::Heading { .. } | Row::Note { .. } => {}
         }
         let _ = window;
@@ -1015,11 +1090,16 @@ impl Sidebar {
         let Some(ix) = self.cursor else {
             return false;
         };
+        let at = self.line_of(ix);
         let bounds = self
             .list
-            .bounds_for_item(ix)
+            .bounds_for_item(at)
             .unwrap_or_else(|| self.list.viewport_bounds());
-        let x = if crate::i18n::is_rtl() {
+        // The second tile of a line starts at the line's middle.
+        let second = matches!(self.lines.get(at), Some(Line::Pair(_, Some(second))) if *second == ix);
+        let x = if second {
+            bounds.center().x
+        } else if crate::i18n::is_rtl() {
             bounds.right()
         } else {
             bounds.left()
@@ -1102,10 +1182,11 @@ impl Sidebar {
             "up" => self.step(-1, cx),
             "home" => self.jump(false, cx),
             "end" => self.jump(true, cx),
-            "right" if !rtl => self.expand(cx),
-            "left" if !rtl => self.collapse(cx),
-            "left" => self.expand(cx),
-            "right" => self.collapse(cx),
+            // Along a line of tiles, dots or chips; else into and out of the tree.
+            "right" if !rtl => self.along(1, cx) || self.expand(cx),
+            "left" if !rtl => self.along(-1, cx) || self.collapse(cx),
+            "left" => self.along(1, cx) || self.expand(cx),
+            "right" => self.along(-1, cx) || self.collapse(cx),
             "enter" | "space" => match self.cursor {
                 Some(ix) => {
                     self.activate(ix, window, cx);
@@ -1129,19 +1210,69 @@ impl Sidebar {
         }
     }
 
-    /// Moves the keyboard to the row `delta` focusable rows away.
+    /// The rows the keyboard can land on, line by line (lines with none left out).
+    fn stops(&self) -> Vec<Vec<usize>> {
+        self.lines
+            .iter()
+            .map(|line| {
+                let mut cells = line.rows();
+                cells.retain(|&ix| self.rows.get(ix).is_some_and(Row::focusable));
+                cells
+            })
+            .filter(|cells| !cells.is_empty())
+            .collect()
+    }
+
+    /// Where the keyboard is among [`Sidebar::stops`]: the line, and the place in it.
+    fn stop_at(&self, stops: &[Vec<usize>]) -> Option<(usize, usize)> {
+        let cursor = self.cursor?;
+        stops
+            .iter()
+            .enumerate()
+            .find_map(|(line, cells)| cells.iter().position(|&ix| ix == cursor).map(|cell| (line, cell)))
+    }
+
+    /// Moves the keyboard `delta` lines away: to the tile in the same half of a line of tiles, else to the line's
+    /// first row. Where every row has a line to itself that is the next row, as it always was.
     fn step(&mut self, delta: isize, cx: &mut Context<Self>) -> bool {
-        let stops: Vec<usize> = (0..self.rows.len()).filter(|&i| self.rows[i].focusable()).collect();
-        if stops.is_empty() {
+        let stops = self.stops();
+        let Some(last) = stops.len().checked_sub(1) else {
+            return false;
+        };
+        let tile = |ix: usize| matches!(self.rows.get(ix), Some(Row::Place(p)) if p.tile);
+        let to = match self.stop_at(&stops) {
+            None if delta > 0 => stops[0][0],
+            None => stops[last][0],
+            Some((line, cell)) => {
+                let next = (line as isize + delta).clamp(0, last as isize) as usize;
+                let cells = &stops[next];
+                if next == line {
+                    stops[line][cell]
+                } else if tile(stops[line][cell]) && tile(cells[0]) {
+                    cells[cell.min(cells.len() - 1)]
+                } else {
+                    cells[0]
+                }
+            }
+        };
+        self.set_cursor(Some(to), cx);
+        true
+    }
+
+    /// Moves the keyboard along its line (`delta` 1 is toward the end), where the line has another row that way
+    /// to land on. False where it has none: Left and Right then mean what they mean on a line of one (Left on the
+    /// tags' title folds them).
+    fn along(&mut self, delta: isize, cx: &mut Context<Self>) -> bool {
+        let stops = self.stops();
+        let Some((line, cell)) = self.stop_at(&stops) else {
+            return false;
+        };
+        let cells = &stops[line];
+        let to = (cell as isize + delta).clamp(0, cells.len() as isize - 1) as usize;
+        if to == cell {
             return false;
         }
-        let at = self.cursor.and_then(|c| stops.iter().position(|&s| s == c));
-        let to = match at {
-            None if delta > 0 => 0,
-            None => stops.len() - 1,
-            Some(at) => (at as isize + delta).clamp(0, stops.len() as isize - 1) as usize,
-        };
-        self.set_cursor(stops.get(to).copied(), cx);
+        self.set_cursor(Some(cells[to]), cx);
         true
     }
 
@@ -1156,7 +1287,7 @@ impl Sidebar {
     fn set_cursor(&mut self, to: Option<usize>, cx: &mut Context<Self>) {
         self.cursor = to;
         if let Some(ix) = to {
-            self.list.scroll_to_reveal_item(ix);
+            self.list.scroll_to_reveal_item(self.line_of(ix));
         }
         cx.notify();
     }
@@ -1169,6 +1300,14 @@ impl Sidebar {
         let Some(row) = self.rows.get(ix) else {
             return false;
         };
+        // A folded section's title: its section opens.
+        if let Row::Heading { title, folded, .. } = row {
+            let (title, folded) = (*title, *folded);
+            if folded == Some(true) {
+                self.toggle_fold(title, cx);
+            }
+            return folded.is_some();
+        }
         let Some(path) = row.tree_path().map(str::to_string) else {
             return false;
         };
@@ -1191,6 +1330,14 @@ impl Sidebar {
         let Some(row) = self.rows.get(ix) else {
             return false;
         };
+        // An open section's title: its section folds.
+        if let Row::Heading { title, folded, .. } = row {
+            let (title, folded) = (*title, *folded);
+            if folded == Some(false) {
+                self.toggle_fold(title, cx);
+            }
+            return folded.is_some();
+        }
         let Some(path) = row.tree_path().map(str::to_string) else {
             return false;
         };
@@ -1210,6 +1357,47 @@ impl Sidebar {
     }
 
     // ---- Drawing ----------------------------------------------------------------------------------------
+
+    /// One line of the list: a row across the rail, two tiles, the labels' dots or the tags' chips.
+    fn draw_line(&mut self, at: usize, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let Some(line) = self.lines.get(at).cloned() else {
+            return div().into_any_element();
+        };
+        match line {
+            Line::One(ix) => self.draw_row(ix, window, cx),
+            Line::Pair(first, second) => {
+                let first = self.draw_row(first, window, cx);
+                let second = second.map(|ix| self.draw_row(ix, window, cx));
+                row_start()
+                    .w_full()
+                    .gap(space(0.5))
+                    .child(div().flex_1().min_w_0().child(first))
+                    .child(div().flex_1().min_w_0().children(second))
+                    .into_any_element()
+            }
+            // The title starts the line and what it titles follows it, wrapping where there is more than a line of it.
+            Line::Dots { heading, from, to } | Line::Chips { heading, from, to } => {
+                let t = theme::tokens(cx).clone();
+                let title = self.rows.get(heading).map(|row| self.heading_title(heading, row, &t, false, cx));
+                let cells: Vec<AnyElement> = (from..to).map(|ix| self.draw_row(ix, window, cx)).collect();
+                // Dots stand close, as one mark of several colors; chips need air between their edges.
+                let dots = matches!(line, Line::Dots { .. });
+                row_start()
+                    .group("heading")
+                    .w_full()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_x(space(if dots { 0.5 } else { 1. }))
+                    .gap_y(space(1.))
+                    .pt(space(3.))
+                    .pb(space(0.5))
+                    .px(space(2.))
+                    .children(title.map(|title| div().flex_none().pe(1.).child(title)))
+                    .children(cells)
+                    .into_any_element()
+            }
+        }
+    }
 
     fn draw_row(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let Some(row) = self.rows.get(ix) else {
@@ -1249,22 +1437,71 @@ impl Sidebar {
         self.folder_tone.map_or(t.muted_foreground, |tone| tone.color)
     }
 
+    /// A section's title on a line of its own: the title, and at the line's end what the section has to switch
+    /// (Quick access: tiles or a list).
     fn draw_heading(&self, ix: usize, row: &Row, t: &Tokens, focused: bool, cx: &mut Context<Self>) -> AnyElement {
         let Row::Heading {
-            title,
-            link,
-            active,
-            first,
+            first, folded, tiles, ..
         } = row
         else {
             return div().into_any_element();
         };
-        let name = t!(*title);
-        let shell = div()
+        let switch = tiles.filter(|_| *folded != Some(true)).map(|on| {
+            let name = if on {
+                t!("Show Quick access as a list")
+            } else {
+                t!("Show Quick access as tiles")
+            };
+            let (hover, pressed, strong) = (t.accent, t.pressed, t.foreground);
+            div()
+                .id("quick-access-view")
+                .role(Role::Button)
+                .aria_label(name.clone())
+                .test_support()
+                .p(space(0.5))
+                .rounded(theme::size::RADIUS_SM)
+                .cursor_pointer()
+                .text_color(t.muted_foreground)
+                // Quiet until the pointer is on the title's line (Settings → Files has the same switch, for the
+                // keyboard), or the keyboard on the title.
+                .opacity(if focused { 1. } else { 0. })
+                .group_hover("heading", |s| s.opacity(1.))
+                .hover(move |s| s.bg(hover).text_color(strong))
+                .active(move |s| s.bg(pressed))
+                .tooltip(tooltip_of(name, SharedString::default()))
+                .on_click(cx.listener(|this, _, _, cx| this.toggle_tiles(cx)))
+                .child(icon(if on { IconName::List } else { IconName::LayoutGrid }).size_3p5())
+        });
+        row_start()
+            .group("heading")
             .w_full()
-            .pt(space(if *first { 0. } else { 4. }))
-            .pb(space(1.))
-            .px(space(2.));
+            .items_center()
+            .gap(space(1.))
+            .pt(space(if *first { 0.5 } else { 3. }))
+            .pb(space(0.5))
+            .px(space(2.))
+            .child(self.heading_title(ix, row, t, focused, cx))
+            .child(div().flex_1())
+            .children(switch)
+            .into_any_element()
+    }
+
+    /// A section's title, and after it the arrow that folds the section where it folds. The title opens what it
+    /// names where it names a place (This PC); another that folds does so on a press as well, so the whole word is
+    /// the target and the arrow is what a screen reader and the Tab key find.
+    fn heading_title(&self, ix: usize, row: &Row, t: &Tokens, focused: bool, cx: &mut Context<Self>) -> AnyElement {
+        let Row::Heading {
+            title,
+            link,
+            active,
+            folded,
+            ..
+        } = row
+        else {
+            return div().into_any_element();
+        };
+        let (title, folded) = (*title, *folded);
+        let name = t!(title);
         let text = if link.is_some() {
             div()
                 .id(("heading", ix))
@@ -1284,22 +1521,73 @@ impl Sidebar {
                     move |s| s.text_color(color)
                 })
                 .on_click(cx.listener(move |this, _, window, cx| this.click(ix, window, cx)))
-                .child(name)
-                .into_any_element()
+                .child(name.clone())
         } else {
-            div()
+            let words = div()
                 .id(("heading", ix))
                 .role(Role::Heading)
                 .aria_label(name.clone())
                 .aria_level(2)
                 .test_support()
+                .rounded(theme::size::RADIUS_SM)
+                .border_1()
+                .border_color(ring(t, focused))
                 .text_size(theme::size::XS)
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(t.muted_foreground)
-                .child(name)
-                .into_any_element()
+                .child(name.clone());
+            match folded {
+                Some(_) => {
+                    let strong = t.foreground;
+                    words
+                        .cursor_pointer()
+                        .hover(move |s| s.text_color(strong))
+                        .on_click(cx.listener(move |this, _, _, cx| this.toggle_fold(title, cx)))
+                }
+                None => words,
+            }
         };
-        shell.child(text).into_any_element()
+        let arrow = folded.map(|folded| {
+            let say = if folded {
+                t!("Show {section}", section = name.clone())
+            } else {
+                t!("Fold {section}", section = name.clone())
+            };
+            let sign = if !folded {
+                IconName::ChevronDown
+            } else if crate::i18n::is_rtl() {
+                IconName::ChevronLeft
+            } else {
+                IconName::ChevronRight
+            };
+            let (hover, pressed, strong) = (t.accent, t.pressed, t.foreground);
+            div()
+                .id(("fold", ix))
+                .role(Role::Button)
+                .aria_label(say.clone())
+                .aria_expanded(!folded)
+                .test_support()
+                .p(space(0.5))
+                .rounded(theme::size::RADIUS_SM)
+                .cursor_pointer()
+                .text_color(t.muted_foreground)
+                // A folded section says so; an open one shows its arrow to the pointer, and while the keyboard is
+                // on its title (Left folds it from there, Right opens it).
+                .opacity(if folded || focused { 1. } else { 0. })
+                .group_hover("heading", |s| s.opacity(1.))
+                .hover(move |s| s.bg(hover).text_color(strong))
+                .active(move |s| s.bg(pressed))
+                .tooltip(tooltip_of(say, SharedString::default()))
+                .on_click(cx.listener(move |this, _, _, cx| this.toggle_fold(title, cx)))
+                .child(icon(sign).size_3())
+        });
+        row_start()
+            .flex_none()
+            .items_center()
+            .gap(space(0.5))
+            .child(text)
+            .children(arrow)
+            .into_any_element()
     }
 
     /// A tree arrow's wrapper: `offset` from the start edge, centred vertically.
@@ -1432,11 +1720,29 @@ impl Sidebar {
             .capacity
             .and_then(|(total, free)| capacity_bar(total, free, space(1.), true, cx))
             .or_else(|| holds_place.then(|| div().h(space(1.)).w_full().rounded_full().bg(t.pressed)));
+        // A drive says how much room it has left at the end of its line, where the rail is wide enough for its
+        // name too (one that can be ejected keeps that end for its button).
+        let free = p
+            .capacity
+            .filter(|_| self.roomy && p.eject.is_none() && matches!(p.glyph, Glyph::Drive(_)))
+            .map(|(_, free)| {
+                div()
+                    .flex_none()
+                    .text_size(theme::size::XS)
+                    .text_color(t.muted_foreground)
+                    .child(t!("{size} free", size = format_size(free)))
+            });
         let text = col()
             .flex_1()
             .min_w_0()
-            .child(div().truncate().child(isolate(label.clone())))
-            .children(bar.map(|b| div().mt(space(1.)).child(b)));
+            .child(
+                row_start()
+                    .items_center()
+                    .gap(space(2.))
+                    .child(div().flex_1().min_w_0().truncate().child(isolate(label.clone())))
+                    .children(free),
+            )
+            .children(bar.map(|b| div().mt(space(0.75)).child(b)));
         let tip = tooltip_of(label.clone(), p.detail.clone());
         let (active, accent) = (p.active, t.accent);
         let (lit, lit_ring) = (t.primary.opacity(0.2), t.primary);
@@ -1454,10 +1760,11 @@ impl Sidebar {
             .test_support()
             .relative()
             .w_full()
-            .gap(space(2.5))
-            .px(space(2.))
-            .py(space(1.5))
-            .when(p.gutter, |d| d.ps(6.))
+            // A tile is half the rail wide: its picture and its name sit closer, and it keeps no room for an arrow.
+            .gap(space(if p.tile { 2. } else { 2.5 }))
+            .px(space(if p.tile { 1.5 } else { 2. }))
+            .py(space(ROW_PAD))
+            .when(p.gutter && !p.tile, |d| d.ps(6.))
             .rounded(theme::size::RADIUS_ROW)
             .border_1()
             .border_color(ring(t, focused))
@@ -1490,7 +1797,7 @@ impl Sidebar {
                 cx.listener(move |this, files: &ExternalPaths, _, cx| this.drop_on(ix, files, cx)),
             )
             .tooltip(tip)
-            .child(self.glyph_art(&p.glyph, theme::rem_size(cx) * 1.25, t, cx))
+            .child(self.glyph_art(&p.glyph, theme::rem_size(cx) * 1.125, t, cx))
             .child(text);
         let button = self.hop(button, ix, label.clone(), cx);
 
@@ -1665,7 +1972,7 @@ impl Sidebar {
             .gap(space(2.5))
             .ps(2.)
             .pe(7.)
-            .py(space(1.5))
+            .py(space(ROW_PAD))
             .rounded(theme::size::RADIUS_ROW)
             .border_1()
             .border_color(ring(t, focused))
@@ -1681,18 +1988,17 @@ impl Sidebar {
                     .flex_none()
                     .text_color(t.muted_foreground),
             )
+            // One line: what is searched for, then where, which gives way first in a narrow rail.
+            .child(div().flex_1().min_w_0().truncate().child(isolate(query.clone())))
             .child(
-                col()
-                    .flex_1()
+                div()
+                    .flex_shrink(1.)
                     .min_w_0()
-                    .child(div().truncate().child(isolate(query.clone())))
-                    .child(
-                        div()
-                            .truncate()
-                            .text_size(theme::size::XS)
-                            .text_color(t.muted_foreground)
-                            .child(isolate(where_)),
-                    ),
+                    .max_w(relative(0.4))
+                    .truncate()
+                    .text_size(theme::size::XS)
+                    .text_color(t.muted_foreground)
+                    .child(isolate(where_)),
             )
             .children(s.count.clone().map(|count| {
                 div()
@@ -1743,58 +2049,45 @@ impl Sidebar {
             .into_any_element()
     }
 
-    /// A label: its own color's dot, its name, and how many items have it where the index says. A click finds what
-    /// has it, on every drive. The name stays in the text's color: a label is not a state.
+    /// A label: its dot, in the line of them after their title. Its name and how many items have it are its tooltip
+    /// and what a screen reader says; a press finds what has it, on every drive.
     fn draw_label(&self, ix: usize, label: &LabelRow, t: &Tokens, focused: bool, cx: &mut Context<Self>) -> AnyElement {
-        let name = SharedString::from(label.name.clone());
         let named = match label.count {
             Some(n) => t!("Label {name}, {n}", name = label.name.clone(), n = n),
             None => t!("Label {name}", name = label.name.clone()),
         };
         let title = t!("What's labeled “{label}”", label = label.name.clone());
+        let how_many: SharedString = match label.count {
+            Some(n) => plural(usize::try_from(n).unwrap_or(usize::MAX), "item").into(),
+            None => SharedString::default(),
+        };
         let (accent, pressed) = (t.accent, t.pressed);
-        let button = row_start()
+        let dot = div()
             .id(("label", ix))
             .role(Role::Button)
             .aria_label(named)
-            .aria_description(title.clone())
+            .aria_description(title)
             .test_support()
-            .w_full()
-            .gap(space(2.5))
-            .px(space(2.))
-            .py(space(1.5))
-            .rounded(theme::size::RADIUS_ROW)
+            .flex_none()
+            // Seven of them and their title fit the rail's narrowest line.
+            .size(space(5.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_full()
             .border_1()
             .border_color(ring(t, focused))
             .cursor_pointer()
-            .text_color(t.foreground.opacity(0.9))
             .hover(move |s| s.bg(accent))
             .active(move |s| s.bg(pressed))
             .on_click(cx.listener(move |this, _, window, cx| this.click(ix, window, cx)))
-            .tooltip(tooltip_of(title, SharedString::default()))
-            .child(
-                div()
-                    .size(space(4.))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(div().size(space(2.5)).rounded_full().bg(theme::label_tone(label.color))),
-            )
-            .child(div().flex_1().min_w_0().truncate().child(isolate(name)))
-            .children(label.count.map(|count| {
-                div()
-                    .flex_none()
-                    .text_size(theme::size::XS)
-                    .text_color(t.muted_foreground)
-                    .child(SharedString::from(count.to_string()))
-            }));
-        let button = self.hop(button, ix, label.name.clone(), cx);
-        div().w_full().pb(space(0.25)).child(button).into_any_element()
+            .tooltip(tooltip_of(label.name.clone().into(), how_many))
+            .child(div().size(space(3.)).rounded_full().bg(theme::label_tone(label.color)));
+        self.hop(dot, ix, label.name.clone(), cx).into_any_element()
     }
 
-    /// A tag: its color's dot, its name, and how many items have it where instant search says. A click finds what
-    /// has it, on every drive.
+    /// A tag: a chip with its color's dot, its name, and how many items have it where instant search says. A click
+    /// finds what has it, on every drive.
     fn draw_tag(&self, ix: usize, tag: &rows::Tag, t: &Tokens, focused: bool, cx: &mut Context<Self>) -> AnyElement {
         let name = SharedString::from(tag.name.clone());
         let tagged = t!("What's tagged “{tag}”", tag = tag.name.clone());
@@ -1803,20 +2096,23 @@ impl Sidebar {
             None => tagged,
         };
         let (accent, pressed) = (t.accent, t.pressed);
-        let button = row_start()
+        let chip = row_start()
             .id(("tag", ix))
             .role(Role::Button)
             .aria_label(name.clone())
             .aria_description(title.clone())
             .test_support()
-            .w_full()
-            .gap(space(2.5))
+            .flex_none()
+            .max_w_full()
+            .items_center()
+            .gap(space(1.5))
             .px(space(2.))
-            .py(space(1.5))
-            .rounded(theme::size::RADIUS_ROW)
+            .py(space(0.5))
+            .rounded_full()
             .border_1()
-            .border_color(ring(t, focused))
+            .border_color(if focused { t.ring } else { t.stroke })
             .cursor_pointer()
+            .text_size(theme::size::XS)
             .text_color(t.foreground.opacity(0.9))
             .hover(move |s| s.bg(accent))
             .active(move |s| s.bg(pressed))
@@ -1828,25 +2124,15 @@ impl Sidebar {
                 }),
             )
             .tooltip(tooltip_of(title, SharedString::default()))
-            .child(
-                div()
-                    .size(space(4.))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(div().size(space(2.5)).rounded_full().bg(tags::tag_color(&tag.name))),
-            )
-            .child(div().flex_1().min_w_0().truncate().child(isolate(name)))
+            .child(div().size(space(2.)).flex_none().rounded_full().bg(tags::tag_color(&tag.name)))
+            .child(div().min_w_0().truncate().child(isolate(name)))
             .children(tag.count.map(|count| {
                 div()
                     .flex_none()
-                    .text_size(theme::size::XS)
                     .text_color(t.muted_foreground)
                     .child(SharedString::from(count.to_string()))
             }));
-        let button = self.hop(button, ix, tag.name.clone(), cx);
-        div().w_full().pb(space(0.25)).child(button).into_any_element()
+        self.hop(chip, ix, tag.name.clone(), cx).into_any_element()
     }
 
     fn draw_add(&self, ix: usize, t: &Tokens, focused: bool, cx: &mut Context<Self>) -> AnyElement {
@@ -1863,7 +2149,7 @@ impl Sidebar {
                     .w_full()
                     .gap(space(2.5))
                     .px(space(2.))
-                    .py(space(1.5))
+                    .py(space(ROW_PAD))
                     .rounded(theme::size::RADIUS_ROW)
                     .border_1()
                     .border_color(ring(t, focused))
@@ -2168,6 +2454,9 @@ impl Render for Sidebar {
         // More rows below the last in view: a delicate hairline over translucent Mica/aurora, or a soft gradient
         // fade on opaque chrome.
         self.fade_below = self.more_below();
+        // Before the first layout the list has no width: a drive's line starts with its free space said.
+        let wide = self.list.viewport_bounds().size.width;
+        self.roomy = wide <= px(0.) || wide >= rem * FREE_SHOWN_FROM;
         let fade = self.fade_below.then(|| {
             if theme::backdrop_on(cx) {
                 div()
@@ -2228,7 +2517,7 @@ impl Render for Sidebar {
                     .child(
                         list(
                             self.list.clone(),
-                            cx.processor(|this, ix, window, cx| this.draw_row(ix, window, cx)),
+                            cx.processor(|this, ix, window, cx| this.draw_line(ix, window, cx)),
                         )
                         .size_full(),
                     )

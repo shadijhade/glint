@@ -74,6 +74,7 @@ mod tests {
             eject: None,
             remote: remote.map(str::to_string),
             gutter: false,
+            tile: false,
         })
     }
 

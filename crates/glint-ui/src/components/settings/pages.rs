@@ -239,6 +239,11 @@ pub const SEARCH: &[Entry] = &[
     ),
     entry(
         Page::Files,
+        "Quick access as tiles",
+        "sidebar tiles grid list compact places rail",
+    ),
+    entry(
+        Page::Files,
         "Copy and move with Glint's queue",
         "copy queue transfers paste",
     ),

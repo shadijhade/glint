@@ -267,8 +267,12 @@ fn world(cx: &mut TestAppContext, name: &str) -> World {
         persistence::init_at(cx, state_file(name));
         tags::init_with(cx, Arc::new(NoTags(fakes.clone())));
         // Settings start with the seven labels, which would add a section to every list below: the tests of
-        // labels set their own.
-        state::update(cx, |s| s.labels.clear());
+        // labels set their own. And Quick access is a list here, each place with its tree, as these tests were
+        // written for; the tests of tiles turn them on.
+        state::update(cx, |s| {
+            s.labels.clear();
+            s.sidebar_tiles = false;
+        });
     });
     fakes.set(HOME, &[("Documents", Some(true)), ("Pictures", Some(false))]);
     fakes.set(DOCS, &[("Reports", None)]);
@@ -445,7 +449,7 @@ fn draws_the_places_with_roles_and_names(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let mut w = world(cx, "draws");
     assert_eq!(w.role_of("Places"), Some(Role::Navigation));
-    // Sections, as the TypeScript ordered them: Pinned and Searches only appear with something in them.
+    // The sections: Pinned, Searches and Remote's title only appear with something in them.
     assert_eq!(
         w.names(),
         [
@@ -458,7 +462,6 @@ fn draws_the_places_with_roles_and_names(cx: &mut TestAppContext) {
             "Local Disk (C:)",
             "Photos (E:)",
             "Recycle Bin",
-            "# Remote",
             "+ add",
         ]
     );
@@ -474,7 +477,7 @@ fn draws_the_places_with_roles_and_names(cx: &mut TestAppContext) {
         assert_eq!(w.role_of(label), Some(Role::Button), "{label}");
     }
     assert_eq!(w.role_of("Quick access"), Some(Role::Heading));
-    assert_eq!(w.role_of("Remote"), Some(Role::Heading));
+    assert_eq!(w.role_of("Remote"), None, "no connection, no title");
     assert_eq!(w.role_of("This PC"), Some(Role::Button), "its title opens it");
     assert_eq!(w.role_of("Add a remote connection"), Some(Role::Button));
     // The folder shown is marked; the others are not.
@@ -583,9 +586,12 @@ fn the_tree_opens_and_closes_from_the_keyboard_as_the_typescript_did(cx: &mut Te
     // Up goes back, and past the first place it stays; Home and End jump.
     w.press("up");
     assert_eq!(w.cursor_row().as_deref(), Some(&*format!("p:{HOME}")));
+    // The first stop is Quick access's title (it folds its section).
     w.press("home");
-    assert_eq!(w.cursor_row().as_deref(), Some("p:shell:Recent"));
+    assert_eq!(w.cursor_row().as_deref(), Some("h:Quick access"));
     w.press("up");
+    assert_eq!(w.cursor_row().as_deref(), Some("h:Quick access"));
+    w.press("down");
     assert_eq!(w.cursor_row().as_deref(), Some("p:shell:Recent"));
     w.press("end");
     assert_eq!(w.cursor_row().as_deref(), Some("add"));
@@ -791,11 +797,11 @@ fn the_tags_instant_search_lists_show_with_their_counts_and_a_click_finds_what_h
     w.settle(|w| w.tag_rows().len() == 12);
     assert_eq!(w.tag_rows()[0], ("tag00".to_string(), Some(100)));
     assert_eq!(w.tag_rows()[11], ("tag11".to_string(), Some(89)));
-    // They sit between Pinned and Searches' place: after Quick access's places and before This PC.
+    // They come after the drives, with what else finds things.
     let names = w.names();
     let tags_at = names.iter().position(|n| n == "# Tags").expect("a Tags title");
     assert_eq!(names[tags_at + 1], "# tag00");
-    assert!(names.iter().position(|n| n == "# This PC").unwrap() > tags_at);
+    assert!(names.iter().position(|n| n == "# This PC").unwrap() < tags_at);
     // Named for a screen reader: the tag, and what a click does with how many have it.
     assert_eq!(w.role_of("Tags"), Some(Role::Heading));
     assert_eq!(w.role_of("tag00"), Some(Role::Button));
@@ -971,10 +977,10 @@ fn labels_come_above_tags_in_the_settings_order_with_their_counts_and_a_tag_name
             ("ضريبة".to_string(), Some(4)),
         ]
     );
-    // Above Tags, after Pinned; and a tag that is a label (or was one) is not in Tags.
+    // Above Tags, after the drives; and a tag that is a label (or was one) is not in Tags.
     let names = w.names();
     let at = |what: &str| names.iter().position(|n| n == what).unwrap();
-    assert!(at("Documents") < at("# Labels") && at("# Labels") < at("# Tags") && at("# Tags") < at("# This PC"));
+    assert!(at("Recycle Bin") < at("# Labels") && at("# Labels") < at("# Tags"));
     assert_eq!(&names[at("# Labels")..at("# Tags") + 2], ["# Labels", "~ Important", "~ Later", "~ ضريبة", "# Tags", "# Work"]);
     assert_eq!(w.tag_rows(), [("Work".to_string(), Some(9))]);
     // Every row has a role and a name.
@@ -1020,18 +1026,19 @@ fn a_press_on_a_label_finds_what_has_it_at_this_pc_by_the_mouse_and_by_enter(cx:
             folder: THIS_PC.into(),
         }))
     );
-    // The keyboard walks label rows as it walks tag rows: Down from one lands on the next, Enter finds it.
+    // The keyboard walks the line of labels as it walks the tags' chips: Right from one lands on the next, Enter
+    // finds it.
     w.focus();
     let first = w.row_of("l:Important".to_string());
     w.sidebar.update(&mut w.cx, |s, cx| s.set_cursor(Some(first), cx));
-    w.press("down");
+    w.press("right");
     assert_eq!(w.cursor_row().as_deref(), Some("l:Later"));
     w.press("enter");
     assert_eq!(
         w.events.borrow().last(),
         Some(&SidebarEvent::RunSavedSearch(rows::label_search("Later")))
     );
-    // Down again: past the last label the keyboard reaches what follows (a tag, else the next place).
+    // Down leaves the line for what follows (the tags, else the next place).
     w.press("down");
     assert_ne!(w.cursor_row().as_deref(), Some("l:Later"));
 }
@@ -1600,7 +1607,7 @@ fn mounted_portals_get_a_section_that_follows_mounting_and_unmounting(cx: &mut T
         &names[at("# Portals")..at("# Portals") + 3],
         ["# Portals", "@ pack.zip", "@ تقارير"]
     );
-    assert!(at("# Portals") < at("# This PC"));
+    assert!(at("# This PC") < at("# Portals"));
     assert!(w.sidebar.read_with(&w.cx, |s, _| s.built) > before_rebuilds);
 
     // Drawn as buttons with their names.
@@ -1696,7 +1703,7 @@ fn the_arrows_reach_portals_and_enter_opens_one_and_the_mirrored_row_fills_the_s
     let ix = w.row_of("o:b".to_string());
     w.sidebar.update(&mut w.cx, |s, cx| s.set_cursor(Some(ix), cx));
     w.press("down");
-    assert_eq!(w.cursor_row().as_deref(), Some("h:This PC"));
+    assert_eq!(w.cursor_row().as_deref(), Some("add"), "the portals are the last section here");
     w.press("up");
     assert_eq!(w.cursor_row().as_deref(), Some("o:b"));
     w.press("enter");
@@ -2062,4 +2069,185 @@ fn a_drive_without_a_known_size_keeps_the_bars_place_so_rows_do_not_jump(cx: &mu
         c_box.size.height, e_box.size.height,
         "the same row height with and without a size"
     );
+}
+
+// ---- Compact: tiles, dots, chips and sections that fold ---------------------------------------------------------
+
+impl World {
+    /// Quick access as tiles (the app's default) or as a list (this file's).
+    fn tiles(&mut self, on: bool) {
+        self.cx.update(|_, cx| state::update(cx, |s| s.sidebar_tiles = on));
+        self.cx.run_until_parked();
+        self.frame();
+    }
+
+    fn folded(&mut self) -> Vec<String> {
+        self.cx.update(|_, cx| state::settings(cx).sidebar_folded.clone())
+    }
+
+    /// Where the element `kind` of the row with `key` is drawn.
+    fn drawn(&mut self, kind: &'static str, key: &str) -> Bounds<Pixels> {
+        let ix = self.row_of(key.to_string());
+        self.bounds_of((kind, ix))
+    }
+
+    fn cursor_on(&mut self, key: &str) {
+        self.focus();
+        let ix = self.row_of(key.to_string());
+        self.sidebar.update(&mut self.cx, |s, cx| s.set_cursor(Some(ix), cx));
+    }
+}
+
+#[gpui_kit::test]
+fn quick_access_is_tiles_two_to_a_line_and_the_keys_walk_them_as_a_grid(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut w = world(cx, "tiles");
+    w.tiles(true);
+    let (home_key, docs_key) = (format!("p:{HOME}"), format!("p:{DOCS}"));
+    let (recent, gallery) = (w.drawn("place", "p:shell:Recent"), w.drawn("place", "p:shell:Gallery"));
+    let (home, docs) = (w.drawn("place", &home_key), w.drawn("place", &docs_key));
+    // Recent and Gallery share a line, Home and Documents the next; each half is as wide as the other.
+    assert_eq!(recent.top(), gallery.top());
+    assert!(gallery.left() >= recent.right(), "side by side: {recent:?} {gallery:?}");
+    assert_eq!(home.top(), docs.top());
+    assert!(home.top() >= recent.bottom());
+    assert_eq!(home.left(), recent.left());
+    assert!((recent.size.width - gallery.size.width).abs() < px(2.));
+    assert_eq!(w.expanded("Home"), None, "a tile has no tree to open");
+    // A click opens the place, as a row's does.
+    w.click("Documents");
+    w.settle(|w| w.path() == DOCS && !w.tab_loading());
+    assert_eq!(w.selected("Documents"), Some(true));
+    // Right and Left go along a line; Down and Up between lines, in the same half.
+    w.cursor_on("p:shell:Recent");
+    w.press("right");
+    assert_eq!(w.cursor_row().as_deref(), Some("p:shell:Gallery"));
+    w.press("right");
+    assert_eq!(w.cursor_row().as_deref(), Some("p:shell:Gallery"), "the line ends there");
+    w.press("down");
+    assert_eq!(w.cursor_row().as_deref(), Some(&*docs_key));
+    w.press("left");
+    assert_eq!(w.cursor_row().as_deref(), Some(&*home_key));
+    w.press("up");
+    assert_eq!(w.cursor_row().as_deref(), Some("p:shell:Recent"));
+    w.press("up");
+    assert_eq!(w.cursor_row().as_deref(), Some("h:Quick access"));
+    // Down from the last line of tiles reaches what follows them.
+    w.cursor_on(&docs_key);
+    w.press("down");
+    assert_eq!(w.cursor_row().as_deref(), Some("h:This PC"));
+    // Enter opens the tile the keyboard is on.
+    w.cursor_on(&home_key);
+    w.press("enter");
+    w.settle(|w| w.path() == HOME && !w.tab_loading());
+}
+
+#[gpui_kit::test]
+fn the_switch_at_quick_accesss_title_turns_the_tiles_into_a_list_and_back(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut w = world(cx, "tiles-switch");
+    w.tiles(true);
+    assert_eq!(w.role_of("Show Quick access as a list"), Some(Role::Button));
+    // The switch shows to the pointer on the title's line, and while the keyboard is on the title.
+    w.cursor_on("h:Quick access");
+    w.press("home");
+    w.click("Show Quick access as a list");
+    w.frame();
+    assert!(!w.cx.update(|_, cx| state::settings(cx).sidebar_tiles));
+    assert_eq!(w.expanded("Home"), Some(false), "a list again: Home opens its folders");
+    let (recent, gallery) = (w.drawn("place", "p:shell:Recent"), w.drawn("place", "p:shell:Gallery"));
+    assert!(gallery.top() >= recent.bottom(), "one to a line");
+    w.cursor_on("h:Quick access");
+    w.press("home");
+    w.click("Show Quick access as tiles");
+    w.frame();
+    assert!(w.cx.update(|_, cx| state::settings(cx).sidebar_tiles));
+    assert_eq!(w.expanded("Home"), None);
+}
+
+#[gpui_kit::test]
+fn a_section_folds_to_its_title_from_the_pointer_and_from_the_keyboard_and_stays_so(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut w = world(cx, "fold");
+    assert!(w.names().contains(&"Recent".to_string()));
+    // Its arrow says what a press does; a press folds the section to its title, and the settings keep it.
+    assert_eq!(w.role_of("Fold Quick access"), Some(Role::Button));
+    // (An open section's arrow shows to the pointer on the title's line, and while the keyboard is on the title.)
+    w.cursor_on("h:Quick access");
+    w.press("home");
+    w.click("Fold Quick access");
+    w.frame();
+    assert!(!w.names().contains(&"Recent".to_string()));
+    assert!(w.names().contains(&"# Quick access".to_string()));
+    assert_eq!(w.folded(), ["Quick access"]);
+    assert_eq!(w.role_of("Show Quick access"), Some(Role::Button));
+    // The title itself is a target too.
+    w.click("Quick access");
+    w.frame();
+    assert!(w.names().contains(&"Recent".to_string()));
+    assert!(w.folded().is_empty());
+    // The keyboard: Left on a title folds its section and Right opens it, and the keyboard stays on the title.
+    w.cursor_on("h:This PC");
+    w.press("left");
+    w.frame();
+    assert!(!w.names().contains(&"Recycle Bin".to_string()));
+    assert_eq!(w.cursor_row().as_deref(), Some("h:This PC"));
+    assert_eq!(w.folded(), ["This PC"]);
+    w.press("left");
+    assert_eq!(w.folded(), ["This PC"], "folded already: nothing more to do");
+    w.press("right");
+    w.frame();
+    assert!(w.names().contains(&"Recycle Bin".to_string()));
+    assert!(w.folded().is_empty());
+    // Enter on This PC's title still opens This PC.
+    w.press("enter");
+    w.settle(|w| w.path() == THIS_PC);
+}
+
+#[gpui_kit::test]
+fn the_labels_are_one_line_of_dots_and_the_tags_a_line_of_chips(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut w = world(cx, "dots");
+    w.set_labels(vec![
+        mark_label("Important", 0xef4444, &[]),
+        mark_label("Later", 0x3b82f6, &[]),
+        mark_label("ضريبة", 0x22c55e, &[]),
+    ]);
+    *w.fakes.tags.lock().unwrap() = Ok(vec![("work".to_string(), 3), ("home".to_string(), 1)]);
+    w.sidebar.update(&mut w.cx, |s, cx| s.read_tags(cx));
+    w.settle(|w| w.tag_rows().len() == 2);
+    w.frame();
+    // The dots follow their title on its line, in the labels' order.
+    let (a, b, c) = (w.drawn("label", "l:Important"), w.drawn("label", "l:Later"), w.drawn("label", "l:ضريبة"));
+    assert!(a.top() == b.top() && b.top() == c.top(), "one line: {a:?} {b:?} {c:?}");
+    assert!(a.right() <= b.left() && b.right() <= c.left());
+    let title = w.drawn("heading", "h:Labels");
+    assert!(title.right() <= a.left(), "after their title: {title:?} {a:?}");
+    assert!(title.top() < a.bottom() && a.top() < title.bottom(), "on its line");
+    // The chips follow theirs.
+    let (work, home) = (w.drawn("tag", "t:work"), w.drawn("tag", "t:home"));
+    assert_eq!(work.top(), home.top());
+    assert!(work.right() <= home.left());
+    let tags = w.drawn("heading", "h:Tags");
+    assert!(tags.right() <= work.left() && tags.top() < work.bottom() && work.top() < tags.bottom());
+    assert!(work.top() >= a.bottom(), "the tags' line is under the labels'");
+    // The keys go along a line and leave it by Down, onto the next line's first stop.
+    w.cursor_on("l:Important");
+    w.press("right");
+    w.press("right");
+    assert_eq!(w.cursor_row().as_deref(), Some("l:ضريبة"));
+    w.press("right");
+    assert_eq!(w.cursor_row().as_deref(), Some("l:ضريبة"));
+    w.press("down");
+    assert_eq!(w.cursor_row().as_deref(), Some("h:Tags"));
+    w.press("right");
+    assert_eq!(w.cursor_row().as_deref(), Some("t:work"));
+    w.press("up");
+    assert_eq!(w.cursor_row().as_deref(), Some("l:Important"));
+    // The tags fold from their title, on the line or by the key.
+    w.cursor_on("h:Tags");
+    w.press("left");
+    w.frame();
+    assert!(w.tag_rows().is_empty());
+    assert_eq!(w.folded(), ["Tags"]);
 }

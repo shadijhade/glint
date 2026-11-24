@@ -258,7 +258,7 @@ impl Sidebar {
             .gap(space(2.5))
             .ps(2.)
             .pe(7.)
-            .py(space(1.5))
+            .py(space(super::ROW_PAD))
             .rounded(theme::size::RADIUS_ROW)
             .border_1()
             .border_color(super::ring(t, focused))
