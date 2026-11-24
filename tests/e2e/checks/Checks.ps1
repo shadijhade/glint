@@ -494,6 +494,52 @@ Add-Check 'search-history' 'a folder opened from search results: Backspace bring
     Assert-Eventually { Test-RowNamesAre 'inner.txt' } 'which lists its file again'
 }
 
+# ------------------------------------------------------------------------------------------------ marks
+
+# Everything a row says to a screen reader besides its file name: its own name, help text and description, and the
+# names of the elements inside it, in one string. The label of an item is spoken there ("label Red"); which of these
+# carries it is what the first run of the marks check shows.
+function Get-RowSaid {
+    param([string]$Name)
+    $row = Get-Row -Name $Name
+    if (-not $row) { return '' }
+    $parts = @($row.Current.Name, $row.Current.HelpText)
+    foreach ($e in (Find-Els -Root $row)) { $parts += $e.Current.Name; $parts += $e.Current.HelpText }
+    return (($parts | Where-Object { $_ }) -join ' | ')
+}
+
+Add-Check 'marks' 'Alt+1 labels the selected file (its row says so), label:red finds it, and the label survives a rename made outside Glint' {
+    $first = Get-ArenaPath 'marks-e2e.txt'
+    $second = Get-ArenaPath 'marks-e2e-renamed.txt'
+    [IO.File]::WriteAllText($first, "marked file`r`n", (New-Object System.Text.UTF8Encoding($false)))
+    try {
+        Assert-Eventually { Get-Row -Name 'marks-e2e.txt' } 'the new file marks-e2e.txt appears in the list'
+        Select-Row 'marks-e2e.txt'
+        Send-Key 'alt+1'
+        Assert-Eventually { (Get-RowSaid 'marks-e2e.txt') -like '*label Red*' } 'the row of marks-e2e.txt says "label Red" after Alt+1 (a fresh profile has Red first)'
+        Assert-True (Test-Path -LiteralPath $first) 'Alt+1 labeled the file and opened nothing, renamed nothing'
+
+        Send-Key 'ctrl+f'
+        Assert-Eventually { Find-El -Type Edit -Name 'Search * and its subfolders.' -Like } 'Ctrl+F puts the keyboard in the search box'
+        Send-Text 'label:red'
+        Send-Key 'enter'
+        Assert-Eventually { Get-SearchBar } 'Enter shows the search results for label:red'
+        Assert-Eventually { Get-Row -Name 'marks-e2e.txt' } 'label:red finds marks-e2e.txt' 15
+        Send-Key 'escape'
+        Assert-Eventually { -not (Get-SearchBar) } 'Escape in the box leaves the results'
+        Assert-Eventually { Get-Row -Name 'marks-e2e.txt' } 'the folder is listed again'
+
+        # A rename by a program outside Glint: the label is kept in the file, so it comes along.
+        & cmd.exe /c ren $first 'marks-e2e-renamed.txt' | Out-Null
+        Assert-True (Test-Path -LiteralPath $second) 'ren renamed the file on disk'
+        Assert-Eventually { (Get-Row -Name 'marks-e2e-renamed.txt') -and -not (Get-Row -Name 'marks-e2e.txt') } 'the folder watcher shows the new name and drops the old one' 20
+        Assert-Eventually { (Get-RowSaid 'marks-e2e-renamed.txt') -like '*label Red*' } 'the row with the new name still says "label Red"' 15
+    }
+    finally {
+        foreach ($f in $first, $second) { if (Test-Path -LiteralPath $f) { Assert-InScratch $f; Remove-Item -LiteralPath $f -Force } }
+    }
+}
+
 # ------------------------------------------------------------------------------------------------ settings, tabs, sidebar
 
 Add-Check 'settings' 'Ctrl+, opens Settings with its sections; Escape closes it' {

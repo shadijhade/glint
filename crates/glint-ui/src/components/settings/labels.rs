@@ -559,6 +559,7 @@ impl MarksRows {
     fn take_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(last) = self.last.clone().filter(|_| !self.busy) else { return };
         self.busy = true;
+        let labels = last.labels.zip(last.made);
         let done = source(cx).take_back(last.journal);
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
@@ -567,6 +568,11 @@ impl MarksRows {
                 this.busy = false;
                 match result {
                     Ok(paths) => {
+                        // After the marks: the labels the import made go back too, while they are still as it
+                        // left them (the same rule as Undo's); said nothing more of either way.
+                        if let Some((before, made)) = labels {
+                            crate::dialogs::marks_import::put_labels_back(cx, &before, &made);
+                        }
                         let n = paths.len();
                         tags::hub(cx).update(cx, |_, cx| cx.emit(TagsChanged { paths }));
                         window.push_notification(

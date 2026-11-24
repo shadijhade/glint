@@ -964,15 +964,39 @@ impl Sidebar {
             _ => return,
         };
         let finding = (self.sources.tagged)(tag.clone());
+        // The dialog opens at once and says it is finding what has the tag (long where the index doesn't cover a
+        // drive); what is found fills it in, or closes it with a notice when nothing is.
+        let (rename_view, take_off_view) = if rename {
+            (Some(open_rename_tag(tag.clone(), window, cx).downgrade()), None)
+        } else {
+            (None, Some(open_take_off_tag(tag.clone(), window, cx).downgrade()))
+        };
         cx.spawn_in(window, async move |this, cx| {
             let found = core_bridge::run(finding).await.and_then(|inner| inner);
-            let _ = this.update_in(cx, |_, window, cx| match found {
-                Ok(paths) if !paths.is_empty() && rename => rename_tag(tag, paths, window, cx),
-                Ok(paths) if !paths.is_empty() => take_tag_off(tag, paths, window, cx),
-                _ => window.push_notification(
-                    Notification::info(t!("Nothing has the tag “{tag}” where Glint can search", tag = tag)),
-                    cx,
-                ),
+            let _ = this.update_in(cx, |_, window, cx| {
+                let found = found.ok().filter(|paths| !paths.is_empty());
+                // A dialog the person already closed is left alone, and so is whatever opened since.
+                let alive = rename_view.as_ref().is_some_and(|v| v.upgrade().is_some())
+                    || take_off_view.as_ref().is_some_and(|v| v.upgrade().is_some());
+                if !alive {
+                    return;
+                }
+                match found {
+                    Some(paths) => {
+                        if let Some(view) = rename_view.and_then(|v| v.upgrade()) {
+                            view.update(cx, |view, cx| view.found(paths, cx));
+                        } else if let Some(view) = take_off_view.and_then(|v| v.upgrade()) {
+                            view.update(cx, |view, cx| view.found(paths, cx));
+                        }
+                    }
+                    None => {
+                        window.close_dialog(cx);
+                        window.push_notification(
+                            Notification::info(t!("Nothing has the tag “{tag}” where Glint can search", tag = tag)),
+                            cx,
+                        );
+                    }
+                }
             });
         })
         .detach();
@@ -1903,10 +1927,10 @@ fn row_name(row: &Row) -> String {
     }
 }
 
-/// *Rename everywhere…*: a small dialog over the items that have the tag.
+/// *Rename everywhere…*: a small dialog over the items that have the tag (`None` while they are being found).
 struct RenameTag {
     tag: String,
-    paths: Vec<String>,
+    paths: Option<Vec<String>>,
     input: Entity<InputState>,
     said: Option<SharedString>,
     _enter: Subscription,
@@ -1921,7 +1945,7 @@ fn refused(old: &str, new: &str) -> Option<SharedString> {
 }
 
 impl RenameTag {
-    fn new(tag: String, paths: Vec<String>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(tag: String, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let input = cx.new(|cx| InputState::new(window, cx).default_value(tag.clone()));
         // Enter in the box saves, as the button does.
         let enter = cx.subscribe_in(&input, window, |this, _, event: &InputEvent, window, cx| {
@@ -1931,15 +1955,24 @@ impl RenameTag {
         });
         Self {
             tag,
-            paths,
+            paths: None,
             input,
             said: None,
             _enter: enter,
         }
     }
 
+    /// The items that have the tag are known: Rename can act.
+    fn found(&mut self, paths: Vec<String>, cx: &mut Context<Self>) {
+        self.paths = Some(paths);
+        cx.notify();
+    }
+
     /// Renames: one change over every item, so one Undo step. A name that is refused is said in the dialog.
     fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(paths) = self.paths.clone() else {
+            return;
+        };
         let typed = self.input.read(cx).value().to_string();
         if let Some(why) = refused(&self.tag, &typed) {
             self.said = Some(why);
@@ -1947,13 +1980,7 @@ impl RenameTag {
             return;
         }
         window.close_dialog(cx);
-        tags::set_tags(
-            window,
-            cx,
-            self.paths.clone(),
-            vec![typed.trim().to_string()],
-            vec![self.tag.clone()],
-        );
+        tags::set_tags(window, cx, paths, vec![typed.trim().to_string()], vec![self.tag.clone()]);
     }
 }
 
@@ -1961,7 +1988,9 @@ impl Render for RenameTag {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme::tokens(cx).clone();
         let title = t!("Rename the tag “{tag}”", tag = isolate(self.tag.clone()));
-        crate::dialogs::main_action(cx, true, |this, window, cx| this.save(window, cx));
+        let known = self.paths.is_some();
+        crate::dialogs::main_action(cx, known, |this, window, cx| this.save(window, cx));
+        let finding = (!known).then(|| t!("Finding what has “{tag}”…", tag = isolate(self.tag.clone())));
         col()
             .id("rename-tag")
             .role(Role::Group)
@@ -1983,6 +2012,16 @@ impl Render for RenameTag {
                     .text_color(t.destructive)
                     .child(said)
             }))
+            .children(finding.map(|finding| {
+                div()
+                    .id("rename-tag-finding")
+                    .role(Role::Status)
+                    .aria_label(finding.clone())
+                    .test_support()
+                    .text_size(theme::size::XS)
+                    .text_color(t.muted_foreground)
+                    .child(finding)
+            }))
             .child(
                 row_start()
                     .justify_end()
@@ -1997,33 +2036,101 @@ impl Render for RenameTag {
                         Button::new("rename-tag-ok")
                             .primary()
                             .label(t!("Rename"))
+                            .disabled(!known)
                             .on_click(cx.listener(|this, _, window, cx| this.save(window, cx))),
                     ),
             )
     }
 }
 
-/// Opens the rename dialog for `tag`, over `paths`.
-fn rename_tag(tag: String, paths: Vec<String>, window: &mut Window, cx: &mut App) {
+/// Opens the rename dialog for `tag`; it waits for the items (`RenameTag::found`) to act.
+fn open_rename_tag(tag: String, window: &mut Window, cx: &mut App) -> Entity<RenameTag> {
     let title = t!("Rename the tag “{tag}”", tag = isolate(tag.clone()));
-    let view = cx.new(|cx| RenameTag::new(tag, paths, window, cx));
+    let view = cx.new(|cx| RenameTag::new(tag, window, cx));
     let input = view.read(cx).input.clone();
-    crate::dialogs::show(window, cx, title, px(420.), view);
+    crate::dialogs::show(window, cx, title, px(420.), view.clone());
     input.update(cx, |input, cx| input.focus(window, cx));
+    view
 }
 
-/// Asks, with the number, before taking `tag` off `paths`; one change, one Undo step.
-fn take_tag_off(tag: String, paths: Vec<String>, window: &mut Window, cx: &mut App) {
-    let shown = isolate(tag.clone());
-    crate::dialogs::confirm(
-        window,
-        cx,
-        t!("Take off “{tag}”", tag = shown.clone()),
-        t!("Take “{tag}” off {n}?", tag = shown, n = plural(paths.len(), "item")),
-        t!("Take off"),
-        false,
-        move |window, cx| tags::set_tags(window, cx, paths.clone(), Vec::new(), vec![tag.clone()]),
-    );
+/// *Take off every file…*: asks, with the number, before taking the tag off the items that have it (`None` while
+/// they are being found); one change, one Undo step.
+struct TakeOffTag {
+    tag: String,
+    paths: Option<Vec<String>>,
+}
+
+impl TakeOffTag {
+    /// The items that have the tag are known: the number can be said and the button acts.
+    fn found(&mut self, paths: Vec<String>, cx: &mut Context<Self>) {
+        self.paths = Some(paths);
+        cx.notify();
+    }
+
+    fn take_off(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(paths) = self.paths.clone() else {
+            return;
+        };
+        window.close_dialog(cx);
+        tags::set_tags(window, cx, paths, Vec::new(), vec![self.tag.clone()]);
+    }
+}
+
+impl Render for TakeOffTag {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let shown = isolate(self.tag.clone());
+        let title = t!("Take off “{tag}”", tag = shown.clone());
+        let message = match &self.paths {
+            Some(paths) => t!("Take “{tag}” off {n}?", tag = shown, n = plural(paths.len(), "item")),
+            None => t!("Finding what has “{tag}”…", tag = shown),
+        };
+        let known = self.paths.is_some();
+        crate::dialogs::main_action(cx, known, |this, window, cx| this.take_off(window, cx));
+        col()
+            .id("take-off-tag")
+            .role(Role::Group)
+            .aria_label(title)
+            .aria_description(message.clone())
+            .test_support()
+            .gap(space(3.))
+            .text_size(theme::size::SM)
+            // The dialog layer is outside the workspace's tree, so the start-aligned text is set here too.
+            .text_start()
+            .child(
+                div()
+                    .id("take-off-tag-said")
+                    .role(Role::Status)
+                    .aria_label(message.clone())
+                    .test_support()
+                    .child(message),
+            )
+            .child(
+                row_start()
+                    .justify_end()
+                    .gap(space(2.))
+                    .child(
+                        Button::new("take-off-tag-cancel")
+                            .ghost()
+                            .label(t!("Cancel"))
+                            .on_click(|_, window, cx| window.close_dialog(cx)),
+                    )
+                    .child(
+                        Button::new("take-off-tag-ok")
+                            .primary()
+                            .label(t!("Take off"))
+                            .disabled(!known)
+                            .on_click(cx.listener(|this, _, window, cx| this.take_off(window, cx))),
+                    ),
+            )
+    }
+}
+
+/// Opens the take-off question for `tag`; it waits for the items (`TakeOffTag::found`) to say the number.
+fn open_take_off_tag(tag: String, window: &mut Window, cx: &mut App) -> Entity<TakeOffTag> {
+    let title = t!("Take off “{tag}”", tag = isolate(tag.clone()));
+    let view = cx.new(|_| TakeOffTag { tag, paths: None });
+    crate::dialogs::show(window, cx, title, px(440.), view.clone());
+    view
 }
 
 impl Render for Sidebar {

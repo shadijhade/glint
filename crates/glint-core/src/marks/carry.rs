@@ -88,9 +88,15 @@ fn carry_in(pairs: &[(String, String)], moved: bool, folders: bool, w: &World) {
     // Each put's destination with the source whose line goes once it is written (a move only).
     let mut after: Vec<(String, String)> = Vec::new();
     let mut seen: HashSet<&str> = HashSet::new();
+    // Folder pairs: the ledger's lines under the source go under the destination, whatever the drives keep.
+    let mut dirs: Vec<(&str, &str)> = Vec::new();
     for (source, dest) in pairs {
+        let dest_dir = folders && Path::new(dest).is_dir();
+        if dest_dir && source.to_lowercase() != dest.to_lowercase() {
+            dirs.push((source, dest));
+        }
         // Both ends keep streams: Windows took a file's along, and nothing is read. Never a folder's own.
-        let came_along = (w.streams)(source) && (w.streams)(dest) && !(folders && Path::new(dest).is_dir());
+        let came_along = (w.streams)(source) && (w.streams)(dest) && !dest_dir;
         if came_along || !seen.insert(dest.as_str()) || source.to_lowercase() == dest.to_lowercase() {
             continue;
         }
@@ -109,6 +115,13 @@ fn carry_in(pairs: &[(String, String)], moved: bool, folders: bool, w: &World) {
         if moved {
             after.push((if written { String::new() } else { dest.clone() }, source.clone()));
         }
+    }
+    if !dirs.is_empty() && !w.ledger_empty() {
+        let mut ledger = w.ledger();
+        for (source, dest) in dirs {
+            ledger.carry_under(source, dest, moved);
+        }
+        let _ = ledger.save();
     }
     let wrote: HashSet<String> = if puts.is_empty() {
         HashSet::new()
@@ -392,6 +405,75 @@ mod tests {
         assert!(l.lock().unwrap().is_empty());
         let _ = std::fs::remove_dir_all(&src);
         let _ = std::fs::remove_dir_all(&dst);
+    }
+
+    /// A ledger file holding these lines (`rest` carries a key a later version wrote), opened.
+    fn seeded(dir: &Path, names: &[&str]) -> Mutex<Ledger> {
+        let lines: Vec<glint_model::marks::Line> = names
+            .iter()
+            .map(|n| {
+                let mut rest = serde_json::Map::new();
+                rest.insert("future".into(), serde_json::json!({ "n": 3 }));
+                glint_model::marks::Line {
+                    name: n.to_string(),
+                    marks: marked("Red"),
+                    at: 77,
+                    why: Some(glint_model::marks::Why::Away),
+                    rest,
+                }
+            })
+            .collect();
+        std::fs::write(dir.join("marks.jsonl"), glint_model::marks::write_ledger(&lines)).unwrap();
+        ledger_in(dir)
+    }
+
+    #[test]
+    fn a_renamed_folder_takes_the_ledgers_lines_under_it_two_levels_deep_and_a_copy_keeps_both() {
+        let dir = folder();
+        let (old, new) = (dir.join("old"), dir.join("new"));
+        std::fs::create_dir_all(old.join("a").join("b")).unwrap();
+        let deep = old.join("a").join("b").join("X.txt").to_string_lossy().into_owned();
+        let top = old.join("t.txt").to_string_lossy().into_owned();
+        let l = seeded(&dir, &[&deep, &top]);
+        std::fs::rename(&old, &new).unwrap();
+        // A copy first (the source is gone, but its lines are what is carried): both stay.
+        carry_in(&[pair(&old.to_string_lossy(), &new.to_string_lossy())], false, true, &world(&l, &no));
+        let moved_deep = new.join("a").join("b").join("X.txt").to_string_lossy().into_owned();
+        {
+            let g = l.lock().unwrap();
+            assert!(g.get(&deep).is_some() && g.get(&moved_deep).is_some());
+        }
+        carry_in(&[pair(&old.to_string_lossy(), &new.to_string_lossy())], true, true, &world(&l, &no));
+        let g = l.lock().unwrap();
+        assert!(g.get(&deep).is_none() && g.get(&top).is_none());
+        let line = g.get(&moved_deep).unwrap();
+        assert_eq!((line.at, line.why, line.marks.clone()), (77, Some(glint_model::marks::Why::Away), marked("Red")));
+        assert_eq!(line.name, moved_deep, "the name keeps its case below the folder");
+        assert_eq!(line.rest["future"]["n"], 3);
+        assert!(g.waits_in(&new.join("a").join("b").to_string_lossy()));
+        assert!(!g.waits_in(&old.join("a").join("b").to_string_lossy()));
+        drop(g);
+        let again = Ledger::open(Some(dir.join("marks.jsonl")));
+        assert!(again.get(&moved_deep).is_some() && again.get(&deep).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_folder_whose_name_starts_another_s_moves_only_its_own_lines() {
+        let dir = folder();
+        let (b, bc, to) = (dir.join("b"), dir.join("bc"), dir.join("moved"));
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::create_dir_all(&bc).unwrap();
+        std::fs::create_dir_all(&to).unwrap();
+        let (inb, inbc) = (b.join("x.txt").to_string_lossy().into_owned(), bc.join("y.txt").to_string_lossy().into_owned());
+        let l = seeded(&dir, &[&inb, &inbc]);
+        carry_in(&[pair(&b.to_string_lossy(), &to.to_string_lossy())], true, true, &world(&l, &no));
+        let g = l.lock().unwrap();
+        assert!(g.get(&inb).is_none());
+        assert!(g.get(&to.join("x.txt").to_string_lossy()).is_some());
+        assert!(g.get(&inbc).is_some(), "bc is not under b");
+        assert_eq!(g.lines().count(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

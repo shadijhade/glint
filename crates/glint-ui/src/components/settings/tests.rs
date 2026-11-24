@@ -489,6 +489,21 @@ pub(super) fn settings(cx: &mut VisualTestContext) -> glint_model::store::Settin
 }
 
 #[gpui_kit::test]
+fn open_at_a_section_after_a_pages_first_scrolls_to_it(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let fake = std::sync::Arc::new(Fake::new());
+    // "marks" is the Files page's last section: below the page's top once the page is laid out.
+    let (mut visual, view) = open_settings(cx, &fake, Some("settings-marks"));
+    for _ in 0..3 {
+        frame(&mut visual);
+        visual.run_until_parked();
+    }
+    assert_eq!(view.read_with(&visual, |v, _| v.sections().last().copied()), Some("marks"));
+    let offset = view.read_with(&visual, |v, _| v.scroll_offset());
+    assert_ne!(offset.y, px(0.), "the last section is shown, not the page's top");
+}
+
+#[gpui_kit::test]
 fn settings_opens_as_a_named_dialog_with_every_section_listed(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let fake = std::sync::Arc::new(Fake::new());

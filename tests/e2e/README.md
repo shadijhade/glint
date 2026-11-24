@@ -88,6 +88,7 @@ lines say which.
 | `zoom-layout` | Ctrl and the real wheel over a folder's row lay the folder out in tiles (the grid, at its smallest), and a notch back out is the list again; the folder and its items stay as they were each time, and out from the list goes nowhere (0.13.0 opened the folder under the pointer, and went to the one above) |
 | `dual-pane-compare` | Ctrl+Shift+D shows two named panes, a second pane can be taken elsewhere, Ctrl+Shift+M marks "Only here" items in both and unmarks, Ctrl+Shift+D closes the second pane |
 | `search-inside` | Ctrl+Shift+F, a typed word, Enter: the file that holds the word is a row of the results under "Inside files", with the matching line and its number under it; Escape returns to the folder |
+| `marks` | Alt+1 puts the first label (Red) on the selected file and its row says "label Red"; `label:red` in the search box finds it; a rename made by `ren` outside Glint keeps the label on the row with the new name |
 | `settings` | Ctrl+, opens Settings (it is a dialog inside the main window), a section can be chosen, Escape closes it |
 | `tabs-sidebar` | Ctrl+T adds a tab, a sidebar place opens in it, Ctrl+W closes it |
 | `quit` | Closing the window ends the process with exit code 0 and writes `state.json` with the session. When it doesn't end, the failure says whether the window was hidden (kept running in the tray), is still shown, or closed with the process left behind, and lists the windows the process still has |

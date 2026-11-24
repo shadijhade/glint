@@ -5,7 +5,11 @@
 //!
 //! The service runs as LocalSystem, so **no path is ever walked**: an account that can write a folder could swap
 //! part of a path for a link while the service looks, and send it to open somewhere else. An item is opened by its
-//! file reference on the drive (`OpenFileById` on the drive's root), a link is not followed, and:
+//! file reference on the drive (`NtCreateFile` with `FILE_OPEN_BY_FILE_ID`, relative to the drive's root: the
+//! reference is the 8-byte name), a link is not followed, and:
+//! 0. the open never waits for another program. Asked with `FILE_COMPLETE_IF_OPLOCKED`, it comes back at once when
+//!    a program holds the file with an oplock (status `STATUS_OPLOCK_BREAK_IN_PROGRESS`: the handle is closed
+//!    unused). That file is **skipped this round**: it stays far and is read on the next one;
 //! 1. its stream listing is asked on a handle that wants attributes alone (no sharing is needed, so nothing another
 //!    program holds is tripped over). Nearly every far record has no `glint.*` stream and ends there;
 //! 2. only an item that has one is opened again, for reading, and walked with `BackupRead`: only the three
@@ -18,18 +22,25 @@ use std::ffi::c_void;
 use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::io::IntoRawHandle;
 use std::sync::RwLock;
-use windows::Win32::Foundation::{ERROR_HANDLE_EOF, ERROR_MORE_DATA, HANDLE};
-use windows::Win32::Storage::FileSystem::{
-    BackupRead, BackupSeek, FileIdType, FileStreamInfo, GetFileInformationByHandleEx, OpenFileById, FILE_FLAG_BACKUP_SEMANTICS,
-    FILE_FLAG_OPEN_NO_RECALL, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_DESCRIPTOR, FILE_ID_DESCRIPTOR_0, FILE_SHARE_DELETE, FILE_SHARE_READ,
-    FILE_SHARE_WRITE,
+use windows::core::PWSTR;
+use windows::Wdk::Foundation::OBJECT_ATTRIBUTES;
+use windows::Wdk::Storage::FileSystem::{
+    NtCreateFile, FILE_COMPLETE_IF_OPLOCKED, FILE_OPEN, FILE_OPEN_BY_FILE_ID, FILE_OPEN_FOR_BACKUP_INTENT, FILE_OPEN_NO_RECALL,
+    FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
 };
+use windows::Win32::Foundation::{ERROR_HANDLE_EOF, ERROR_MORE_DATA, HANDLE, OBJECT_ATTRIBUTE_FLAGS, STATUS_OPLOCK_BREAK_IN_PROGRESS, UNICODE_STRING};
+use windows::Win32::Storage::FileSystem::{
+    BackupRead, BackupSeek, FileStreamInfo, GetFileInformationByHandleEx, FILE_ACCESS_RIGHTS, FILE_FLAGS_AND_ATTRIBUTES,
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+};
+use windows::Win32::System::IO::IO_STATUS_BLOCK;
 
 /// The most records one pass of [`drain`] takes.
 pub const BATCH: usize = 256;
 
 const FILE_READ_ATTRIBUTES: u32 = 0x80;
 const GENERIC_READ: u32 = 0x8000_0000;
+const SYNCHRONIZE: u32 = 0x10_0000;
 /// How much of a label and of the tags is read (a comment's is [`COMMENT_KEPT`]).
 const LABEL_READ: u64 = 256;
 const TAGS_READ: u64 = 4096;
@@ -46,32 +57,73 @@ fn root_handle(letter: char) -> Option<Handle> {
     Some(Handle(HANDLE(file.into_raw_handle())))
 }
 
+/// What opening an item by its reference came to.
+enum Opened {
+    /// Gone, another file's now, kept from the service, or a reference that is no reference.
+    Gone,
+    /// Another program holds it with an oplock: not waited for, tried again next round.
+    Busy,
+    File(Handle),
+}
+
+// The access of every open [`open_ref`] made, per thread (for the tests: how many opens a read made, and for what).
+#[cfg(test)]
+thread_local! {
+    static OPENS: std::cell::RefCell<Vec<u32>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 /// Opens the item with file reference `reference` on the drive `root` is of: no path, a link not followed,
-/// every share mode, and nothing fetched for a file whose data is kept somewhere else (a cloud folder's). A
-/// reference whose sequence is 0 would match any file that has the number, so it opens nothing.
-fn open_ref(root: &Handle, reference: u64, access: u32) -> Option<Handle> {
+/// every share mode, nothing fetched for a file whose data is kept somewhere else (a cloud folder's), and no
+/// waiting for a program that holds it with an oplock. A reference whose sequence is 0 would match any file that
+/// has the number, so it opens nothing.
+fn open_ref(root: &Handle, reference: u64, access: u32) -> Opened {
     if reference >> 48 == 0 {
-        return None;
+        return Opened::Gone;
     }
-    let id = FILE_ID_DESCRIPTOR {
-        dwSize: size_of::<FILE_ID_DESCRIPTOR>() as u32,
-        Type: FileIdType,
-        // The reference's 64 bits as they are.
-        Anonymous: FILE_ID_DESCRIPTOR_0 { FileId: i64::from_ne_bytes(reference.to_ne_bytes()) },
+    #[cfg(test)]
+    OPENS.with(|o| o.borrow_mut().push(access));
+    // The reference's 8 bytes are the name, as `FILE_OPEN_BY_FILE_ID` wants.
+    let mut id = reference;
+    let name = UNICODE_STRING { Length: 8, MaximumLength: 8, Buffer: PWSTR((&mut id as *mut u64).cast()) };
+    let attributes = OBJECT_ATTRIBUTES {
+        Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
+        RootDirectory: root.0,
+        ObjectName: &name,
+        Attributes: OBJECT_ATTRIBUTE_FLAGS(0),
+        ..Default::default()
     };
-    // SAFETY: `id` lives through the call and `root` is an open handle.
-    let handle = unsafe {
-        OpenFileById(
-            root.0,
-            &id,
-            access,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+    let mut handle = HANDLE::default();
+    let mut status_block = IO_STATUS_BLOCK::default();
+    // SAFETY: `id`, `name` and `attributes` live through the call, `root` is an open handle, and the two outputs are ours.
+    let status = unsafe {
+        NtCreateFile(
+            &mut handle,
+            FILE_ACCESS_RIGHTS(access | SYNCHRONIZE),
+            &attributes,
+            &mut status_block,
             None,
-            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_OPEN_NO_RECALL,
+            FILE_FLAGS_AND_ATTRIBUTES(0),
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            FILE_OPEN,
+            FILE_OPEN_BY_FILE_ID
+                | FILE_COMPLETE_IF_OPLOCKED
+                | FILE_OPEN_REPARSE_POINT
+                | FILE_OPEN_NO_RECALL
+                | FILE_OPEN_FOR_BACKUP_INTENT
+                | FILE_SYNCHRONOUS_IO_NONALERT,
+            None,
+            0,
         )
+    };
+    if status.0 < 0 {
+        return Opened::Gone;
     }
-    .ok()?;
-    Some(Handle(handle))
+    // Opened, but a program's oplock is being broken: the file isn't ours to look at yet. The handle is closed.
+    let handle = Handle(handle);
+    if status == STATUS_OPLOCK_BREAK_IN_PROGRESS {
+        return Opened::Busy;
+    }
+    Opened::File(handle)
 }
 
 /// Which of [label, tags, comment] an item has a stream for, from its stream listing; `None` when the file
@@ -262,30 +314,53 @@ impl Drop for Reading {
     }
 }
 
+/// An item that another program holds with an oplock: skipped this round.
+struct Busy;
+
 /// The marks of the item with file reference `reference` on the drive `root` is of (`tree::make_ref`): its
-/// three streams as `record`'s readers read them, each field empty when it has none. `None` when it can't be
-/// opened (gone, another file's now, or kept from the service): its record is then left as it is.
-pub fn read_ref(root: &Handle, reference: u64) -> Option<Marked> {
-    let probe = open_ref(root, reference, FILE_READ_ATTRIBUTES)?;
+/// three streams as `record`'s readers read them, each field empty when it has none. `Ok(None)` when it can't be
+/// opened (gone, another file's now, or kept from the service): its record is then left as it is. `Err(Busy)`
+/// when a program holds it with an oplock: it is not waited for, and tried again next round.
+fn read_outcome(root: &Handle, reference: u64) -> Result<Option<Marked>, Busy> {
+    let probe = match open_ref(root, reference, FILE_READ_ATTRIBUTES) {
+        Opened::File(h) => h,
+        Opened::Busy => return Err(Busy),
+        Opened::Gone => return Ok(None),
+    };
     // Nearly every far record ends here, and nothing was held that another program could trip over.
-    if listing(&probe)? == [false; 3] {
-        return Some(Marked::default());
+    let Some(streams) = listing(&probe) else { return Ok(None) };
+    if streams == [false; 3] {
+        return Ok(Some(Marked::default()));
     }
     drop(probe);
-    let file = open_ref(root, reference, GENERIC_READ)?;
-    Some(collect(&mut Reading { file, context: std::ptr::null_mut() }))
+    match open_ref(root, reference, GENERIC_READ) {
+        Opened::File(file) => Ok(Some(collect(&mut Reading { file, context: std::ptr::null_mut() }))),
+        Opened::Busy => Err(Busy),
+        Opened::Gone => Ok(None),
+    }
+}
+
+/// [`read_outcome`] with a busy item as `None`, as an item that can't be opened.
+pub fn read_ref(root: &Handle, reference: u64) -> Option<Marked> {
+    read_outcome(root, reference).unwrap_or(None)
 }
 
 /// One pass over drive `letter`'s far records: takes up to [`BATCH`] of them out of `Tree::far`, reads each
-/// by its reference (`read_ref`) while no lock is held (a search never waits for the disk), and gives the tree
-/// what was read (`Tree::set_marks`). Returns how many records it took: 0 when none is far, or when the drive's
-/// root can't be opened. `stop` ends it early.
+/// by its reference while no lock is held (a search never waits for the disk), and gives the tree what was read
+/// (`Tree::set_marks`). An item another program holds with an oplock stays far for the next pass. Returns how
+/// many records it took and did not skip: 0 when none is far, when the drive's root can't be opened, or when every
+/// one it took was held (so the caller rests before asking again). `stop` ends it early.
 pub fn drain(tree: &RwLock<Tree>, letter: char, stop: &(dyn Fn() -> bool + Sync)) -> usize {
     let Some(root) = root_handle(letter) else { return 0 };
-    drain_with(tree, stop, &|reference| read_ref(&root, reference))
+    drain_busy(tree, stop, &|reference| read_outcome(&root, reference))
 }
 
+#[cfg(test)]
 fn drain_with(tree: &RwLock<Tree>, stop: &(dyn Fn() -> bool + Sync), read: &dyn Fn(u64) -> Option<Marked>) -> usize {
+    drain_busy(tree, stop, &|reference| Ok(read(reference)))
+}
+
+fn drain_busy(tree: &RwLock<Tree>, stop: &(dyn Fn() -> bool + Sync), read: &dyn Fn(u64) -> Result<Option<Marked>, Busy>) -> usize {
     let write = || tree.write().unwrap_or_else(|e| e.into_inner());
     let (taken, jobs) = {
         let mut tree = write();
@@ -302,11 +377,20 @@ fn drain_with(tree: &RwLock<Tree>, stop: &(dyn Fn() -> bool + Sync), read: &dyn 
     // No lock is held while the disk is read.
     let mut done = Vec::with_capacity(jobs.len());
     let mut unread = Vec::new();
+    let mut skipped = 0;
     for (n, reference) in &jobs {
         if stop() {
             unread.push(*n);
-        } else if let Some(marks) = read(*reference) {
-            done.push((*n, *reference, marks));
+            continue;
+        }
+        match read(*reference) {
+            Ok(Some(marks)) => done.push((*n, *reference, marks)),
+            Ok(None) => {}
+            // Held by another program: far again, and read on the next round.
+            Err(Busy) => {
+                unread.push(*n);
+                skipped += 1;
+            }
         }
     }
     if !done.is_empty() || !unread.is_empty() {
@@ -324,7 +408,7 @@ fn drain_with(tree: &RwLock<Tree>, stop: &(dyn Fn() -> bool + Sync), read: &dyn 
         }
         tree.far.extend(unread);
     }
-    taken
+    taken - skipped
 }
 
 #[cfg(test)]
@@ -336,7 +420,14 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Mutex;
     use std::time::Instant;
-    use windows::Win32::Storage::FileSystem::{GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION};
+    use windows::Win32::Foundation::ERROR_IO_PENDING;
+    use windows::Win32::Storage::FileSystem::{GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_FLAG_OVERLAPPED};
+    use windows::Win32::System::Ioctl::{
+        FSCTL_REQUEST_OPLOCK, OPLOCK_LEVEL_CACHE_HANDLE, OPLOCK_LEVEL_CACHE_READ, OPLOCK_LEVEL_CACHE_WRITE, REQUEST_OPLOCK_INPUT_BUFFER,
+        REQUEST_OPLOCK_INPUT_FLAG_REQUEST, REQUEST_OPLOCK_OUTPUT_BUFFER,
+    };
+    use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
+    use windows::Win32::System::IO::{DeviceIoControl, OVERLAPPED};
 
     /// A folder of its own under the temp folder, removed when dropped.
     struct Dir(PathBuf);
@@ -407,6 +498,135 @@ mod tests {
             three(&p);
             assert_eq!(read(&p), Some(marks("Red", "a\nb", "hello")), "{item}");
         }
+    }
+
+    /// A file held the way a program that caches it holds it: an overlapped handle with a read, write and handle
+    /// oplock. The break that another open brings stays pending until this is dropped.
+    struct Oplock {
+        file: Option<Handle>,
+        event: Handle,
+        // Windows writes to these when the request completes, so they outlive the handle (see the drop).
+        _over: Box<OVERLAPPED>,
+        _input: Box<REQUEST_OPLOCK_INPUT_BUFFER>,
+        _output: Box<REQUEST_OPLOCK_OUTPUT_BUFFER>,
+    }
+
+    impl Oplock {
+        /// `None` when the oplock isn't granted (another program has the file, or the drive can't).
+        fn hold(path: &str) -> Option<Oplock> {
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .share_mode(FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0 | FILE_SHARE_DELETE.0)
+                .custom_flags(FILE_FLAG_OVERLAPPED.0)
+                .open(path)
+                .ok()?;
+            let file = Handle(HANDLE(file.into_raw_handle()));
+            // SAFETY: a plain event, closed by its `Handle`.
+            let event = Handle(unsafe { CreateEventW(None, true, false, windows::core::PCWSTR::null()) }.ok()?);
+            let mut over = Box::new(OVERLAPPED { hEvent: event.0, ..Default::default() });
+            let mut input = Box::new(REQUEST_OPLOCK_INPUT_BUFFER {
+                StructureVersion: 1,
+                StructureLength: size_of::<REQUEST_OPLOCK_INPUT_BUFFER>() as u16,
+                RequestedOplockLevel: OPLOCK_LEVEL_CACHE_READ | OPLOCK_LEVEL_CACHE_WRITE | OPLOCK_LEVEL_CACHE_HANDLE,
+                Flags: REQUEST_OPLOCK_INPUT_FLAG_REQUEST,
+            });
+            let mut output = Box::new(REQUEST_OPLOCK_OUTPUT_BUFFER {
+                StructureVersion: 1,
+                StructureLength: size_of::<REQUEST_OPLOCK_OUTPUT_BUFFER>() as u16,
+                ..Default::default()
+            });
+            // SAFETY: the buffers and the OVERLAPPED are boxed and kept until the request completes (the drop).
+            let sent = unsafe {
+                DeviceIoControl(
+                    file.0,
+                    FSCTL_REQUEST_OPLOCK,
+                    Some((&mut *input as *mut REQUEST_OPLOCK_INPUT_BUFFER).cast()),
+                    size_of::<REQUEST_OPLOCK_INPUT_BUFFER>() as u32,
+                    Some((&mut *output as *mut REQUEST_OPLOCK_OUTPUT_BUFFER).cast()),
+                    size_of::<REQUEST_OPLOCK_OUTPUT_BUFFER>() as u32,
+                    None,
+                    Some(&mut *over),
+                )
+            };
+            // A granted oplock leaves the request pending; anything else means none is held.
+            let pending = sent.is_err_and(|e| e.code() == ERROR_IO_PENDING.to_hresult());
+            let held = Oplock { file: Some(file), event, _over: over, _input: input, _output: output };
+            pending.then_some(held)
+        }
+    }
+
+    impl Drop for Oplock {
+        fn drop(&mut self) {
+            // Closing the handle completes the request; the buffers must stay until it has.
+            self.file = None;
+            // SAFETY: the event is open.
+            unsafe { WaitForSingleObject(self.event.0, 5000) };
+        }
+    }
+
+    #[test]
+    fn a_file_another_program_holds_with_an_oplock_is_skipped_at_once_and_read_once_it_is_let_go() {
+        let dir = Dir::new();
+        if !dir.streams() {
+            return;
+        }
+        let p = dir.path("f.txt");
+        std::fs::write(&p, b"data").unwrap();
+        std::fs::write(format!("{p}:glint.label"), b"Red").unwrap();
+        let (reference, root) = (reference(&p), root());
+        let Some(held) = Oplock::hold(&p) else {
+            println!("no oplock could be taken here: the oplock test did not run");
+            return;
+        };
+        let start = Instant::now();
+        assert!(read_outcome(&root, reference).is_err(), "busy");
+        assert_eq!(read_ref(&root, reference), None);
+        assert!(start.elapsed() < std::time::Duration::from_secs(1), "{:?}", start.elapsed());
+        drop(held);
+        assert_eq!(read_ref(&root, reference), Some(marks("Red", "", "")));
+    }
+
+    #[test]
+    fn a_file_with_no_glint_stream_is_opened_once_for_its_attributes_alone_and_a_marked_one_twice() {
+        let dir = Dir::new();
+        let p = dir.path("f.txt");
+        std::fs::write(&p, b"data").unwrap();
+        let (reference, root) = (reference(&p), root());
+        OPENS.with(|o| o.borrow_mut().clear());
+        assert_eq!(read_ref(&root, reference), Some(Marked::default()));
+        assert_eq!(OPENS.with(|o| o.borrow().clone()), [FILE_READ_ATTRIBUTES]);
+        if dir.streams() {
+            std::fs::write(format!("{p}:glint.label"), b"Red").unwrap();
+            OPENS.with(|o| o.borrow_mut().clear());
+            assert_eq!(read_ref(&root, reference), Some(marks("Red", "", "")));
+            assert_eq!(OPENS.with(|o| o.borrow().clone()), [FILE_READ_ATTRIBUTES, GENERIC_READ]);
+        }
+    }
+
+    #[test]
+    fn a_reference_with_sequence_zero_is_never_opened() {
+        let root = root();
+        OPENS.with(|o| o.borrow_mut().clear());
+        assert_eq!(read_ref(&root, 5), None);
+        assert!(OPENS.with(|o| o.borrow().is_empty()));
+    }
+
+    #[test]
+    fn a_file_found_busy_stays_far_for_the_next_round_and_the_round_does_not_count_it() {
+        let tree = RwLock::new(far_tree(2));
+        let reader = |reference: u64| if reference == make_ref(30, 1) { Err(Busy) } else { Ok(Some(marks("L", "", ""))) };
+        assert_eq!(drain_busy(&tree, &never, &reader), 1);
+        {
+            let tree = tree.read().unwrap();
+            assert_eq!(tree.far.iter().copied().collect::<Vec<_>>(), [30]);
+            assert_eq!(tree.marked(31), Some(&marks("L", "", "")));
+            assert_eq!(tree.marked(30), None);
+        }
+        // Next round it is free.
+        let free = |_: u64| Ok(Some(marks("Now", "", "")));
+        assert_eq!(drain_busy(&tree, &never, &free), 1);
+        assert!(tree.read().unwrap().far.is_empty());
+        assert_eq!(tree.read().unwrap().marked(30).map(|m| &*m.label), Some("Now"));
     }
 
     #[test]

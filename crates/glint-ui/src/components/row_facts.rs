@@ -259,6 +259,16 @@ struct TagsAsk {
     folder: String,
     path: String,
     ticket: u64,
+    /// A whole read only: what the index says can be older than this item's change, so it is read from its file.
+    file: bool,
+}
+
+/// A folder's marks to read in one go ([`RowFacts::ask_all`]).
+struct WholeAsk {
+    ticket: u64,
+    asks: Vec<TagsAsk>,
+    /// The folder the items are right inside, to ask the index for; None where they are not all in one.
+    folder: Option<String>,
 }
 
 struct MediaAsk {
@@ -271,7 +281,7 @@ struct MediaAsk {
 struct Batch {
     tags: Vec<TagsAsk>,
     /// A folder's marks read in one call, with the ticket that tells the read still counts.
-    whole: Vec<(u64, Vec<TagsAsk>)>,
+    whole: Vec<WholeAsk>,
     media: Vec<MediaAsk>,
     backend: Arc<dyn Backend>,
     source: Arc<dyn MediaSource>,
@@ -284,7 +294,7 @@ pub struct RowFacts {
     /// The folders asked about, the most recent last.
     order: Vec<String>,
     pending_tags: Vec<TagsAsk>,
-    pending_whole: Vec<(u64, Vec<TagsAsk>)>,
+    pending_whole: Vec<WholeAsk>,
     pending_media: Vec<MediaAsk>,
     /// A task is reading (or about to): it takes whatever is pending when it looks.
     flushing: bool,
@@ -382,7 +392,7 @@ impl RowFacts {
     fn queue(
         &mut self,
         tags: Vec<TagsAsk>,
-        whole: Vec<(u64, Vec<TagsAsk>)>,
+        whole: Vec<WholeAsk>,
         media: Vec<MediaAsk>,
         cx: &mut Context<Self>,
     ) {
@@ -410,10 +420,10 @@ impl RowFacts {
                 }
             }
             // A folder read whole is one call, however long (core reads a long list on every core).
-            for (ticket, asks) in &batch.whole {
-                let paths = asks.iter().map(|ask| ask.path.clone()).collect();
-                let read = core_bridge::run(batch.backend.read_marks(paths)).await.and_then(|r| r);
-                if this.update(cx, |this, cx| this.whole_arrived(*ticket, asks, read, cx)).is_err() {
+            for whole in &batch.whole {
+                let read = read_whole(&batch.backend, whole).await;
+                let landed = this.update(cx, |this, cx| this.whole_arrived(whole.ticket, &whole.asks, read, cx));
+                if landed.is_err() {
                     return;
                 }
             }
@@ -453,13 +463,7 @@ impl RowFacts {
 
     /// A folder read whole landed: its marks are kept, and the folder counts as read whole unless it was listed
     /// again or a mark in it changed meanwhile.
-    fn whole_arrived(
-        &mut self,
-        ticket: u64,
-        asked: &[TagsAsk],
-        read: Result<Vec<Marks>, String>,
-        cx: &mut Context<Self>,
-    ) {
+    fn whole_arrived(&mut self, ticket: u64, asked: &[TagsAsk], read: Result<Vec<Marks>, String>, cx: &mut Context<Self>) {
         let mut changed = self.keep_marks(asked, read);
         if let Some(store) = asked.first().and_then(|ask| self.stores.get_mut(&ask.folder)) {
             if store.whole_inflight == Some(ticket) {
@@ -590,6 +594,11 @@ impl RowFacts {
     ///
     /// Everything `ask` would read marks for and that is neither fresh nor on its way is read in one call. Asking
     /// again while that read is on its way, or when everything is fresh, calls nothing.
+    ///
+    /// Where instant search covers the folder, its one answer gives each item's label and tags (an item it leaves
+    /// out has no marks), and only the items it says have a comment are read from their files, for its text. An
+    /// item a change was named for since (`TagsChanged`), and every item where the index can't say, is read from
+    /// the file.
     pub fn ask_all(&mut self, folder: &str, entries: &[FileEntry], cx: &mut Context<Self>) {
         let ticket = &mut self.next_ticket;
         let store = Self::store_for(&mut self.stores, &mut self.order, folder);
@@ -598,9 +607,23 @@ impl RowFacts {
         }
         let mut asks = Vec::new();
         for entry in entries {
-            if on_this_disk(entry) && !on_network(&entry.path) {
-                ask_tags(store, folder, &entry.path, ticket, &mut asks);
+            if !on_this_disk(entry) || on_network(&entry.path) || store.tags_inflight.contains_key(&entry.path) {
+                continue;
             }
+            let file = match store.tags.get(&entry.path) {
+                Some(read) if read.epoch == store.epoch => continue,
+                // Zero: a change was named for it since.
+                Some(read) => read.epoch == 0,
+                None => false,
+            };
+            *ticket += 1;
+            store.tags_inflight.insert(entry.path.clone(), *ticket);
+            asks.push(TagsAsk {
+                folder: folder.to_string(),
+                path: entry.path.clone(),
+                ticket: *ticket,
+                file,
+            });
         }
         if asks.is_empty() {
             // Nothing left to read: if no batch is still on its way, every row is read.
@@ -612,7 +635,12 @@ impl RowFacts {
         }
         *ticket += 1;
         store.whole_inflight = Some(*ticket);
-        let whole = vec![(*ticket, asks)];
+        let in_folder = common_parent(asks.iter().filter(|ask| !ask.file).map(|ask| ask.path.as_str()));
+        let whole = vec![WholeAsk {
+            ticket: *ticket,
+            asks,
+            folder: in_folder,
+        }];
         self.queue(Vec::new(), whole, Vec::new(), cx);
     }
 
@@ -655,6 +683,64 @@ impl RowFacts {
     }
 }
 
+/// The folder every path is right inside (any case), or None for no path or paths in several.
+fn common_parent<'a>(paths: impl Iterator<Item = &'a str>) -> Option<String> {
+    let mut found: Option<&str> = None;
+    for path in paths {
+        let at = path.rfind(['\\', '/'])?;
+        let parent = &path[..at];
+        match found {
+            Some(known) if !known.eq_ignore_ascii_case(parent) => return None,
+            _ => found = Some(parent),
+        }
+    }
+    // A drive's root keeps its slash ("C:\").
+    found.map(|parent| if parent.ends_with(':') { format!("{parent}\\") } else { parent.to_string() })
+}
+
+/// What a whole read of a folder's marks says, in the order of its asks: the index's answer where it can give one,
+/// the files' for the rest and for every item with a comment (the index never sends a comment's text).
+async fn read_whole(backend: &Arc<dyn Backend>, whole: &WholeAsk) -> Result<Vec<Marks>, String> {
+    let mut marks = vec![Marks::default(); whole.asks.len()];
+    let mut files: Vec<usize> = Vec::new();
+    let mut indexed: Vec<usize> = Vec::new();
+    for (i, ask) in whole.asks.iter().enumerate() {
+        if ask.file { files.push(i) } else { indexed.push(i) }
+    }
+    let answer = match &whole.folder {
+        Some(folder) if !indexed.is_empty() => {
+            core_bridge::run(backend.marks_in(folder.clone())).await.and_then(|r| r).ok().flatten()
+        }
+        _ => None,
+    };
+    match answer {
+        Some(items) => {
+            let by_name: HashMap<String, _> = items.into_iter().map(|item| (item.name.to_lowercase(), item)).collect();
+            for i in indexed {
+                let path = &whole.asks[i].path;
+                let name = path.rsplit(['\\', '/']).next().unwrap_or(path).to_lowercase();
+                let Some(item) = by_name.get(&name) else { continue };
+                if item.comment {
+                    files.push(i);
+                } else {
+                    marks[i] = Marks { label: item.label.clone(), tags: item.tags.clone(), comment: None };
+                }
+            }
+        }
+        None => files.extend(indexed),
+    }
+    if !files.is_empty() {
+        let paths = files.iter().map(|&i| whole.asks[i].path.clone()).collect();
+        // A failed read says nothing for these items, as it always has.
+        if let Ok(read) = core_bridge::run(backend.read_marks(paths)).await.and_then(|r| r) {
+            for (&i, read) in files.iter().zip(read) {
+                marks[i] = read;
+            }
+        }
+    }
+    Ok(marks)
+}
+
 /// Queues `path` for a read of its tags if they are neither fresh nor on their way.
 fn ask_tags(store: &mut Store, folder: &str, path: &str, ticket: &mut u64, queue: &mut Vec<TagsAsk>) {
     let fresh = store.tags.get(path).is_some_and(|read| read.epoch == store.epoch);
@@ -667,6 +753,7 @@ fn ask_tags(store: &mut Store, folder: &str, path: &str, ticket: &mut u64, queue
         folder: folder.to_string(),
         path: path.to_string(),
         ticket: *ticket,
+        file: false,
     });
 }
 
@@ -880,9 +967,24 @@ pub(crate) mod fake {
         pub marks: Mutex<HashMap<String, Marks>>,
         pub reads: Mutex<Vec<Vec<String>>>,
         pub tags_reads: Mutex<usize>,
+        /// What the index says of the folder (`marks_in`); None: it can't say.
+        pub index: Mutex<Option<Vec<glint_core::marks::MarkedIn>>>,
+        /// The folders `marks_in` was asked about.
+        pub index_calls: Mutex<Vec<String>>,
     }
 
     impl MarksBackend {
+        /// Makes the index answer for the folder with these items.
+        pub(crate) fn indexed(&self, items: Vec<glint_core::marks::MarkedIn>) {
+            if let Ok(mut index) = self.index.lock() {
+                *index = Some(items);
+            }
+        }
+
+        pub(crate) fn index_asked(&self) -> Vec<String> {
+            self.index_calls.lock().map(|c| c.clone()).unwrap_or_default()
+        }
+
         pub(crate) fn with(items: &[(&str, Marks)]) -> Arc<Self> {
             let fake = MarksBackend::default();
             for (path, marks) in items {
@@ -931,6 +1033,14 @@ pub(crate) mod fake {
                     .map(|p| known.get(&p.to_lowercase()).cloned().unwrap_or_default())
                     .collect())
             })
+        }
+
+        fn marks_in(&self, folder: String) -> Fut<Option<Vec<glint_core::marks::MarkedIn>>> {
+            if let Ok(mut calls) = self.index_calls.lock() {
+                calls.push(folder);
+            }
+            let answer = self.index.lock().map(|i| i.clone()).unwrap_or_default();
+            Box::pin(async move { Ok(answer) })
         }
     }
 
@@ -1558,5 +1668,136 @@ mod tests {
         assert_eq!(got.get("c:\\x\\f0001.jpg"), Some(&red));
         assert_eq!(got.get("c:\\x\\f0000.jpg"), Some(&Marks::default()));
         assert_eq!(got.get("c:\\x\\nope.jpg"), None);
+    }
+
+    // ---- A sort or a group by a mark, from the index ----------------------------------------------------------
+
+    fn in_index(name: &str, label: Option<&str>, tags: &[&str], comment: bool) -> glint_core::marks::MarkedIn {
+        glint_core::marks::MarkedIn {
+            name: name.to_string(),
+            label: label.map(String::from),
+            tags: tags.iter().map(|t| t.to_string()).collect(),
+            comment,
+        }
+    }
+
+    /// A backend whose index covers C:\x and says every seventh of `count` entries is marked (the 4th has a comment).
+    fn indexed_backend(count: usize) -> Arc<fake::MarksBackend> {
+        let backend = fake::MarksBackend::with(&[]);
+        let items = (0..count)
+            .step_by(7)
+            .map(|i| in_index(&format!("F{i:04}.JPG"), Some("Red"), &["Work"], i % 28 == 0))
+            .collect();
+        backend.indexed(items);
+        backend
+    }
+
+    #[gpui_kit::test]
+    fn the_index_gives_a_whole_folders_labels_and_tags_in_one_call_and_only_files_with_a_comment_are_read(
+        cx: &mut TestAppContext,
+    ) {
+        let _guard = testing::lock();
+        let backend = indexed_backend(10_000);
+        let facts = marks_app(cx, &backend);
+        let list = entries(10_000);
+        facts.update(cx, |f, cx| f.ask_all(DIR, &list, cx));
+        fake::settle(cx, |cx| facts.read_with(cx, |f, _| f.has_all(DIR)));
+        assert_eq!(backend.index_asked(), ["C:\\x"], "one question, about the folder");
+        assert_eq!(backend.paths_read(), (0..10_000).step_by(28).count(), "only the items with a comment");
+        facts.read_with(cx, |f, _| {
+            let red = f.marks_of(DIR, "C:\\x\\f0007.jpg").expect("read");
+            assert_eq!((red.label.as_deref(), red.tags.as_slice()), (Some("Red"), &["Work".to_string()][..]));
+            assert_eq!(f.marks_of(DIR, "C:\\x\\f0008.jpg"), Some(&Marks::default()), "left out: no marks");
+        });
+    }
+
+    #[gpui_kit::test]
+    fn the_items_the_index_says_have_a_comment_are_read_from_their_files_and_no_others(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let backend = indexed_backend(100);
+        backend.put("C:\\x\\f0000.jpg", marked(Some("Red"), &["Work"], Some("first\nmore")));
+        backend.put("C:\\x\\f0028.jpg", marked(Some("Red"), &["Work"], Some("second")));
+        let facts = marks_app(cx, &backend);
+        let list = entries(100);
+        facts.update(cx, |f, cx| f.ask_all(DIR, &list, cx));
+        fake::settle(cx, |cx| facts.read_with(cx, |f, _| f.has_all(DIR)));
+        let mut asked = backend.calls();
+        assert_eq!(asked.len(), 1, "one read");
+        asked[0].sort();
+        assert_eq!(asked[0], ["C:\\x\\f0000.jpg", "C:\\x\\f0028.jpg", "C:\\x\\f0056.jpg", "C:\\x\\f0084.jpg"]);
+        let first = facts.read_with(cx, |f, _| f.marks_of(DIR, "C:\\x\\f0000.jpg").and_then(|m| m.comment.clone()));
+        assert_eq!(first.as_deref(), Some("first\nmore"), "the text is in");
+    }
+
+    #[gpui_kit::test]
+    fn where_the_index_cannot_say_every_entry_is_read_from_its_file_as_before(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let red = marked(Some("Red"), &[], None);
+        let backend = fake::MarksBackend::with(&[("C:\\x\\f0009.jpg", red.clone())]);
+        let facts = marks_app(cx, &backend);
+        let (list, asked) = mixed(50);
+        facts.update(cx, |f, cx| f.ask_all(DIR, &list, cx));
+        fake::settle(cx, |cx| facts.read_with(cx, |f, _| f.has_all(DIR)));
+        assert_eq!(backend.calls(), [asked]);
+        assert!(marks_are(&facts, cx, "C:\\x\\f0009.jpg", &red));
+    }
+
+    #[gpui_kit::test]
+    fn a_path_named_by_tags_changed_after_the_index_answered_is_read_from_its_file_and_wins(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let backend = indexed_backend(30);
+        let blue = marked(Some("Blue"), &[], None);
+        backend.put("C:\\x\\f0007.jpg", blue.clone());
+        let facts = marks_app(cx, &backend);
+        let list = entries(30);
+        facts.update(cx, |f, cx| f.ask_all(DIR, &list, cx));
+        fake::settle(cx, |cx| facts.read_with(cx, |f, _| f.has_all(DIR)));
+        assert_eq!(facts.read_with(cx, |f, _| f.marks_of(DIR, "C:\\x\\f0007.jpg").and_then(|m| m.label.clone())), Some("Red".into()));
+        changed(cx, &["C:\\x\\f0007.jpg"]);
+        facts.update(cx, |f, cx| f.ask_all(DIR, &list, cx));
+        fake::settle(cx, |cx| facts.read_with(cx, |f, _| f.has_all(DIR)));
+        // The first read was the two with a comment.
+        assert_eq!(backend.calls()[1..], [["C:\\x\\f0007.jpg"]], "that one, from its file");
+        assert_eq!(backend.index_asked().len(), 1, "the index is not asked again for it");
+        assert!(marks_are(&facts, cx, "C:\\x\\f0007.jpg", &blue));
+    }
+
+    /// Measures (`cargo test -p glint-ui row_facts -- --ignored --nocapture`): 10,000 marked entries sorted by label,
+    /// from `ask_all` to `has_all`, with the index's answer in hand and with the files' read answering at once.
+    /// It cannot say what the real index or 10,000 real files cost: only what Glint's own side adds (the batch,
+    /// the map, the keeping of the marks).
+    #[gpui_kit::test]
+    #[ignore = "measures, prints"]
+    fn measured_ten_thousand_marked_entries_from_the_index_and_from_the_files(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let n = 10_000;
+        let list = entries(n);
+        let marks = marked(Some("Red"), &["Work"], None);
+        for (name, from_index) in [("files", false), ("index", true)] {
+            let backend = fake::MarksBackend::with(&[]);
+            let items = (0..n).map(|i| in_index(&format!("f{i:04}.jpg"), Some("Red"), &["Work"], false)).collect();
+            if from_index {
+                backend.indexed(items);
+            }
+            for e in &list {
+                backend.put(&e.path, marks.clone());
+            }
+            let dir = format!("dir:{name}");
+            let facts = marks_app(cx, &backend);
+            let start = std::time::Instant::now();
+            facts.update(cx, |f, cx| f.ask_all(&dir, &list, cx));
+            for _ in 0..4000 {
+                cx.run_until_parked();
+                if facts.read_with(cx, |f, _| f.has_all(&dir)) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            let held = facts.read_with(cx, |f, _| f.has_all(&dir));
+            let all: std::collections::HashMap<_, _> = facts.read_with(cx, |f, _| {
+                list.iter().filter_map(|e| Some((e.path.clone(), f.marks_of(&dir, &e.path)?.clone()))).collect()
+            });
+            println!("{name}: has_all={held}, {} rows' marks in {:?}, files read: {}", all.len(), start.elapsed(), backend.paths_read());
+        }
     }
 }

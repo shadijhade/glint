@@ -118,8 +118,8 @@ impl Global for MainActions {}
 
 /// Declares what Enter does in the dialog `cx` renders: the same as its main button (the one at the footer's end),
 /// `enabled` while that button can be pressed. Call it in `render`, next to the button, with the same closure the
-/// button's click runs, so Enter and the click can't drift apart. Enter in a text box already does it when the
-/// dialog listens to the box ([`enter_runs_main`]); Enter on a button presses that button.
+/// button's click runs, so Enter and the click can't drift apart. Enter in a text box belongs to the box (the
+/// dialog listens to its `PressEnter` itself); Enter on a button presses that button.
 pub fn main_action<V: 'static>(
     cx: &mut Context<V>,
     enabled: bool,
@@ -156,21 +156,6 @@ pub fn run_main(view: EntityId, window: &mut Window, cx: &mut App) -> bool {
         }
         None => false,
     }
-}
-
-/// Makes Enter in the single-line `input` run the dialog's main action ([`main_action`]), the way its button does.
-/// For a dialog that doesn't already listen to the box's `PressEnter` itself.
-pub fn enter_runs_main<V: 'static>(
-    input: &Entity<InputState>,
-    window: &mut Window,
-    cx: &mut Context<V>,
-) -> Subscription {
-    let id = cx.entity_id();
-    cx.subscribe_in(input, window, move |_, _, event: &InputEvent, window, cx| {
-        if matches!(event, InputEvent::PressEnter { .. }) {
-            run_main(id, window, cx);
-        }
-    })
 }
 
 /// Whether the keyboard is in a text box: Enter there belongs to the box (and the dialog's own listener of it).

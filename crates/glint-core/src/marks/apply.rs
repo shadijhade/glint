@@ -11,11 +11,13 @@
 //! A journal: `{"glint-import":1,"source":…,"at":…}`, then one ledger-format line an item that changed, holding its
 //! marks before (a line with `"none":true` where it had none).
 
-use super::import::{At, ImportOptions, ImportPlan, ImportReport, Planned, Progress};
+use super::import::{At, ImportOptions, ImportPlan, ImportReport, LabelPlan, Planned, Progress};
 use super::{read_all, real, work, World};
 use crate::fsx::blocking;
 use crate::host::ipc::Channel;
-use glint_model::marks::{meet, read_ledger, tidy, write_ledger, Change, Label, Line, Marks, Meet, Outcome, Why};
+use glint_model::marks::{
+    label_of, meet, read_ledger, tidy, write_ledger, Change, Label, Line, Marks, Meet, Outcome, Why, MAX_LABELS,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::io::{Read, Write};
@@ -39,6 +41,10 @@ pub struct LastImport {
     pub at: i64,
     /// How many items it changed.
     pub items: u64,
+    /// Glint's labels as they were before it (None for a journal written before the labels were kept).
+    pub labels: Option<Vec<Label>>,
+    /// The labels as the import left them: Undo and take back put `labels` back only while Settings still have these.
+    pub made: Option<Vec<Label>>,
 }
 
 /// What following XYplorer brought in (F30).
@@ -52,6 +58,8 @@ pub struct Followed {
     pub gone: u64,
     /// Every item it changed, for the rows that show them.
     pub paths: Vec<String>,
+    /// The plan's labels: the interface adds a new one to Settings (`apply_labels`).
+    pub labels: Vec<LabelPlan>,
 }
 
 /// What `xyplorer.json` remembers: each source that was brought in, and what each item was given.
@@ -201,11 +209,24 @@ struct Journal {
     source: String,
     started: i64,
     file: Option<(std::fs::File, PathBuf)>,
+    /// The labels before the import and as it left them, for the header.
+    labels: (Vec<Label>, Vec<Label>),
 }
 
 impl Journal {
-    fn new(data: Option<&Path>, source: &str) -> Journal {
-        Journal { dir: data.map(|d| d.join("imports")), source: source.to_string(), started: now_ms(), file: None }
+    fn new(data: Option<&Path>, plan: &ImportPlan) -> Journal {
+        // The interface hands in the labels as they were when the plan was made (`options.have`): the same list
+        // the import then changes, as the dialog is open until it runs.
+        let before = plan.options.have.clone();
+        let mut made = before.clone();
+        apply_labels(&mut made, &plan.labels);
+        Journal {
+            dir: data.map(|d| d.join("imports")),
+            source: plan.source.clone(),
+            started: now_ms(),
+            file: None,
+            labels: (before, made),
+        }
     }
 
     fn append(&mut self, lines: &[Line]) {
@@ -228,7 +249,10 @@ impl Journal {
                 self.dir = None;
                 return;
             };
-            let header = serde_json::json!({"glint-import": 1, "source": self.source, "at": self.started});
+            let header = serde_json::json!({
+                "glint-import": 1, "source": self.source, "at": self.started,
+                "labels": self.labels.0, "made": self.labels.1,
+            });
             let _ = writeln!(f, "{header}");
             self.file = Some((f, path));
         }
@@ -253,6 +277,37 @@ fn journal_line(path: &str, before: &Marks, at: i64) -> Line {
         rest.insert("none".into(), serde_json::Value::Bool(true));
     }
     Line { name: path.to_string(), marks: before.clone(), at, why: None, rest }
+}
+
+/// The settings' labels after an import: a new label of the plan is added (never past 32), and Glint's label that
+/// took XYplorer's name is renamed to it, the old name kept in `was` (PLAN 5.5).
+pub fn apply_labels(labels: &mut Vec<Label>, plan: &[LabelPlan]) {
+    for label in plan {
+        if label.to.is_empty() {
+            continue;
+        }
+        if label.new {
+            if labels.len() < MAX_LABELS && label_of(labels, &label.name).is_none() {
+                labels.push(Label { name: label.name.clone(), color: label.color, was: Vec::new() });
+            }
+        } else if label.takes_name {
+            let Some((at, _)) = label_of(labels, &label.to) else {
+                continue;
+            };
+            // The name is taken by another label: leave both as they are.
+            if label_of(labels, &label.name).is_some_and(|(other, _)| other != at) {
+                continue;
+            }
+            if let Some(own) = labels.get_mut(at) {
+                if own.name != label.name {
+                    let old = std::mem::replace(&mut own.name, label.name.clone());
+                    if !own.was.contains(&old) {
+                        own.was.push(old);
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Journals older than 30 days are removed.
@@ -303,7 +358,7 @@ fn apply_in(
     if let Some(d) = data {
         clean_journals(d);
     }
-    let mut journal = Journal::new(data, &plan.source);
+    let mut journal = Journal::new(data, plan);
     let mut done = Done { report: ImportReport::default(), applied: BTreeMap::new(), gone: 0 };
     let total = (plan.items.len() + gone.len()) as u64;
     let mut count = 0u64;
@@ -480,7 +535,9 @@ fn last_import_in(data: &Path) -> Option<LastImport> {
     let head = lines.next().and_then(|l| serde_json::from_str::<serde_json::Value>(l).ok());
     let source = head.as_ref().and_then(|h| h["source"].as_str()).unwrap_or("").to_string();
     let at = head.as_ref().and_then(|h| h["at"].as_i64()).unwrap_or(newest.0);
-    Some(LastImport { journal: newest.1.to_string_lossy().into_owned(), source, at, items: lines.count() as u64 })
+    let labels_of = |key: &str| head.as_ref().and_then(|h| serde_json::from_value::<Vec<Label>>(h[key].clone()).ok());
+    let (labels, made) = (labels_of("labels"), labels_of("made"));
+    Some(LastImport { journal: newest.1.to_string_lossy().into_owned(), source, at, items: lines.count() as u64, labels, made })
 }
 
 /// The last import whose journal is still kept (30 days), if any.
@@ -548,9 +605,23 @@ fn changed_source(data: &Path) -> Option<(String, ImportOptions)> {
 /// Following XYplorer (F30): one `stat` of the source that was brought in; when it changed since, what is new
 /// or changed in it comes in. None when nothing is followed or nothing changed.
 pub async fn follow() -> Result<Option<Followed>, String> {
+    follow_in(None).await
+}
+
+/// [`follow`], planned with Glint's labels as they are now (`have`, from Settings) and not as they were at the
+/// import: a label renamed in Glint since is matched by its new name and `was`, and one XYplorer gained since is
+/// named new in `Followed::labels`.
+pub async fn follow_with(have: Vec<Label>) -> Result<Option<Followed>, String> {
+    follow_in(Some(have)).await
+}
+
+async fn follow_in(have: Option<Vec<Label>>) -> Result<Option<Followed>, String> {
     let Some(data) = crate::tools::data_dir() else { return Ok(None) };
     let d = data.clone();
-    let Some((source, options)) = blocking(move || Ok(changed_source(&d))).await? else { return Ok(None) };
+    let Some((source, mut options)) = blocking(move || Ok(changed_source(&d))).await? else { return Ok(None) };
+    if let Some(have) = have {
+        options.have = have;
+    }
     let plan = super::import::import_plan(source, options).await?;
     blocking(move || real(|w| follow_plan(&plan, &data, w))).await
 }
@@ -580,7 +651,7 @@ fn follow_plan(plan: &ImportPlan, data: &Path, w: &World) -> Result<Option<Follo
         return Ok(None);
     }
     let paths = done.report.befores.into_iter().map(|(p, _)| p).collect();
-    Ok(Some(Followed { source: plan.source.clone(), came, gone, paths }))
+    Ok(Some(Followed { source: plan.source.clone(), came, gone, paths, labels: plan.labels.clone() }))
 }
 
 #[cfg(test)]
@@ -948,6 +1019,78 @@ mod tests {
         assert!(!load(&r.data).sources.values().any(|s| s.items.contains_key(&lower(&c)) || s.items.contains_key(&lower(&d))));
         // It wrote a journal of its own, so the last import can be taken back.
         assert!(last_import_in(&r.data).is_some());
+    }
+
+    /// The fixture of issue 8 (Chinese label names) as a tag.dat in the rig's folder, its two paths relative.
+    fn xyplorer_file(r: &Rig) -> PathBuf {
+        r.file("a.txt");
+        std::fs::create_dir_all(r.files.join("sub")).unwrap();
+        r.file("sub\\b.txt");
+        let real = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/marks/real-v5-zh.dat")).unwrap();
+        let units: Vec<u16> = real[2..].as_chunks::<2>().0.iter().map(|&c| u16::from_le_bytes(c)).collect();
+        let text = String::from_utf16(&units)
+            .unwrap()
+            .replace("Storage: 0 (Absolute paths)", "Storage: 3 (Relative to tags database)")
+            .replace("C:\\$Recycle.Bin", "a.txt")
+            .replace("C:\\Documents and Settings", "sub\\b.txt");
+        let mut bytes = vec![0xFF, 0xFE];
+        bytes.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
+        let source = r.files.join("tag.dat");
+        std::fs::write(&source, bytes).unwrap();
+        source
+    }
+
+    fn with_have(have: Vec<Label>) -> ImportOptions {
+        ImportOptions { have, meet: Meet::Replace, ..ImportOptions::default() }
+    }
+
+    #[test]
+    fn the_journals_first_line_keeps_the_labels_before_and_after_and_a_journal_from_before_reads_without() {
+        let r = Rig::new("journal-labels");
+        let a = r.file("a.txt");
+        let before = glint_model::marks::default_labels();
+        let new = LabelPlan { name: "天蓝色".into(), color: 0x0ea5e9, to: "天蓝色".into(), new: true, takes_name: false };
+        let mut p = plan("C:\\xy\\tag.dat", vec![here(&a, label("天蓝色"))]);
+        p.options = with_have(before.clone());
+        p.labels = vec![new];
+        let report = r.import(&p);
+        let last = last_import_in(&r.data).expect("a last import");
+        assert_eq!(Some(last.journal.clone()), report.journal);
+        assert_eq!(last.labels.as_ref(), Some(&before));
+        let made = last.made.clone().expect("the labels it made");
+        assert_eq!((made.len(), made.last().map(|l| l.name.as_str())), (before.len() + 1, Some("天蓝色")));
+
+        // A journal written before the labels were kept: the same lines with a bare first line.
+        let text = std::fs::read_to_string(&last.journal).unwrap();
+        let body = text.split_once('\n').unwrap().1;
+        let old = format!("{{\"glint-import\":1,\"source\":\"C:\\\\xy\\\\tag.dat\",\"at\":{}}}\n{body}", last.at);
+        std::fs::write(&last.journal, old).unwrap();
+        let again = last_import_in(&r.data).expect("still a last import");
+        assert_eq!((again.labels, again.made, again.items), (None, None, 1));
+    }
+
+    #[test]
+    fn following_with_a_label_xyplorer_gained_since_names_it_new_and_one_renamed_in_glint_is_matched_by_its_new_name() {
+        let r = Rig::new("follow-labels");
+        let source = xyplorer_file(&r);
+        let mut have = glint_model::marks::default_labels();
+        let first = super::super::import::plan_here(&source, with_have(have.clone())).unwrap();
+        assert!(first.labels.iter().any(|l| l.name == "天蓝色" && l.new), "{:?}", first.labels);
+        r.import(&first);
+
+        // Since then Red was renamed in Glint (keeping its old name), and the file's marks changed.
+        let old = std::mem::replace(&mut have[0].name, "红色".into());
+        have[0].was.push(old);
+        let mut second = super::super::import::plan_here(&source, with_have(have.clone())).unwrap();
+        second.items[0].gets = label("天蓝色");
+        let red = &second.labels[0];
+        assert_eq!((red.name.as_str(), red.to.as_str(), red.new, red.takes_name), ("红色", "红色", false, false));
+        let followed = follow_plan(&second, &r.data, &r.w()).unwrap().expect("something came");
+        assert_eq!(followed.labels, second.labels);
+        let sky = followed.labels.iter().find(|l| l.name == "天蓝色").expect("the label XYplorer gained");
+        assert!(sky.new && sky.to == "天蓝色");
+        // Its own journal keeps the labels it was planned with.
+        assert_eq!(last_import_in(&r.data).and_then(|l| l.labels), Some(have));
     }
 
     #[test]

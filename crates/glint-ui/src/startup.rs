@@ -82,6 +82,13 @@ pub(crate) fn start(cx: &mut App, request: launch::Request) {
     explorer::marked::init(cx);
     // XYplorer's tag.dat, followed once it was brought in and the setting says so (docs/gpui/marks, F30).
     crate::marks_follow::init(cx);
+    // The PC's labels, so a write settles a 0.16 color tag into its label; and, once after the update, the files
+    // instant search lists with one (docs/gpui/marks, 5.6). A secondary window leaves both to the main one.
+    if secondary_window.is_none() {
+        hand_labels_to_core(cx);
+        glint_core::marks::settle::start();
+        cx.on_app_quit(|_| async { glint_core::marks::settle::stop() }).detach();
+    }
     explorer::explorer(cx).update(cx, |e, cx| e.refresh_on_demand(cx).detach());
     // The saved remote connections, handed to core so their folders open (`initRemotes`).
     crate::dialogs::remote::push_to_core(cx);
@@ -715,6 +722,20 @@ fn quit(cx: &mut App) {
         window_state::save_hwnd(hwnd);
     }
     cx.quit();
+}
+
+/// Gives core the settings' labels now and again whenever they change (and only then).
+fn hand_labels_to_core(cx: &mut App) {
+    let handed = Rc::new(std::cell::RefCell::new(state::settings(cx).labels.clone()));
+    glint_core::marks::set_labels(handed.borrow().clone());
+    cx.observe_global::<state::UiState>(move |cx| {
+        let labels = &state::settings(cx).labels;
+        if *handed.borrow() != *labels {
+            *handed.borrow_mut() = labels.clone();
+            glint_core::marks::set_labels(labels.clone());
+        }
+    })
+    .detach();
 }
 
 // ---- The explorer and the saved state ----------------------------------------------------------------------

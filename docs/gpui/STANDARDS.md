@@ -232,6 +232,24 @@ Retired with the migration (0.10). What it said about strings still holds: indic
 
 **Editing files with scripts:** open and write with `encoding='utf-8'`. The default on this PC (cp1252) mangles the sources' non-ASCII characters.
 
+### 5.2 Marks (a label, tags and a comment: `glint_model::marks`, `glint_core::marks`)
+
+*From the Marks wave (docs/gpui/marks/PLAN.md section 3; docs/marks.md says what the person and a script can rely on). What a later card that touches marks keeps to:*
+
+- **The file is the home.** Where the drive keeps named streams, a mark is in the file's own stream (`glint.label`, `glint.tags`, `glint.comment`) and nowhere else. Beside the file (`.glint-marks`) and the ledger on this PC are for drives and items that can't hold a stream, and writing to one home takes the item out of the homes after it (`marks::home_of`). Ask the volume (`caps::has_streams`), never an error's text.
+- **Marks are plain text in every home.** UTF-8 a person can read and a script can write: `Get-Content f -Stream glint.comment`. No database and no binary format outside the index's own snapshot.
+- **Marking never changes a file's dates or contents.** A stream is written under `tags::keep_times`; a mark beside a file or in the ledger touches only that file.
+- **Only what is known is drawn.** A row whose marks aren't read yet draws none: no placeholder, no guess (the Aware rule, "Only what is known is said").
+- **A listing costs what it cost before.** No mark is read to list a folder. Rows on screen are read in batches off the UI thread (`RowFacts`); every row of a folder is read only when a marks column sorts, groups or filters (`ask_all`), and a view never reads marks itself.
+- **Every change goes through `dialogs::tags::set_marks`** (or core's `marks_set` and `marks_put`, `set_many` where there is no runtime), so it is one Undo step with its words and `TagsChanged` tells the views. An import, a paste and an agent's change included.
+- **XYplorer's files are only read.** Never written, moved or held open (`xy_find::read_shared` shares for writing); Glint writes its own exports, never `tag.dat`.
+- **What 0.16 wrote keeps working.** `glint.tags` keeps its name and format, and a key, a stream name or a file's line format is never renamed. A 0.16 app or service that meets a 0.17 file still sees its tags.
+- **No new crate for marks.**
+- **What comes from outside is data.** A `.glint-marks` from a USB stick, a `tag.dat`, an import and an export are read capped (4 MB and 100,000 lines; 64 MB), a name with `\`, `/` or `..` in a sidecar is refused (it can only speak of its own folder), nothing in them is run and none of it panics (section 3). A label or a tag an agent sends is one line without control characters, here and in the question the person is asked.
+- **A label is not a state.** Selection, hover and drop keep their one fill ("A state is a fill"); a label is drawn under them, through `theme::label_wash`, and never in the accent. A selected row shows its selection alone.
+- **The marks filter exists twice on purpose** (`shadui_index::query::MarksFilter`: a SYSTEM service keeps few dependencies; `glint_model::marks::Wanted`), and both run `tests/fixtures/marks-filter.txt`. A change to one is a change to the table. The lists of filter keys the interface keeps read `marks::KEYS`.
+- **The service never sends a comment's text.** It says which files match; the app reads the comment from the file with the person's own rights. A far read (a stream that left the record) opens by file reference and reads only the three `glint.*` streams.
+
 ## 6. Core rules (src-tauri to glint-core)
 
 Retired with the migration (0.10): glint-core is Glint's engine now, not code on its way from src-tauri.

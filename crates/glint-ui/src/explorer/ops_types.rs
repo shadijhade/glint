@@ -9,7 +9,7 @@
 //! (`base_name`, which keeps the whole path for a drive).
 
 use super::types::TabId;
-use glint_model::marks::Marks;
+use glint_model::marks::{Label, Marks};
 
 // ---- Asking Windows' file engine -------------------------------------------------------------------------
 
@@ -156,6 +156,10 @@ pub enum UndoAction {
     /// Marks changed (docs/gpui/marks): each item gets back the marks it had, through glint-core's `marks_put`.
     /// Not a file operation of Windows' file engine.
     Marks(Vec<(String, Marks)>),
+    /// An import's labels taken back (docs/gpui/marks, wave 6): Settings' labels become `before`, but only while
+    /// they are still `made` (what the import left them as); the person's own changes since are never undone.
+    /// Run in the interface, not a file operation.
+    Labels { before: Vec<Label>, made: Vec<Label> },
 }
 
 /// One piece of work that taking a step back is made of, in the order it runs (see [`UndoAction::runs`]).
@@ -171,6 +175,8 @@ pub enum UndoRun {
     RemoveLinks(Vec<String>),
     /// Through glint-core's `marks_put`.
     Marks(Vec<(String, Marks)>),
+    /// In the interface: Settings' labels (see [`UndoAction::Labels`]).
+    Labels { before: Vec<Label>, made: Vec<Label> },
 }
 
 impl UndoAction {
@@ -182,6 +188,7 @@ impl UndoAction {
             UndoAction::Wof(id) => vec![UndoRun::Wof(*id)],
             UndoAction::RemoveLinks(paths) => vec![UndoRun::RemoveLinks(paths.clone())],
             UndoAction::Marks(items) => vec![UndoRun::Marks(items.clone())],
+            UndoAction::Labels { before, made } => vec![UndoRun::Labels { before: before.clone(), made: made.clone() }],
             single => single.op().map(UndoRun::File).into_iter().collect(),
         }
     }
@@ -206,7 +213,8 @@ impl UndoAction {
             | UndoAction::RenameBatch(_)
             | UndoAction::Wof(_)
             | UndoAction::RemoveLinks(_)
-            | UndoAction::Marks(_) => None,
+            | UndoAction::Marks(_)
+            | UndoAction::Labels { .. } => None,
             UndoAction::Recycle(paths) => Some(FileOp::Delete {
                 paths: paths.clone(),
                 permanent: false,

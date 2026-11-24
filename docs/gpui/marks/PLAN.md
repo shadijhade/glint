@@ -138,7 +138,7 @@ Hidden, in the folder, JSON Lines (UTF-8, `\n`), sorted by name so it reads well
 
 ### 5.3 On this PC: the ledger
 
-`%APPDATA%\com.shado.shadui-ripgrep\marks.jsonl`: the same lines with `"path"` in place of `"name"`, and `"why"`: `"away"` (an import waiting for a file that was not there) or `"shut"` (it cannot be written where it is). Held in memory by path in lower case; written the way the sidecar is, a moment after it changes.
+`%LOCALAPPDATA%\com.shado.shadui-ripgrep\marks.jsonl` (`tools::data_dir()`): the same lines with `"path"` in place of `"name"`, and `"why"`: `"away"` (an import waiting for a file that was not there) or `"shut"` (it cannot be written where it is). Held in memory by path in lower case; written the way the sidecar is, a moment after it changes.
 
 ### 5.4 Which home
 
@@ -209,15 +209,20 @@ On fd's drives the test moves from `Out::push` (one thread, `find.rs:228`) to th
 
 ### 6.6 What it may cost (S0 measured the first column; section 11 holds the second)
 
-| | Today | Wanted |
-| :--- | :--- | :--- |
-| Listing a folder of 100,000 | 24 ms: Windows' enumeration 19–20 ms, the sort 5–7 ms | the same |
-| Marks of 200 rows, none marked | tags: 2.1 ms (10.7 µs a file: one open, which fails) | within a millisecond of it |
-| Every mark in a folder of 10,000 (a sort) | not done | under 60 ms on every core (see below) |
-| The index: C: read from scratch | 2.3–2.5 s | the same with no marks; measured with 10,000 marked files |
-| `tag:work` inside the service | 8.0 ms (best 7.3), C: and D: (1.4 million items, none tagged); a name, `report`, 8.2 ms | the same; `label:` and `comment:` like it |
-| The right-click menu for one item | under 1 ms | the same |
-| A `tag.dat` of 10,000 lines: read, find the files, mark them | not done | read under 50 ms; the rest in the background, said as it goes |
+| | Today | Wanted | Wave 6, release (2026-11-24) |
+| :--- | :--- | :--- | :--- |
+| Listing a folder of 100,000 | 24 ms: Windows' enumeration 19–20 ms, the sort 5–7 ms | the same | **26.8 ms** (best 24.9): enumeration 22.9, sort 6.6 |
+| Marks of 200 rows, none marked | tags: 2.1 ms (10.7 µs a file: one open, which fails) | within a millisecond of it | **11.6 ms** (58 µs a file): **not met**; the read is waves 2–5's, unchanged by wave 6, and the files were in %TEMP% (see below) |
+| Every mark in a folder of 10,000 (a sort) | not done | under 60 ms on every core (see below) | from the files: **205 ms** none marked, **984 ms** all three marks each; from the index (W2): not measured, the service here is 0.16.1's |
+| The index: C: read from scratch | 2.3–2.5 s | the same with no marks; measured with 10,000 marked files | not measured (needs an administrator) |
+| `tag:work` inside the service | 8.0 ms (best 7.3), C: and D: (1.4 million items, none tagged); a name, `report`, 8.2 ms | the same; `label:` and `comment:` like it | not measured: the running service is 0.16.1's and was not replaced; a name, `kernel32.dll`, 5.5 ms there |
+| The right-click menu for one item | under 1 ms | the same | not measured (needs the real app) |
+| A `tag.dat` of 10,000 lines: read, find the files, mark them | not done | read under 50 ms; the rest in the background, said as it goes | read **21 ms**, the whole plan 274 ms; applied **37.6 s** where the drive keeps streams (3.8 ms an item), **1.1 s** beside the files |
+| `set_marks` over 1,000 files (an agent) | — | — | **1.68 s** (a label, a tag and a comment, streams); `get_marks` 88 ms |
+| A zip of 10,000 unmarked files | — | the same with marks read | **1,327 ms** without the marks' step, **1,379 ms** with it (medians of 5) |
+| A label rule on 1,000 new files | — | — | **375 ms** |
+
+**How wave 6 measured** (the coordinator, release builds, this PC: 16 threads, NVMe, Windows 11; 50 writes of 4 KB took 0.8 ms each first, so the PC was not in its locked-maintenance state; files in the session's scratch folder under %TEMP%, created just before and read once to warm up): listing with `Glint.exe bench <folder> --runs 9` (median of 9); the row reads with `marks::tests::measure_reads_for_rows_and_a_whole_folder` (`read_many`, median of 11); the rest with the cards' own ignored tests run from the release test binary (`mcp::tests::measure_a_thousand_files`, `archive::compress::tests::measure_a_zip_of_ten_thousand_unmarked_files`, `rules::tests::measure_a_label_rule_on_a_thousand_new_files`, `marks::apply::tests::ten_thousand_items_in_a_hundred_folders_time`, `marks::import::tests::ten_thousand_lines_over_ten_thousand_files_cost`), one run each but the zip's. The second row is four times S0's harness: `find` (a stream listing, the folder's `.glint-marks` looked for once, `tidy`) is not what S0 timed, and Defender may scan new files in %TEMP% on open; nobody has found which. Applying an import where the drive keeps streams is 3.8 ms an item (three streams written with their dates kept).
 
 How S0 measured (2026-11-23, this PC: 16 threads, NVMe SSD, Windows 11, release builds, files in Windows' cache, nothing else running): listing with `Glint.exe bench <folder> --runs 9` on 100,000 files of 64 bytes, twice (medians 24.2 and 24.4 ms); the marks of rows with a harness that copies `tags.rs`'s reads exactly and times four ways in turns, 11 runs after a warm-up (section 14, item 5); the service with its own `search` command, 11 fresh runs, the time it reports for itself. The harness and its notes are in the coordinator's notes folder (`marks-s0-harness/`).
 
@@ -406,6 +411,7 @@ The tree wins; this is what a card finds there.
 - **Added by wave 3's review**: `marks::carry::carry_files` (pairs known to be files: the queue's), `Change::Paste`, `marks::comment_brief`, the queue's `Copies` (what a job copied, carried 512 at a time and when it ends), `marking::take_label_off` as `pub(crate)`; `queue::plan` gives each folder with the one it is a copy of; glint-ui's `file_list::layout::leave_room` with `NAME_ROOM`.
 - **Landed before wave 4's cards** (each compiles and does nothing until its card fills it, but `marks_in`, which is whole): glint-core's `marks/apply.rs` (`apply`, which `import_apply` now calls on a blocking thread; `last_import`, `import_take_back`, `brought_in`, `follow`, with `LastImport` and `Followed`: F1b), `marks/wake.rs` with `listed(folder)`, which `fsx::read_listing` calls for every real folder it lists (F1b), `beside::waiting_in` and `beside::move_in` behind `marks_beside(folder)` and `marks_move_in(folder)` (B4), `marks_in(folder) -> Option<Vec<MarkedIn>>` (the index's `MarksIn`, `None` where it can't say); three fields of the import's types: `ImportOptions.have` (Glint's labels, which the interface hands in: core has no settings), `LabelPlan.takes_name` (7.3: Glint's label takes XYplorer's name) and `ImportPlan.needs_base`, and `LabelPlan.to` may be empty (the label comes in as a tag). glint-ui's `dialogs/marks_import.rs` with `open(window, cx, source)` (F2a) and `dialogs/marks_export.rs` with `open(window, cx, folder)` (F3), `MenuEvent::ImportMarks { source }` and `ExportMarks { folder }` with their keys `do:import-marks` and `do:export-marks` and the workspace's two arms, `marks_follow.rs` with `init(cx)`, which start-up calls after `explorer::marked::init` (F2b), and the module `settings/labels.rs` (G1b).
 - **Landed before wave 5's cards** (whole, not empty: two lines each): glint-core's `marks::read_many(paths: &[String]) -> Vec<Marks>` and `marks::set_many(items: Vec<(String, Change)>) -> Vec<Outcome>`, the synchronous twins of `marks_read` and `marks_set`/`marks_put` for MCP's tools, the rules' thread and the archive writer, which have no runtime. Each reads a folder's `.glint-marks` once a call, and `set_many` writes it once.
+- **Before wave 6's cards** nothing was landed: no two of its cards share code (W4 adds `UndoAction::Labels`, and the only exhaustive matches on `UndoAction` are in its own files).
 - **Engine helpers**: `xray::list_streams` is `pub(crate)`; `permalinks::win` is `pub(crate)`, so `find_volume_root_by_serial` is `crate::permalinks::win::find_volume_root_by_serial` (Windows only).
 
 ## 9. The waves
@@ -453,7 +459,14 @@ Cards in a wave run at the same time; a wave starts when the one before it is in
 | 5 | [H2a](cards/H2a-batch-rename.md) | `{label}` and `{tags}` in Batch rename | ui | `dialogs/batch_rename.rs` |
 | 5 | [H2b](cards/H2b-rule-label.md) | A folder rule that labels (`RuleAction::Label`) | model, core, ui | `RuleAction` and `FolderRule` in `store.rs`, `rules.rs` (core), `dialogs/rules.rs` |
 | 5 | [H2c](cards/H2c-zip-marks.md) | The zips Glint makes keep a `.glint-marks` in each folder | core | `archive/compress.rs` |
-| 6 | — | **Coordinator**: the color tags' move (5.6); every wiring call; the look in the real app in both themes; speed; e2e; docs (section 11) | all | — |
+| 6 | [W1](cards/W1-color-tags-move.md) | The color tags' move (5.6): the next write, and once on indexed drives | core | `marks/mod.rs` (`work`), `marks/settle.rs`, a marked place in `startup.rs` |
+| 6 | [W2](cards/W2-sort-from-index.md) | A sort or a group by a mark from the index (6.6's third row) | ui | `row_facts.rs`, marked places in `explorer/rows.rs` and `explorer/marked.rs` |
+| 6 | [W3](cards/W3-far-oplocks.md) | Far reads an oplock can't stall (`NtCreateFile`, `FILE_COMPLETE_IF_OPLOCKED`) | index | `far.rs`, the oplock sentence of `instant-search.md` |
+| 6 | [W4](cards/W4-import-undo-labels.md) | The import's Undo and *Take back* put the labels back; following plans with the labels now | core, ui | `marks/apply.rs`, `dialogs/marks_import.rs`, `marks_follow.rs`, `explorer/{ops_types,undo}.rs`, the take back in `settings/labels.rs` |
+| 6 | [W5](cards/W5-ledger.md) | The ledger between processes; its lines under a renamed folder | core | `marks/ledger.rs`, `marks/carry.rs` |
+| 6 | [W6](cards/W6-small-things.md) | Small things left: the tag menu's dialogs say they look; `enter_runs_main` goes; one recent-tags cap; `open_at` reaches a later section | ui | marked places in `sidebar/mod.rs`, `dialogs/mod.rs`, `persistence.rs`, `dialogs/tags.rs`, `settings/mod.rs` |
+| 6 | [W7](cards/W7-docs.md) | The docs (11.8) | docs | `docs/marks.md`, `features.md`, `instant-search.md`, STANDARDS §5, `NEXT_RELEASE.md` |
+| 6 | [W8](cards/W8-e2e-marks.md) | The end-to-end check `marks` (11.7), written, not run | e2e | `tests/e2e/checks/Checks.ps1` |
 
 Why this order: wave 1 has no card that reads another's code. B2 needs A1, A2 and B1; C2 needs C1 and A4; D1 needs only section 8. Wave 3 is the interface on D1, and carrying on B2. Wave 4 is XYplorer and what stands on a working feature. Wave 5 can be left for 0.17.1 without anyone missing a promise of the issue.
 
@@ -603,11 +616,55 @@ Decided by the cards' agents, and kept:
 - A zip's marks are read once for all its items; with a password its `.glint-marks` is encrypted like the rest; tar carries it without a hidden bit.
 - `set_marks` answers what each item has after, and what failed, in the homes' words.
 
+**Wave 6, as it landed** (2026-11-24: the other session wrote eight cards and ran them, one Sonnet agent a card, in two rounds; [its report](WAVE-6-REPORT.md), and [what it was asked](RUN-WAVE-6.md)). Six came back done and two partial: W1's move had never run against an index, and W6's `open_at` couldn't be made to fail in the tests. The speed it measured is 6.6's last column.
+
+What the review changed:
+
+- **A debug copy never moves color tags.** The look at the app found the move running: a dev build is 0.16.1, like the installed service, so "the service is this version's" held, and half a minute after start the scratch copy settled C: and D: through the real index, with its scratch profile's labels (an import had just renamed them 红色…). Every `glint.label` stream in the part of C: it reached was looked for afterwards: only the scratch folder's own file had changed, and D: listed nothing. `settle::start` now does nothing in a debug build, so neither a look at the app nor the end-to-end checks can rewrite the person's files.
+- **The move can't undo a mark set meanwhile.** It read a batch, then wrote each file's settled marks whole (`Put`), so a change made between the two was lost. It now asks `set_many` for no change: `work` settles what it writes, writes nothing already settled, and reads each file as it writes it.
+- **A label list the person emptied stays empty.** Core took an empty list as "not told yet" and settled with the seven. It now keeps `None` until the interface says (the MCP server's process never does, and settles with the seven).
+- **A sort from the index keeps the marks the index doesn't know.** The index lists what the files' own streams say, so a line in `.glint-marks` (a folder from a stick or a zip) and the ledger's were drawn as no marks. `marks_in` now adds them, in `find`'s order. The service also refuses a folder while one of its items' marks is still to be read (far), so the app reads the files rather than draw that item unmarked.
+- **No comment stand-in.** An item the index said has a comment was kept with an empty comment until its row came on screen, and meanwhile Copy marks, Paste and the Marks block could take the empty text for the comment. Now the index gives labels and tags, and only the items with a comment are read from their files, whole.
+- `docs/marks.md` and 5.3 say where the ledger is (`%LOCALAPPDATA%\com.shado.shadui-ripgrep`), and what W5 changed for the MCP server.
+- The tour's `settings:` no longer scrolls again after 600 ms.
+
+**Looked at in the real app** (a debug copy on a scratch profile):
+
+- **Seen working**: Settings opened at *Marks*, the Files page's last section, shows it at once, so wave 4's case is gone with no change of code (W6's part 4). Also an import's preview and apply with issue 8's file (the labels take XYplorer's Chinese names, 天蓝色 comes in, the notice has Undo), and Sort by Label in dark. With the installed 0.16.1 service the folder is read from the files, and a 0.16 color tag and a line beside a file sort as their labels.
+- **Not seen**: an import's Undo putting labels back (the tour's `key:` reaches neither Alt+3 nor Ctrl+Z in the list; the tests cover it). Nor, with no service of this version here: the move, a sort from the index, `tag:`, or far reads under an oplock outside the tests. Nor the tag menu's *Finding what has…*.
+
+The whole, after the review: `cargo test --workspace --no-fail-fast` 3,984 passed, 0 failed, 62 ignored; clippy clean.
+
+Decided here (the report's questions):
+
+- **Tagging a file *Red* gives it the label Red** (5.6 over 10's "`tags_set` as today"). It is what every row already draws, and the move does the same to every file. Section 10 says so now.
+- **The ledger's look once a second stays** (one `metadata` a second, a busy second skipped), in the MCP server's process too: reading only when marks are written would leave the rows showing the other process's old lines.
+- W1's labels stay outside `World`: `work_with` is the one place they are passed.
+
+What is left, and whose it is:
+
+- **The person's**:
+  - a real XYplorer, and the drives of 11.3;
+  - running the end-to-end checks (`marks` the first time);
+  - updating instant search's service, after which the move, a sort from the index and `tag:` can be seen and timed;
+  - where the head's label chips go, and how an export's path is cut;
+  - the reply on issue 8, and the README's What's new.
+- The marks of 200 unmarked rows take 11.6 ms where 6.6 wants about 3. Why isn't found: new files in %TEMP% and Defender, or `find`'s look for the folder's `.glint-marks`.
+- A write by the other process between the ledger's read and its write is still lost (`ponytail:` in `save`: a lock file would close it).
+
+Decided by the cards' agents, and kept:
+
+- `UndoAction::Labels { before, made }`: Undo and *Take back the last import* put the labels back only while Settings still equal what the import made. An import that changed labels is one step, `Sequence([Labels, Marks])`.
+- An import's journal keeps `labels` and `made` in its first line; an old journal reads with neither.
+- A far read that finds the item held with an oplock leaves it far for the next round and doesn't count it, so a round of only such items rests a second.
+- The ledger's lines under a folder move or copy with it by key prefix and a separator; a rename that changes only case is skipped.
+- *Take off every file…* is a view of its own (`TakeOffTag`), with the same words.
+
 **A cut that still keeps the issue's word**: S0 and waves 1 to 3 are the three marks, their columns, keys, menu, panel, search and following the file. Wave 4's F1 to F3 are import and export, XYplorer's included. Everything else is what makes it Glint's.
 
 ## 10. What must not break
 
-- **`glint.tags`**: its name, its format, `tags::read` and `tags_set` as they answer today; a 0.16 file read by 0.17 and a 0.17 file read by 0.16.
+- **`glint.tags`**: its name, its format, `tags::read` and `tags_set` as they answer today, but for a color tag, which becomes the label (5.6; decided in wave 6); a 0.16 file read by 0.17 and a 0.17 file read by 0.16.
 - **The tests there are** pass unchanged: `dialogs/tags.rs` (`:733`–`:989`), the sidebar's, `row_facts.rs`'s, `file_list/tests/facts.rs`. The two that list the Tags submenu's rows (`menus/tests.rs:395`–`:451`, `tests_content.rs:260`) change for exactly the rows of F7.
 - **The end-to-end names** the Aware plan's section 8 lists.
 - **Speed**: 6.6's second column, in the real app with `GLINT_FRAME_LOG=1`.

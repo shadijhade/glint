@@ -8,6 +8,90 @@ The plan for 0.12 that was here is in git history (`git show df1245a:NEXT_RELEAS
 before it (`git show 47c33fa:NEXT_RELEASE.md`), and 0.13's own plan, the menu and the dock that know the selection,
 is [docs/gpui/aware/PLAN.md](docs/gpui/aware/PLAN.md) with its task cards beside it.*
 
+## In 0.17.0: a label, tags and a comment that stay with the file (not released yet)
+
+*[Issue #8](https://github.com/shadijhade/glint/issues/8), Label, Tags and Comment as in XYplorer, and XYplorer's own brought along.
+Built as the Marks wave, [its plan](docs/gpui/marks/PLAN.md) and task cards beside it, in waves 1 to 3 (`00cf486`), 4 (`12a6e5e`),
+5 (`c6a4c8b`) and 6 (the docs, the last fixes and the checks; its commit is the one that carries this note).
+[docs/marks.md](docs/marks.md) has the formats, PowerShell and what follows a file.*
+
+### What it is
+
+1. **Three marks on any file or folder.** A **label** (one named color that says a status), **tags** (several words,
+   as before) and a **comment** (free text, 64 KB at most). Label, Tags and Comment are columns that sort, **Group by
+   → Label** groups, a labeled row is washed in its color, a tile's name sits on a pill of it, and a row with a comment
+   has a small note mark whose tooltip is the comment.
+2. **One key.** `Alt+1`…`Alt+9` give the selection the first nine labels (again on items that all have it: takes it
+   off), `Alt+0` takes the label off, `Alt+T` opens Edit tags… (which now suggests tags as you type) and `Alt+N` Edit
+   comment…. The menu has a row of the labels' dots; **More → Marks** has *Tags…*, *Comment…*, *Copy marks*, *Paste
+   marks* and *Clear marks*; the preview pane and Quick Look start with a **Marks** block; `Ctrl+K` has all of it.
+   Every change is one **Undo**, tagging included (it had none).
+3. **Labels are yours.** **Settings → Files → Labels** renames, recolors, adds (32 at most) and reorders them. They start
+   as the seven color tags of 0.16, which become labels: a file tagged *Red* is shown with the label *Red*, `tag:red`
+   still finds it, and its color tag moves into the label the next time its marks are written.
+4. **Found at once.** `label:important` (`label:red;orange` for either), `tag:`, `comment:lacp`, `has:label`,
+   `has:tag`, `has:comment`, `has:mark` and `!` for not, with XYplorer's `lbl:`, `tags:` and `cmt:`. They work in the
+   open folder as you type (`tag:` there showed every row before), in instant search and on fd's drives. A plain word
+   also finds comments and tags, under **In comments**; typos in a tag or label are forgiven; `tagged netplan`,
+   `with comments` and `labeled pending from last week` are understood. The sidebar lists **Labels** above **Tags**, and a
+   tag's menu renames it everywhere or takes it off every file. The pane's head shows the labels in the folder, and
+   pressing one filters to it.
+
+### Where the marks live
+
+5. **In the file.** On NTFS and ReFS the three marks are streams of the file itself (`glint.label`, `glint.tags`,
+   `glint.comment`, plain text), so renaming, moving or copying it with any program takes them along, into the Recycle
+   Bin and back. PowerShell reads and writes them: `Set-Content bond0.conf -Stream glint.label -Value Important`
+   (PowerShell moves the file's Date modified; Glint never does). 0.16's `glint.tags` is unchanged, so 0.16 and 0.17
+   read each other's tags.
+6. **On a drive without streams** (FAT, exFAT, a card, some NAS shares) they are in a hidden `.glint-marks` text file in
+   the same folder, which travels with the folder; where neither can be written they are kept on this PC. Glint's own
+   copies and moves write them where they belong on the other side, a folder's own marks included (Windows never
+   copies a folder's streams); a tool that makes a new file in the old one's place (Make smaller, the PDF tools,
+   Convert document…) gives it the old one's marks; a zip Glint makes holds a `.glint-marks` in each marked folder.
+7. **Instant search reads them** in the pass that reads the names. A mark too big for the file's record is read through
+   the file system by the service, by the file's reference and never by a path. The service never sends a comment's
+   text, and holds the first 4 KB of every account's comments, so whoever may ask it can learn which files have a word
+   in theirs ([instant-search.md](docs/instant-search.md)).
+
+### XYplorer, agents and rules
+
+8. **XYplorer's marks come in.** Glint finds `tag.dat` by itself (a suggestion offers it), or **Import marks…** takes any
+   `tag.dat` or `XYplorerTag.dat`. One preview says where everything is (labels and what each becomes, extra columns,
+   items here, moved since, waiting for a drive, not found), *Fill what is empty* is the default, and one **Undo** (or
+   **Settings → Files → Marks → Take back the last import**) takes it back. Items on a drive that isn't there wait and
+   take their marks when it is. **Keep following XYplorer** is off until you choose it. XYplorer's file is only read.
+   **Export marks…** writes Glint's own file or an `XYplorerTag.dat` that XYplorer's `tagload` merges.
+9. **AI agents** get `get_marks` and `set_marks` (asked first in a Windows dialog, written down, undone from Settings →
+   AI agents). **Folder rules** can give a file a label, and **Batch rename** has `{label}` and `{tags}`.
+
+### Not tried for real
+
+- **Against a real XYplorer.** The reader was built from its manual and forum and read the one file a user sent for the
+  issue; each storage mode, following a change and `tagload` of an export are untried.
+- **On an exFAT drive and on a NAS.** This PC has neither; carrying marks between homes, `.glint-marks` written through
+  `replace_contents` there, what Windows asks when streams would be lost, and whether a share that says it keeps
+  streams does, are untried.
+- Instant search's side with the service that came with this build: the installed 0.16.1 service knows no marks, so
+  the index's answers were tested against the code and not seen in the window. ReFS drives keep marks in the file, but
+  the index holds none there. The once-only move of 0.16's color tags runs only in a release build with the new
+  service, so it has run in tests alone.
+
+### Keys added
+
+Alt+1 to Alt+9 (give a label), Alt+0 (no label), Alt+T (Edit tags…), Alt+N (Edit comment…).
+
+### Checks
+
+After wave 6, `cargo test --workspace --no-fail-fast` 3,984 passed, 0 failed, 62 ignored, and `cargo clippy
+--workspace --all-targets -- -D warnings` clean (wave 5's review: 3,947, 0, 60). Looked at in a debug copy on a scratch profile in both themes
+(`GLINT_SELFTEST=fly:`): the wash, the columns, the grid, the menu's dots, the Marks block, Edit comment…, the import's
+preview and notice with issue 8's own file, Export marks…, Settings' Labels, Batch rename with `{label}`, the rule's
+label. Wave 6 measured release builds ([the plan's 6.6](docs/gpui/marks/PLAN.md)): listing 100,000 files 26.8 ms, a
+zip of 10,000 unmarked files 1,327 ms without reading marks and 1,379 ms with, `set_marks` over 1,000 files 1.7 s, a
+`tag.dat` of 10,000 lines read in 21 ms; the marks of 200 unmarked rows take 11.6 ms, over the millisecond the plan
+wanted. The end-to-end check `marks` is written and not yet run.
+
 ## 0.16.1: scrolling the sidebar no longer closes Glint
 
 - 0.16.0 closed with no message (Windows' Application log: `Glint.exe`, exception `0xc0000409`, `FAST_FAIL_FATAL_APP_EXIT`)

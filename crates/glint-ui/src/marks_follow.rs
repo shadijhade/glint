@@ -10,8 +10,10 @@
 use crate::dialogs::tags::{self, TagsChanged};
 use crate::kit::prelude::*;
 use crate::{core_bridge, state, t};
+use glint_core::marks::apply::apply_labels;
 use glint_core::marks::Followed;
 use glint_model::format::plural;
+use glint_model::marks::Label;
 use gpui_kit::gpui::{AnyWindowHandle, App, Context, Global};
 use std::future::Future;
 use std::pin::Pin;
@@ -21,8 +23,9 @@ use std::time::{Duration, Instant};
 /// Not asked again within this long of the last answer (coming to the front twice is not two questions).
 pub const QUIET: Duration = Duration::from_secs(5);
 
-/// What answers "did the followed `tag.dat` change?": in the app core's `marks::follow`, in a test a fake.
-pub type Source = Rc<dyn Fn() -> Pin<Box<dyn Future<Output = Result<Option<Followed>, String>>>>>;
+/// What answers "did the followed `tag.dat` change?", given Settings' labels as they are now: in the app core's
+/// `marks::apply::follow_with`, in a test a fake.
+pub type Source = Rc<dyn Fn(Vec<Label>) -> Pin<Box<dyn Future<Output = Result<Option<Followed>, String>>>>>;
 
 struct Follow {
     source: Source,
@@ -46,7 +49,9 @@ pub fn init(cx: &mut App) {
     }
     init_with(
         cx,
-        Rc::new(|| Box::pin(async { core_bridge::run(glint_core::marks::follow()).await.and_then(|answer| answer) })),
+        Rc::new(|have| {
+            Box::pin(async { core_bridge::run(glint_core::marks::apply::follow_with(have)).await.and_then(|answer| answer) })
+        }),
     );
 }
 
@@ -102,7 +107,8 @@ fn ask(cx: &mut App) {
         return;
     }
     follow.asking = true;
-    let asked = (follow.source)();
+    let source = follow.source.clone();
+    let asked = source(state::settings(cx).labels.clone());
     cx.spawn(async move |cx| {
         let answer = asked.await;
         cx.update(|cx| answered(cx, answer));
@@ -128,6 +134,12 @@ fn answered(cx: &mut App, answer: Result<Option<Followed>, String>) {
     let marks = followed.came.saturating_add(followed.gone);
     if marks == 0 {
         return;
+    }
+    // A label XYplorer gained since comes into Settings as an import brings it (the marks already carry its name).
+    let mut labels = state::settings(cx).labels.clone();
+    apply_labels(&mut labels, &followed.labels);
+    if labels != state::settings(cx).labels {
+        state::update(cx, |settings| settings.labels = labels);
     }
     tags::hub(cx).update(cx, |_, cx| cx.emit(TagsChanged { paths: followed.paths }));
     if let Some(window) = window {
@@ -160,6 +172,8 @@ mod tests {
         asked: Rc<Cell<usize>>,
         answers: Rc<RefCell<Vec<Answer>>>,
         now: Rc<Cell<Instant>>,
+        /// The labels each question was handed.
+        handed: Rc<RefCell<Vec<Vec<Label>>>>,
     }
 
     fn start(cx: &mut TestAppContext, on: bool, hang: bool, answers: Vec<Answer>) -> (VisualTestContext, Fake) {
@@ -171,10 +185,12 @@ mod tests {
             asked: Rc::default(),
             answers: Rc::new(RefCell::new(answers)),
             now: Rc::new(Cell::new(Instant::now())),
+            handed: Rc::default(),
         };
-        let (asked, queue) = (fake.asked.clone(), fake.answers.clone());
-        let source: Source = Rc::new(move || {
+        let (asked, queue, handed) = (fake.asked.clone(), fake.answers.clone(), fake.handed.clone());
+        let source: Source = Rc::new(move |have| {
             asked.set(asked.get() + 1);
+            handed.borrow_mut().push(have);
             let next = if queue.borrow().is_empty() { Ok(None) } else { queue.borrow_mut().remove(0) };
             if hang {
                 Box::pin(std::future::pending())
@@ -237,6 +253,7 @@ mod tests {
             came: 2,
             gone: 1,
             paths: vec!["C:\\a.txt".into(), "C:\\b.txt".into()],
+            labels: Vec::new(),
         };
         let answers = vec![Ok(Some(followed)), Ok(None), Err("tag.dat is locked".into()), Ok(Some(Followed::default()))];
         let (mut visual, fake) = start(cx, false, false, answers);
@@ -266,5 +283,33 @@ mod tests {
         assert_eq!(fake.asked.get(), 4);
         assert_eq!(heard.borrow().len(), 1, "no more events");
         visual.update(|window, cx| assert_eq!(window.notifications(cx).len(), 1, "still the one line"));
+    }
+
+    #[gpui_kit::test]
+    fn following_hands_settings_labels_as_they_are_now_and_adds_the_label_xyplorer_gained_since(
+        cx: &mut TestAppContext,
+    ) {
+        let _guard = testing::lock();
+        let sky = glint_core::marks::LabelPlan {
+            name: "天蓝色".into(),
+            color: 0x000e_a5e9,
+            to: "天蓝色".into(),
+            new: true,
+            takes_name: false,
+        };
+        let followed = Followed { came: 1, paths: vec!["C:\\a.txt".into()], labels: vec![sky.clone()], ..Followed::default() };
+        let (mut visual, fake) = start(cx, false, false, vec![Ok(Some(followed))]);
+        // Renamed in Glint after the import: the question carries the list as it is now.
+        visual.update(|_, cx| state::update(cx, |s| s.labels[0].name = "红色".into()));
+        visual.update(|_, cx| state::update(cx, |s| s.follow_xyplorer = true));
+        visual.run_until_parked();
+        let handed = fake.handed.borrow().clone();
+        assert_eq!(handed.len(), 1);
+        assert_eq!(handed[0][0].name, "红色");
+        let now = visual.update(|_, cx| state::settings(cx).labels.clone());
+        assert_eq!(now.len(), handed[0].len() + 1, "the new label came into Settings");
+        let last = now.last().expect("a label");
+        assert_eq!((last.name.as_str(), last.color), ("天蓝色", sky.color));
+        assert_eq!(now[0].name, "红色", "what the person renamed stays");
     }
 }

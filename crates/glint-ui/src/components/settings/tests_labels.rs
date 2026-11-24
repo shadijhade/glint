@@ -45,7 +45,13 @@ impl Source for FakeSource {
 }
 
 fn an_import() -> LastImport {
-    LastImport { journal: "j1".into(), source: "C:\\Users\\me\\tag.dat".into(), at: 1_700_000_000_000, items: 3 }
+    LastImport {
+        journal: "j1".into(),
+        source: "C:\\Users\\me\\tag.dat".into(),
+        at: 1_700_000_000_000,
+        items: 3,
+        ..LastImport::default()
+    }
 }
 
 /// Settings on the Files page, over a fake source.
@@ -337,3 +343,55 @@ fn a_label_with_an_arabic_name_mirrors_and_nothing_overlaps(cx: &mut TestAppCont
     testing::set_rtl(false);
 }
 
+/// An import that renamed the first label to `name`, as the journal would keep it.
+fn an_import_that_renamed_the_first_label(name: &str) -> (LastImport, Vec<Label>, Vec<Label>) {
+    let before = default_labels();
+    let mut made = before.clone();
+    made[0].name = name.into();
+    (LastImport { labels: Some(before.clone()), made: Some(made.clone()), ..an_import() }, before, made)
+}
+
+#[gpui_kit::test]
+fn take_back_puts_the_labels_back_after_the_marks_only_while_they_are_what_the_import_made(
+    cx: &mut TestAppContext,
+) {
+    let _guard = testing::lock();
+    // The labels are still what it made (an Arabic name, mirrored by nothing here: only kept whole): back they go.
+    let (last, before, made) = an_import_that_renamed_the_first_label("مهم");
+    let (mut visual, _, source) = open_files(cx, Some(last.clone()));
+    visual.update(|_, cx| state::update(cx, |s| s.labels = made.clone()));
+    settle(&mut visual, |cx| disabled(cx, "settings-button-take-back-import") == Some(false));
+    click(&mut visual, "settings-button-take-back-import");
+    settle(&mut visual, |_| !lock(&source.taken).is_empty());
+    settle(&mut visual, |cx| disabled(cx, "settings-button-take-back-import") == Some(true));
+    assert_eq!(*lock(&source.taken), ["j1"], "the marks went back through the source");
+    assert_eq!(labels_now(&mut visual), before);
+}
+
+#[gpui_kit::test]
+fn take_back_leaves_labels_changed_since_and_a_journal_without_labels_puts_back_the_marks_alone(
+    cx: &mut TestAppContext,
+) {
+    let _guard = testing::lock();
+    let (last, _, made) = an_import_that_renamed_the_first_label("مهم");
+    let (mut visual, _, source) = open_files(cx, Some(last));
+    let mut theirs = made;
+    theirs[2].name = "Mine".into();
+    visual.update(|_, cx| state::update(cx, |s| s.labels = theirs.clone()));
+    settle(&mut visual, |cx| disabled(cx, "settings-button-take-back-import") == Some(false));
+    click(&mut visual, "settings-button-take-back-import");
+    settle(&mut visual, |cx| disabled(cx, "settings-button-take-back-import") == Some(true));
+    assert_eq!(lock(&source.taken).len(), 1, "the marks went back");
+    assert_eq!(labels_now(&mut visual), theirs, "their labels stay");
+
+    // A journal written before the labels were kept: the marks alone.
+    let (mut visual, _, source) = open_files(cx, Some(an_import()));
+    let mut now = default_labels();
+    now[0].name = "Renamed".into();
+    visual.update(|_, cx| state::update(cx, |s| s.labels = now.clone()));
+    settle(&mut visual, |cx| disabled(cx, "settings-button-take-back-import") == Some(false));
+    click(&mut visual, "settings-button-take-back-import");
+    settle(&mut visual, |cx| disabled(cx, "settings-button-take-back-import") == Some(true));
+    assert_eq!(lock(&source.taken).len(), 1);
+    assert_eq!(labels_now(&mut visual), now);
+}

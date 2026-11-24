@@ -12,9 +12,9 @@
 //! switch, [tags::TagsChanged] for the paths, one Undo step ("import of 1,190 items"), and a notice with **Undo** and
 //! **What happened**.
 //!
-//! **Undo does not take the labels back.** The explorer's Undo steps hold file operations and marks
-//! ([UndoAction::Marks]), not settings, so the labels an import added or renamed stay (they are Settings → Files →
-//! Labels' to change).
+//! **Undo takes the labels back too**, as one step with the marks ([UndoAction::Labels] in a `Sequence`), but only
+//! while Settings' labels are still what the import made them: the person's own changes since stay (and Undo says
+//! nothing more than its own words).
 
 use super::tags;
 use crate::explorer::{self, UndoAction};
@@ -24,9 +24,10 @@ use crate::platform::pickers::{self, Filter, Options};
 use crate::platform::window_state::{self, ProgressState};
 use crate::{core_bridge, i18n, state, t, theme};
 use glint_core::host::ipc::Channel;
+use glint_core::marks::apply::apply_labels;
 use glint_core::marks::{At, ImportOptions, ImportPlan, ImportReport, LabelPlan, Progress};
 use glint_model::format::{format_count, format_date, plural};
-use glint_model::marks::{label_of, meet, tidy, Label, Meet, XyExtra, XyKind, MAX_LABELS};
+use glint_model::marks::{meet, tidy, Label, Meet, XyExtra, XyKind, MAX_LABELS};
 use glint_model::paths::base_name;
 use gpui_kit::UniformListScrollHandle;
 use std::cell::Cell;
@@ -232,39 +233,15 @@ fn notice_words(report: &ImportReport) -> SharedString {
     parts.join(" · ").into()
 }
 
-/// The settings' labels after the import: a new label of the plan is added (never past 32), and Glint's label that
-/// took XYplorer's name is renamed to it, the old name kept in `was` (PLAN 5.5).
-fn apply_labels(labels: &mut Vec<Label>, plan: &[LabelPlan]) {
-    for label in plan {
-        if label.to.is_empty() {
-            continue;
-        }
-        if label.new {
-            if labels.len() < MAX_LABELS && label_of(labels, &label.name).is_none() {
-                labels.push(Label {
-                    name: label.name.clone(),
-                    color: label.color,
-                    was: Vec::new(),
-                });
-            }
-        } else if label.takes_name {
-            let Some((at, _)) = label_of(labels, &label.to) else {
-                continue;
-            };
-            // The name is taken by another label: leave both as they are.
-            if label_of(labels, &label.name).is_some_and(|(other, _)| other != at) {
-                continue;
-            }
-            if let Some(own) = labels.get_mut(at) {
-                if own.name != label.name {
-                    let old = std::mem::replace(&mut own.name, label.name.clone());
-                    if !own.was.contains(&old) {
-                        own.was.push(old);
-                    }
-                }
-            }
-        }
+/// Settings' labels become `before` when they are still `made` (what an import left them as): one the person
+/// changed since is theirs, and stays. Whether they were put back. Undo of an import and Settings' take back both say
+/// nothing more than their own words either way.
+pub(crate) fn put_labels_back(cx: &mut App, before: &[Label], made: &[Label]) -> bool {
+    let same = state::settings(cx).labels == made;
+    if same {
+        state::update(cx, |settings| settings.labels = before.to_vec());
     }
+    same
 }
 
 // ---- The dialog -------------------------------------------------------------------------------------------
@@ -546,6 +523,24 @@ fn run(window: &mut Window, cx: &mut App, backend: Arc<dyn Backend>, plan: Impor
         .detach();
 }
 
+/// The import's one Undo step and its words: the marks as they were, and the labels as they were when the import
+/// changed them (`Sequence([Labels, Marks])`, run marks first), else `Marks` alone; none when nothing changed.
+fn undo_step(report: &ImportReport, before: Vec<Label>, made: Vec<Label>) -> Option<(String, UndoAction)> {
+    let marks = (!report.befores.is_empty()).then(|| UndoAction::Marks(report.befores.clone()));
+    let labels = (before != made).then_some(UndoAction::Labels { before, made });
+    let action = match (labels, marks) {
+        (Some(labels), Some(marks)) => UndoAction::Sequence(vec![labels, marks]),
+        (Some(one), None) | (None, Some(one)) => one,
+        (None, None) => return None,
+    };
+    let what = if report.befores.is_empty() {
+        t!("import of labels")
+    } else {
+        t!("import of {what}", what = plural(report.befores.len(), "item"))
+    };
+    Some((what.to_string(), action))
+}
+
 /// What happens when the import ends (see the module's note for the order).
 fn finish(window: &mut Window, cx: &mut App, plan: &ImportPlan, follow: bool, result: Result<ImportReport, String>) {
     window.remove_notification1::<ImportToast>(0usize, cx);
@@ -557,6 +552,7 @@ fn finish(window: &mut Window, cx: &mut App, plan: &ImportPlan, follow: bool, re
             return;
         }
     };
+    let labels_before = state::settings(cx).labels.clone();
     state::update(cx, |settings| {
         apply_labels(&mut settings.labels, &plan.labels);
         if follow {
@@ -566,17 +562,11 @@ fn finish(window: &mut Window, cx: &mut App, plan: &ImportPlan, follow: bool, re
     let paths: Vec<String> = report.befores.iter().map(|(path, _)| path.clone()).collect();
     let hub = tags::hub(cx);
     hub.update(cx, |_, cx| cx.emit(tags::TagsChanged { paths }));
-    let step = if report.befores.is_empty() {
-        None
-    } else {
-        let what = t!("import of {what}", what = plural(report.befores.len(), "item")).to_string();
-        let befores = report.befores.clone();
-        explorer::try_explorer(cx).map(|explorer| {
-            explorer.update(cx, |explorer, cx| {
-                explorer.remember_undo(what, UndoAction::Marks(befores), cx)
-            })
-        })
-    };
+    let step = undo_step(&report, labels_before, state::settings(cx).labels.clone())
+        .and_then(|(what, action)| {
+            explorer::try_explorer(cx)
+                .map(|explorer| explorer.update(cx, |explorer, cx| explorer.remember_undo(what, action, cx)))
+        });
     let key = step.map_or(0, |step| step.0 as usize);
     let items = Arc::new(report.items.clone());
     let mut note = Notification::success(notice_words(&report))
@@ -1979,5 +1969,91 @@ mod tests {
         assert_eq!(some.picked(), ["file"]);
         assert_eq!(some.asked()[0].0, "C:\\x\\tag.dat");
         assert!(visual.update(|window, cx| window.has_active_dialog(cx)));
+    }
+
+    /// An import that renamed Red to 红色 and added 天蓝色, ended with an explorer to hold its step: the labels
+    /// as they were before, and the report's befores.
+    fn labelled_import(cx: &mut TestAppContext) -> (Rig, Vec<Label>, Vec<(String, Marks)>) {
+        let mut p = plan("C:\\x\\tag.dat", 5, two_items());
+        let mut chinese = label("红色", "Red");
+        chinese.takes_name = true;
+        let mut teal = label("天蓝色", "天蓝色");
+        teal.new = true;
+        p.labels = vec![chinese, teal];
+        let befores = vec![(A.to_string(), Marks::default()), (B.to_string(), marked(Some("Red"), &[], None))];
+        let fake = Fake::of(p);
+        if let Ok(mut r) = fake.report.lock() {
+            *r = Ok(ImportReport { marked: 2, befores: befores.clone(), ..ImportReport::default() });
+        }
+        let mut rig = rig(cx, &fake, "C:\\x\\tag.dat", true);
+        let before = rig.visual.update(|_, cx| state::settings(cx).labels.clone());
+        rig.click("marks-import-apply");
+        settle(&mut rig.visual, |cx| cx.update(|_, cx| state::settings(cx).labels.len() == before.len() + 1));
+        rig.visual.run_until_parked();
+        (rig, before, befores)
+    }
+
+    fn undo_it(rig: &mut Rig) {
+        let explorer = rig.explorer.clone().expect("an explorer");
+        explorer.update(&mut rig.visual, |e, cx| e.undo(None, cx).detach());
+        let runner = rig.runner.clone().expect("a runner");
+        settle(&mut rig.visual, |_| !runner.marks_put().is_empty());
+    }
+
+    #[gpui_kit::test]
+    fn undo_of_an_import_that_renamed_and_added_labels_puts_marks_and_labels_back_in_one_step(
+        cx: &mut TestAppContext,
+    ) {
+        let _guard = testing::lock();
+        let (mut rig, before, befores) = labelled_import(cx);
+        assert_eq!(rig.next_undo().as_deref(), Some("import of 2 items"), "one step, one label");
+        let made = rig.visual.update(|_, cx| state::settings(cx).labels.clone());
+        assert!(made.iter().any(|l| l.name == "红色" && l.was == ["Red"]) && made.iter().any(|l| l.name == "天蓝色"));
+        undo_it(&mut rig);
+        let runner = rig.runner.clone().expect("a runner");
+        assert_eq!(runner.marks_put(), [befores]);
+        assert_eq!(rig.visual.update(|_, cx| state::settings(cx).labels.clone()), before);
+        assert_eq!(rig.next_undo(), None, "the one step is used up");
+    }
+
+    #[gpui_kit::test]
+    fn undo_leaves_labels_the_person_changed_since_the_import_and_still_puts_the_marks_back(
+        cx: &mut TestAppContext,
+    ) {
+        let _guard = testing::lock();
+        let (mut rig, _, befores) = labelled_import(cx);
+        rig.visual.update(|_, cx| state::update(cx, |s| s.labels[1].name = "مهم".into()));
+        let theirs = rig.visual.update(|_, cx| state::settings(cx).labels.clone());
+        undo_it(&mut rig);
+        let runner = rig.runner.clone().expect("a runner");
+        assert_eq!(runner.marks_put(), [befores], "the marks come back");
+        assert_eq!(rig.visual.update(|_, cx| state::settings(cx).labels.clone()), theirs, "their labels stay");
+        assert!(theirs.iter().any(|l| l.name == "مهم"), "an Arabic name goes through untouched");
+    }
+
+    #[test]
+    fn an_arabic_label_the_import_made_is_put_back_by_undo_as_it_was() {
+        let mut before = glint_model::marks::default_labels();
+        before[0].name = "مهم".into();
+        let mut made = before.clone();
+        let mut p = plan("C:\\x\\tag.dat", 5, vec![]).labels;
+        let mut sky = label("زرقاء", "زرقاء");
+        sky.new = true;
+        p.push(sky);
+        apply_labels(&mut made, &p);
+        assert_eq!(made.len(), before.len() + 1);
+        let report = ImportReport::default();
+        let (what, action) = undo_step(&report, before.clone(), made.clone()).expect("a step for labels alone");
+        assert_eq!(what, "import of labels");
+        assert_eq!(action, UndoAction::Labels { before, made });
+    }
+
+    #[test]
+    fn an_import_that_changed_no_label_makes_a_marks_step_as_before_and_one_that_changed_nothing_makes_none() {
+        let labels = glint_model::marks::default_labels();
+        let report = ImportReport { befores: vec![(A.to_string(), Marks::default())], ..ImportReport::default() };
+        let step = undo_step(&report, labels.clone(), labels.clone());
+        assert_eq!(step, Some(("import of 1 item".to_string(), UndoAction::Marks(report.befores.clone()))));
+        assert_eq!(undo_step(&ImportReport::default(), labels.clone(), labels), None);
     }
 }

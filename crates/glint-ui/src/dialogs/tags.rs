@@ -49,8 +49,6 @@ const OTHER_COLORS: [u32; 8] = [
 const MOST_DOTS: usize = 5;
 /// The most tags the dialog offers as chips.
 const MOST_OFFERED: usize = 16;
-/// The most recent tags kept.
-const MOST_RECENT: usize = 20;
 
 /// A tag's color: a color tag's own, any other's from its name (`tagColor`).
 pub fn tag_color(tag: &str) -> Hsla {
@@ -209,6 +207,12 @@ pub trait Backend: Send + Sync {
         let _ = items;
         Box::pin(async { Ok(Vec::new()) })
     }
+    /// The marked items right inside `folder`, from the index's memory (`marks::marks_in`): None where it can't
+    /// say (not covered, no service, a service older than marks), and so for a backend that has no index.
+    fn marks_in(&self, folder: String) -> Fut<Option<Vec<glint_core::marks::MarkedIn>>> {
+        let _ = folder;
+        Box::pin(async { Ok(None) })
+    }
 }
 
 /// glint-core's tags.
@@ -233,6 +237,10 @@ impl Backend for CoreBackend {
 
     fn put_marks(&self, items: Vec<(String, Marks)>) -> Fut<Vec<Outcome>> {
         Box::pin(glint_core::marks::marks_put(items))
+    }
+
+    fn marks_in(&self, folder: String) -> Fut<Option<Vec<glint_core::marks::MarkedIn>>> {
+        Box::pin(glint_core::marks::marks_in(folder))
     }
 }
 
@@ -265,9 +273,9 @@ impl Tags {
         Self::with_recent(backend, Vec::new())
     }
 
-    /// A model calling `backend`, starting from the recent tags kept last time (at most `MOST_RECENT`).
+    /// A model calling `backend`, starting from the recent tags kept last time (at most `KEPT_RECENT_TAGS`).
     pub fn with_recent(backend: Arc<dyn Backend>, mut recent: Vec<String>) -> Self {
-        recent.truncate(MOST_RECENT);
+        recent.truncate(crate::persistence::KEPT_RECENT_TAGS);
         Self { backend, recent }
     }
 
@@ -281,7 +289,7 @@ impl Tags {
         &self.recent
     }
 
-    /// Puts `added` at the front of the recent tags (each once, any case), keeping `MOST_RECENT`.
+    /// Puts `added` at the front of the recent tags (each once, any case), keeping `KEPT_RECENT_TAGS`.
     fn remember(&mut self, added: &[String]) {
         let mut recent: Vec<String> = Vec::new();
         for tag in added.iter().chain(self.recent.iter()) {
@@ -289,7 +297,7 @@ impl Tags {
                 recent.push(tag.clone());
             }
         }
-        recent.truncate(MOST_RECENT);
+        recent.truncate(crate::persistence::KEPT_RECENT_TAGS);
         self.recent = recent;
     }
 }

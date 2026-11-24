@@ -1049,8 +1049,12 @@ impl Engine {
         let tree = slot.tree.read().unwrap();
         let dir = tree.resolve(rest).ok_or("This folder isn't in the index")?;
         tree.rec(dir).filter(|r| r.dir()).ok_or("Not a folder")?;
-        Ok(tree
-            .list(dir)
+        let children = tree.list(dir);
+        // An item whose marks are still to be read (far.rs) would answer as unmarked: the app reads the files.
+        if children.iter().any(|&id| tree.far.contains(&tree.link(id).rec)) {
+            return Err("Some marks here are still being read".into());
+        }
+        Ok(children
             .into_iter()
             .filter_map(|id| {
                 let marked = tree.marked(tree.link(id).rec)?;
@@ -2146,6 +2150,14 @@ mod tests {
         assert_eq!(engine.marks_in(r"T:\").unwrap().len(), 1, "only loose.txt: folders aren't marked");
         assert_eq!(engine.marks_in(r"T:\docs\nope").unwrap_err(), engine.sizes(r"T:\docs\nope", false).unwrap_err());
         assert_eq!(engine.marks_in(r"Q:\docs").unwrap_err(), engine.sizes(r"Q:\docs", false).unwrap_err());
+    }
+
+    #[test]
+    fn marks_in_a_folder_with_an_item_still_to_be_read_far_is_no_answer() {
+        let engine = marked_engine();
+        engine.slots.read().unwrap()[0].tree.write().unwrap().far.insert(24);
+        assert!(engine.marks_in(r"T:\docs").is_err(), "note.txt's marks aren't known yet");
+        assert_eq!(engine.marks_in(r"T:\src").unwrap().len(), 1, "another folder answers");
     }
 
     #[test]

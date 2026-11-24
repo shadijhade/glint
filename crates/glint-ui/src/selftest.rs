@@ -238,13 +238,7 @@ fn fly_step(step: &str, cx: &mut App) {
             ("settings", section) => {
                 // The page keeps the name: a debug tour's few words may live as long as the app.
                 let section: &'static str = Box::leak(section.to_string().into_boxed_str());
-                let view = crate::components::settings::open_at(window, cx, Some(section));
-                // A section after a page's first is only found once a frame has laid the page out.
-                cx.spawn(async move |cx| {
-                    cx.background_executor().timer(std::time::Duration::from_millis(600)).await;
-                    view.update(cx, |view, cx| view.scroll_to(section, cx));
-                })
-                .detach();
+                crate::components::settings::open_at(window, cx, Some(section));
             }
             (_, key) => {
                 let key: &'static str = Box::leak(key.to_string().into_boxed_str());

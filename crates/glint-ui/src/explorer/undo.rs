@@ -171,6 +171,13 @@ impl Explorer {
                     UndoRun::Wof(id) => runner.wof_undo(id).await.and_then(wof_outcome),
                     UndoRun::RemoveLinks(paths) => runner.remove_links(paths).await,
                     UndoRun::Marks(items) => runner.put_marks(items).await,
+                    // Settings are the interface's: no file, no runner.
+                    UndoRun::Labels { before, made } => {
+                        this.update(cx, |_, cx| {
+                            crate::dialogs::marks_import::put_labels_back(cx, &before, &made);
+                        })
+                        .map_err(|e| e.to_string())
+                    }
                 };
                 if let Err(message) = done {
                     result = Err(message);
@@ -199,7 +206,8 @@ impl Explorer {
 mod tests {
     use super::*;
     use crate::explorer::fake::*;
-    use crate::testing;
+    use crate::{state, testing};
+    use glint_model::marks::Label;
     use gpui_kit::{AppContext as _, TestAppContext};
 
     fn item(name: &str) -> MoveItem {
@@ -592,5 +600,47 @@ mod tests {
         assert!(matches!(runs[1], UndoRun::File(FileOp::Delete { .. })));
         assert_eq!(mixed.ops().len(), 1);
         assert!(mixed.renamed_folders().is_empty());
+    }
+
+    fn labels_step() -> (UndoAction, Vec<Label>, Vec<Label>) {
+        let before = glint_model::marks::default_labels();
+        let mut made = before.clone();
+        made[0].name = "مهم".into();
+        (UndoAction::Labels { before: before.clone(), made: made.clone() }, before, made)
+    }
+
+    #[test]
+    fn a_labels_step_is_not_a_file_operation_runs_as_one_labels_run_and_takes_its_turn_in_a_sequence() {
+        let (step, before, made) = labels_step();
+        assert!(step.ops().is_empty());
+        assert_eq!(step.op(), None);
+        assert!(step.renamed_folders().is_empty(), "names no renamed folder");
+        assert_eq!(step.runs(), [UndoRun::Labels { before, made }]);
+        let both = UndoAction::Sequence(vec![step, marks_step()]);
+        let runs = both.runs();
+        assert!(matches!(runs[0], UndoRun::Marks(_)), "the marks first");
+        assert!(matches!(runs[1], UndoRun::Labels { .. }), "then the labels");
+        assert!(both.ops().is_empty() && both.renamed_folders().is_empty());
+    }
+
+    #[gpui_kit::test]
+    fn ctrl_z_on_a_labels_step_puts_settings_labels_back_only_while_they_are_what_the_import_made(
+        cx: &mut TestAppContext,
+    ) {
+        let _guard = testing::lock();
+        let (disk, explorer, _runner) = explorer_in_a(cx);
+        let (step, before, made) = labels_step();
+        cx.update(|cx| state::update(cx, |s| s.labels = made.clone()));
+        let id = explorer.update(cx, |e, cx| e.remember_undo("import of labels", step.clone(), cx));
+        undo_now(cx, &explorer, Some(id));
+        assert_eq!(cx.update(|cx| state::settings(cx).labels.clone()), before);
+        assert!(disk.ops().is_empty(), "no file operation ran");
+        // Changed since: left as the person made them.
+        let mut theirs = made.clone();
+        theirs[1].name = "Mine".into();
+        cx.update(|cx| state::update(cx, |s| s.labels = theirs.clone()));
+        let id = explorer.update(cx, |e, cx| e.remember_undo("import of labels", step, cx));
+        undo_now(cx, &explorer, Some(id));
+        assert_eq!(cx.update(|cx| state::settings(cx).labels.clone()), theirs);
     }
 }

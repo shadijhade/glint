@@ -37,6 +37,8 @@ struct Fakes {
     tagged: Mutex<Result<Vec<String>, String>>,
     /// The tags asked of the `tagged` source, and the tags changes the backend was asked for: (paths, add, remove).
     tagged_asked: Mutex<Vec<String>>,
+    /// While set, the `tagged` source waits until this channel is closed or sent to (a drive the index doesn't cover).
+    tagged_hold: Mutex<Option<async_channel::Receiver<()>>>,
     sets: Mutex<Vec<TagsChange>>,
     /// The portals mounted, what was done to them ("refresh:id", "unmount:id"), and where core's change notice goes.
     portals: Mutex<Vec<PortalItem>>,
@@ -56,6 +58,7 @@ impl Default for Fakes {
             marks: Mutex::new(Err("Marks can't be counted".to_string())),
             tagged: Mutex::new(Err("Nothing can be searched".to_string())),
             tagged_asked: Mutex::default(),
+            tagged_hold: Mutex::default(),
             sets: Mutex::default(),
             portals: Mutex::default(),
             portal_log: Mutex::default(),
@@ -139,6 +142,10 @@ impl Fakes {
                 let j = j.clone();
                 Box::pin(async move {
                     j.tagged_asked.lock().unwrap().push(tag);
+                    let hold = j.tagged_hold.lock().unwrap().clone();
+                    if let Some(hold) = hold {
+                        let _ = hold.recv().await;
+                    }
                     j.tagged.lock().unwrap().clone()
                 })
             }),
@@ -1090,7 +1097,8 @@ fn rename_everywhere_asks_set_tags_once_with_the_paths_found_and_an_empty_or_unc
     let mut w = world_with_work(cx, "tag-rename");
     w.open_tag_menu_by_key("Work");
     w.click("Rename everywhere…");
-    w.settle(|w| w.dialog_open());
+    // The dialog opens at once; it is ready when it has stopped saying it is finding.
+    w.settle(|w| w.dialog_open() && !w.has("Finding what has “Work”…"));
     assert_eq!(*w.fakes.tagged_asked.lock().unwrap(), ["Work".to_string()]);
     assert!(w.has("New name"));
     // Empty, the same, the same in another case: refused in the dialog, which stays.
@@ -1126,7 +1134,8 @@ fn take_off_every_file_asks_with_the_number_and_yes_takes_the_tag_off_those_path
     // No: nothing is changed.
     w.open_tag_menu_by_key("Work");
     w.click("Take off every file…");
-    w.settle(|w| w.dialog_open());
+    // The dialog opens at once; it is ready when it has stopped saying it is finding.
+    w.settle(|w| w.dialog_open() && !w.has("Finding what has “Work”…"));
     assert!(w.has("Take off “Work”"), "the dialog is about the tag");
     let said = w.cx.update(|window, _| {
         window
@@ -1141,7 +1150,8 @@ fn take_off_every_file_asks_with_the_number_and_yes_takes_the_tag_off_those_path
     // Yes: the tag comes off every path the source gave, as one change.
     w.open_tag_menu_by_key("Work");
     w.click("Take off every file…");
-    w.settle(|w| w.dialog_open());
+    // The dialog opens at once; it is ready when it has stopped saying it is finding.
+    w.settle(|w| w.dialog_open() && !w.has("Finding what has “Work”…"));
     w.click("Take off");
     w.settle(|w| !w.sets().is_empty());
     assert_eq!(
@@ -1152,6 +1162,41 @@ fn take_off_every_file_asks_with_the_number_and_yes_takes_the_tag_off_those_path
             vec!["Work".to_string()]
         )]
     );
+}
+
+#[gpui_kit::test]
+fn while_the_files_with_a_tag_are_being_found_both_dialogs_say_so_and_their_button_waits(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut w = world_with_work(cx, "tag-finding");
+    let finding = "Finding what has “Work”…";
+    for (row, button, id) in [
+        ("Rename everywhere…", "Rename", "rename-tag-ok"),
+        ("Take off every file…", "Take off", "take-off-tag-ok"),
+    ] {
+        let (hold, gate) = async_channel::bounded::<()>(1);
+        *w.fakes.tagged_hold.lock().unwrap() = Some(gate);
+        w.fakes.tagged_asked.lock().unwrap().clear();
+        w.open_tag_menu_by_key("Work");
+        w.click(row);
+        w.settle(|w| w.dialog_open() && !w.fakes.tagged_asked.lock().unwrap().is_empty());
+        // Hanging: the words are where the count or the button would be, and the button can't act.
+        w.frame();
+        assert!(w.has(finding), "{row}: says it is finding");
+        assert_eq!(w.role_of(finding), Some(Role::Status), "{row}");
+        assert_eq!(w.cx.update(|window, _| window.find(id).disabled()), Some(true), "{row}: {button} waits");
+        w.press("enter");
+        w.cx.run_until_parked();
+        assert!(w.sets().is_empty(), "{row}: Enter waits too");
+        // Answered: the words go, the button acts.
+        drop(hold);
+        w.settle(|w| !w.has(finding));
+        assert_ne!(w.cx.update(|window, _| window.find(id).disabled()), Some(true), "{row}: {button} can act");
+        w.click("Cancel");
+        w.cx.run_until_parked();
+        assert!(!w.dialog_open());
+    }
+    *w.fakes.tagged_hold.lock().unwrap() = None;
+    assert!(w.sets().is_empty());
 }
 
 #[gpui_kit::test]

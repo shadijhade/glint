@@ -16,6 +16,7 @@ pub mod carry;
 pub mod export;
 pub mod import;
 pub mod ledger;
+pub mod settle;
 pub mod streams;
 pub mod wake;
 pub mod xy_find;
@@ -30,12 +31,26 @@ pub use import::{
 pub use xy_find::{xyplorer_found, Found};
 
 use crate::fsx::blocking;
-use glint_model::marks::{tidy, Beside, Line, Why, COMMENT_CAP, TAGS_CAP};
+use glint_model::marks::{default_labels, settled, tidy, Beside, Label, Line, Why, COMMENT_CAP, TAGS_CAP};
 use ledger::Ledger;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
+
+/// The labels of this PC, handed over by the interface (Settings → Files → Labels); None until it does.
+static LABELS: RwLock<Option<Vec<Label>>> = RwLock::new(None);
+
+/// Tells core the PC's labels, so a write settles a 0.16 color tag into the label it is shown as (5.6).
+pub fn set_labels(labels: Vec<Label>) {
+    *LABELS.write().unwrap_or_else(|e| e.into_inner()) = Some(labels);
+}
+
+/// The PC's labels: the seven of `default_labels()` until the interface says (the MCP server never does). A list
+/// the person emptied stays empty: no color tag becomes a label then.
+pub fn labels() -> Vec<Label> {
+    LABELS.read().unwrap_or_else(|e| e.into_inner()).clone().unwrap_or_else(default_labels)
+}
 
 /// Every label and tag in use with how many items carry it, most used first, and how many items have a
 /// comment: the index's for the drives it covers, with the ledger's.
@@ -154,6 +169,15 @@ struct Group {
 
 /// The worker of `marks_set` and `marks_put`: one outcome a path, in order.
 fn work(items: Vec<(String, Change)>, w: &World) -> Vec<Outcome> {
+    work_with(items, w, &labels())
+}
+
+/// `work` with the labels given. What is written is `settled` (5.5, 5.6): a file tagged Red in 0.16 gets the
+/// label Red and loses the tag. A change that is about the *label* (`Label`, `Paste`) starts from the marks as
+/// they are shown, so taking the label off a file whose "label" is a color tag takes that tag off and does not
+/// make it the label again; the others start from what the file has (taking a tag off takes that color tag off).
+// TODO(coordinator): these labels belong in `World`; carry.rs, export.rs, wake.rs and apply.rs build it by hand.
+fn work_with(items: Vec<(String, Change)>, w: &World, labels: &[Label]) -> Vec<Outcome> {
     let sidecars = Sidecars::default();
     let mut out: Vec<Outcome> = Vec::with_capacity(items.len());
     let mut groups: Vec<Group> = Vec::new();
@@ -163,7 +187,11 @@ fn work(items: Vec<(String, Change)>, w: &World) -> Vec<Outcome> {
 
     for (path, change) in items {
         let (before, here) = find(&path, w, &sidecars);
-        let after = change.apply(&before);
+        let base = match change {
+            Change::Label(_) | Change::Paste(_) => settled(labels, &before),
+            _ => before.clone(),
+        };
+        let after = settled(labels, &change.apply(&base));
         let i = out.len();
         out.push(Outcome { path: path.clone(), before: before.clone(), after: Err(String::new()) });
 
@@ -343,15 +371,18 @@ pub struct MarkedIn {
 }
 
 /// The marked items right inside `folder`, from the index's memory (the head's chips, a sort from the index):
-/// None where instant search doesn't cover the folder, isn't running or is older than marks.
+/// None where instant search doesn't cover the folder, isn't running, is older than marks, or is still reading
+/// some item's marks. The index knows the files' own streams; marks beside the files or in the ledger are added.
 pub async fn marks_in(folder: String) -> Result<Option<Vec<MarkedIn>>, String> {
     blocking(move || {
         #[cfg(windows)]
         let items = shadui_index::client::marks_in(&folder).ok().map(|items| {
-            items
+            let mut items = items
                 .into_iter()
                 .map(|c| MarkedIn { name: c.name, label: Some(c.label).filter(|l| !l.is_empty()), tags: c.tags, comment: c.comment })
-                .collect()
+                .collect();
+            real(|w| kept_elsewhere(&folder, &mut items, w));
+            items
         });
         #[cfg(not(windows))]
         let items = {
@@ -361,6 +392,30 @@ pub async fn marks_in(folder: String) -> Result<Option<Vec<MarkedIn>>, String> {
         Ok(items)
     })
     .await
+}
+
+/// Adds to the index's `items` of `folder` the items it doesn't list whose marks are beside them or in the ledger,
+/// in `find`'s order: a file's own streams (the index's) first, then its line beside it, then the ledger's.
+fn kept_elsewhere(folder: &str, items: &mut Vec<MarkedIn>, w: &World) {
+    let mut listed: std::collections::HashSet<String> = items.iter().map(|i| i.name.to_lowercase()).collect();
+    let mut add = |name: &str, marks: &Marks| {
+        let m = tidy(marks);
+        if !m.is_empty() && listed.insert(name.to_lowercase()) {
+            items.push(MarkedIn { name: name.to_string(), label: m.label, tags: m.tags, comment: m.comment.is_some() });
+        }
+    };
+    for line in beside::read(Path::new(folder)).map(|b| b.lines).unwrap_or_default() {
+        add(&line.name, &line.marks);
+    }
+    if !w.ledger_empty() {
+        let bare = |p: &str| p.trim_end_matches(['\\', '/']).to_lowercase();
+        let here = bare(folder);
+        for line in w.ledger().lines() {
+            if let Some((_, name)) = split(&line.name).filter(|(p, _)| bare(&p.to_string_lossy()) == here) {
+                add(&name, &line.marks);
+            }
+        }
+    }
 }
 
 /// How many items of `folder` have their marks beside them though the drive keeps streams (F23).
@@ -434,6 +489,131 @@ mod tests {
 
     fn set(paths: &[&String], change: Change, w: &World) -> Vec<Outcome> {
         work(paths.iter().map(|p| ((*p).clone(), change.clone())).collect(), w)
+    }
+
+    fn raw(dir: &Path, name: &str, marks: Marks, w: &World) -> String {
+        let a = file(dir, name);
+        work_with(vec![(a.clone(), Change::Put(marks))], w, &[]);
+        a
+    }
+
+    fn tagged(tags: &[&str]) -> Marks {
+        Marks { tags: tags.iter().map(|t| t.to_string()).collect(), ..Marks::default() }
+    }
+
+    fn add(tag: &str) -> Change {
+        Change::Tags { add: vec![tag.into()], remove: Vec::new() }
+    }
+
+    #[test]
+    fn the_pcs_labels_are_the_seven_until_some_are_set() {
+        // Not through the shared list: another test may be reading it.
+        assert_eq!(labels().len(), default_labels().len());
+        assert_eq!(labels()[0].name, "Red");
+    }
+
+    #[test]
+    fn a_file_tagged_red_in_016_is_written_with_the_label_red_and_loses_the_tag() {
+        let dir = folder();
+        let l = ledger_in(&dir);
+        let w = world(&l, &caps::has_streams);
+        let a = raw(&dir, "a.txt", tagged(&["Red", "work"]), &w);
+        let modified = std::fs::metadata(&a).unwrap().modified().unwrap();
+        let out = work_with(vec![(a.clone(), add("x"))], &w, &default_labels());
+        let want = Marks { label: Some("Red".into()), tags: vec!["work".into(), "x".into()], comment: None };
+        assert_eq!(out[0].before, tagged(&["Red", "work"]));
+        assert_eq!(out[0].after.as_ref().map(|(m, _)| m), Ok(&want));
+        assert_eq!(read_all(std::slice::from_ref(&a), &w), vec![want]);
+        assert_eq!(std::fs::metadata(&a).unwrap().modified().unwrap(), modified);
+        if caps::has_streams(&a) {
+            // What a 0.16 copy reads: one tag a line, and no color.
+            let tags = std::fs::read_to_string(format!("{a}:glint.tags")).unwrap();
+            assert_eq!(tags.lines().collect::<Vec<_>>(), ["work", "x"]);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_renamed_label_is_what_a_file_with_the_old_color_tag_is_written_with() {
+        let dir = folder();
+        let l = ledger_in(&dir);
+        let w = world(&l, &none);
+        let mut labels = default_labels();
+        labels[0].name = "Important".into();
+        labels[0].was = vec!["Red".into()];
+        let a = raw(&dir, "a.txt", tagged(&["red", "work"]), &w);
+        work_with(vec![(a.clone(), add("x"))], &w, &labels);
+        assert_eq!(read_all(&[a], &w)[0].label.as_deref(), Some("Important"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_tag_that_is_a_label_is_taken_off_as_a_tag_and_the_label_off_never_brings_it_back() {
+        let dir = folder();
+        let l = ledger_in(&dir);
+        let w = world(&l, &none);
+        let labels = default_labels();
+        // Label(None) on a file whose "label" is a color tag: the color goes, the other tags stay. Written:
+        // no label, tags `work`. (It does not become the label again: that is what the person took off.)
+        let a = raw(&dir, "a.txt", tagged(&["Red", "work"]), &w);
+        let out = work_with(vec![(a.clone(), Change::Label(None))], &w, &labels);
+        assert_eq!(out[0].after.as_ref().map(|(m, _)| m), Ok(&tagged(&["work"])));
+        // The path of marking.rs's take_label_off: the tag is taken off by name.
+        let b = raw(&dir, "b.txt", tagged(&["Red", "work"]), &w);
+        let remove = Change::Tags { add: Vec::new(), remove: vec!["Red".into()] };
+        let out = work_with(vec![(b.clone(), remove)], &w, &labels);
+        assert_eq!(out[0].after.as_ref().map(|(m, _)| m), Ok(&tagged(&["work"])));
+        assert_eq!(read_all(&[a, b], &w), vec![tagged(&["work"]), tagged(&["work"])]);
+        // A tag `Red` added to a file with no label is the label Red; a new label replaces the old color.
+        let c = file(&dir, "c.txt");
+        let out = work_with(vec![(c.clone(), add("Red"))], &w, &labels);
+        assert_eq!(out[0].after.as_ref().map(|(m, _)| m), Ok(&marked("Red")));
+        let d = raw(&dir, "d.txt", tagged(&["Red"]), &w);
+        let out = work_with(vec![(d, Change::Label(Some("Blue".into())))], &w, &labels);
+        assert_eq!(out[0].after.as_ref().map(|(m, _)| m), Ok(&marked("Blue")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_with_a_label_keeps_it_and_its_color_tag_stays_a_tag() {
+        let dir = folder();
+        let l = ledger_in(&dir);
+        let w = world(&l, &none);
+        let a = raw(&dir, "a.txt", Marks { label: Some("Blue".into()), tags: vec!["Red".into()], comment: None }, &w);
+        work_with(vec![(a.clone(), add("x"))], &w, &default_labels());
+        let read = read_all(&[a], &w);
+        assert_eq!((read[0].label.as_deref(), read[0].tags.clone()), (Some("Blue"), vec!["Red".to_string(), "x".to_string()]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_label_this_pc_lacks_stays_as_the_file_says_it() {
+        let dir = folder();
+        let l = ledger_in(&dir);
+        let w = world(&l, &none);
+        let a = raw(&dir, "a.txt", marked("Pending"), &w);
+        work_with(vec![(a.clone(), add("x"))], &w, &default_labels());
+        assert_eq!(read_all(&[a], &w)[0].label.as_deref(), Some("Pending"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_indexs_answer_gains_what_is_kept_beside_the_files_and_in_the_ledger_and_a_files_own_wins() {
+        let dir = folder();
+        let l = ledger_in(&dir);
+        let w = world(&l, &none);
+        let (beside, both) = (file(&dir, "beside.txt"), file(&dir, "both.txt"));
+        set(&[&beside, &both], label("Blue"), &w);
+        let gone = dir.join("gone.txt").to_string_lossy().into_owned();
+        work(vec![(gone, Change::Comment(Some("kept on this PC".into())))], &w);
+        // The index lists both.txt, whose own stream says Red, and nothing else.
+        let red = MarkedIn { name: "BOTH.txt".into(), label: Some("Red".into()), ..MarkedIn::default() };
+        let mut items = vec![red.clone()];
+        kept_elsewhere(&format!("{}\\", dir.display()), &mut items, &w);
+        items.sort_by(|a, b| a.name.cmp(&b.name));
+        let blue = MarkedIn { name: "beside.txt".into(), label: Some("Blue".into()), ..MarkedIn::default() };
+        assert_eq!(items, [red, blue, MarkedIn { name: "gone.txt".into(), comment: true, ..MarkedIn::default() }]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn sidecar_text(dir: &Path) -> String {
@@ -628,13 +808,15 @@ mod tests {
         let a = file(&dir, "a.txt");
         let failed = crate::host::async_runtime::block_on(crate::tags::tags_set(vec![a.clone()], vec!["Work".into(), "Red".into()], vec![])).unwrap();
         assert!(failed.is_empty());
-        assert_eq!(crate::tags::read(&a), ["Work", "Red"]);
+        // A color tag is a label from 0.17 (5.6): it leaves `glint.tags` for `glint.label`.
+        assert_eq!(crate::tags::read(&a), ["Work"]);
+        assert_eq!(read(&a).label.as_deref(), Some("Red"));
         crate::host::async_runtime::block_on(crate::tags::tags_set(vec![a.clone()], vec![], vec!["work".into()])).unwrap();
-        assert_eq!(crate::tags::read(&a), ["Red"]);
+        assert!(crate::tags::read(&a).is_empty());
         let b = file(&dir, "b.txt");
         std::fs::write(format!("{b}:glint.tags"), "Hand\nMade\n").unwrap();
         let read = crate::host::async_runtime::block_on(crate::tags::tags_read(vec![a, b])).unwrap();
-        assert_eq!(read, vec![vec!["Red".to_string()], vec!["Hand".to_string(), "Made".to_string()]]);
+        assert_eq!(read, vec![Vec::<String>::new(), vec!["Hand".to_string(), "Made".to_string()]]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -747,5 +929,35 @@ mod tests {
         let index = Counts { labels: vec![("blue".into(), 5)], tags: vec![], comments: 3 };
         let joined = merge(index, [line("Blue", &[], false)].into_iter());
         assert_eq!((joined.labels, joined.comments), (vec![("blue".to_string(), 6)], 3));
+    }
+
+    /// 6.6's second and third rows from the files (the coordinator's, wave 6): the marks of 200 rows none marked,
+    /// and every mark of a folder of 10,000, none marked and all three each. Run in release:
+    /// `cargo test --release -p glint-core marks::tests::measure_reads -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "a measurement; prints"]
+    fn measure_reads_for_rows_and_a_whole_folder() {
+        fn median(mut v: Vec<f64>) -> f64 {
+            v.sort_by(|a, b| a.total_cmp(b));
+            v[v.len() / 2]
+        }
+        let time = |paths: &[String]| {
+            let _ = read_many(paths);
+            median((0..11).map(|_| {
+                let t = std::time::Instant::now();
+                let _ = read_many(paths);
+                t.elapsed().as_secs_f64() * 1000.0
+            }).collect())
+        };
+        let dir = folder();
+        let paths: Vec<String> = (0..10_000).map(|i| file(&dir, &format!("f{i:05}.txt"))).collect();
+        println!("200 rows, none marked: {:.2} ms", time(&paths[..200]));
+        println!("10,000, none marked: {:.1} ms", time(&paths));
+        let all = Marks { label: Some("Red".into()), tags: vec!["work".into(), "netplan".into()], comment: Some("mode 4\nLACP".into()) };
+        for p in &paths {
+            streams::write(p, &all).unwrap();
+        }
+        println!("10,000, all three marks each: {:.1} ms", time(&paths));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

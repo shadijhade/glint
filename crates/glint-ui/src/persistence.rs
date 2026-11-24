@@ -743,8 +743,8 @@ pub const PARTS: [(Part, &str, Option<&str>); 9] = [
     (Part::Labels, "Labels", Some("with the tags used lately")),
 ];
 
-/// How many tags used lately a PC keeps (the tags dialog's `MOST_RECENT`).
-const KEPT_RECENT_TAGS: usize = 20;
+/// How many tags used lately a PC keeps (the tags dialog remembers as many).
+pub(crate) const KEPT_RECENT_TAGS: usize = 20;
 /// The longest a label's name or a tag can be in a file taken.
 const LONGEST_NAME: usize = 64;
 
