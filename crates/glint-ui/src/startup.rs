@@ -549,6 +549,8 @@ fn open_settings_in_main(cx: &mut App, section: Option<&str>) {
 /// goes (`summon` toggled in the web app too).
 fn quick_search(cx: &mut App) {
     quick_search::toggle(cx);
+    // Used often, and Glint quits with its window: the suggestion to keep it in the tray comes at its moment.
+    crate::suggestions::moments::noticed_in_main(crate::suggestions::moments::Moment::ShortcutUsed, cx);
 }
 
 /// What core tells without being asked, said in the main window: a scheduled backup that finished (App.tsx's

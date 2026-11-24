@@ -197,9 +197,9 @@ impl Render for ExportDialog {
                     self.format,
                     vec![
                         Choice::new(Format::Glint, t!("Glint"))
-                            .hint(t!("Text, one line an item: read by Import marks… on any PC")),
+                            .hint(t!("Text that Import marks… reads on any PC")),
                         Choice::new(Format::Xyplorer, t!("XYplorer"))
-                            .hint(t!("An XYplorerTag.dat that XYplorer's tagload merges")),
+                            .hint(t!("A file XYplorer's tagload brings in")),
                     ],
                     2,
                     |this, format, _, _| this.set_format(format),
@@ -538,11 +538,11 @@ mod tests {
         assert_eq!(role_of(&mut visual, "Export marks"), Some(Role::Group));
         assert_eq!(role_of(&mut visual, "Format"), Some(Role::RadioGroup));
         assert_eq!(
-            role_of(&mut visual, "Glint. Text, one line an item: read by Import marks… on any PC"),
+            role_of(&mut visual, "Glint. Text that Import marks… reads on any PC"),
             Some(Role::RadioButton)
         );
         assert_eq!(
-            role_of(&mut visual, "XYplorer. An XYplorerTag.dat that XYplorer's tagload merges"),
+            role_of(&mut visual, "XYplorer. A file XYplorer's tagload brings in"),
             Some(Role::RadioButton)
         );
         assert_eq!(role_of(&mut visual, JSONL), Some(Role::Group));

@@ -390,6 +390,14 @@ impl LabelRows {
                         .child(words)
                 }))
         });
+        let quiet = |what: &str, sign: IconName, name: SharedString| {
+            Button::new(widgets::id(&["settings-button", &format!("label-{what}-{i}")]))
+                .ghost()
+                .small()
+                .icon(sign)
+                .tooltip(name.clone())
+                .accessibility_label(name)
+        };
         let mut line = row_start()
             .id(widgets::id(&["settings-labelrow", &i.to_string()]))
             .role(Role::Group)
@@ -408,20 +416,20 @@ impl LabelRows {
             }))
             .child(dot)
             .children(name_box)
+            // The row's three small actions are signs, each named in its tooltip and for a screen reader: seven
+            // rows of worded buttons were louder than the names they are about.
             .child(
-                widgets::button(&format!("label-up-{i}"), t!("Move up"), Some(IconName::ChevronUp))
+                quiet("up", IconName::ChevronUp, t!("Move up"))
                     .disabled(i == 0)
-                    .accessibility_label(t!("Move up"))
                     .on_click(cx.listener(move |this, _, window, cx| this.edit(window, cx, |l| move_by(l, i, -1)))),
             )
             .child(
-                widgets::button(&format!("label-down-{i}"), t!("Move down"), Some(IconName::ChevronDown))
+                quiet("down", IconName::ChevronDown, t!("Move down"))
                     .disabled(i >= last)
-                    .accessibility_label(t!("Move down"))
                     .on_click(cx.listener(move |this, _, window, cx| this.edit(window, cx, |l| move_by(l, i, 1)))),
             )
             .child(
-                widgets::quiet_button(&format!("label-remove-{i}"), t!("Remove"))
+                quiet("remove", IconName::X, t!("Remove “{name}”", name = label.name.clone()))
                     .on_click(cx.listener(move |this, _, window, cx| this.edit(window, cx, |l| remove(l, i)))),
             );
         if open {

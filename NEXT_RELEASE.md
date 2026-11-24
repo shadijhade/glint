@@ -66,6 +66,40 @@ reports name the commits of the branch they were built on (`00cf486`, `12a6e5e`,
 9. **AI agents** get `get_marks` and `set_marks` (asked first in a Windows dialog, written down, undone from Settings →
    AI agents). **Folder rules** can give a file a label, and **Batch rename** has `{label}` and `{tags}`.
 
+### After the waves: what comes to you, and other keyboards
+
+10. **Suggestions at their moment** (`glint-ui/src/suggestions`). Most people never open Settings, so what is worth
+    turning on there comes as a notification when it would have helped, with one button that does it:
+    - three renames in a row in one folder: **Batch rename** for those three;
+    - a copy or a move of eight seconds and more: **Glint's copy queue**; a deletion taken back: **Ask before deleting**;
+    - a folder of photos the Gallery doesn't show, or the Gallery opened while photos lie outside it (instant search
+      says where: the folder that really holds them, never a drive or the profile): **Add to the Gallery**;
+    - one kind of file moved from one folder to another for the third time: a **folder rule**, filled in and off
+      until looked at; copies back and forth between two folders: **two panes**, with the other folder beside;
+    - four files of a folder opened one after another: **Quick Look**; labels used with the names they came with:
+      **Settings → Files → Labels**; a tag or a comment written: how to **find it again**, typed into the box for you;
+    - Quick search's shortcut used while Glint quits with its window: **the tray**; Windows going dark or light while a
+      theme is set by hand: **Follow Windows**; zoxide or an AI agent found on the PC: sharing history, connecting it.
+    One on screen at a time, four minutes apart at least, three in a run of Glint, never over a dialog; in the
+    background it waits for the window. Each has **Don't suggest this again**; one that came up is quiet for a week,
+    and after three times with no press for good (but a full drive, which can be full again); one whose button was
+    pressed is settled where pressing it settles it. A setting it turned on says so with **Undo**
+    and where it lives. **Settings → Overview** lists them all, with the switch **Suggest these as I work**
+    (`settings.tips`). No model and nothing sent: rules and counts.
+11. **XYplorer in one press.** The suggestion's button brings `tag.dat` in without the preview (*Look first…* still
+    opens it), with the same progress, Undo and *What happened*. An XYplorer that marks nothing yet (just installed) is
+    no longer offered as "0 items": it is offered to **follow**, and following starts from there.
+12. **Any keyboard** (`glint_model::keyboard`). A Chinese input method's full-width `：`, `；`, `，`, `！`, `“ ”`, `》`
+    and `《` are read as the syntax they stand for, only where the syntax is (after a filter's key and in its value):
+    `label：重要`, `size：》10mb`. A name with `：` in it is still searched as typed, and the box keeps what was typed.
+    Tags part at `，`, `、` and Arabic's `،` as well as `,`. A label is found by its color's name in either language:
+    `label:红色` is the label called Red, `label:red` the one a Chinese XYplorer's import named 红色.
+13. **Fixes found on the way.** Settings opened at a section (Labels, from a menu or a suggestion) landed in the
+    middle of the page above it: the page's header wasn't counted, and the page moved while it settled. The Labels
+    rows' *Move up*, *Move down* and *Remove* are quiet signs with tooltips. Edit tags… had an empty band where no
+    tag was used lately. Export marks…' two formats cut their own descriptions short. Edit comment… says that
+    `Ctrl+Enter` saves. The import's notice had *What happened* floating in its middle.
+
 ### Not tried for real
 
 - **Against a real XYplorer.** The reader was built from its manual and forum and read the one file a user sent for the
@@ -99,6 +133,14 @@ at 0.17.0, `marks` the first time: it found that a search's results weren't read
 `label:red` left in the box hid what the search had found (fixed). A dev build still numbered 0.16.1 sends `label:` to the
 installed 0.16.1 service, which finds nothing: the check passes once the version is bumped. After those fixes `cargo test
 --workspace --no-fail-fast` 3,986 passed, 0 failed, 62 ignored, and clippy is clean.
+
+After items 10 to 13: `cargo test --workspace --no-fail-fast` passed with none failed (core 536, model 428, ui 2,891, index
+160), then 20 more in glint-ui for what was added last (2,911), and `cargo clippy --workspace --all-targets -- -D
+warnings` is clean. Looked at in a debug copy (1,382 by 891 at 125%, dark and light): every suggestion's notification, the
+one-press import of a made-up XYplorer of twelve items in English and in Chinese (*Marked 11 · 1 not found*, its labels
+renamed 红色…), following one that marks nothing, `label：红色` typed into the box, the Gallery naming a real folder of
+photos outside it, and Settings opening at Labels. **Not run: the end-to-end checks** (a Glint was running, and they
+want none), and the list a `label:` search answers in the live app (the dev-build trap above).
 
 ## 0.16.1: scrolling the sidebar no longer closes Glint
 

@@ -619,6 +619,32 @@ fn the_search_box_filters_as_you_type_and_tells_the_find_part_the_rest(cx: &mut 
 }
 
 #[gpui_kit::test]
+fn a_filter_typed_on_a_chinese_keyboard_means_what_it_would_in_ascii_and_the_box_keeps_it(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut rig = rig(cx, false, 900., "C:\\Users");
+    rig.focus_search();
+    // The full-width colon and semicolon of a Chinese input method, after a filter's key.
+    rig.type_text("ext：txt；md");
+    assert_eq!(rig.filter(), "ext:txt;md", "the folder is filtered by what it means");
+    let typed = |rig: &mut Rig| {
+        let search = rig.bar.read_with(&rig.visual, |bar, _| bar.search.clone());
+        search.read_with(&rig.visual, |input, _| input.value().to_string())
+    };
+    assert_eq!(typed(&mut rig), "ext：txt；md", "and the box still holds what was typed");
+    // Enter searches for what it means too.
+    rig.press("enter");
+    assert!(rig.events().contains(&AddressBarEvent::RunFind {
+        query: "ext:txt;md".into()
+    }));
+    // A label by its color's Chinese name is the label called Red.
+    rig.click("address-search-clear");
+    rig.focus_search();
+    rig.type_text("label：红色");
+    assert_eq!(rig.filter(), "label:Red");
+    assert_eq!(typed(&mut rig), "label：红色");
+}
+
+#[gpui_kit::test]
 fn escape_clears_the_search_and_down_hands_the_keyboard_to_the_list(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let mut rig = rig(cx, false, 900., "C:\\Users");

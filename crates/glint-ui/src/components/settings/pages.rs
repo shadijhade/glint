@@ -204,6 +204,12 @@ const fn entry(page: Page, label: &'static str, words: &'static str) -> Entry {
 /// Every setting search finds. The labels are the rows' own (English is the key of the words drawn), so a
 /// row renamed in its page must be renamed here too: `the_search_index_names_rows_that_are_drawn` says so.
 pub const SEARCH: &[Entry] = &[
+    // Overview
+    entry(
+        Page::Overview,
+        "Suggest these as I work",
+        "suggestions tips hints notifications toasts",
+    ),
     // Appearance
     entry(Page::Appearance, "Theme", "dark mode light mode colors night"),
     entry(Page::Appearance, "Backdrop", "mica transparency glass solid window"),

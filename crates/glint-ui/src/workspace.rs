@@ -302,6 +302,9 @@ impl Workspace {
             }
             // Someone is looking: the updater hears it, and notices that waited while the window was hidden show.
             crate::updater::window_active(window, cx);
+            if window.is_window_active() {
+                crate::suggestions::window_active(window, cx);
+            }
             // The light behind the window dims while another window is in front.
             cx.notify();
         }));
@@ -312,6 +315,26 @@ impl Workspace {
         subscriptions.push(cx.observe_global_in::<state::UiState>(window, |this, window, cx| {
             this.sync_preview(window, cx);
             this.sync_dual_split(cx);
+        }));
+        // What the person is doing may suggest something (`suggestions::moments`): a few comparisons an event.
+        subscriptions.push(cx.subscribe_in(&explorer, window, |_, _, event, window, cx| {
+            crate::suggestions::moments::heard(event, window, cx);
+        }));
+        // Windows going light or dark while a theme is set by hand is the moment to offer following it. Only a
+        // change counts, and none in the window's first moments: a new window is told its appearance once, which
+        // is Windows being as it was, not Windows changing.
+        let is_dark = |window: &Window| matches!(window.appearance(), WindowAppearance::Dark | WindowAppearance::VibrantDark);
+        let (was_dark, born) = (Cell::new(is_dark(window)), std::time::Instant::now());
+        subscriptions.push(cx.observe_window_appearance(window, move |_, window, cx| {
+            let dark = is_dark(window);
+            let changed = was_dark.replace(dark) != dark;
+            if changed && born.elapsed() >= std::time::Duration::from_secs(10) {
+                crate::suggestions::moments::noticed(
+                    crate::suggestions::moments::Moment::WindowsThemeChanged { dark },
+                    window,
+                    cx,
+                );
+            }
         }));
         subscriptions.push(
             cx.subscribe_in(&explorer, window, |this, _, event, window, cx| match event {

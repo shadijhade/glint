@@ -68,9 +68,16 @@ pub fn tag_color(tag: &str) -> Hsla {
     gpui_kit::rgb(OTHER_COLORS[ix]).into()
 }
 
-/// The tags in `text` as typed: commas between them, spaces trimmed, empty ones dropped.
+/// What stands between two tags as they are typed: a comma, as any keyboard types it. A Chinese keyboard's is `，`
+/// (and `、` lists things), an Arabic one's `،`; someone typing in their own language shouldn't have to switch to
+/// English for it.
+pub fn is_comma(ch: char) -> bool {
+    matches!(ch, ',' | '，' | '、' | '،')
+}
+
+/// The tags in `text` as typed: commas between them ([`is_comma`]), spaces trimmed, empty ones dropped.
 pub fn parse_typed(text: &str) -> Vec<String> {
-    text.split(',')
+    text.split(is_comma)
         .map(str::trim)
         .filter(|t| !t.is_empty())
         .map(str::to_string)
@@ -442,6 +449,18 @@ pub fn set_marks(window: &mut Window, cx: &mut App, paths: Vec<String>, change: 
                     if let Some(step) = step {
                         offer_undo(said, step, window, cx);
                     }
+                    // A mark was made: what it may suggest (your own label names, finding it again).
+                    use crate::suggestions::moments::{noticed, Moment};
+                    match &change {
+                        Change::Label(Some(_)) => noticed(Moment::Labeled, window, cx),
+                        Change::Tags { add, .. } => {
+                            if let Some(tag) = add.first() {
+                                noticed(Moment::Tagged { tag: tag.clone() }, window, cx);
+                            }
+                        }
+                        Change::Comment(Some(text)) if !text.trim().is_empty() => noticed(Moment::Commented, window, cx),
+                        _ => {}
+                    }
                 }
                 let added = match (&change, &result) {
                     (Change::Tags { add, .. }, Ok(_)) if !add.is_empty() => add.clone(),
@@ -536,7 +555,7 @@ fn tags_here(cx: &App) -> std::collections::HashSet<String> {
 
 /// The text before the tag being typed (its tags), and the tag being typed: what follows the last comma.
 fn split_typing(text: &str) -> (Vec<String>, &str) {
-    match text.rsplit_once(',') {
+    match text.rsplit_once(is_comma) {
         Some((done, typing)) => (parse_typed(done), typing.trim()),
         None => (Vec::new(), text.trim()),
     }
@@ -918,7 +937,8 @@ impl Render for TagsDialog {
                         })),
                 )
             })
-            .child(
+            // No tag used lately, no row: an empty one would be a gap between the box and the buttons.
+            .when(!chips.is_empty(), |this| this.child(
                 row_start()
                     .id("tags-chips")
                     .role(Role::Group)
@@ -956,7 +976,7 @@ impl Render for TagsDialog {
                                     .child(isolate(label)),
                             )
                     })),
-            )
+            ))
             .child(
                 row_start()
                     .justify_end()
@@ -1180,6 +1200,11 @@ mod tests {
     fn typed_text_shared_tags_toggles_and_offers_read_as_the_typescript_did() {
         assert_eq!(parse_typed(" Work ,, Taxes 2026 ,Red,"), ["Work", "Taxes 2026", "Red"]);
         assert!(parse_typed("  , ").is_empty());
+        // The comma of the keyboard in use: Chinese (and its listing comma), Arabic.
+        assert_eq!(parse_typed("工作，报告、重要"), ["工作", "报告", "重要"]);
+        assert_eq!(parse_typed("عمل، تقارير, x"), ["عمل", "تقارير", "x"]);
+        assert_eq!(split_typing("工作，报"), (strings(&["工作"]), "报"));
+        assert_eq!(with_chosen("工作，报", "报告"), "工作, 报告, ");
         let lists = vec![
             strings(&["Work", "Red", "A"]),
             strings(&["red", "work"]),

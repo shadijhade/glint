@@ -564,4 +564,14 @@ pub enum ExplorerEvent {
     SizesChanged { path: String },
     /// The remotes shown in File Explorer on demand changed ([`Explorer::on_demand`](super::Explorer::on_demand)).
     OnDemandChanged,
+    /// A file was opened with its app (its path): the suggestions count a look through a folder.
+    Opened(String),
+    /// Items were copied or moved from the folder `from` into `dest`: their kinds (extensions in lower case, "" for
+    /// a folder or none) and whether they were moved. For the suggestions (two panes, a folder rule).
+    Placed {
+        from: String,
+        dest: String,
+        exts: Vec<String>,
+        moved: bool,
+    },
 }

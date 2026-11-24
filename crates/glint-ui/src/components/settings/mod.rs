@@ -80,6 +80,8 @@ pub const ABOUT: &str = "settings-about";
 
 /// How long a row search opened stays marked.
 const MARKED_FOR: Duration = Duration::from_millis(2600);
+/// How long a section that was asked for is kept at the top of its page while the page settles.
+const SECTION_HELD: Duration = Duration::from_millis(600);
 
 /// What Settings asks of the rest of the app. It closes itself first, as the TypeScript's did ("Settings sits
 /// above everything: it goes first"); the coordinator opens the dialog asked for.
@@ -123,6 +125,9 @@ pub struct SettingsView {
     order: Vec<&'static str>,
     /// A section asked for, scrolled to once its page has drawn it.
     pending_section: Option<String>,
+    /// The section just scrolled to, and until when it is kept at the top: what is above it is still finding its
+    /// height in those first moments (rows that come once the PC has answered), and would push it away.
+    held_section: Option<(String, Instant)>,
     /// The search box; while it holds words, what they find shows instead of the page.
     pub(crate) search: Entity<InputState>,
     /// Until when the row search opened stays marked; it's scrolled into view once drawn.
@@ -151,6 +156,8 @@ pub struct SettingsView {
     pub(crate) drives: Option<Vec<crate::suggestions::Room>>,
     /// Whether zoxide is on the PATH, for History's switch; false until core has looked.
     pub(crate) zoxide_found: bool,
+    /// An AI agent found on this PC whose settings don't name Glint, for the suggestion to connect it.
+    pub(crate) agent: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -279,6 +286,7 @@ impl SettingsView {
             page,
             order: Vec::new(),
             pending_section: section.map(str::to_string),
+            held_section: None,
             search,
             marked_until: None,
             reveal_mark: false,
@@ -297,6 +305,7 @@ impl SettingsView {
             shells: Vec::new(),
             editors: Vec::new(),
             drives: None,
+            agent: None,
             zoxide_found: false,
             _subscriptions: subscriptions,
         };
@@ -419,6 +428,7 @@ impl SettingsView {
     }
 
     fn go(&mut self, page: Page, cx: &mut Context<Self>) {
+        self.held_section = None;
         if self.page != page {
             self.page = page;
             self.order.clear();
@@ -439,12 +449,28 @@ impl SettingsView {
             self.pending_section = Some(section.to_string());
             return;
         }
+        self.put_at_top(section);
+        // Kept there while the page settles: asked again at each draw until then, and at two draws of its own.
+        self.held_section = Some((section.to_string(), Instant::now() + SECTION_HELD));
+        for after in [SECTION_HELD / 3, SECTION_HELD] {
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(after).await;
+                this.update(cx, |_, cx| cx.notify()).ok();
+            })
+            .detach();
+        }
+        cx.notify();
+    }
+
+    /// Scrolls the page so `section` starts at its top.
+    fn put_at_top(&self, section: &str) {
         let slot = section.strip_prefix("settings-").unwrap_or(section);
         match self.order.iter().position(|s| *s == slot) {
             Some(0) | None => self.scroll.set_offset(point(px(0.), px(0.))),
-            Some(at) => self.scroll.scroll_to_top_of_item(at),
+            // The page's header is the body's first child: a section is one further down than its place in `order`
+            // (without that, Labels opened on the middle of the page above it).
+            Some(at) => self.scroll.scroll_to_top_of_item(at + 1),
         }
-        cx.notify();
     }
 
     /// Opens what search found: its page, the search put away, its row marked and scrolled into view.
@@ -741,6 +767,12 @@ impl Render for SettingsView {
         // A section asked for: now the page knows where its sections are.
         if let Some(section) = self.pending_section.take() {
             self.scroll_to(&section, cx);
+        } else if let Some((section, until)) = self.held_section.clone() {
+            if Instant::now() <= until {
+                self.put_at_top(&section);
+            } else {
+                self.held_section = None;
+            }
         }
         self.reveal_marked(cx);
 

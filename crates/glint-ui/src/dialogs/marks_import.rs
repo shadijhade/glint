@@ -216,6 +216,15 @@ fn count_of(n: u64) -> String {
 }
 
 /// What the notice says when an import ends: the parts that are not 0, or that nothing was left to bring in.
+/// `following`: it was started to follow a `tag.dat` that marks nothing yet, and that is what there is to say.
+fn notice_words_for(report: &ImportReport, following: bool) -> SharedString {
+    if following && report.marked + report.waiting + report.missing == 0 {
+        return t!("Glint follows XYplorer: what you mark there shows here when Glint comes to the front");
+    }
+    notice_words(report)
+}
+
+/// [notice_words_for] an import that follows nothing new.
 fn notice_words(report: &ImportReport) -> SharedString {
     let mut parts: Vec<SharedString> = Vec::new();
     if report.marked > 0 {
@@ -553,8 +562,13 @@ fn finish(window: &mut Window, cx: &mut App, plan: &ImportPlan, follow: bool, re
         }
     };
     let labels_before = state::settings(cx).labels.clone();
+    // A tag.dat that marks nothing yet is only followed: its labels come with the first marks that use them
+    // (`marks_follow`), not now, when nothing of XYplorer's is in Glint.
+    let only_followed = follow && plan.items.is_empty();
     state::update(cx, |settings| {
-        apply_labels(&mut settings.labels, &plan.labels);
+        if !only_followed {
+            apply_labels(&mut settings.labels, &plan.labels);
+        }
         if follow {
             settings.follow_xyplorer = true;
         }
@@ -569,15 +583,21 @@ fn finish(window: &mut Window, cx: &mut App, plan: &ImportPlan, follow: bool, re
         });
     let key = step.map_or(0, |step| step.0 as usize);
     let items = Arc::new(report.items.clone());
-    let mut note = Notification::success(notice_words(&report))
+    let nothing_listed = items.is_empty();
+    let mut note = Notification::success(notice_words_for(&report, follow))
         .id1::<DoneToast>(key)
         .autohide(false)
         .content(move |_, _, _| {
             let items = items.clone();
-            div()
+            // With no item there is nothing that happened to list.
+            if nothing_listed {
+                return div().into_any_element();
+            }
+            // A row, so the button is as wide as its words and starts where the notice's words do.
+            row_start()
+                .pt(space(2.))
                 .child(
                     Button::new("marks-import-what")
-                        .ghost()
                         .small()
                         .label(t!("What happened"))
                         .on_click(move |_, window, cx| {
@@ -1167,6 +1187,39 @@ pub fn open_with(window: &mut Window, cx: &mut App, source: Option<String>, back
                 .detach();
         }
     }
+}
+
+/// One press brings a `tag.dat` in (the suggestion's button, F27), without the preview: planned with what the
+/// preview starts with (fill what is empty, the extra columns too, Glint's labels as they are now), then applied
+/// exactly as the preview's Import does it: how far it is, the labels, one Undo step, and the notice with Undo and
+/// What happened. `follow` also turns following on. A plan the person has to settle first (XYplorer's folder
+/// couldn't be told), or one that couldn't be made, opens the preview instead, which says so.
+pub fn bring_in(window: &mut Window, cx: &mut App, source: String, follow: bool) {
+    bring_in_with(window, cx, source, follow, Arc::new(CoreBackend));
+}
+
+/// [bring_in] on `backend`, for tests.
+pub fn bring_in_with(window: &mut Window, cx: &mut App, source: String, follow: bool, backend: Arc<dyn Backend>) {
+    let have = state::try_settings(cx).map(|settings| settings.labels.clone()).unwrap_or_default();
+    let options = ImportOptions {
+        extras: true,
+        have,
+        ..ImportOptions::default()
+    };
+    let planning = backend.plan(source.clone(), options);
+    window.push_notification(working(None), cx);
+    window
+        .spawn(cx, async move |cx| {
+            let planned = planning.await;
+            let _ = cx.update(|window, cx| match planned {
+                Ok(plan) if !plan.needs_base => run(window, cx, backend, plan, follow),
+                _ => {
+                    window.remove_notification1::<ImportToast>(0usize, cx);
+                    show_dialog(window, cx, source, backend);
+                }
+            });
+        })
+        .detach();
 }
 
 #[cfg(test)]

@@ -744,9 +744,77 @@ pub fn mcp_setup() -> Result<Setup, String> {
     })
 }
 
+/// An agent's settings file is a few kilobytes; one bigger than this is not read.
+const AGENT_FILE_MAX: u64 = 2 << 20;
+
+/// The AI agents that speak MCP and keep their settings where these say, by name: `(name, base, file)`, the base
+/// being `%APPDATA%` (true) or the person's profile.
+const AGENT_FILES: &[(&str, bool, &str)] = &[
+    ("Claude", true, r"Claude\claude_desktop_config.json"),
+    ("Claude Code", false, ".claude.json"),
+    ("Cursor", false, r".cursor\mcp.json"),
+    ("VS Code", true, r"Code\User\mcp.json"),
+    ("Windsurf", false, r".codeium\windsurf\mcp_config.json"),
+];
+
+/// The first AI agent on this PC whose settings don't start Glint: for the suggestion to connect one (Settings → AI
+/// agents). Its settings file is only read, and only looked through for Glint's program (`Glint.exe`, which every
+/// way of setting it up writes; the word alone could be a folder's name). None when no agent is found, or one
+/// found knows Glint already.
+pub fn agent_without_glint() -> Option<&'static str> {
+    let roaming = std::env::var_os("APPDATA").map(std::path::PathBuf::from);
+    let profile = std::env::var_os("USERPROFILE").map(std::path::PathBuf::from);
+    agent_without_glint_in(roaming.as_deref(), profile.as_deref())
+}
+
+/// [`agent_without_glint`] with the two folders given.
+pub fn agent_without_glint_in(roaming: Option<&std::path::Path>, profile: Option<&std::path::Path>) -> Option<&'static str> {
+    let mut found = None;
+    for (name, in_roaming, file) in AGENT_FILES {
+        let Some(base) = (if *in_roaming { roaming } else { profile }) else { continue };
+        let path = base.join(file);
+        let small = std::fs::metadata(&path).is_ok_and(|m| m.is_file() && m.len() <= AGENT_FILE_MAX);
+        if !small {
+            continue;
+        }
+        let Ok(text) = std::fs::read(&path) else { continue };
+        let knows = String::from_utf8_lossy(&text).to_lowercase().contains("glint.exe");
+        if knows {
+            // One agent set up is the person having found the page: nothing more to suggest.
+            return None;
+        }
+        found = found.or(Some(*name));
+    }
+    found
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_agent_whose_settings_do_not_name_glint_is_found_and_one_set_up_ends_the_looking() {
+        let dir = std::env::temp_dir().join(format!("glint-mcp-agents-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (roaming, profile) = (dir.join("Roaming"), dir.join("me"));
+        std::fs::create_dir_all(roaming.join("Claude")).unwrap();
+        std::fs::create_dir_all(profile.join(".cursor")).unwrap();
+        let found = |r: &std::path::Path, p: &std::path::Path| agent_without_glint_in(Some(r), Some(p));
+        assert_eq!(found(&roaming, &profile), None, "no agent's settings: nothing");
+        std::fs::write(profile.join(".cursor").join("mcp.json"), r#"{"mcpServers":{}}"#).unwrap();
+        assert_eq!(found(&roaming, &profile), Some("Cursor"));
+        std::fs::write(roaming.join("Claude").join("claude_desktop_config.json"), "{}").unwrap();
+        assert_eq!(found(&roaming, &profile), Some("Claude"), "the first in the list");
+        // A project folder that happens to be called glint is not Glint set up.
+        std::fs::write(profile.join(".cursor").join("mcp.json"), r#"{"projects":["D:\code\glint"]}"#).unwrap();
+        assert_eq!(found(&roaming, &profile), Some("Claude"));
+        // One of them starts Glint (any case): the page was found, nothing to suggest.
+        let set_up = r#"{"mcpServers":{"glint":{"command":"C:\Users\me\AppData\Local\Glint\GLINT.EXE","args":["--mcp"]}}}"#;
+        std::fs::write(profile.join(".cursor").join("mcp.json"), set_up).unwrap();
+        assert_eq!(found(&roaming, &profile), None);
+        assert_eq!(agent_without_glint_in(None, None), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn ask(message: Value) -> Value {
         answer(&message).unwrap()

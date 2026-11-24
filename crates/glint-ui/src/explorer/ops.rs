@@ -109,7 +109,8 @@ pub(super) async fn run_op(this: &WeakEntity<Explorer>, cx: &mut AsyncApp, op: F
             _ => None,
         };
         if let Some((kind, sources, dest)) = queued {
-            this.update(cx, |this, cx| this.note_place(sources.iter().map(String::as_str), &dest, cx)).ok();
+            let moved = kind == QueueKind::Move;
+            this.update(cx, |this, cx| this.note_place(sources.iter().map(String::as_str), &dest, moved, cx)).ok();
             super::queue::queue_in(this, cx, kind, sources, dest).await;
             return Ok(true);
         }
@@ -126,10 +127,18 @@ const KINDS_FROM: usize = 16;
 impl Explorer {
     /// Counts `dest` as where these kinds of thing go (`aware::note_place`): a file's extension, lower case, and
     /// "" for a folder or a file with none. An item no tab shows (dropped from another program) is taken for a
-    /// file.
-    pub(super) fn note_place<'a>(&self, sources: impl Iterator<Item = &'a str>, dest: &str, cx: &mut Context<Self>) {
+    /// file. And says so ([`ExplorerEvent::Placed`]: `moved` when it was a move), with the folder the first came from.
+    pub(super) fn note_place<'a>(
+        &self,
+        sources: impl Iterator<Item = &'a str>,
+        dest: &str,
+        moved: bool,
+        cx: &mut Context<Self>,
+    ) {
         let mut kinds: Vec<String> = Vec::new();
+        let mut came_from: Option<String> = None;
         for from in sources.take(KINDS_FROM) {
+            came_from.get_or_insert_with(|| glint_model::paths::parent_path(from));
             let shown = self.tabs.values().find_map(|tab| tab.rows.iter().find(|entry| entry.path == from));
             let kind = match shown {
                 Some(entry) if entry.dir => String::new(),
@@ -146,6 +155,14 @@ impl Explorer {
         }
         if !kinds.is_empty() {
             crate::aware::note_place(cx, &kinds, dest);
+            if let Some(from) = came_from {
+                cx.emit(ExplorerEvent::Placed {
+                    from,
+                    dest: dest.to_string(),
+                    exts: kinds,
+                    moved,
+                });
+            }
         }
     }
 
@@ -169,7 +186,8 @@ impl Explorer {
         let count = done.len();
         // Where this kind of thing went is counted, for "Move or copy to" (docs/gpui/aware).
         if let FileOp::Copy { dest, .. } | FileOp::Move { dest, .. } = op {
-            self.note_place(done.iter().map(|(from, _)| *from), dest, cx);
+            let moved = matches!(op, FileOp::Move { .. });
+            self.note_place(done.iter().map(|(from, _)| *from), dest, moved, cx);
         }
         if let Some(&(first_from, first_to)) = done.first() {
             let what = plural(count, "item");

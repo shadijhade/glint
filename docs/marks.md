@@ -99,6 +99,8 @@ Typed in the search box, in the sidebar's saved searches, in Quick search and in
 
 A space is *and*; `;` is *or* within one filter. XYplorer's names work too: `lbl:`, `tags:` and `cmt:`. Plain words are understood as well: `tagged netplan`, `with comments`, `labeled pending from last week`.
 
+**Typed on any keyboard.** A Chinese input method types its punctuation full width, and the filters read it as it stands: `label：重要`, `tag：工作，报告`, `！has：comment`, `comment：“周五 之前”`. That holds after a filter's key and in its value only, so a file named `报告：终稿` is still found by its name. In Edit tags… and the Marks block, tags part at `，`, `、` and Arabic's `،` as well as `,`. And a label answers to its color in either language: `label:红色` (or `红`, `紅色`) finds the label named Red, and `label:red` finds one named 红色; a label actually named that way always wins.
+
 Where they work:
 
 - **The open folder, as you type.** It reads the marks of the folder's items to answer, and shows them as it goes.
@@ -114,7 +116,7 @@ The index and the open folder's filter are two parsers that run one table of cas
 
 XYplorer keeps all marks in one file, `tag.dat` (UTF-16 text), in its data folder: `%APPDATA%\XYplorer`; a portable copy's `Data` folder; or where its `Startup.ini` says. Glint **only reads** it: never writes, moves or holds it open (it is read with sharing that lets XYplorer write meanwhile), and it never writes XYplorer's own `tag.dat`.
 
-- **Found by itself.** When there is a `tag.dat` that was never brought in, a suggestion offers *Bring your XYplorer labels, tags and comments*, with how many items it marks. A `tag.dat` or `XYplorerTag.dat` has *Import marks…* in its own menu under Suggested, and `Ctrl+K` has it too.
+- **Found by itself.** When there is a `tag.dat` that was never brought in, a suggestion offers *Bring your XYplorer labels, tags and comments*, with how many items it marks: **Bring them in** does it at once, as the preview's Import would with nothing changed in it, and **Look first…** opens the preview. An XYplorer that marks nothing yet (just installed) is offered to be followed instead, so what is marked there later shows in Glint. A `tag.dat` or `XYplorerTag.dat` has *Import marks…* in its own menu under Suggested, and `Ctrl+K` has it too.
 - **Import marks…** reads the file (version 3 and 5, and a later version by the same rules, saying so) and shows a **preview** before anything is written: the version and date, how many items, labels, tags and comments, and then
   - **Labels**: each XYplorer label and the Glint label it becomes. By name (*Grey* is *Gray*); else by XYplorer's own color, for an XYplorer in another language (*红色* is *Red*, which Glint then calls *红色*, keeping the old name for files that say it); else *New label*, in XYplorer's color (it comes in as a tag past 32 labels). Any can be pointed elsewhere.
   - **Extra columns**, each with what it becomes, and a switch to leave them out.

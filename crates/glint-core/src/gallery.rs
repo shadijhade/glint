@@ -324,9 +324,257 @@ pub fn geo_photos_in(folder: &str) -> Vec<GeoPhoto> {
     out
 }
 
+// ---- Photos the Gallery doesn't show ---------------------------------------------------------------------------
+
+/// A folder outside the Gallery's that holds what a camera or a phone makes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Elsewhere {
+    pub folder: String,
+    /// How many photos and videos are below it.
+    pub files: usize,
+}
+
+/// What a camera or a phone makes. No PNG, GIF, WebP or BMP: those are mostly what programs draw with.
+const CAMERA_KINDS: &[&str] = &[
+    "jpg", "jpeg", "heic", "heif", "dng", "cr2", "cr3", "nef", "nrw", "arw", "raf", "orf", "rw2", "pef", "srw", "mp4",
+    "mov", "m4v", "mts", "m2ts", "3gp",
+];
+
+/// A file under this isn't counted: thumbnails, icons, and the pictures programs and web pages are made of.
+const CAMERA_FROM_KB: u64 = 300;
+
+/// A folder is worth naming from this many photos and videos.
+pub const ELSEWHERE_FROM: usize = 40;
+
+/// The most files looked at: a PC with more photos than this outside its Gallery is answered from the first ones.
+const ELSEWHERE_LOOKS: usize = 400_000;
+
+/// Folders photos are never looked for under (any case): Windows', programs', caches, what a build makes.
+const NOT_PHOTOS: &[&str] = &[
+    "windows",
+    "program files",
+    "program files (x86)",
+    "programdata",
+    "appdata",
+    "$recycle.bin",
+    "system volume information",
+    "node_modules",
+    "site-packages",
+    "steamapps",
+    ".git",
+    "cache",
+    "caches",
+    "temp",
+    "tmp",
+    "thumbnails",
+    ".thumbnails",
+];
+
+/// The folders outside the Gallery's with the most photos and videos below them, most first, at most `most` of
+/// them: for the suggestion to show one in the Gallery. Asked of instant search's index only, below `drives`
+/// (their roots); None when the index doesn't answer, since nothing is walked for a suggestion. `broad` are
+/// folders too wide to offer themselves (the person's profile, the folder profiles are in): what is below them is.
+pub fn elsewhere(drives: &[String], broad: &[String], most: usize) -> Option<Vec<Elsewhere>> {
+    let shown = state().folders.clone();
+    let paths = camera_files(drives)?;
+    Some(group_elsewhere(paths.iter().map(String::as_str), &shown, broad, most))
+}
+
+/// Every file a camera or a phone made below `drives`, from the index.
+#[cfg(windows)]
+fn camera_files(drives: &[String]) -> Option<Vec<String>> {
+    use shadui_index::client::{self, Event};
+    if drives.is_empty() {
+        return None;
+    }
+    let request = shadui_index::proto::SearchRequest {
+        query: format!("ext:{} size:>{CAMERA_FROM_KB}kb", CAMERA_KINDS.join(";")),
+        roots: drives.to_vec(),
+        hidden: false,
+        exclude: Vec::new(),
+        max_results: Some(ELSEWHERE_LOOKS),
+        fuzzy: false,
+        rank: false,
+        marks: false,
+    };
+    let mut found = Vec::new();
+    client::search(&request, |event| {
+        if let Event::Hits(hits) = event {
+            found.extend(hits.into_iter().filter(|h| !h.dir).map(|h| h.path));
+        }
+        true
+    })
+    .ok()?;
+    Some(found)
+}
+
+#[cfg(not(windows))]
+fn camera_files(_drives: &[String]) -> Option<Vec<String>> {
+    None
+}
+
+/// Whether `path` is `folder` or below it (any case, either slash at the end of `folder`).
+fn is_under(path: &str, folder: &str) -> bool {
+    let folder = folder.trim_end_matches(['\\', '/']);
+    path.len() >= folder.len()
+        && path.is_char_boundary(folder.len())
+        && path[..folder.len()].eq_ignore_ascii_case(folder)
+        && matches!(path.as_bytes().get(folder.len()), None | Some(b'\\' | b'/'))
+}
+
+/// [`elsewhere`]'s answer for these files: each is counted for every folder above it, then, from each drive down,
+/// the folder named is the deepest one that still holds nearly all of what is below it (a folder whose photos are
+/// spread over its subfolders is named itself; one with a single subfolder of photos gives that subfolder).
+pub fn group_elsewhere<'a>(
+    paths: impl Iterator<Item = &'a str>,
+    shown: &[String],
+    broad: &[String],
+    most: usize,
+) -> Vec<Elsewhere> {
+    use std::collections::HashMap;
+    /// A folder: how it is written, how many files are below it, and the folders right inside it that have some.
+    #[derive(Default)]
+    struct Node {
+        written: String,
+        files: usize,
+        inside: Vec<String>,
+    }
+    // How many files are right in each folder (by the folder in lower case), and how it is written.
+    let mut direct: HashMap<String, (String, usize)> = HashMap::new();
+    for path in paths {
+        if shown.iter().any(|folder| is_under(path, folder)) {
+            continue;
+        }
+        let Some((folder, _)) = path.rsplit_once('\\') else { continue };
+        let lower = folder.to_lowercase();
+        if lower.split('\\').any(|part| NOT_PHOTOS.contains(&part)) {
+            continue;
+        }
+        direct.entry(lower).or_insert_with(|| (folder.to_string(), 0)).1 += 1;
+    }
+    // A folder's files count for every folder above it; a folder met for the first time is put inside the one
+    // above it, once.
+    let mut nodes: HashMap<String, Node> = HashMap::new();
+    let mut roots: Vec<String> = Vec::new();
+    for (lower, (written, files)) in &direct {
+        let (mut key, mut written) = (lower.as_str(), written.as_str());
+        let mut below: Option<String> = None;
+        loop {
+            let fresh = !nodes.contains_key(key);
+            let node = nodes.entry(key.to_string()).or_insert_with(|| Node {
+                written: written.to_string(),
+                ..Node::default()
+            });
+            node.files += files;
+            node.inside.extend(below.take());
+            below = fresh.then(|| key.to_string());
+            match (key.rsplit_once('\\'), written.rsplit_once('\\')) {
+                (Some((above, _)), Some((above_written, _))) => (key, written) = (above, above_written),
+                _ => {
+                    roots.extend(below.take());
+                    break;
+                }
+            }
+        }
+    }
+    let too_broad = |written: &str| {
+        // A drive ("D:"), or one of the folders the caller named.
+        !written.contains('\\') || broad.iter().any(|b| b.trim_end_matches('\\').eq_ignore_ascii_case(written))
+    };
+    let mut found: Vec<Elsewhere> = Vec::new();
+    let mut stack = roots;
+    while let Some(key) = stack.pop() {
+        let Some(node) = nodes.get(&key) else { continue };
+        if node.files < ELSEWHERE_FROM {
+            continue;
+        }
+        if too_broad(&node.written) {
+            stack.extend(node.inside.iter().cloned());
+            continue;
+        }
+        // One folder inside holds nearly all of it: that one is where the photos are.
+        let heavy = node
+            .inside
+            .iter()
+            .find(|inner| nodes.get(*inner).is_some_and(|n| n.files * 100 >= node.files * 85));
+        match heavy {
+            Some(inner) => stack.push(inner.clone()),
+            None => found.push(Elsewhere {
+                folder: node.written.clone(),
+                files: node.files,
+            }),
+        }
+    }
+    found.sort_by(|a, b| b.files.cmp(&a.files).then_with(|| a.folder.cmp(&b.folder)));
+    found.truncate(most);
+    found
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `n` photos in `folder`.
+    fn photos(folder: &str, n: usize) -> Vec<String> {
+        (0..n).map(|i| format!("{folder}\\IMG_{i:04}.JPG")).collect()
+    }
+
+    fn grouped(paths: &[String], shown: &[&str], broad: &[&str]) -> Vec<(String, usize)> {
+        let shown: Vec<String> = shown.iter().map(|s| (*s).to_string()).collect();
+        let broad: Vec<String> = broad.iter().map(|s| (*s).to_string()).collect();
+        group_elsewhere(paths.iter().map(String::as_str), &shown, &broad, 5)
+            .into_iter()
+            .map(|e| (e.folder, e.files))
+            .collect()
+    }
+
+    #[test]
+    fn photos_elsewhere_name_the_folder_they_are_really_in() {
+        // All in one folder, three levels down: that folder, not the ones above it.
+        let deep = photos(r"D:\Backup\Phone\DCIM\Camera", 120);
+        assert_eq!(grouped(&deep, &[], &[]), [(r"D:\Backup\Phone\DCIM\Camera".to_string(), 120)]);
+        // Spread over years: the folder that holds the years.
+        let mut years = photos(r"D:\Photos\2022", 60);
+        years.extend(photos(r"D:\Photos\2023", 70));
+        years.extend(photos(r"D:\Photos\2024\Trip", 50));
+        assert_eq!(grouped(&years, &[], &[]), [(r"D:\Photos".to_string(), 180)]);
+        // Two places: both, the bigger first.
+        let mut two = deep.clone();
+        two.extend(years.clone());
+        assert_eq!(
+            grouped(&two, &[], &[]),
+            [(r"D:\Photos".to_string(), 180), (r"D:\Backup\Phone\DCIM\Camera".to_string(), 120)]
+        );
+    }
+
+    #[test]
+    fn photos_elsewhere_leave_out_the_gallery_few_files_and_what_programs_keep() {
+        // In the Gallery already (any case), under a program's folder, in a cache, or too few to matter.
+        let mut paths = photos(r"C:\Users\me\Pictures\2024", 500);
+        paths.extend(photos(r"C:\Users\me\AppData\Local\Some App\media", 300));
+        paths.extend(photos(r"C:\Program Files\Game\textures", 300));
+        paths.extend(photos(r"D:\Site\node_modules\pkg\img", 300));
+        paths.extend(photos(r"D:\Work\cache\thumbs", 300));
+        paths.extend(photos(r"D:\Few", ELSEWHERE_FROM - 1));
+        assert!(grouped(&paths, &[r"c:\users\me\pictures"], &[]).is_empty());
+        // A folder whose name only starts like the Gallery's is not in it.
+        let near = photos(r"C:\Users\me\Pictures old", 50);
+        assert_eq!(grouped(&near, &[r"C:\Users\me\Pictures"], &[]).len(), 1);
+    }
+
+    #[test]
+    fn a_drive_and_the_profile_are_too_wide_to_offer_themselves() {
+        // Loose on the drive: the drive is never offered.
+        assert!(grouped(&photos("D:", 90), &[], &[]).is_empty());
+        // Under the profile: its folders are offered, never the profile.
+        let mut paths = photos(r"C:\Users\me\Desktop\Wedding", 80);
+        paths.extend(photos(r"C:\Users\me\Phone", 60));
+        let found = grouped(&paths, &[], &[r"C:\Users\me", r"C:\Users"]);
+        assert_eq!(
+            found,
+            [(r"C:\Users\me\Desktop\Wedding".to_string(), 80), (r"C:\Users\me\Phone".to_string(), 60)]
+        );
+    }
 
     #[test]
     fn takes_photos_and_videos() {

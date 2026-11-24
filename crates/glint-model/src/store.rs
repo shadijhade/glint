@@ -435,6 +435,9 @@ pub struct Settings {
     /// What XYplorer's `tag.dat` gains comes into Glint when Glint starts or comes to the front (docs/gpui/marks,
     /// F30). Off until chosen.
     pub follow_xyplorer: bool,
+    /// Glint puts forward, as you work, what would help with what you are doing (`glint_ui::suggestions`): a
+    /// setting that fits, a quicker way. Off, the same things only wait in Settings' Overview.
+    pub tips: bool,
 }
 
 impl Default for Settings {
@@ -549,6 +552,7 @@ impl Default for Settings {
             haptics: true,
             labels: default_labels(),
             follow_xyplorer: false,
+            tips: true,
         }
     }
 }
@@ -946,6 +950,7 @@ lenient_deserialize!(Settings {
     "haptics" => haptics,
     "labels" => labels,
     "followXyplorer" => follow_xyplorer,
+    "tips" => tips,
 });
 /// Kinds of remote connection Glint no longer has: a paired PC's folders ("device"), gone with paired devices in
 /// 0.12. A saved one loads as nothing ([`load_persisted`] drops it); any other kind it doesn't know loads as S3.
@@ -1362,7 +1367,7 @@ mod tests {
                 r#""labels":[{{"name":"Red","color":15680580}},{{"name":"Orange","color":16347926}},"#,
                 r#"{{"name":"Yellow","color":15381256}},{{"name":"Green","color":2278750}},"#,
                 r#"{{"name":"Blue","color":3900150}},{{"name":"Purple","color":11032055}},"#,
-                r#"{{"name":"Gray","color":10265519}}],"followXyplorer":false}}"#
+                r#"{{"name":"Gray","color":10265519}}],"followXyplorer":false,"tips":true}}"#
             ),
             DEFAULT_EXCLUSIONS
         );

@@ -27,6 +27,8 @@ pub mod groups;
 pub mod hex;
 pub mod i18n;
 pub mod json_tree;
+/// What a search means when it was typed on a keyboard that isn't an English one (a Chinese one's `：` and `；`).
+pub mod keyboard;
 pub mod markdown;
 /// A label, tags and a comment that stay with the file (docs/gpui/marks).
 pub mod marks;

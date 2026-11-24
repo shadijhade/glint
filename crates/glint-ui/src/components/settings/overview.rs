@@ -3,14 +3,15 @@
 //! Four tiles, each with what matters most and the one thing to do about it: Instant search (on, with how many
 //! files it knows, or Index all drives), Tools (how many are ready, Update all), Clouds (how many are connected) and
 //! Theme (System, Light or Dark, chosen right there). A tile's name opens its page. Under them, the suggestions that
-//! apply to this PC (`crate::suggestions`), each with its button and a cross that puts it away.
+//! apply to this PC and what this run's moments brought (`crate::suggestions`), each with its button and a cross
+//! that puts it away, and the switch that lets them come up as notifications while you work.
 
 use super::backend::IndexState;
 use super::pages::Page;
 use super::widgets;
 use super::SettingsView;
 use crate::kit::prelude::*;
-use crate::suggestions::{self, Facts, Room, Suggestion};
+use crate::suggestions::{self, Facts, Kind, Suggestion};
 use crate::{state, t, theme};
 use glint_model::format::format_count;
 use glint_model::store::Theme;
@@ -70,6 +71,8 @@ impl SettingsView {
             drives: self.drives.clone(),
             rclone: tools.tool("rclone").map(|tool| tool.origin.is_some()),
             clouds: self.clouds.read(cx).remotes().map(<[_]>::len),
+            zoxide: self.zoxide_found.then_some(true),
+            agent: self.agent.clone(),
             ..Facts::from_settings(cx)
         }
     }
@@ -254,9 +257,10 @@ impl SettingsView {
             .into_any_element()
     }
 
-    /// The suggestions card: each with its sign, words, button and cross; or a line that all is well.
+    /// The suggestions card: each with its sign, words, button and cross, or a line that all is well; then the
+    /// switch that lets them come up while you work.
     fn suggestions_card(&self, list: Vec<Suggestion>, t: &theme::Tokens, cx: &mut Context<Self>) -> AnyElement {
-        let rows: Vec<AnyElement> = if list.is_empty() {
+        let mut rows: Vec<AnyElement> = if list.is_empty() {
             vec![row_start()
                 .id("settings-suggestions-none")
                 .role(Role::Status)
@@ -307,6 +311,15 @@ impl SettingsView {
                                         .child(suggestion.body.clone()),
                                 ),
                         )
+                        .children(suggestion.also.clone().map(|label| {
+                            let looking = suggestion.clone();
+                            widgets::button(&format!("suggestion-{id}-also"), label, None).on_click(cx.listener(
+                                move |_, _, window, cx| {
+                                    window.close_dialog(cx);
+                                    suggestions::act_also(&looking, window, cx);
+                                },
+                            ))
+                        }))
                         .child(
                             widgets::primary_button(&format!("suggestion-{id}"), suggestion.button.clone(), None)
                                 .on_click(cx.listener(move |this, _, window, cx| this.act_on(&doing, window, cx))),
@@ -327,19 +340,49 @@ impl SettingsView {
                 })
                 .collect()
         };
+        rows.push(
+            widgets::switch_row(
+                "tips",
+                t!("Suggest these as I work"),
+                Some(t!(
+                    "A notification now and then, at the moment one would help: a setting that fits, a quicker way. Off, they only wait here."
+                )),
+                state::settings(cx).tips,
+                false,
+                |on, _, cx| state::update(cx, |s| s.tips = on),
+                t,
+            )
+            .into_any_element(),
+        );
         widgets::section("suggestions", t!("Suggestions for you"), None, rows, t)
     }
 
     /// A suggestion's button, from inside Settings: the ones about Settings' own pages stay in Settings.
     fn act_on(&mut self, suggestion: &Suggestion, window: &mut Window, cx: &mut Context<Self>) {
         match suggestion.kind {
-            suggestions::Kind::ToolUpdates => self.tools.update(cx, |tools, cx| tools.update_all(window, cx)),
-            suggestions::Kind::ConnectCloud => {
+            Kind::ToolUpdates => self.tools.update(cx, |tools, cx| tools.update_all(window, cx)),
+            Kind::ConnectCloud => {
                 window.close_dialog(cx);
                 cx.emit(super::SettingsEvent::ConnectCloud);
             }
-            suggestions::Kind::IndexAllDrives => self.instant.update(cx, |instant, cx| instant.turn_on(window, cx)),
-            suggestions::Kind::FullDrive => {
+            Kind::IndexAllDrives => self.instant.update(cx, |instant, cx| instant.turn_on(window, cx)),
+            // Settings' own pages: shown here, not opened again.
+            Kind::ConnectAgent => {
+                self.show_page(Page::Agents, window, cx);
+                suggestions::settle(cx, suggestion.kind);
+            }
+            Kind::NameLabels => {
+                self.show_page(Page::Files, window, cx);
+                suggestions::settle(cx, suggestion.kind);
+            }
+            // What happens in the window behind: Settings gets out of its way first.
+            Kind::FullDrive
+            | Kind::BatchRename
+            | Kind::QuickLook
+            | Kind::TwoPanes
+            | Kind::FindMarks
+            | Kind::FolderRule
+            | Kind::GalleryFolder => {
                 window.close_dialog(cx);
                 suggestions::act(suggestion, window, cx);
             }
@@ -348,36 +391,20 @@ impl SettingsView {
         cx.notify();
     }
 
-    /// Asks core for the fixed drives' room once, for the full-drive suggestion (none without core, as in tests).
+    /// Asks the PC once for what the suggestions need and only it can say: the fixed drives' room, XYplorer's
+    /// `tag.dat` (F27, kept for `Facts::from_settings`), an AI agent that doesn't know Glint (nothing without core, as in
+    /// tests).
     pub(super) fn load_drives(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !cx.has_global::<crate::core_bridge::Core>() {
             return;
         }
+        let looking = suggestions::look(cx);
         cx.spawn_in(window, async move |this, cx| {
-            // F27: XYplorer's tag.dat is asked here too, and kept for `Facts::from_settings`.
-            let xyplorer = cx.update(|_, cx| suggestions::ask_xyplorer(cx)).ok();
-            let xyplorer = match xyplorer {
-                Some(asked) => asked.await,
-                None => None,
-            };
-            let drives = crate::core_bridge::run(glint_core::fsx::list_drives())
-                .await
-                .ok()
-                .and_then(Result::ok)
-                .map(|drives| {
-                    drives
-                        .into_iter()
-                        .filter(|d| d.kind == "fixed")
-                        .map(|d| Room {
-                            root: d.path,
-                            free: d.free,
-                            total: d.total,
-                        })
-                        .collect::<Vec<_>>()
-                });
+            let looked = looking.await;
             this.update(cx, |this, cx| {
-                suggestions::know_xyplorer(cx, xyplorer);
-                this.drives = drives;
+                suggestions::know_xyplorer(cx, looked.xyplorer);
+                this.drives = looked.drives;
+                this.agent = looked.agent;
                 cx.notify();
             })
             .ok();

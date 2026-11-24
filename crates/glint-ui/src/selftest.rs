@@ -200,6 +200,49 @@ fn fly_step(step: &str, cx: &mut App) {
         });
         return;
     }
+    // `suggest:<what>`: the moment that brings a suggestion, made up, for a look at its notification (`rename`,
+    // `rule`, `panes`, `queue`, `delete`, `look`, `labels`, `tag`, `comment`, `gallery`, `theme`, `tray`).
+    if let Some(what) = step.strip_prefix("suggest:") {
+        use crate::suggestions::moments::{noticed, Moment};
+        let Some(main) = startup::main_window(cx) else {
+            return;
+        };
+        let (folder, files): (String, Vec<String>) = {
+            let explorer = explorer::explorer(cx).read(cx);
+            let files = explorer
+                .active_tab()
+                .map(|tab| tab.rows.iter().filter(|e| !e.dir).map(|e| e.path.clone()).collect())
+                .unwrap_or_default();
+            (explorer.current_path().to_string(), files)
+        };
+        let placed = |moved: bool| Moment::Placed {
+            from: folder.clone(),
+            dest: "D:\\Papers\\Invoices".to_string(),
+            exts: vec!["pdf".to_string()],
+            moved,
+        };
+        let moments: Vec<Moment> = match what {
+            "rename" => files.iter().take(3).map(|to| Moment::Renamed { to: to.clone() }).collect(),
+            "rule" => vec![placed(true), placed(true), placed(true)],
+            "panes" => vec![placed(false), placed(false), placed(false)],
+            "queue" => vec![Moment::SlowTransfer],
+            "delete" => vec![Moment::UndidDeletion],
+            "look" => (0..4).map(|i| Moment::Opened { path: format!("{folder}\\{i}.jpg") }).collect(),
+            "labels" => vec![Moment::Labeled, Moment::Labeled, Moment::Labeled],
+            "tag" => vec![Moment::Tagged { tag: "work".to_string() }],
+            "comment" => vec![Moment::Commented],
+            "gallery" => vec![Moment::PhotoFolder { folder: folder.clone(), files: 312 }],
+            "theme" => vec![Moment::WindowsThemeChanged { dark: false }],
+            "tray" => vec![Moment::ShortcutUsed, Moment::ShortcutUsed, Moment::ShortcutUsed],
+            _ => Vec::new(),
+        };
+        let _ = main.update(cx, |_, window, cx| {
+            for moment in moments {
+                noticed(moment, window, cx);
+            }
+        });
+        return;
+    }
     // The marks' dialogs and keys: `import:<file>`, `export` (of the folder shown), `settings:<section>`,
     // `key:<keystroke>` (made up, as the pointer is: `key:enter`, `key:escape`).
     // Wave 5's: `rename:<pattern>` (Batch rename over the folder's files, with that pattern) and `rule-label` (a new

@@ -25,6 +25,16 @@ pub(super) fn as_typed_after(query: &str) -> Duration {
     })
 }
 
+/// What `text` means whatever keyboard typed it (`glint_model::keyboard`): a Chinese keyboard's full-width `：`
+/// and `；` in a filter are the syntax's own, and a label is found by its color's name in either language. The
+/// box keeps what was typed; the folder's filter and every search get this. Nearly always the text itself.
+pub(super) fn as_meant(text: &str, cx: &App) -> String {
+    let names: Vec<&str> = crate::state::try_settings(cx)
+        .map(|s| s.labels.iter().map(|l| l.name.as_str()).collect())
+        .unwrap_or_default();
+    glint_model::keyboard::as_meant(text, &names).into_owned()
+}
+
 /// `plain_query_with` knowing the settings' labels by name.
 fn plain_for(text: &str, cx: &App) -> Option<glint_model::plain::Plain> {
     let names: Vec<&str> = crate::state::try_settings(cx)
@@ -38,7 +48,9 @@ impl AddressBar {
     /// says what the box searches.
     pub(super) fn sync_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let filter = self.seen.filter.clone();
-        if self.search.read(cx).value().as_ref() != filter.as_str() {
+        // What was typed stays in the box while it means the tab's filter (`label：red` for `label:red`).
+        let typed = self.search.read(cx).value();
+        if typed.as_ref() != filter.as_str() && as_meant(&typed, cx) != filter {
             self.plain = self.read_plain(&filter, cx);
             self.search.update(cx, |input, cx| input.set_value(filter, window, cx));
         }
@@ -96,6 +108,7 @@ impl AddressBar {
 
     /// The text in the box changed (`onFilterChange`): it filters the folder now, and may search below it.
     pub(super) fn filter_changed(&mut self, value: String, cx: &mut Context<Self>) {
+        let value = as_meant(&value, cx);
         self.find_timer = None;
         self.plain = self.read_plain(&value, cx);
         self.explorer
@@ -140,8 +153,9 @@ impl AddressBar {
     fn run_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.find_timer = None;
         let filter = self.search.read(cx).value().to_string();
+        let query = as_meant(&filter, cx);
         // Git's marks are the folder shown's: a search of its subfolders couldn't ask them.
-        if has_git_filter(&filter) {
+        if has_git_filter(&query) {
             window.push_notification(
                 Notification::info(t!("Git's marks are for the open folder only."))
                     .title(t!("git: filters this folder, as you type")),
@@ -151,13 +165,14 @@ impl AddressBar {
         }
         // Kept among the recent searches the empty box offers (when Settings keep them).
         if !filter.trim().is_empty() {
+            // As it was typed: that is how its writer knows it.
             let (query, folder) = (filter.clone(), self.seen.path.clone());
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
             crate::persistence::update_app(cx, |app| app.add_to_history(&query, &folder, now));
         }
-        cx.emit(AddressBarEvent::RunFind { query: filter });
+        cx.emit(AddressBarEvent::RunFind { query });
     }
 
     /// The switches of the search inside files (match case, whole words, a regular expression; documents,

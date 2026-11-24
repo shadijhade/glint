@@ -249,6 +249,11 @@ impl Explorer {
         self.tabs.get(&id)
     }
 
+    /// Every open tab, in no order.
+    pub fn tabs(&self) -> impl Iterator<Item = &Tab> {
+        self.tabs.values()
+    }
+
     /// The tab the keyboard, toolbar and palette act on: the active pane's (`tabState()`).
     pub fn active_tab(&self) -> Option<&Tab> {
         self.tabs.get(&self.active_tab_id())
@@ -646,6 +651,12 @@ impl Explorer {
         // Show hidden items changes what is compared.
         self.refresh_comparison(cx);
         cx.notify();
+    }
+
+    /// The Gallery's folders as glint-core has them: Pictures, Videos and the ones added in Settings. Empty until
+    /// the known folders were found.
+    pub fn gallery_folders(&self) -> &[String] {
+        self.gallery_sent.as_deref().unwrap_or_default()
     }
 
     /// Hands glint-core the Gallery's folders when they change: Pictures and Videos, and the ones added in Settings

@@ -329,15 +329,17 @@ impl QuickSearch {
 
     /// The box's text changed: read it, offer the filters its plain words make, and search after a pause.
     fn query_changed(&mut self, cx: &mut Context<Self>) {
-        let value = self.input.read(cx).value().to_string();
-        if value == self.query {
-            return;
-        }
-        self.query = value;
+        let typed = self.input.read(cx).value().to_string();
         // The settings' labels are words here too (nothing is read from disk: the names are borrowed).
         let names: Vec<&str> = state::try_settings(cx)
             .map(|s| s.labels.iter().map(|l| l.name.as_str()).collect())
             .unwrap_or_default();
+        // What was typed, as it is meant whatever keyboard typed it (a Chinese one's `：` after a filter's key).
+        let value = glint_model::keyboard::as_meant(&typed, &names).into_owned();
+        if value == self.query {
+            return;
+        }
+        self.query = value;
         self.plain = plain_query_with(&self.query, &names);
         self.search_after_a_pause(cx);
         cx.notify();

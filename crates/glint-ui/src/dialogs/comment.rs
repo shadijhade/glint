@@ -254,8 +254,18 @@ impl Render for CommentDialog {
             })
             .child(
                 row_start()
-                    .justify_end()
+                    .items_center()
                     .gap(space(2.))
+                    // Enter is a new line here, so what saves is said where the eye goes for the buttons.
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(theme::size::XS)
+                            .text_color(t.muted_foreground)
+                            .child(t!("Ctrl+Enter saves")),
+                    )
                     .child(
                         Button::new("comment-cancel")
                             .ghost()

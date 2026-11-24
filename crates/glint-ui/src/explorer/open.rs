@@ -70,7 +70,10 @@ impl Explorer {
                     Err(_) => false,
                 }
             }
-            Ok(None) => true,
+            Ok(None) => {
+                this.update(cx, |_, cx| cx.emit(ExplorerEvent::Opened(path))).ok();
+                true
+            }
             Err(message) => {
                 this.update(cx, |_, cx| {
                     cx.emit(ExplorerEvent::Notice(Notice::CouldNotOpenFile { path, message }));
