@@ -158,7 +158,7 @@ pub(crate) fn start(cx: &mut App) {
 /// One step of the `fly` script (see [`start`]).
 fn fly_step(step: &str, cx: &mut App) {
     use glint_model::store::ViewMode;
-    if let Some((what @ ("point" | "wheel" | "pinch"), by)) = step.split_once(':') {
+    if let Some((what @ ("point" | "wheel" | "pinch" | "scroll"), by)) = step.split_once(':') {
         let Some(main) = startup::main_window(cx) else {
             return;
         };
@@ -184,6 +184,12 @@ fn fly_step(step: &str, cx: &mut App) {
                     modifiers: Modifiers::control(),
                     ..Default::default()
                 }),
+                // The wheel without Ctrl: what's under the pointer scrolls (a negative number goes down).
+                "scroll" => PlatformInput::Scroll(ScrollEvent {
+                    position: POINTER.get(),
+                    delta: ScrollDelta::Lines(point(0., by.parse().unwrap_or(0.))),
+                    ..Default::default()
+                }),
                 _ => PlatformInput::Pinch(PinchEvent {
                     position: POINTER.get(),
                     delta: by.parse().unwrap_or(0.),
@@ -196,13 +202,37 @@ fn fly_step(step: &str, cx: &mut App) {
     }
     // The marks' dialogs and keys: `import:<file>`, `export` (of the folder shown), `settings:<section>`,
     // `key:<keystroke>` (made up, as the pointer is: `key:enter`, `key:escape`).
+    // Wave 5's: `rename:<pattern>` (Batch rename over the folder's files, with that pattern) and `rule-label` (a new
+    // folder rule for the folder shown, its action Label).
     let head: (&str, &str) = step.split_once(':').unwrap_or((step, ""));
-    if matches!(head.0, "import" | "export" | "settings" | "key") {
+    if matches!(head.0, "import" | "export" | "settings" | "key" | "rename" | "rule-label") {
         let Some(main) = startup::main_window(cx) else {
             return;
         };
         let folder = explorer::explorer(cx).read(cx).current_path().to_string();
+        let files: Vec<String> = explorer::explorer(cx)
+            .read(cx)
+            .active_tab()
+            .map(|tab| tab.rows.iter().filter(|e| !e.dir).map(|e| e.path.clone()).collect())
+            .unwrap_or_default();
         let _ = main.update(cx, |_, window, cx| match head {
+            ("rename", pattern) => {
+                use crate::dialogs::batch_rename::{core_source, gather, BatchRename, BatchRenameDialog};
+                let (items, existing) = gather(&files, cx);
+                let model = cx.new(|_| BatchRename::new(items, existing, core_source()));
+                let pattern = pattern.to_string();
+                model.update(cx, |m, cx| m.update_rules(|r| r.pattern = pattern, cx));
+                let view = cx.new(|cx| BatchRenameDialog::new(model, window, cx));
+                crate::dialogs::show(window, cx, "Rename".into(), px(896.), view);
+            }
+            ("rule-label", _) => {
+                let backend = crate::dialogs::rules::backend(cx);
+                let view = cx.new(|cx| crate::dialogs::rules::RulesDialog::new(backend, Some(folder.clone()), window, cx));
+                crate::dialogs::show(window, cx, "Folder rules".into(), px(672.), view.clone());
+                if let Some(editor) = view.read(cx).editor().cloned() {
+                    editor.update(cx, |e, cx| e.choose_action(glint_model::store::RuleAction::Label, window, cx));
+                }
+            }
             ("import", file) => crate::dialogs::marks_import::open(window, cx, Some(file.to_string())),
             ("export", _) => crate::dialogs::marks_export::open(window, cx, folder),
             ("settings", section) => {

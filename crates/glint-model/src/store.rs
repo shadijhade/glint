@@ -642,6 +642,8 @@ pub enum RuleAction {
     Unblock,
     Extract,
     Sync,
+    /// Gives it a label (the rule's `target` names it).
+    Label,
 }
 
 impl RuleAction {
@@ -654,6 +656,7 @@ impl RuleAction {
             RuleAction::Unblock => "unblock",
             RuleAction::Extract => "extract",
             RuleAction::Sync => "sync",
+            RuleAction::Label => "label",
         }
     }
 }
@@ -700,7 +703,7 @@ pub struct FolderRule {
     pub older_than_days: u32,
     pub action: RuleAction,
     /// Move: where to ({year}, {month}, {day} of the file's date may be in it). Sync: the place on a remote
-    /// of rclone's ("gdrive:Backups").
+    /// of rclone's ("gdrive:Backups"). Label: the label's name (one of Settings' labels).
     pub target: String,
     /// Rename: the new name, of {name}, {ext}, {date}, {time}, {year}, {month}, {day}.
     pub pattern: String,
@@ -709,6 +712,9 @@ pub struct FolderRule {
     /// Sync: also every this many minutes (0: when files change, and at start).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub every: Option<u32>,
+    /// Label: also replaces a label a file already has (off: a file with a label keeps it).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub replace: bool,
 }
 
 impl Default for FolderRule {
@@ -728,6 +734,7 @@ impl Default for FolderRule {
             pattern: String::new(),
             sync: None,
             every: None,
+            replace: false,
         }
     }
 }
@@ -1000,6 +1007,7 @@ lenient_deserialize!(FolderRule {
     "pattern" => pattern,
     "sync" => sync,
     "every" => every,
+    "replace" => replace,
 });
 lenient_deserialize!(FolderView { "columns" => columns, "sort" => sort, "view" => view, "at" => at });
 lenient_deserialize!(SavedSearch { "query" => query, "folder" => folder });
@@ -1314,6 +1322,7 @@ mod tests {
             RuleAction::Unblock,
             RuleAction::Extract,
             RuleAction::Sync,
+            RuleAction::Label,
         ] {
             assert_eq!(serde_json::to_value(action).unwrap(), action.as_str());
         }
@@ -1515,6 +1524,26 @@ mod tests {
         assert!(json.contains(r#""columns":{"size":120.5}"#) && json.contains(r#""startFolder":"thispc""#));
         assert!(json.contains(r#""session":{"dual":true,"activePane":1,"panes":[{"paths":["C:\\"],"active":0}]}"#));
         assert_eq!(load_persisted(&json), state);
+    }
+
+    #[test]
+    fn a_label_rule_is_saved_as_label_and_replace_is_left_out_while_false() {
+        let rule = FolderRule { id: "x".into(), action: RuleAction::Label, target: "Red".into(), ..Default::default() };
+        let json = serde_json::to_string(&rule).unwrap();
+        assert!(json.contains(r#""action":"label""#) && !json.contains("replace"));
+        assert_eq!(serde_json::from_str::<FolderRule>(&json).unwrap(), rule);
+        let replacing = FolderRule { replace: true, ..rule };
+        let json = serde_json::to_string(&replacing).unwrap();
+        assert!(json.contains(r#""replace":true"#));
+        assert_eq!(serde_json::from_str::<FolderRule>(&json).unwrap(), replacing);
+    }
+
+    #[test]
+    fn a_rule_saved_by_0_16_1_reads_unchanged() {
+        let old = r#"{"id":"r","name":"N","on":true,"folder":"C:\\D","subfolders":false,"names":"*.pdf","minSize":0,"maxSize":0,"olderThanDays":0,"action":"move","target":"D:\\X","pattern":""}"#;
+        let rule: FolderRule = serde_json::from_str(old).unwrap();
+        assert_eq!((rule.action, rule.replace, rule.target.as_str(), rule.on), (RuleAction::Move, false, "D:\\X", true));
+        assert!(!serde_json::to_string(&rule).unwrap().contains("replace"));
     }
 
     #[test]

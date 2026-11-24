@@ -274,6 +274,18 @@ pub async fn marks_put(items: Vec<(String, Marks)>) -> Result<Vec<Outcome>, Stri
     blocking(move || Ok(real(|w| work(items.into_iter().map(|(p, m)| (p, Change::Put(m))).collect(), w)))).await
 }
 
+/// Each path's marks, synchronously (MCP's tools, the rules' thread, the archive writer): `marks_read`'s twin.
+/// A folder's `.glint-marks` is read once a call.
+pub fn read_many(paths: &[String]) -> Vec<Marks> {
+    real(|w| read_all(paths, w))
+}
+
+/// Changes each path's marks, synchronously: `marks_set`'s and `marks_put`'s twin, one change a path.
+/// A folder's `.glint-marks` is written once a call.
+pub fn set_many(items: Vec<(String, Change)>) -> Vec<Outcome> {
+    real(|w| work(items, w))
+}
+
 /// An item's marks: its streams', else its line beside it, else the ledger's. None known is no marks.
 pub fn read(path: &str) -> Marks {
     real(|w| find(path, w, &Sidecars::default()).0)

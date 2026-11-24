@@ -88,6 +88,7 @@ pub fn to_core(rule: &FolderRule) -> glint_core::rules::Rule {
         pattern: rule.pattern.clone(),
         sync: rule.sync.map(|sync| sync.as_str().to_string()).unwrap_or_default(),
         every: rule.every.unwrap_or(0),
+        replace: rule.replace,
     }
 }
 
@@ -190,11 +191,12 @@ pub fn backend(cx: &mut App) -> Arc<dyn Backend> {
 // ---- The words ------------------------------------------------------------------------------------------
 
 /// What a rule can do, in the order the TypeScript listed them (`ACTIONS`), each with its words.
-pub fn actions() -> [(RuleAction, SharedString); 6] {
+pub fn actions() -> [(RuleAction, SharedString); 7] {
     [
         (RuleAction::Sync, t!("Keep it in sync with a cloud (rclone)")),
         (RuleAction::Move, t!("Move it into a folder")),
         (RuleAction::Rename, t!("Rename it")),
+        (RuleAction::Label, t!("Give it a label")),
         (
             RuleAction::Unblock,
             t!("Unblock it (take off Windows' downloaded-from-the-internet mark)"),
@@ -271,6 +273,7 @@ pub fn summary(rule: &FolderRule) -> String {
     let place_to = match rule.action {
         RuleAction::Move => format!(" {}", rule.target),
         RuleAction::Rename => t!(" to {pattern}", pattern = rule.pattern).to_string(),
+        RuleAction::Label => format!(" {}", rule.target),
         _ => String::new(),
     };
     let age = if rule.older_than_days > 0 {
@@ -306,6 +309,7 @@ fn did_verb(action: &str) -> String {
     match action {
         "move" => t!("moved"),
         "rename" => t!("renamed"),
+        "label" => t!("labeled"),
         "recycle" => t!("put in the Recycle Bin"),
         "unblock" => t!("unblocked"),
         "extract" => t!("extracted"),
@@ -445,6 +449,22 @@ fn radio<V: 'static>(
     cx: &mut Context<V>,
     on_pick: impl Fn(&mut V, &mut Window, &mut Context<V>) + 'static,
 ) -> Button {
+    radio_dot(id, label, hint, None, chosen, t, cx, on_pick)
+}
+
+/// `radio` with a dot before its name, in a color of its own (a label's). The dot only says which label this is:
+/// that it is chosen shows as for every radio, never in the dot's color.
+#[allow(clippy::too_many_arguments)] // radio's own arguments and the dot: a struct would only be this list again
+fn radio_dot<V: 'static>(
+    id: impl Into<ElementId>,
+    label: SharedString,
+    hint: Option<SharedString>,
+    dot: Option<Hsla>,
+    chosen: bool,
+    t: &theme::Tokens,
+    cx: &mut Context<V>,
+    on_pick: impl Fn(&mut V, &mut Window, &mut Context<V>) + 'static,
+) -> Button {
     Button::new(id)
         .custom(
             ButtonCustomVariant::new(cx)
@@ -472,7 +492,13 @@ fn radio<V: 'static>(
             on_pick(this, window, cx);
             cx.notify();
         }))
-        .child(div().text_start().child(isolate(label)))
+        .child(
+            align_row(1.5)
+                .when_some(dot, |this, color| {
+                    this.child(div().size(space(2.5)).flex_none().rounded_full().bg(color))
+                })
+                .child(div().text_start().child(isolate(label))),
+        )
 }
 
 /// A labelled row of the editor: a fixed-width label, then the control and its hint.
@@ -565,6 +591,7 @@ pub struct RuleEditor {
     every: Option<u32>,
     subfolders: bool,
     target: String,
+    replace: bool,
     min_size: u64,
     max_size: u64,
     // The text boxes.
@@ -648,6 +675,7 @@ impl RuleEditor {
             every: start.every,
             subfolders: start.subfolders,
             target: start.target.clone(),
+            replace: start.replace,
             min_size: start.min_size,
             max_size: start.max_size,
             name,
@@ -715,6 +743,7 @@ impl RuleEditor {
             pattern: value(&self.pattern),
             sync: self.sync,
             every: self.every,
+            replace: self.replace,
         }
     }
 
@@ -774,6 +803,10 @@ impl RuleEditor {
 
     /// Chooses what the rule does (`chooseAction`); a sync rule takes subfolders, copies, and looks every hour.
     pub fn choose_action(&mut self, action: RuleAction, window: &mut Window, cx: &mut Context<Self>) {
+        // A label's name and a folder or a cloud are all `target`: none of them means anything as another.
+        if (self.action == RuleAction::Label) != (action == RuleAction::Label) {
+            self.target.clear();
+        }
         self.action = action;
         if action == RuleAction::Sync {
             let remotes = persistence::app(cx).map(|a| a.remotes.clone()).unwrap_or_default();
@@ -818,6 +851,23 @@ impl RuleEditor {
         self.edited(cx);
     }
 
+    /// The labels of Settings, which a label rule chooses from.
+    fn labels(cx: &App) -> Vec<glint_model::marks::Label> {
+        crate::state::try_settings(cx).map(|s| s.labels.clone()).unwrap_or_default()
+    }
+
+    /// Chooses the label a label rule gives.
+    pub fn choose_label(&mut self, name: &str, cx: &mut Context<Self>) {
+        self.target = name.to_string();
+        self.edited(cx);
+    }
+
+    /// Sets whether a label rule replaces a label a file already has.
+    pub fn set_replace(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.replace = on;
+        self.edited(cx);
+    }
+
     /// Sets whether the rule takes the folder's subfolders too.
     pub fn set_subfolders(&mut self, on: bool, cx: &mut Context<Self>) {
         self.subfolders = on;
@@ -826,6 +876,10 @@ impl RuleEditor {
 
     /// Looks at what the rule would do now to what is in its folder ("What would it do?").
     pub fn look(&mut self, cx: &mut Context<Self>) {
+        // Turning a rule on goes through its look: a label rule with no labels to give can't.
+        if self.action == RuleAction::Label && Self::labels(cx).is_empty() {
+            return;
+        }
         self.looking += 1;
         let this_look = self.looking;
         self.preview = Some(Preview::Running);
@@ -1077,6 +1131,72 @@ impl RuleEditor {
             .into_any_element()
     }
 
+    /// A label rule's choices: Settings' labels (a dot in the label's color, the chosen one checked as any radio is),
+    /// and whether it replaces a label a file has. With no labels, the words that say where to make them.
+    fn label_fields(&self, t: &theme::Tokens, cx: &mut Context<Self>) -> AnyElement {
+        let labels = Self::labels(cx);
+        if labels.is_empty() {
+            let line = t!("There are no labels yet: Settings → Files → Labels makes them");
+            return align_row(2.)
+                .id("rules-no-labels")
+                .role(Role::Status)
+                .aria_label(line.clone())
+                .test_support()
+                .items_start()
+                .rounded(theme::size::RADIUS)
+                .border_1()
+                .border_color(t.border)
+                .bg(t.primary.opacity(0.05))
+                .px(space(3.))
+                .py(space(2.))
+                .text_size(theme::size::XS)
+                .child(icon(IconName::Tag).size_4().flex_none().text_color(t.primary))
+                .child(div().flex_1().min_w_0().child(line))
+                .into_any_element();
+        }
+        let replace = t!("Replace a label a file already has");
+        col()
+            .gap(space(3.))
+            .child(field(
+                t!("Label"),
+                None,
+                row_start()
+                    .id("rules-label")
+                    .role(Role::RadioGroup)
+                    .aria_label(t!("Label"))
+                    .test_support()
+                    .flex_wrap()
+                    .gap(space(1.5))
+                    .children(labels.into_iter().enumerate().map(|(ix, label)| {
+                        let chosen = self.target.trim().eq_ignore_ascii_case(label.name.trim());
+                        let name = label.name.clone();
+                        radio_dot(
+                            ("rules-label-choice", ix),
+                            SharedString::from(label.name),
+                            None,
+                            Some(theme::label_tone(label.color)),
+                            chosen,
+                            t,
+                            cx,
+                            move |this: &mut Self, _, cx| this.choose_label(&name, cx),
+                        )
+                    })),
+                t,
+            ))
+            .child(
+                align_row(2.)
+                    .ps(31.)
+                    .child(
+                        Switch::new("rules-replace")
+                            .checked(self.replace)
+                            .accessibility_label(replace.clone())
+                            .on_click(cx.listener(|this, on: &bool, _, cx| this.set_replace(*on, cx))),
+                    )
+                    .child(replace),
+            )
+            .into_any_element()
+    }
+
     /// What the rule would do: the heading, the files (up to 500), and the buttons that turn it on.
     fn preview_view(&self, found: &[Done], folder: &str, t: &theme::Tokens, cx: &mut Context<Self>) -> AnyElement {
         let syncing = self.action == RuleAction::Sync;
@@ -1253,6 +1373,7 @@ impl Render for RuleEditor {
         let running = matches!(self.preview, Some(Preview::Running));
         let remotes = persistence::app(cx).map(|a| a.remotes.clone()).unwrap_or_default();
         let (clouds, cloud, _) = cloud_of(&self.target, &remotes);
+        let no_labels = Self::labels(cx).is_empty();
 
         let then = field(
             t!("Then"),
@@ -1359,6 +1480,7 @@ impl Render for RuleEditor {
             .when(self.action == RuleAction::Sync, |this| {
                 this.child(self.sync_fields(&clouds, cloud, &t, cx))
             })
+            .when(self.action == RuleAction::Label, |this| this.child(self.label_fields(&t, cx)))
             .when(self.action == RuleAction::Rename, |this| {
                 this.child(field(
                     t!("New name"),
@@ -1384,7 +1506,7 @@ impl Render for RuleEditor {
                         IconName::WandSparkles
                     })
                     .label(t!("What would it do?"))
-                    .disabled(folder_empty || running)
+                    .disabled(folder_empty || running || (self.action == RuleAction::Label && no_labels))
                     .on_click(cx.listener(|this, _, _, cx| this.look(cx))),
             )
             .when(known, |this| {
@@ -2320,6 +2442,7 @@ mod tests {
             IconName::WandSparkles,
             IconName::LoaderCircle,
             IconName::TriangleAlert,
+            IconName::Tag,
         ] {
             let path = name.path();
             assert!(matches!(AllAssets.load(&path), Ok(Some(_))), "{path} is not embedded");
@@ -2990,5 +3113,110 @@ mod tests {
         visual.run_until_parked();
         assert!(!has(&mut visual, "Undo"));
         assert_eq!(visual.update(|window, cx| window.notifications(cx).len()), 1);
+    }
+    // ---- A rule that labels
+
+    fn label(name: &str, color: u32) -> glint_model::marks::Label {
+        glint_model::marks::Label { name: name.into(), color, was: Vec::new() }
+    }
+
+    /// Chooses Label as the rule's action (its button is below the fold of the scrolling fields).
+    fn choose_label_action(cx: &mut VisualTestContext, editor: &Entity<RuleEditor>) {
+        let editor = editor.clone();
+        cx.update(|window, cx| editor.update(cx, |e, cx| e.choose_action(RuleAction::Label, window, cx)));
+        cx.run_until_parked();
+    }
+
+    fn set_labels(cx: &mut VisualTestContext, labels: Vec<glint_model::marks::Label>) {
+        cx.update(|_, cx| crate::state::update(cx, |s| s.labels = labels));
+    }
+
+    #[test]
+    fn a_label_rule_is_worded_by_its_summary_its_log_and_its_core_twin() {
+        let _guard = testing::lock();
+        let rule = FolderRule {
+            action: RuleAction::Label,
+            target: "Important".into(),
+            replace: true,
+            ..rule("r", "n", "C:\\Users\\me\\Downloads")
+        };
+        assert_eq!(summary(&rule), "In Downloads, *.pdf: give it a label Important");
+        assert_eq!(
+            did_what(&done(1, "n", "label", "C:\\Users\\me\\Downloads\\a.pdf", Some("C:\\Users\\me\\Downloads\\a.pdf"))),
+            "labeled “a.pdf”"
+        );
+        let core = to_core(&rule);
+        assert_eq!((core.action.as_str(), core.target.as_str(), core.replace), ("label", "Important", true));
+        assert!(!to_core(&FolderRule { replace: false, ..rule }).replace);
+    }
+
+    #[gpui_kit::test]
+    fn choosing_label_shows_settings_labels_and_the_switch_and_choosing_one_sets_the_target(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let (mut visual, fake) = window(cx, Vec::new(), Vec::new());
+        set_labels(&mut visual, vec![label("Important", 0xE5484D), label("Later", 0x3E63DD)]);
+        let view = open_view(&mut visual, &fake, Some("C:\\Photos"));
+        let editor = editor_of(&mut visual, &view);
+        assert!(!has_id(&mut visual, "rules-label"));
+        assert_eq!(actions()[3].0, RuleAction::Label);
+        choose_label_action(&mut visual, &editor);
+        assert_eq!(editor.read_with(&visual, |e, cx| e.rule(cx).action), RuleAction::Label);
+        assert_eq!(role_of(&mut visual, "Label"), Some(Role::RadioGroup));
+        assert_eq!(role_of(&mut visual, "Important"), Some(Role::RadioButton));
+        assert_eq!(role_of(&mut visual, "Later"), Some(Role::RadioButton));
+        assert!(has(&mut visual, "Replace a label a file already has"));
+        assert!(!has_id(&mut visual, "rules-no-labels"));
+        editor.update(&mut visual, |e, cx| e.choose_label("Later", cx));
+        let rule = editor.read_with(&visual, |e, cx| e.rule(cx));
+        assert_eq!((rule.target.as_str(), rule.replace), ("Later", false));
+        editor.update(&mut visual, |e, cx| e.set_replace(true, cx));
+        assert!(editor.read_with(&visual, |e, cx| e.rule(cx).replace));
+        // Going to another action leaves no label's name where a folder goes.
+        visual.update(|window, cx| editor.update(cx, |e, cx| e.choose_action(RuleAction::Move, window, cx)));
+        assert_eq!(editor.read_with(&visual, |e, cx| e.rule(cx).target), "");
+        // The look of a label rule asks core as any rule does.
+        choose_label_action(&mut visual, &editor);
+        editor.update(&mut visual, |e, cx| e.choose_label("Important", cx));
+        click(&mut visual, "rules-look");
+        settle(&mut visual, |_| fake.calls().iter().any(|c| c.starts_with("preview")));
+        assert_eq!(editor.read_with(&visual, |e, cx| e.rule(cx).target), "Important");
+    }
+
+    #[gpui_kit::test]
+    fn with_no_labels_a_label_rule_says_where_to_make_them_and_cannot_be_turned_on(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let (mut visual, fake) = window(cx, Vec::new(), Vec::new());
+        set_labels(&mut visual, Vec::new());
+        let view = open_view(&mut visual, &fake, Some("C:\\Photos"));
+        let editor = editor_of(&mut visual, &view);
+        choose_label_action(&mut visual, &editor);
+        let words = "There are no labels yet: Settings → Files → Labels makes them";
+        assert!(has(&mut visual, words));
+        assert_eq!(role_of(&mut visual, words), Some(Role::Status));
+        assert!(!has_id(&mut visual, "rules-label"));
+        editor.update(&mut visual, |e, cx| e.look(cx));
+        visual.run_until_parked();
+        assert!(fake.calls().is_empty(), "a rule with no label to give is never looked at, so never turned on");
+        assert!(!has_id(&mut visual, "rules-turn-on"));
+    }
+
+    #[gpui_kit::test]
+    fn an_arabic_label_is_named_in_the_editor_and_the_summary_with_the_mirrored_layout(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let saved_rule = FolderRule {
+            action: RuleAction::Label,
+            target: "مهم".into(),
+            ..rule("r1", "فواتير", "C:\\Users\\أنا\\التنزيلات")
+        };
+        let (mut visual, fake) = window(cx, vec![saved_rule], Vec::new());
+        set_labels(&mut visual, vec![label("مهم", 0xE5484D)]);
+        testing::set_rtl(true);
+        let view = open_view(&mut visual, &fake, None);
+        assert!(has(&mut visual, "فواتير. In التنزيلات, *.pdf: give it a label مهم"));
+        click(&mut visual, ("rules-edit", 0_usize));
+        let editor = editor_of(&mut visual, &view);
+        assert_eq!(role_of(&mut visual, "مهم"), Some(Role::RadioButton));
+        assert_eq!(editor.read_with(&visual, |e, cx| e.rule(cx).target), "مهم");
+        testing::set_rtl(false);
     }
 }

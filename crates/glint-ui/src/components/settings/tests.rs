@@ -255,6 +255,8 @@ impl Backend for Fake {
             summary: "Moved 2 files to Archive".into(),
             items: vec![("C:\\a.txt".into(), Some("C:\\Archive\\a.txt".into()))],
             undone: false,
+            marks: Vec::new(),
+            marks_after: Vec::new(),
         }]))
     }
 

@@ -160,8 +160,8 @@ impl Render for Agents {
             widgets::note(
                 format!(
                     "{} {}",
-                    t!("AI agents that speak the Model Context Protocol can ask Glint to find files by name on every drive in milliseconds (with instant search on), measure folders (as a map, in agents that show apps), list the biggest files, say what was moved or deleted lately and search text inside files."),
-                    t!("They can also ask to move, rename, make folders and recycle: Glint asks you first each time, in a Windows dialog naming exactly what will happen, and lists what was done below, with Undo. Once told how, the agent starts Glint for itself, and sees the names and text it asks for.")
+                    t!("AI agents that speak the Model Context Protocol can ask Glint to find files by name on every drive in milliseconds (with instant search on), measure folders (as a map, in agents that show apps), list the biggest files, say what was moved or deleted lately, search text inside files and read the labels, tags and comments you gave files."),
+                    t!("They can also ask to move, rename, make folders, recycle and label, tag or comment files: Glint asks you first each time, in a Windows dialog naming exactly what will happen, and lists what was done below, with Undo. Once told how, the agent starts Glint for itself, and sees the names and text it asks for.")
                 ),
                 &t,
             )

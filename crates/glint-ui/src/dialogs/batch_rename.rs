@@ -180,10 +180,28 @@ impl From<glint_core::media::MediaDetails> for Media {
 }
 
 /// The tokens a pattern can hold, in the order the dialog offers them (`TOKENS`).
-pub const TOKENS: [&str; 13] = [
-    "{name}", "{ext}", "{n}", "{nn}", "{nnn}", "{date}", "{parent}", "{taken}", "{camera}", "{artist}", "{album}",
-    "{title}", "{track}",
+pub const TOKENS: [&str; 15] = [
+    "{name}", "{ext}", "{n}", "{nn}", "{nnn}", "{date}", "{parent}", "{label}", "{tags}", "{taken}", "{camera}",
+    "{artist}", "{album}", "{title}", "{track}",
 ];
+
+/// The tokens that are read from the items' marks (their label and tags): asking for them reads the marks once.
+const MARK_TOKENS: [&str; 2] = ["{label}", "{tags}"];
+
+/// Whether a pattern asks for an item's label or tags.
+pub fn wants_marks(pattern: &str) -> bool {
+    MARK_TOKENS.iter().any(|token| pattern.contains(token))
+}
+
+/// An item's label as it is shown (a 0.16 color tag reads as its label, a renamed label by its new name) and its
+/// tags with a space between, less the one shown as the label.
+pub fn mark_text(labels: &[glint_model::marks::Label], marks: &glint_model::marks::Marks) -> (String, String) {
+    let shown = glint_model::marks::shown(labels, marks);
+    (shown.label.unwrap_or_default(), shown.tags.join(" "))
+}
+
+/// What `{label}` and `{tags}` stand for, by path: the label as shown, and the tags with a space between.
+pub type MarkText = HashMap<String, (String, String)>;
 
 /// The tokens that are read from inside the files (EXIF, songs' tags): asking for them reads the files once.
 const DETAIL_TOKENS: [&str; 6] = ["{taken}", "{camera}", "{artist}", "{album}", "{title}", "{track}"];
@@ -203,6 +221,8 @@ fn token_help(token: &str) -> SharedString {
         "{nnn}" => t!("001, 002…"),
         "{date}" => t!("YYYY-MM-DD"),
         "{parent}" => t!("Folder name"),
+        "{label}" => t!("The item's label"),
+        "{tags}" => t!("The item's tags, with a space between"),
         "{taken}" => t!("Date a photo or video was taken (YYYY-MM-DD), else its date"),
         "{camera}" => t!("The camera a photo was taken with"),
         "{artist}" => t!("A song's artist"),
@@ -498,6 +518,7 @@ pub fn simulate(
     existing: &HashSet<String>,
     rules: &Rules,
     media: Option<&HashMap<String, Option<Media>>>,
+    marks: Option<&MarkText>,
 ) -> Simulation {
     let parts: Vec<(&str, &str)> = items.iter().map(|i| split_stem_ext(&i.name, i.dir)).collect();
     let stems: Vec<&str> = parts.iter().map(|(stem, _)| *stem).collect();
@@ -516,6 +537,9 @@ pub fn simulate(
         let parent = base_name(&folder).to_string();
         let date = iso_date(item.modified);
         let details = media.and_then(|m| m.get(&item.path)).and_then(Option::as_ref);
+        let (label, tags) = marks
+            .and_then(|m| m.get(&item.path))
+            .map_or(("", ""), |(label, tags)| (label.as_str(), tags.as_str()));
 
         // The tokens one after the other, as the TypeScript's chain of `replace`s did: a token that a
         // stem or an earlier token brought in is replaced too. NOTE(port): a stem with "{n}" in it gets
@@ -544,6 +568,16 @@ pub fn simulate(
             .replace("{album}", &safe(details.and_then(|d| d.album.as_deref())))
             .replace("{title}", &safe(details.and_then(|d| d.title.as_deref())))
             .replace("{track}", &track);
+        // A label or a tag is a part of the name as any is, not `safe`d: one with `/` or `:` makes a name the row
+        // refuses (`InvalidCharacters`) rather than a path into another folder. Many items have neither, so an
+        // empty one takes a space beside it along: `{label} {name}` is `report.pdf`, not ` report.pdf`.
+        for (token, value) in [("{label}", label), ("{tags}", tags)] {
+            built = if value.is_empty() {
+                built.replace(&format!("{token} "), "").replace(&format!(" {token}"), "").replace(token, "")
+            } else {
+                built.replace(token, value)
+            };
+        }
         built = transform_case(&built, rules.case_mode);
         let new_name = if pattern_has_ext || ext.is_empty() {
             built
@@ -693,6 +727,17 @@ enum Details {
     Ready(Arc<HashMap<String, Option<Media>>>),
 }
 
+/// Where the items' marks stand (for `{label}` and `{tags}`).
+#[derive(Clone)]
+enum MarksRead {
+    /// Not needed yet: no token in the pattern asks for one.
+    Idle,
+    /// Being read.
+    Reading,
+    /// Read (or failed, which leaves the map empty): each item's label and tags as text, by path.
+    Ready(Arc<MarkText>),
+}
+
 /// Whether the batch renamer builds names from explicit Find/Replace + Pattern rules or
 /// infers a rule automatically from user-edited examples (`flashfill`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -754,10 +799,12 @@ pub struct BatchRename {
     /// well would name them differently.
     doubt: Arc<[bool]>,
     details: Details,
+    marks: MarksRead,
     simulation: Arc<Simulation>,
     source: Source,
     running: bool,
     _reading: Option<Task<()>>,
+    _reading_marks: Option<Task<()>>,
 }
 
 impl BatchRename {
@@ -766,7 +813,7 @@ impl BatchRename {
         let items: Arc<[Item]> = items.into();
         let existing = Arc::new(existing);
         let rules = Rules::default();
-        let simulation = Arc::new(simulate(&items, &existing, &rules, None));
+        let simulation = Arc::new(simulate(&items, &existing, &rules, None, None));
         Self {
             items,
             existing,
@@ -776,10 +823,12 @@ impl BatchRename {
             synthesized: None,
             doubt: Arc::from([]),
             details: Details::Idle,
+            marks: MarksRead::Idle,
             simulation,
             source,
             running: false,
             _reading: None,
+            _reading_marks: None,
         }
     }
 
@@ -816,8 +865,8 @@ impl BatchRename {
     /// The files' details are being read and the pattern needs them (`reading`).
     pub fn reading(&self) -> bool {
         self.mode == RenameMode::Rules
-            && wants_details(&self.rules.pattern)
-            && !matches!(self.details, Details::Ready(_))
+            && ((wants_details(&self.rules.pattern) && !matches!(self.details, Details::Ready(_)))
+                || (wants_marks(&self.rules.pattern) && !matches!(self.marks, MarksRead::Ready(_))))
     }
 
     /// Renaming is under way.
@@ -881,7 +930,17 @@ impl BatchRename {
             Details::Ready(found) => Some(found.clone()),
             _ => None,
         };
-        self.simulation = Arc::new(simulate(&self.items, &self.existing, &self.rules, media.as_deref()));
+        let marks = match &self.marks {
+            MarksRead::Ready(found) => Some(found.clone()),
+            _ => None,
+        };
+        self.simulation = Arc::new(simulate(
+            &self.items,
+            &self.existing,
+            &self.rules,
+            media.as_deref(),
+            marks.as_deref(),
+        ));
     }
 
     fn simulate_by_example(&mut self) -> Simulation {
@@ -975,6 +1034,9 @@ impl BatchRename {
         if wants_details(&self.rules.pattern) && matches!(self.details, Details::Idle) {
             self.read_details(cx);
         }
+        if wants_marks(&self.rules.pattern) && matches!(self.marks, MarksRead::Idle) {
+            self.read_marks(cx);
+        }
         cx.notify();
     }
 
@@ -1012,6 +1074,34 @@ impl BatchRename {
                 .collect();
             let _ = this.update(cx, |this, cx| {
                 this.details = Details::Ready(Arc::new(map));
+                this.resimulate();
+                cx.notify();
+            });
+        }));
+    }
+
+    /// Reads the items' marks through the tags hub's backend on core's runtime, once, and works out each
+    /// item's label and tags as text with the labels as they are when the marks land. A failure leaves the map
+    /// empty, so the two tokens are empty text.
+    fn read_marks(&mut self, cx: &mut Context<Self>) {
+        self.marks = MarksRead::Reading;
+        let paths: Vec<String> = self.items.iter().map(|i| i.path.clone()).collect();
+        let reading = crate::dialogs::tags::hub(cx).read(cx).backend().read_marks(paths.clone());
+        self._reading_marks = Some(cx.spawn(async move |this, cx| {
+            let found = core_bridge::run(reading)
+                .await
+                .and_then(|inner| inner)
+                .unwrap_or_default();
+            let _ = this.update(cx, |this, cx| {
+                let labels = crate::state::try_settings(cx)
+                    .map(|s| s.labels.clone())
+                    .unwrap_or_else(glint_model::marks::default_labels);
+                let map: MarkText = paths
+                    .into_iter()
+                    .zip(found)
+                    .map(|(path, marks)| (path, mark_text(&labels, &marks)))
+                    .collect();
+                this.marks = MarksRead::Ready(Arc::new(map));
                 this.resimulate();
                 cx.notify();
             });
@@ -2349,7 +2439,7 @@ mod tests {
     }
 
     fn run(items: &[Item], rules: &Rules) -> Simulation {
-        simulate(items, &HashSet::new(), rules, None)
+        simulate(items, &HashSet::new(), rules, None, None)
     }
 
     // ---- The pure parts ----
@@ -2491,7 +2581,7 @@ mod tests {
         );
         media.insert(items[1].path.clone(), None);
         let r = rules("{track} {artist} - {title} [{album}] {camera}");
-        let sim = simulate(&items, &HashSet::new(), &r, Some(&media));
+        let sim = simulate(&items, &HashSet::new(), &r, Some(&media), None);
         assert_eq!(
             names(&sim),
             [
@@ -2501,7 +2591,7 @@ mod tests {
             ]
         );
         // Unknown details are empty text; `{taken}` is the item's own date.
-        let sim = simulate(&items, &HashSet::new(), &rules("{taken}"), Some(&media));
+        let sim = simulate(&items, &HashSet::new(), &rules("{taken}"), Some(&media), None);
         assert_eq!(sim.rows[1].new_name, "1970-01-01.mp3");
         assert!(
             sim.rows[0].new_name.starts_with("2024-03-1"),
@@ -2511,6 +2601,90 @@ mod tests {
         // Without any details yet the same fallbacks hold.
         assert_eq!(run(&items, &rules("{artist}")).rows[0].new_name, ".mp3");
         assert!(wants_details("a{camera}") && !wants_details("{name}{n}"));
+    }
+
+    fn marked(entries: &[(&Item, &str, &[&str])]) -> MarkText {
+        let labels = glint_model::marks::default_labels();
+        entries
+            .iter()
+            .map(|(item, label, tags)| {
+                let marks = glint_model::marks::Marks {
+                    label: (!label.is_empty()).then(|| label.to_string()),
+                    tags: tags.iter().map(|t| t.to_string()).collect(),
+                    comment: None,
+                };
+                (item.path.clone(), mark_text(&labels, &marks))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn label_and_tags_fill_a_pattern_and_are_empty_where_the_item_has_none() {
+        let items = [item("C:\\w", "report.pdf"), item("C:\\w", "plain.pdf")];
+        let map = marked(&[(&items[0], "Green", &["work", "q3"])]);
+        let sim = simulate(&items, &HashSet::new(), &rules("{label} {name}"), None, Some(&map));
+        // With none, the space beside the token goes with it: "plain.pdf", never " plain.pdf" or "plain .pdf".
+        assert_eq!(names(&sim), ["Green report.pdf", "plain.pdf"]);
+        let sim = simulate(&items, &HashSet::new(), &rules("{name} {tags}"), None, Some(&map));
+        assert_eq!(names(&sim), ["report work q3.pdf", "plain.pdf"]);
+        let sim = simulate(&items, &HashSet::new(), &rules("{label} {tags} {name}"), None, Some(&map));
+        assert_eq!(names(&sim), ["Green work q3 report.pdf", "plain.pdf"]);
+        // Without a map (not read yet) both are empty.
+        assert_eq!(run(&items, &rules("[{label}{tags}]")).rows[0].new_name, "[].pdf");
+        assert!(wants_marks("a{tags}") && wants_marks("{label}") && !wants_marks("{name}{taken}"));
+    }
+
+    #[test]
+    fn a_color_tag_reads_as_the_label_and_a_renamed_label_by_its_new_name() {
+        let items = [item("C:\\w", "a.pdf")];
+        let map = marked(&[(&items[0], "", &["Red", "work"])]);
+        let sim = simulate(&items, &HashSet::new(), &rules("{label}|{tags}"), None, Some(&map));
+        assert_eq!(names(&sim), ["Red|work.pdf"]);
+        let mut labels = glint_model::marks::default_labels();
+        labels[0].name = "Important".into();
+        labels[0].was = vec!["Red".into()];
+        let marks = glint_model::marks::Marks {
+            label: Some("Red".into()),
+            tags: vec!["work".into()],
+            comment: None,
+        };
+        assert_eq!(mark_text(&labels, &marks), ("Important".to_string(), "work".to_string()));
+    }
+
+    #[test]
+    fn a_tag_with_a_slash_or_colon_is_refused_and_stays_in_the_items_folder() {
+        let items = [item("C:\\w", "a.pdf"), item("C:\\w", "b.pdf")];
+        let map = marked(&[(&items[0], "", &["a/b"]), (&items[1], "", &["c:d"])]);
+        let sim = simulate(&items, &HashSet::new(), &rules("{name} {tags}"), None, Some(&map));
+        for row in &sim.rows {
+            assert_eq!(row.conflict, Some(Conflict::InvalidCharacters));
+            assert!(row.to.starts_with("C:\\w\\"), "{}", row.to);
+        }
+        assert_eq!(sim.conflict_count, 2);
+    }
+
+    #[test]
+    fn arabic_label_and_tags_fill_the_pattern() {
+        let items = [item("C:\\w", "تقرير.pdf")];
+        let map = marked(&[(&items[0], "مهم", &["عمل", "تقرير"])]);
+        let sim = simulate(&items, &HashSet::new(), &rules("{label} {name} {tags}"), None, Some(&map));
+        assert_eq!(names(&sim), ["مهم تقرير عمل تقرير.pdf"]);
+    }
+
+    /// Measured: a thousand items with `{label}` and a map of their marks. Run with `--ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn measure_simulating_a_thousand_items_with_label() {
+        let items: Vec<Item> = (0..1000).map(|i| item("C:\\w", &format!("file {i}.pdf"))).collect();
+        let map: MarkText = items
+            .iter()
+            .map(|i| (i.path.clone(), ("Important".to_string(), "work q3".to_string())))
+            .collect();
+        let r = rules("{label} {name}");
+        let start = std::time::Instant::now();
+        let sim = simulate(&items, &HashSet::new(), &r, None, Some(&map));
+        println!("simulate, 1000 items with {{label}}: {:?}", start.elapsed());
+        assert_eq!(sim.rows.len(), 1000);
     }
 
     #[test]
@@ -2607,9 +2781,9 @@ mod tests {
         assert_eq!(run(&items, &r).conflict_count, 3);
         // On disk: only when the name changes (an item that keeps its name isn't "already there").
         let existing: HashSet<String> = ["new.txt".to_string(), "a.txt".to_string()].into();
-        let sim = simulate(&items[..1], &existing, &rules("new"), None);
+        let sim = simulate(&items[..1], &existing, &rules("new"), None, None);
         assert_eq!(sim.rows[0].conflict, Some(Conflict::Exists));
-        let sim = simulate(&items[..1], &existing, &rules("{name}"), None);
+        let sim = simulate(&items[..1], &existing, &rules("{name}"), None, None);
         assert_eq!(sim.rows[0].conflict, None);
         assert_eq!(sim.changed_count, 0);
         // A swap inside the batch is no collision: core's two phases handle it.
@@ -3304,6 +3478,127 @@ mod tests {
         type_into(&mut visual, &pattern, " x");
         assert_eq!(*fake.details_asked.lock().unwrap(), 1);
         assert!(!has(&mut visual, "Reading the files' details…"));
+    }
+
+    /// A fake for the tags hub's backend: answers `read_marks` from a map, counts and remembers its calls, and
+    /// waits at `gate` when there is one.
+    #[derive(Clone, Default)]
+    struct FakeMarks {
+        known: Arc<Mutex<HashMap<String, glint_model::marks::Marks>>>,
+        asked: Arc<Mutex<Vec<Vec<String>>>>,
+        gate: Arc<Mutex<Option<async_channel::Receiver<()>>>>,
+    }
+
+    impl crate::dialogs::tags::Backend for FakeMarks {
+        fn read(&self, paths: Vec<String>) -> crate::dialogs::tags::Fut<Vec<Vec<String>>> {
+            Box::pin(async move { Ok(paths.iter().map(|_| Vec::new()).collect()) })
+        }
+
+        fn set(&self, _: Vec<String>, _: Vec<String>, _: Vec<String>) -> crate::dialogs::tags::Fut<Vec<(String, String)>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+
+        fn read_marks(&self, paths: Vec<String>) -> crate::dialogs::tags::Fut<Vec<glint_model::marks::Marks>> {
+            self.asked.lock().unwrap().push(paths.clone());
+            let known = self.known.lock().unwrap().clone();
+            let wait = self.gate.lock().unwrap().clone();
+            Box::pin(async move {
+                if let Some(wait) = wait {
+                    let _ = wait.recv().await;
+                }
+                Ok(paths.iter().map(|p| known.get(p).cloned().unwrap_or_default()).collect())
+            })
+        }
+    }
+
+    fn marks_of(label: Option<&str>, tags: &[&str]) -> glint_model::marks::Marks {
+        glint_model::marks::Marks {
+            label: label.map(String::from),
+            tags: tags.iter().map(|t| t.to_string()).collect(),
+            comment: None,
+        }
+    }
+
+    #[gpui_kit::test]
+    fn marks_are_read_once_when_label_or_tags_first_appears_and_renaming_waits_for_them(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let mut visual = window(cx);
+        let backend = FakeMarks::default();
+        let docs = vec![item("C:\\Docs", "a.pdf"), item("C:\\Docs", "b.pdf")];
+        backend.known.lock().unwrap().insert(docs[0].path.clone(), marks_of(None, &["Red", "work"]));
+        backend.known.lock().unwrap().insert(docs[1].path.clone(), marks_of(Some("Important"), &["q3"]));
+        let (open_gate, gate) = async_channel::bounded::<()>(1);
+        *backend.gate.lock().unwrap() = Some(gate);
+        let shared = backend.clone();
+        visual.update(|_, cx| crate::dialogs::tags::init_with(cx, Arc::new(shared)));
+        let view = open_items(&mut visual, &Fake::default(), docs.clone(), &[]);
+        let (pattern, model) = view.read_with(&visual, |v, _| (v.pattern.clone(), v.model.clone()));
+        // A pattern without the tokens never reads marks.
+        type_into(&mut visual, &pattern, " x");
+        assert!(backend.asked.lock().unwrap().is_empty());
+        visual.update(|window, cx| pattern.update(cx, |p, cx| p.set_value("", window, cx)));
+        type_into(&mut visual, &pattern, "{label}-{tags}");
+        // Asked once, with every path; Rename waits.
+        assert_eq!(*backend.asked.lock().unwrap(), [vec![docs[0].path.clone(), docs[1].path.clone()]]);
+        assert!(model.read_with(&visual, |m, _| m.reading()));
+        assert!(disabled(&mut visual, "batch-rename-apply"));
+        open_gate.try_send(()).unwrap();
+        settle(&mut visual, "the marks", |cx| !model.read_with(cx, |m, _| m.reading()));
+        assert_eq!(new_names(&mut visual, &model), ["Red-work.pdf", "Important-q3.pdf"]);
+        assert!(!disabled(&mut visual, "batch-rename-apply"));
+        // More typing, and the other token, don't read again.
+        type_into(&mut visual, &pattern, " {tags}");
+        assert_eq!(backend.asked.lock().unwrap().len(), 1);
+    }
+
+    #[gpui_kit::test]
+    fn a_tag_with_a_slash_stops_the_batch_in_the_dialog(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let mut visual = window(cx);
+        let backend = FakeMarks::default();
+        let docs = vec![item("C:\\Docs", "a.pdf")];
+        backend.known.lock().unwrap().insert(docs[0].path.clone(), marks_of(None, &["a/b"]));
+        visual.update(|_, cx| crate::dialogs::tags::init_with(cx, Arc::new(backend)));
+        let view = open_items(&mut visual, &Fake::default(), docs, &[]);
+        let (pattern, model) = view.read_with(&visual, |v, _| (v.pattern.clone(), v.model.clone()));
+        type_into(&mut visual, &pattern, "{tags}");
+        settle(&mut visual, "the marks", |cx| !model.read_with(cx, |m, _| m.reading()));
+        model.read_with(&visual, |m, _| {
+            assert_eq!(m.simulation().rows[0].conflict, Some(Conflict::InvalidCharacters));
+            assert!(!m.can_apply());
+        });
+    }
+
+    #[gpui_kit::test]
+    fn arabic_label_and_tags_fill_the_pattern_in_the_mirrored_dialog(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let mut visual = window(cx);
+        testing::set_rtl(true);
+        let backend = FakeMarks::default();
+        let docs = vec![item("C:\\مستندات", "تقرير.pdf")];
+        backend.known.lock().unwrap().insert(docs[0].path.clone(), marks_of(Some("مهم"), &["عمل"]));
+        visual.update(|_, cx| crate::dialogs::tags::init_with(cx, Arc::new(backend)));
+        let view = open_items(&mut visual, &Fake::default(), docs, &[]);
+        let (pattern, model) = view.read_with(&visual, |v, _| (v.pattern.clone(), v.model.clone()));
+        visual.update(|window, cx| pattern.update(cx, |p, cx| p.set_value("", window, cx)));
+        type_into(&mut visual, &pattern, "{label} {name} {tags}");
+        settle(&mut visual, "the marks", |cx| !model.read_with(cx, |m, _| m.reading()));
+        assert_eq!(new_names(&mut visual, &model), ["مهم تقرير عمل.pdf"]);
+        assert_eq!(role_of(&mut visual, "تقرير.pdf → مهم تقرير عمل.pdf"), Some(Role::ListItem));
+        testing::set_rtl(false);
+    }
+
+    #[gpui_kit::test]
+    fn the_token_chips_list_label_and_tags_each_a_button_with_its_help(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let mut visual = window(cx);
+        let _view = open_items(&mut visual, &Fake::default(), photos(), &[]);
+        assert_eq!(TOKENS.len(), 15);
+        assert_eq!(role_of(&mut visual, "{label}: The item's label"), Some(Role::Button));
+        assert_eq!(
+            role_of(&mut visual, "{tags}: The item's tags, with a space between"),
+            Some(Role::Button)
+        );
     }
 
     #[gpui_kit::test]

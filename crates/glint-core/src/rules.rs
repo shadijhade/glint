@@ -33,10 +33,10 @@ pub struct Rule {
     pub max_size: u64,
     /// Files last changed at least this many days ago (0: any).
     pub older_than_days: u32,
-    /// "move", "rename", "recycle", "unblock", "extract" or "sync".
+    /// "move", "rename", "recycle", "unblock", "extract", "sync" or "label".
     pub action: String,
     /// Move: the folder it goes into; {year}, {month} and {day} of the file's date may be in it. Sync:
-    /// the place on a remote of rclone's ("gdrive:Backups").
+    /// the place on a remote of rclone's ("gdrive:Backups"). Label: the label's name.
     pub target: String,
     /// Rename: the new name, made of {name}, {ext}, {date}, {time}, {year}, {month} and {day}.
     pub pattern: String,
@@ -45,6 +45,8 @@ pub struct Rule {
     pub sync: String,
     /// Sync: also every this many minutes (0: when files change, and at start).
     pub every: u32,
+    /// Label: a label a file already has is replaced too (else it is kept).
+    pub replace: bool,
 }
 
 /// What a rule did (or would do, in a preview) to one file.
@@ -59,14 +61,14 @@ pub struct Done {
     pub from: String,
     /// Where it is now: moved or renamed, its Recycle Bin entry, or the folder it was extracted into.
     pub to: Option<String>,
-    /// Unblock: the mark taken off, to put back.
+    /// Unblock: the mark taken off, to put back. Label: the label the file had (None: none), to put back.
     #[serde(default)]
     pub mark: Option<String>,
     #[serde(default)]
     pub error: Option<String>,
     #[serde(default)]
     pub undone: bool,
-    /// A sync's: what it did, in a few words ("3 up, 1 down").
+    /// A sync's: what it did, in a few words ("3 up, 1 down"). A label's: the label it gave.
     #[serde(default)]
     pub summary: Option<String>,
 }
@@ -156,6 +158,7 @@ fn takes_name(rule: &Rule, name: &str) -> bool {
 fn takes(rule: &Rule, path: &Path, size: u64, modified: i64, now: i64) -> bool {
     let Some(name) = path.file_name().map(|n| n.to_string_lossy()) else { return false };
     takes_name(rule, &name)
+        && !(rule.action == "label" && name.eq_ignore_ascii_case(glint_model::marks::BESIDE_NAME))
         && !(rule.action == "rename" && renamed_already(&rule.pattern, &name))
         && (rule.min_size == 0 || size >= rule.min_size)
         && (rule.max_size == 0 || size <= rule.max_size)
@@ -220,6 +223,11 @@ fn plan(rule: &Rule, path: &Path, modified: i64) -> Result<(String, Option<PathB
         "unblock" => Ok(("Unblock: take off Windows' downloaded-from-the-internet mark".into(), None)),
         "extract" => Ok(("Extract into a folder next to it".into(), None)),
         "sync" => Ok((format!("Sync with {}", rule.target.trim()), None)),
+        "label" => match rule.target.trim() {
+            "" => Err("Which label? Choose one in the rule".into()),
+            label if rule.replace => Ok((format!("Label it {label}, in place of a label it has"), None)),
+            label => Ok((format!("Label it {label}"), None)),
+        },
         other => Err(format!("Rules don't know “{other}”")),
     }
 }
@@ -369,6 +377,73 @@ fn act(rule: &Rule, path: &Path, modified: i64) -> Done {
     done
 }
 
+/// The files of `files` a label rule would change, with the label each has now: those with none (or any, when
+/// the rule replaces) that isn't already the rule's. One `read` of the whole batch.
+fn label_wants(rule: &Rule, files: &[String], read: &dyn Fn(&[String]) -> Vec<glint_model::marks::Marks>) -> Vec<(String, Option<String>)> {
+    let target = rule.target.trim();
+    let marks = read(files);
+    files
+        .iter()
+        .enumerate()
+        .filter_map(|(i, path)| {
+            let has = marks.get(i).and_then(|m| m.label.clone());
+            let wanted = match &has {
+                Some(l) if l.trim().eq_ignore_ascii_case(target) => false,
+                Some(_) => rule.replace,
+                None => true,
+            };
+            wanted.then(|| (path.clone(), has))
+        })
+        .collect()
+}
+
+/// Gives the batch of `files` the label of a label rule: one `read` of them, one `set` of those that change, and
+/// a `Done` for each of those (never one for a file that has the label already, so a rule that runs again
+/// changes and logs nothing). `to` is the file itself, so `made` keeps the rule from taking it again when
+/// the write wakes the watcher.
+fn label_with(
+    rule: &Rule,
+    files: &[PathBuf],
+    read: &dyn Fn(&[String]) -> Vec<glint_model::marks::Marks>,
+    set: &dyn Fn(Vec<(String, glint_model::marks::Change)>) -> Vec<glint_model::marks::Outcome>,
+) -> Vec<Done> {
+    let done = |path: &str, before: Option<String>, error: Option<String>| Done {
+        id: 0,
+        at: now_ms(),
+        rule: rule.name.clone(),
+        action: "label".into(),
+        from: path.to_string(),
+        to: Some(path.to_string()),
+        mark: before,
+        error,
+        undone: false,
+        summary: Some(rule.target.trim().to_string()),
+    };
+    let paths: Vec<String> = files.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+    if let Err(why) = plan(rule, Path::new("x"), 0) {
+        return paths.iter().map(|p| done(p, None, Some(why.clone()))).collect();
+    }
+    let wants = label_wants(rule, &paths, read);
+    let label = rule.target.trim().to_string();
+    let outcomes = set(wants.iter().map(|(p, _)| (p.clone(), glint_model::marks::Change::Label(Some(label.clone())))).collect());
+    wants
+        .into_iter()
+        .enumerate()
+        .map(|(i, (path, before))| {
+            let error = match outcomes.get(i) {
+                Some(o) => o.after.as_ref().err().cloned(),
+                None => Some("It wasn't labeled".into()),
+            };
+            done(&path, before, error)
+        })
+        .collect()
+}
+
+/// `label_with` through the marks engine.
+fn label_all(rule: &Rule, files: &[PathBuf]) -> Vec<Done> {
+    label_with(rule, files, &crate::marks::read_many, &crate::marks::set_many)
+}
+
 /// Logs what a rule did, tells the app (it says so, with Undo), and remembers what it made.
 fn record(done: Done) -> Done {
     let done = note(done, true);
@@ -513,6 +588,8 @@ fn tick() {
         }
     }
     let mut did = false;
+    // The files that went to label rules, by rule: each rule labels its batch at once, after the loop.
+    let mut to_label: Vec<(Rule, Vec<PathBuf>)> = Vec::new();
     for path in ready {
         if !complete(&path) {
             // Still open for writing: it waits on.
@@ -531,7 +608,20 @@ fn tick() {
         let file = Path::new(&path);
         let rule = engine().rules.iter().find(|r| r.on && r.action != "sync" && covers(r, file) && takes(r, file, meta.len(), modified, now_ms())).cloned();
         if let Some(rule) = rule {
+            if rule.action == "label" {
+                match to_label.iter_mut().find(|(r, _)| r.id == rule.id) {
+                    Some((_, files)) => files.push(file.to_path_buf()),
+                    None => to_label.push((rule, vec![file.to_path_buf()])),
+                }
+                continue;
+            }
             note(act(&rule, file, modified), true);
+            did = true;
+        }
+    }
+    for (rule, files) in to_label {
+        for done in label_all(&rule, &files) {
+            note(done, true);
             did = true;
         }
     }
@@ -545,8 +635,15 @@ fn sweep() {
     let rules: Vec<Rule> = engine().rules.iter().filter(|r| r.on && r.older_than_days > 0 && r.action != "sync").cloned().collect();
     for rule in rules {
         let found = matching(&rule, 10_000);
-        for (path, _, modified) in &found {
-            note(act(&rule, path, *modified), true);
+        if rule.action == "label" {
+            let files: Vec<PathBuf> = found.iter().map(|(p, _, _)| p.clone()).collect();
+            for done in label_all(&rule, &files) {
+                note(done, true);
+            }
+        } else {
+            for (path, _, modified) in &found {
+                note(act(&rule, path, *modified), true);
+            }
         }
         if !found.is_empty() {
             save_log(&engine().log);
@@ -671,7 +768,16 @@ pub async fn rules_preview(rule: Rule) -> Result<Vec<Done>, String> {
                 .map(|(what, path)| Done { id: 0, at: 0, rule: rule.name.clone(), action: what, from: path, to: None, mark: None, error: None, undone: false, summary: None })
                 .collect());
         }
-        Ok(matching(&rule, 500)
+        let found = matching(&rule, 500);
+        if rule.action == "label" {
+            let paths: Vec<String> = found.iter().map(|(p, _, _)| p.to_string_lossy().into_owned()).collect();
+            let (what, _) = plan(&rule, Path::new("x"), 0)?;
+            return Ok(label_wants(&rule, &paths, &crate::marks::read_many)
+                .into_iter()
+                .map(|(path, _)| Done { id: 0, at: 0, rule: rule.name.clone(), action: what.clone(), from: path, to: None, mark: None, error: None, undone: false, summary: None })
+                .collect());
+        }
+        Ok(found
             .into_iter()
             .map(|(path, _, modified)| {
                 let (what, to) = plan(&rule, &path, modified).unwrap_or_else(|e| (e, None));
@@ -699,7 +805,13 @@ pub async fn rules_apply(rule: Rule) -> Result<(usize, usize), String> {
             }
             return Ok((0, 0));
         }
-        let done: Vec<Done> = matching(&rule, 10_000).into_iter().map(|(path, _, modified)| note(act(&rule, &path, modified), false)).collect();
+        let found = matching(&rule, 10_000);
+        let done: Vec<Done> = if rule.action == "label" {
+            let files: Vec<PathBuf> = found.into_iter().map(|(path, _, _)| path).collect();
+            label_all(&rule, &files).into_iter().map(|d| note(d, false)).collect()
+        } else {
+            found.into_iter().map(|(path, _, modified)| note(act(&rule, &path, modified), false)).collect()
+        };
         save_log(&engine().log);
         let failed = done.iter().filter(|d| d.error.is_some()).count();
         Ok((done.len() - failed, failed))
@@ -718,7 +830,7 @@ pub fn rules_clear_log() {
 }
 
 /// Takes back what a rule did to one file: moved back, restored from the Recycle Bin, blocked again, or
-/// what was extracted put in the Recycle Bin.
+/// what was extracted put in the Recycle Bin, or the label a file had put back (if it still has the rule's).
 pub async fn rules_undo(id: u64) -> Result<(), String> {
     crate::fsx::blocking(move || {
         let done = engine().log.iter().find(|d| d.id == id).cloned().ok_or("That's not in the log any more")?;
@@ -747,6 +859,18 @@ pub async fn rules_undo(id: u64) -> Result<(), String> {
             }
             "extract" => {
                 crate::shell::recycle(0, vec![to])?;
+            }
+            "label" => {
+                let given = done.summary.clone().ok_or("The label that was given isn't known")?;
+                let now = crate::marks::read_many(std::slice::from_ref(&done.from)).into_iter().next().and_then(|m| m.label);
+                if !now.is_some_and(|l| l.trim().eq_ignore_ascii_case(&given)) {
+                    return Err("Its label has changed since".into());
+                }
+                engine().made.insert(done.from.to_lowercase(), Instant::now());
+                let outcomes = crate::marks::set_many(vec![(done.from.clone(), glint_model::marks::Change::Label(done.mark.clone()))]);
+                if let Some(why) = outcomes.into_iter().next().and_then(|o| o.after.err()) {
+                    return Err(why);
+                }
             }
             _ => return Err("There's nothing to take back".into()),
         }
@@ -840,6 +964,141 @@ mod tests {
         crate::host::async_runtime::block_on(rules_undo(done.id)).unwrap();
         assert_eq!(std::fs::read_to_string(dir.join("in").join("a.pdf")).unwrap(), "pdf");
         assert!(engine().log.iter().any(|d| d.id == done.id && d.undone));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    // ---- Label rules
+
+    /// A folder of `names` (each a file), under a folder of this test's own; each with the label given, if any.
+    fn labeled_folder(tag: &str, files: &[(&str, Option<&str>)]) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("glint-rules-label-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut set = Vec::new();
+        for (name, label) in files {
+            std::fs::write(dir.join(name), "x").unwrap();
+            if let Some(label) = label {
+                set.push((dir.join(name).to_string_lossy().into_owned(), glint_model::marks::Change::Label(Some(label.to_string()))));
+            }
+        }
+        assert!(crate::marks::set_many(set).iter().all(|o| o.after.is_ok()));
+        dir
+    }
+
+    fn label_rule(name: &str, dir: &Path, label: &str, replace: bool) -> Rule {
+        Rule { id: name.into(), name: name.into(), folder: dir.to_string_lossy().into(), action: "label".into(), target: label.into(), replace, ..Default::default() }
+    }
+
+    fn label_of(dir: &Path, name: &str) -> Option<String> {
+        crate::marks::read_many(&[dir.join(name).to_string_lossy().into_owned()]).remove(0).label
+    }
+
+    fn logged(rule: &str) -> Vec<Done> {
+        engine().log.iter().filter(|d| d.rule == rule).cloned().collect()
+    }
+
+    #[test]
+    fn a_label_rule_is_worded_and_one_without_a_label_is_refused() {
+        let r = label_rule("L", Path::new(r"C:\Downloads"), "Red", false);
+        assert_eq!(plan(&r, Path::new(r"C:\Downloads\a.pdf"), 0).unwrap().0, "Label it Red");
+        let replacing = Rule { replace: true, ..r.clone() };
+        assert_eq!(plan(&replacing, Path::new(r"C:\Downloads\a.pdf"), 0).unwrap().0, "Label it Red, in place of a label it has");
+        let none = Rule { target: "  ".into(), folder: std::env::temp_dir().to_string_lossy().into(), ..r };
+        assert_eq!(plan(&none, Path::new(r"C:\Downloads\a.pdf"), 0).unwrap_err(), "Which label? Choose one in the rule");
+        assert_eq!(check(&none).unwrap_err(), "Which label? Choose one in the rule");
+    }
+
+    #[test]
+    fn a_label_rule_fills_what_is_empty_and_run_again_changes_nothing() {
+        let files = [("a.txt", None), ("b.txt", Some("Blue")), ("c.txt", None), ("d.txt", Some("Green")), ("e.txt", None)];
+        let dir = labeled_folder("fill", &files);
+        let r = label_rule("label-fill", &dir, "Red", false);
+        assert_eq!(crate::host::async_runtime::block_on(rules_apply(r.clone())).unwrap(), (3, 0));
+        let got: Vec<_> = files.iter().map(|(n, _)| label_of(&dir, n)).collect();
+        assert_eq!(got, [Some("Red".into()), Some("Blue".into()), Some("Red".into()), Some("Green".into()), Some("Red".into())]);
+        let first = logged("label-fill");
+        assert_eq!(first.len(), 3);
+        assert!(first.iter().all(|d| d.action == "label" && d.mark.is_none() && d.to.as_deref() == Some(&*d.from)));
+        // Again: nothing is written, nothing is logged.
+        assert_eq!(crate::host::async_runtime::block_on(rules_apply(r)).unwrap(), (0, 0));
+        assert_eq!(logged("label-fill").len(), 3);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_replacing_label_rule_labels_all_five_and_keeps_what_it_had_in_the_log() {
+        let files = [("a.txt", None), ("b.txt", Some("Blue")), ("c.txt", None), ("d.txt", Some("Green")), ("e.txt", None)];
+        let dir = labeled_folder("replace", &files);
+        let r = label_rule("label-replace", &dir, "Red", true);
+        assert_eq!(crate::host::async_runtime::block_on(rules_apply(r.clone())).unwrap(), (5, 0));
+        assert!(files.iter().all(|(n, _)| label_of(&dir, n).as_deref() == Some("Red")));
+        let had: Vec<_> = logged("label-replace").into_iter().filter_map(|d| d.mark).collect();
+        assert_eq!(had, ["Blue", "Green"]);
+        assert_eq!(crate::host::async_runtime::block_on(rules_apply(r)).unwrap(), (0, 0));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_batch_is_one_read_and_one_set() {
+        use std::cell::Cell;
+        let dir = labeled_folder("batch", &[("a.txt", None), ("b.txt", Some("Blue")), ("c.txt", None)]);
+        let files: Vec<PathBuf> = ["a.txt", "b.txt", "c.txt"].iter().map(|n| dir.join(n)).collect();
+        let (reads, sets, sent) = (Cell::new(0), Cell::new(0), Cell::new(0));
+        let done = label_with(
+            &label_rule("label-batch", &dir, "Red", false),
+            &files,
+            &|paths| {
+                reads.set(reads.get() + 1);
+                crate::marks::read_many(paths)
+            },
+            &|items| {
+                sets.set(sets.get() + 1);
+                sent.set(items.len());
+                crate::marks::set_many(items)
+            },
+        );
+        assert_eq!((reads.get(), sets.get(), sent.get(), done.len()), (1, 1, 2, 2));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn undoing_a_label_puts_back_what_was_there_and_refuses_after_a_change() {
+        let dir = labeled_folder("undo", &[("a.txt", None), ("b.txt", Some("Blue")), ("c.txt", None)]);
+        let r = label_rule("label-undo", &dir, "Red", true);
+        crate::host::async_runtime::block_on(rules_apply(r)).unwrap();
+        let ids: Vec<(String, u64)> = logged("label-undo").into_iter().map(|d| (d.from, d.id)).collect();
+        assert_eq!(ids.len(), 3);
+        let id_of = |name: &str| ids.iter().find(|(f, _)| f.ends_with(name)).unwrap().1;
+        // The person gives c another label.
+        let c = dir.join("c.txt").to_string_lossy().into_owned();
+        crate::marks::set_many(vec![(c, glint_model::marks::Change::Label(Some("Green".into())))]);
+        crate::host::async_runtime::block_on(rules_undo(id_of("a.txt"))).unwrap();
+        crate::host::async_runtime::block_on(rules_undo(id_of("b.txt"))).unwrap();
+        assert_eq!((label_of(&dir, "a.txt"), label_of(&dir, "b.txt")), (None, Some("Blue".into())));
+        let refused = crate::host::async_runtime::block_on(rules_undo(id_of("c.txt"))).unwrap_err();
+        assert_eq!(refused, "Its label has changed since");
+        assert_eq!(label_of(&dir, "c.txt").as_deref(), Some("Green"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_label_rule_does_not_take_the_marks_file_beside() {
+        let r = label_rule("L", Path::new(r"C:\Downloads"), "Red", false);
+        assert!(!takes(&r, Path::new(r"C:\Downloads\.glint-marks"), 1, 0, 0));
+        assert!(takes(&r, Path::new(r"C:\Downloads\a.txt"), 1, 0, 0));
+    }
+
+    /// Prints how long a label rule takes to label 1,000 new files in one folder (run it with `--ignored --nocapture`).
+    #[test]
+    #[ignore = "measures; prints"]
+    fn measure_a_label_rule_on_a_thousand_new_files() {
+        let names: Vec<String> = (0..1000).map(|i| format!("f{i:04}.txt")).collect();
+        let files: Vec<(&str, Option<&str>)> = names.iter().map(|n| (n.as_str(), None)).collect();
+        let dir = labeled_folder("thousand", &files);
+        let r = label_rule("label-thousand", &dir, "Red", false);
+        let start = Instant::now();
+        let done = crate::host::async_runtime::block_on(rules_apply(r)).unwrap();
+        println!("label rule on 1000 new files: {:?} ({done:?})", start.elapsed());
+        assert_eq!(done, (1000, 0));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

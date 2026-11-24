@@ -405,6 +405,7 @@ The tree wins; this is what a card finds there.
 - **Landed before wave 3's cards**: glint-ui's `theme::label_tone(color)` and `theme::label_wash(color, cx)` (the one place a label's strength in a row is set); glint-model's `COLUMN_ORDER` with the marks' three columns and `GROUP_BYS` with Label, so both can be chosen; `marks::clip_text(name, marks)` and `marks::clip_marks(text)` (one item's marks as the sidecar's line, for Copy marks and Paste marks); glint-ui's `marking.rs` (eight functions the workspace calls for the four key actions and the menus' five events, filled by E5), `dialogs/comment.rs` with `open(window, cx, paths)` (E3), the module `preview/marks.rs` (E4), `explorer::RowFileMarks` with the field `RowSpec::marked`, and `explorer::marked::init`, which start-up calls (E1a).
 - **Added by wave 3's review**: `marks::carry::carry_files` (pairs known to be files: the queue's), `Change::Paste`, `marks::comment_brief`, the queue's `Copies` (what a job copied, carried 512 at a time and when it ends), `marking::take_label_off` as `pub(crate)`; `queue::plan` gives each folder with the one it is a copy of; glint-ui's `file_list::layout::leave_room` with `NAME_ROOM`.
 - **Landed before wave 4's cards** (each compiles and does nothing until its card fills it, but `marks_in`, which is whole): glint-core's `marks/apply.rs` (`apply`, which `import_apply` now calls on a blocking thread; `last_import`, `import_take_back`, `brought_in`, `follow`, with `LastImport` and `Followed`: F1b), `marks/wake.rs` with `listed(folder)`, which `fsx::read_listing` calls for every real folder it lists (F1b), `beside::waiting_in` and `beside::move_in` behind `marks_beside(folder)` and `marks_move_in(folder)` (B4), `marks_in(folder) -> Option<Vec<MarkedIn>>` (the index's `MarksIn`, `None` where it can't say); three fields of the import's types: `ImportOptions.have` (Glint's labels, which the interface hands in: core has no settings), `LabelPlan.takes_name` (7.3: Glint's label takes XYplorer's name) and `ImportPlan.needs_base`, and `LabelPlan.to` may be empty (the label comes in as a tag). glint-ui's `dialogs/marks_import.rs` with `open(window, cx, source)` (F2a) and `dialogs/marks_export.rs` with `open(window, cx, folder)` (F3), `MenuEvent::ImportMarks { source }` and `ExportMarks { folder }` with their keys `do:import-marks` and `do:export-marks` and the workspace's two arms, `marks_follow.rs` with `init(cx)`, which start-up calls after `explorer::marked::init` (F2b), and the module `settings/labels.rs` (G1b).
+- **Landed before wave 5's cards** (whole, not empty: two lines each): glint-core's `marks::read_many(paths: &[String]) -> Vec<Marks>` and `marks::set_many(items: Vec<(String, Change)>) -> Vec<Outcome>`, the synchronous twins of `marks_read` and `marks_set`/`marks_put` for MCP's tools, the rules' thread and the archive writer, which have no runtime. Each reads a folder's `.glint-marks` once a call, and `set_many` writes it once.
 - **Engine helpers**: `xray::list_streams` is `pub(crate)`; `permalinks::win` is `pub(crate)`, so `find_volume_root_by_serial` is `crate::permalinks::win::find_volume_root_by_serial` (Windows only).
 
 ## 9. The waves
@@ -448,8 +449,10 @@ Cards in a wave run at the same time; a wave starts when the one before it is in
 | 4 | [B4](cards/B4-inner-folders.md) | The folders inside a folder Windows' engine copies or moves away; marks beside files moved into them (F23's core) | core | `marks/beside.rs`, one marked place in `shell.rs` |
 | 4 | [E6](cards/E6-small-things.md) | Small things the look found: the grid's sort bar, Edit tags…' chips, a sort by label's key | ui, model | marked places in `file_grid/mod.rs`, `dialogs/tags.rs`, `entries.rs` |
 | 4 | [P1](cards/P1-palette-and-suggested.md) | *Import marks…* and *Export marks…* in `Ctrl+K` (F9); a marks file's own menu (F25) | ui | `palette/commands.rs`, `menus/smart.rs` |
-| 5 | H1 | AI agents: `get_marks`, `set_marks`, the help's words | core | `mcp.rs` |
-| 5 | H2 | Ties, each one cut freely: `{label}` and `{tags}` in Batch rename; a folder rule that labels (`RuleAction::Label`, `store.rs:621`); zips Glint makes carry a `.glint-marks` in each folder | model, core | named in the card |
+| 5 | [H1](cards/H1-agents.md) | AI agents: `get_marks`, `set_marks` (asked first, written down, undone from Settings), the help's words | core | `mcp.rs`, `agents.rs`, the intro's two sentences in `settings/agents.rs` |
+| 5 | [H2a](cards/H2a-batch-rename.md) | `{label}` and `{tags}` in Batch rename | ui | `dialogs/batch_rename.rs` |
+| 5 | [H2b](cards/H2b-rule-label.md) | A folder rule that labels (`RuleAction::Label`) | model, core, ui | `RuleAction` and `FolderRule` in `store.rs`, `rules.rs` (core), `dialogs/rules.rs` |
+| 5 | [H2c](cards/H2c-zip-marks.md) | The zips Glint makes keep a `.glint-marks` in each folder | core | `archive/compress.rs` |
 | 6 | — | **Coordinator**: the color tags' move (5.6); every wiring call; the look in the real app in both themes; speed; e2e; docs (section 11) | all | — |
 
 Why this order: wave 1 has no card that reads another's code. B2 needs A1, A2 and B1; C2 needs C1 and A4; D1 needs only section 8. Wave 3 is the interface on D1, and carrying on B2. Wave 4 is XYplorer and what stands on a working feature. Wave 5 can be left for 0.17.1 without anyone missing a promise of the issue.
@@ -569,6 +572,36 @@ Decided by the cards' agents, and kept:
 - A label's chip replaces the search box's text, as a kind's chip does.
 - Renaming a tag to itself in another case is refused.
 - The settings file's Settings part no longer touches the labels: its Labels part does.
+
+**Wave 5, as it landed** (2026-11-24: the other session wrote four cards and ran them, one Sonnet agent a card; [its report](WAVE-5-REPORT.md), and [what it was asked](RUN-WAVE-5.md)). All four came back done; `marks::read_many` and `marks::set_many` were landed first, whole.
+
+What the review changed:
+
+- **An agent's Undo keeps what the person did since.** The log held each item's marks before, and Undo put them all back, so a comment the person wrote after an agent labeled a file went with the label. The log now keeps what each item was given too (`Action.marks_after`), and Undo puts back only an item that still has it. A log written before puts everything back, as it did.
+- **The question names what is written, in plain words.** An agent's label and tags were shown as it sent them: a line break, or a character that turns the text's direction, could make the Windows question seem to say something else (`…\n\nAllow it? Yes`, or a name that reads backwards). A label and a tag are now one line without such characters, the same in the question and on disk; the question lists ten tags and how many more; a call takes 100 tags at most.
+- **An empty `{label}` or `{tags}` takes the space beside it along**: `{label} {name}` gives `report.pdf` for a file with no label, not ` report.pdf`.
+
+**Looked at in the real app** (both themes; the tour gained `rename:<pattern>`, `rule-label` and `scroll:<lines>`):
+
+- **Seen working**: Batch rename with `{label} {tags} {name}` (*Gray camera Beside.txt*, *Red Work Taxes 2026 Budget 2026.xlsx*, a 0.16 color tag as *Orange Home Old color tag.txt*, an unmarked file left as it is), the two tokens among the chips; the rule editor's *Give it a label*, Settings' labels each with its dot, and *Replace a label a file already has*; Settings → AI agents' new sentences, and an agent's *Labeled 1 item “Important”* with Undo (a seeded log, read with its afters).
+- **Windows' own zip folders show a zip's `.glint-marks`**: they ignore its hidden bit (tried with a zip made as Glint makes them, on a PC whose Explorer hides hidden files). It is what carries the marks; someone who opens the zip in Explorer sees one small file in each marked folder.
+- **Not seen**: a real agent and its Windows question; a rule labelling files as they arrive; a zip in 7-Zip.
+
+The whole, after the review: `cargo test --workspace --no-fail-fast` 3,947 passed, 0 failed, 60 ignored; clippy clean.
+
+What is left, and whose it is:
+
+- **Wave 6**: the MCP server is a process of its own, with its own copy of the ledger, so an item whose marks live in the ledger (a folder that takes neither streams nor a `.glint-marks`) can lose a change when both processes write it. The rows hear of an agent's or a rule's marks through the folder watcher alone, and the explorer's Ctrl+Z doesn't know them: the agents' log and the rules' log are their Undo.
+- An agent's comment over 64 KB fails every item of its call (one `Put` an item holds all three marks).
+- Batch rename reads the marks once while it is open.
+- A zip's `.glint-marks` lines carry no date (`at` is 0).
+
+Decided by the cards' agents, and kept:
+
+- A label rule never takes a `.glint-marks` as a file to label; it compares labels in any case, not through `was`; switching the action to or from Label clears the target.
+- The rules' log keeps the label given in `summary` and the one a file had in `mark`; Undo puts it back only while the file still has the rule's.
+- A zip's marks are read once for all its items; with a password its `.glint-marks` is encrypted like the rest; tar carries it without a hidden bit.
+- `set_marks` answers what each item has after, and what failed, in the homes' words.
 
 **A cut that still keeps the issue's word**: S0 and waves 1 to 3 are the three marks, their columns, keys, menu, panel, search and following the file. Wave 4's F1 to F3 are import and export, XYplorer's included. Everything else is what makes it Glint's.
 
