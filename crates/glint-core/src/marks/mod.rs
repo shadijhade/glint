@@ -932,8 +932,11 @@ mod tests {
     }
 
     /// 6.6's second and third rows from the files (the coordinator's, wave 6): the marks of 200 rows none marked,
-    /// and every mark of a folder of 10,000, none marked and all three each. Run in release:
-    /// `cargo test --release -p glint-core marks::tests::measure_reads -- --ignored --nocapture`.
+    /// beside what 0.16 read for them (its tags stream alone: one open, which fails), and every mark of a folder of
+    /// 10,000, none marked and all three each. Run in release:
+    /// `cargo test --release -p glint-core marks::tests::measure_reads -- --ignored --nocapture`. The files are made
+    /// in the temporary folder: `TMP=<folder>` measures another drive (a drive's filters cost a lot here, so the two
+    /// reads are timed in turns, in the same folder, and the comparison is what counts).
     #[test]
     #[ignore = "a measurement; prints"]
     fn measure_reads_for_rows_and_a_whole_folder() {
@@ -941,17 +944,29 @@ mod tests {
             v.sort_by(|a, b| a.total_cmp(b));
             v[v.len() / 2]
         }
+        let marks_now = |paths: &[String]| drop(read_many(paths));
+        let tags_016 = |paths: &[String]| paths.iter().for_each(|p| drop(crate::tags::read(p)));
+        let once = |f: &dyn Fn(&[String]), paths: &[String]| {
+            let t = std::time::Instant::now();
+            f(paths);
+            t.elapsed().as_secs_f64() * 1000.0
+        };
         let time = |paths: &[String]| {
-            let _ = read_many(paths);
-            median((0..11).map(|_| {
-                let t = std::time::Instant::now();
-                let _ = read_many(paths);
-                t.elapsed().as_secs_f64() * 1000.0
-            }).collect())
+            marks_now(paths);
+            median((0..11).map(|_| once(&marks_now, paths)).collect())
         };
         let dir = folder();
         let paths: Vec<String> = (0..10_000).map(|i| file(&dir, &format!("f{i:05}.txt"))).collect();
-        println!("200 rows, none marked: {:.2} ms", time(&paths[..200]));
+        let rows = &paths[..200];
+        marks_now(rows);
+        tags_016(rows);
+        let (mut now, mut then) = (Vec::new(), Vec::new());
+        for _ in 0..11 {
+            now.push(once(&marks_now, rows));
+            then.push(once(&tags_016, rows));
+        }
+        let (now, then) = (median(now), median(then));
+        println!("200 rows, none marked: {now:.2} ms; 0.16's tags alone {then:.2} ms; {:+.2} ms", now - then);
         println!("10,000, none marked: {:.1} ms", time(&paths));
         let all = Marks { label: Some("Red".into()), tags: vec!["work".into(), "netplan".into()], comment: Some("mode 4\nLACP".into()) };
         for p in &paths {
