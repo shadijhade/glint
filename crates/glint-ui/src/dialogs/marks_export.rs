@@ -216,7 +216,10 @@ impl Render for ExportDialog {
                                 .test_support()
                                 .flex_1()
                                 .min_w_0()
-                                .truncate()
+                                // A long path is cut in its middle: the drive and the file's name stay.
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis_middle()
                                 .text_size(theme::size::XS)
                                 .text_color(t.muted_foreground)
                                 .child(isolate(self.to.clone())),
