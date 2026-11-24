@@ -63,7 +63,7 @@ Glint needs Windows 10 or 11, 64-bit, and nothing else: it draws its own window,
 
 ## What's new
 
-**0.17.0** (coming soon) gives every file and folder a **label**, **tags** and a **comment** that stay with the file, as XYplorer has them, and brings XYplorer's own along ([#8](https://github.com/shadijhade/glint/issues/8)).
+**0.17.0** (November 24, 2026) gives every file and folder a **label**, **tags** and a **comment** that stay with the file, as XYplorer has them, and brings XYplorer's own along ([#8](https://github.com/shadijhade/glint/issues/8)).
 
 -   **Three marks.** A label is one named color that says a status, tags are words, and a comment is free text. **Label**, **Tags** and **Comment** are columns that sort, **Group by → Label** groups, a labeled row is washed in its color, and a row with a comment has a small note mark whose tooltip is the comment.
 -   **One key.** `Alt+1`…`Alt+9` give the selection a label, `Alt+0` takes it off, `Alt+T` edits its tags and `Alt+N` its comment. The right-click menu has a row of the labels' dots, the preview pane and Quick Look start with a **Marks** block, and every change can be undone, tagging included.
