@@ -324,7 +324,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ## Apache License 2.0
 
-[parquet 60.1.0](https://github.com/apache/arrow-rs)
+[parquet 60.2.0](https://github.com/apache/arrow-rs)
 
 ````text
 
