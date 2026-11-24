@@ -11,8 +11,9 @@ is [docs/gpui/aware/PLAN.md](docs/gpui/aware/PLAN.md) with its task cards beside
 ## In 0.17.0: a label, tags and a comment that stay with the file (not released yet)
 
 *[Issue #8](https://github.com/shadijhade/glint/issues/8), Label, Tags and Comment as in XYplorer, and XYplorer's own brought along.
-Built as the Marks wave, [its plan](docs/gpui/marks/PLAN.md) and task cards beside it, in waves 1 to 3 (`00cf486`), 4 (`12a6e5e`),
-5 (`c6a4c8b`) and 6 (the docs, the last fixes and the checks; its commit is the one that carries this note).
+Built as the Marks wave, [its plan](docs/gpui/marks/PLAN.md) and task cards beside it: the plan and its contracts (`f107938`),
+waves 1 to 3 (`e26c229`), 4 (`ff4f387`), 5 (`6c537c6`) and 6 (`c6b9e6a`: the docs, the last fixes and the checks). The waves'
+reports name the commits of the branch they were built on (`00cf486`, `12a6e5e`, `c6a4c8b`), which master doesn't have.
 [docs/marks.md](docs/marks.md) has the formats, PowerShell and what follows a file.*
 
 ### What it is
@@ -89,8 +90,15 @@ After wave 6, `cargo test --workspace --no-fail-fast` 3,984 passed, 0 failed, 62
 preview and notice with issue 8's own file, Export marks…, Settings' Labels, Batch rename with `{label}`, the rule's
 label. Wave 6 measured release builds ([the plan's 6.6](docs/gpui/marks/PLAN.md)): listing 100,000 files 26.8 ms, a
 zip of 10,000 unmarked files 1,327 ms without reading marks and 1,379 ms with, `set_marks` over 1,000 files 1.7 s, a
-`tag.dat` of 10,000 lines read in 21 ms; the marks of 200 unmarked rows take 11.6 ms, over the millisecond the plan
-wanted. The end-to-end check `marks` is written and not yet run.
+`tag.dat` of 10,000 lines read in 21 ms. The marks of 200 unmarked rows took 11.6 ms on the PC that built it; on
+another, the same test takes 3.1–3.4 ms on C: and 1.8–1.9 ms on D:, 1.0–1.4 ms over 0.16's read of the same files (the
+plan wanted 1 ms at most: one more open a file). Looked at again there at 125% in a 900-pixel window: the grid's *Sort by*
+bar was cut off at the pane's edge (Label, Tags, Comment and Size out of reach, a sort by one of them in force out of
+sight); it now scrolls sideways and keeps the sort in force in view. Then the end-to-end checks, 22 of 22 with the version
+at 0.17.0, `marks` the first time: it found that a search's results weren't read for their marks as they came, so
+`label:red` left in the box hid what the search had found (fixed). A dev build still numbered 0.16.1 sends `label:` to the
+installed 0.16.1 service, which finds nothing: the check passes once the version is bumped. After those fixes `cargo test
+--workspace --no-fail-fast` 3,986 passed, 0 failed, 62 ignored, and clippy is clean.
 
 ## 0.16.1: scrolling the sidebar no longer closes Glint
 

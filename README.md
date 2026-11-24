@@ -63,22 +63,17 @@ Glint needs Windows 10 or 11, 64-bit, and nothing else: it draws its own window,
 
 ## What's new
 
-**0.16.1** (November 23, 2026) fixes Glint closing by itself the moment you scrolled the sidebar with the mouse wheel or a touchpad.
+**0.17.0** (coming soon) gives every file and folder a **label**, **tags** and a **comment** that stay with the file, as XYplorer has them, and brings XYplorer's own along ([#8](https://github.com/shadijhade/glint/issues/8)).
 
-**0.16.0** (November 23, 2026) is calmer to look at and quicker to get around: a quieter window, right-click menus sorted by what matters, **Hop mode** to reach anything in sight from the keyboard, and **named workspaces**. The photo map, the Color Wheel and Time Machine grew up, and a lot got faster.
+-   **Three marks.** A label is one named color that says a status, tags are words, and a comment is free text. **Label**, **Tags** and **Comment** are columns that sort, **Group by → Label** groups, a labeled row is washed in its color, and a row with a comment has a small note mark whose tooltip is the comment.
+-   **One key.** `Alt+1`…`Alt+9` give the selection a label, `Alt+0` takes it off, `Alt+T` edits its tags and `Alt+N` its comment. The right-click menu has a row of the labels' dots, the preview pane and Quick Look start with a **Marks** block, and every change can be undone, tagging included.
+-   **Labels are yours.** Rename, recolor, add and reorder them in **Settings → Files → Labels**. 0.16's color tags become labels, and `tag:red` still finds what it found.
+-   **Found at once.** `label:important`, `tag:netplan`, `comment:lacp`, `has:comment` and `!` for not, in the open folder as you type, in instant search and everywhere else. Where instant search covers the drive, a plain word in the search box finds comments too, under **In comments**.
+-   **They stay with the file.** On NTFS and ReFS the marks are in the file itself, so any program can rename, move or copy it and they go along, and PowerShell reads and writes them. On a drive without streams (exFAT, a camera's card, some NAS shares) they travel in a hidden `.glint-marks` beside the files. [How marks are kept](docs/marks.md).
+-   **XYplorer comes along.** Glint finds XYplorer's `tag.dat`, shows what it would bring in, does it with one Undo, can keep following it while you use both, and exports to its format for `tagload`. XYplorer's files are only read.
+-   **Agents and rules.** AI agents can read and set marks (asked first), folder rules can give a label, and Batch rename has `{label}` and `{tags}`.
 
--   **A quieter window.** The files are part of the window, edge to edge, instead of a card floating in it; the light behind it is one soft wash in the color of the place you're in; and what's selected is one plain fill, with the accent kept for what is chosen or switched on.
--   **Right-click menus by importance.** What's done most in a strip, a short section for the kind of file, and the rest under **More**: a picture's menu went from 22 rows to 12, a folder's from 19 to 9. Submenus open beside the menu, and no menu is taller than three quarters of the window.
--   **Hop mode.** `Alt+J` puts letters on every tab, crumb, place and visible file in both panes: type them to go there.
--   **Named workspaces.** Save the window's tabs, panes, views and scroll places under a name (the sidebar's **Workspaces** button, or `Ctrl+K`) and switch between them.
--   **Hover cards and a smarter head.** A background tab or a parent folder in the address bar says what's in it when the pointer rests there, and **Map**, **Colors** and **History** appear on a folder only when they would show something.
--   **The basket's drawer** (`Alt+B`): what the basket holds, with thumbnails, and what to do with it, or drag it all out.
--   **Changing now, and Freeze order.** A live list of the files being written, and `Alt+F` keeps a folder's rows where they are while they change.
--   **The photo map, the Color Wheel and Time Machine.** Photos in the pins, places named offline and a scrubber of months; sliders, color chords and palette dots; a timeline rail with a tick for every stop.
--   **Drag to transform.** Pictures and videos dragged out get a strip of choices at the window's edge: without personal info, as WebP, under 10 MB, or the sound alone.
--   **Faster.** Color search about eight times, the map's frames about forty times, Time Machine's first stops in 7 ms instead of 92, thumbnails a screenful ahead of the scroll, and an instant search service that no longer wakes when nothing changes. Glint.exe is 2 MB smaller.
-
-Release notes: [0.16.0](https://github.com/shadijhade/glint/releases/tag/v0.16.0) · [Every release](https://github.com/shadijhade/glint/releases) · 0.15 gave files [a past, a place on the map and links that follow them](https://github.com/shadijhade/glint/releases/tag/v0.15.0), 0.14 made Glint [quicker, sharper and lighter](https://github.com/shadijhade/glint/releases/tag/v0.14.0), 0.13 made it [pay attention](https://github.com/shadijhade/glint/releases/tag/v0.13.0), 0.12 made it [smaller and quieter](https://github.com/shadijhade/glint/releases/tag/v0.12.0), 0.11 gave it [a window of its own](https://github.com/shadijhade/glint/releases/tag/v0.11.0), and 0.10 made it [a native app](https://github.com/shadijhade/glint/releases/tag/v0.10.0).
+Release notes: [0.17.0](https://github.com/shadijhade/glint/releases/tag/v0.17.0) · [Every release](https://github.com/shadijhade/glint/releases) · 0.16 made Glint [calmer and quicker to get around](https://github.com/shadijhade/glint/releases/tag/v0.16.0), 0.15 gave files [a past, a place on the map and links that follow them](https://github.com/shadijhade/glint/releases/tag/v0.15.0), 0.14 made Glint [quicker, sharper and lighter](https://github.com/shadijhade/glint/releases/tag/v0.14.0), 0.13 made it [pay attention](https://github.com/shadijhade/glint/releases/tag/v0.13.0), 0.12 made it [smaller and quieter](https://github.com/shadijhade/glint/releases/tag/v0.12.0), 0.11 gave it [a window of its own](https://github.com/shadijhade/glint/releases/tag/v0.11.0), and 0.10 made it [a native app](https://github.com/shadijhade/glint/releases/tag/v0.10.0).
 
 ## Benchmarks
 
@@ -186,7 +181,7 @@ A tour of what Glint does. **Every feature, in detail: [docs/features.md](docs/f
 
 -   **One box for names and contents.** Typing filters the folder; `Enter` searches below it, names by the index or fd and contents by ripgrep, in one list.
 -   **Instant search**, when you turn it on: an index of every NTFS drive, kept current from the change journal, so names, folder sizes and maps answer from memory in milliseconds ([how it works, and its security model](docs/instant-search.md)).
--   **Filters, or plain words.** `ext:pdf size:>10mb dm:7d`, `taken:2024 camera:canon`, `artist:`, `tag:work`, `git:changed`… or type `pdfs from last week over 5 mb` and Glint shows the filters it read. Typos are forgiven: `reprot` finds *Q3 Report.pdf*.
+-   **Filters, or plain words.** `ext:pdf size:>10mb dm:7d`, `taken:2024 camera:canon`, `artist:`, `tag:work`, `label:important`, `comment:lacp`, `git:changed`… or type `pdfs from last week over 5 mb` and Glint shows the filters it read. Typos are forgiven: `reprot` finds *Q3 Report.pdf*.
 -   **Inside documents and pictures.** The text in PDFs, Word, Excel, PowerPoint, OpenDocument and EPUB files without Office, and in screenshots and scans through Windows' OCR.
 -   **By color.** The **Color Wheel** ranks a folder's pictures by how close their colors come to the one you pick, and **Find similar colors** starts from a picture.
 -   **Quick search from anywhere.** `Ctrl+Alt+F` in any app opens a search box over every drive, answered by the index as you type.
@@ -576,6 +571,7 @@ npm run test:signing
 -   [x] Previous versions, from Windows' shadow copies
 -   [x] Remotes in File Explorer, on demand
 -   [x] Search inside files from an index, and tags
+-   [x] Labels, tags and comments that stay with the file, and XYplorer's brought along
 
 </details>
 
