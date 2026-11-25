@@ -8,7 +8,13 @@ The plan for 0.12 that was here is in git history (`git show df1245a:NEXT_RELEAS
 before it (`git show 47c33fa:NEXT_RELEASE.md`), and 0.13's own plan, the menu and the dock that know the selection,
 is [docs/gpui/aware/PLAN.md](docs/gpui/aware/PLAN.md) with its task cards beside it.*
 
-## Next: Glint in other languages: Chinese, German and Arabic ([#9](https://github.com/shadijhade/glint/issues/9))
+## In 0.18.0: Glint in Chinese, German and Arabic ([#9](https://github.com/shadijhade/glint/issues/9)) (released 2026-11-25)
+
+*Released 2026-11-25 from `4fe038f` ([its release](https://github.com/shadijhade/glint/releases/tag/v0.18.0)) by
+`ship`, with the speed fixes below, in one build: no new advisory, and the Windows 10 import check passed on a
+release build first. Helius's Chinese catalog went in as their commit (`45a3d75`), with labels made 颜色标签 apart
+from tags and the confirmations' blank lines put back (`e4d421b`). Scoop has it, winget's pull request is
+microsoft/winget-pkgs#489316, and the Store's package was left for Partner Center's pages.*
 
 A contributor offered a Chinese translation (2026-11-25). The interface already went through `t!("English")` (the
 hook 0.13 kept when Arabic went), so the work was everything around it. [docs/translating.md](docs/translating.md)
@@ -73,7 +79,7 @@ German and Arabic, the same evening:
   and the columns run from the right.
 - The e2e wasn't run again: it pins English.
 
-## Next: speed, from an outside list of 30 (checked against the code 2026-11-25)
+## In 0.18.0: speed, from an outside list of 30 (checked against the code 2026-11-25; released 2026-11-25)
 
 The user's Antigravity agent wrote a ranked list of 30 speed fixes. Each was read against the code before
 anything changed; several premises were wrong, so the numbers below are the list's own unless they say
