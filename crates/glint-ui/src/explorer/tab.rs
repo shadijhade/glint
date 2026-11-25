@@ -318,6 +318,12 @@ impl Tab {
         self.path == THIS_PC
     }
 
+    /// Whether the tab shows the This PC page (its folders and drives): on This PC, with no search. A search of
+    /// every drive (a tag's, a label's, one typed at This PC) keeps This PC as the tab's path and shows its results.
+    pub fn shows_this_pc(&self) -> bool {
+        self.is_this_pc() && self.find.is_none()
+    }
+
     /// What a tab shows: a folder, or a search's results. Scroll positions and thumbnail timings are kept by it
     /// for each view (`viewKey`).
     pub fn view_key(&self) -> String {

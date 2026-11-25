@@ -529,7 +529,8 @@ impl Workspace {
             return None;
         }
         let tab = explorer.pane_tab(pane)?;
-        Some(if tab.is_this_pc() {
+        // A search of every drive is run from This PC: its results are rows, not the This PC page.
+        Some(if tab.shows_this_pc() {
             Shown::ThisPc
         } else if disk_usage::visible(cx, tab.id) {
             Shown::DiskUsage
@@ -3368,6 +3369,147 @@ mod tests {
             window.try_find("pane-head-title").is_some()
         });
         assert!(!found, "This PC has its own headings");
+    }
+
+    #[gpui_kit::test]
+    fn a_tag_label_or_saved_search_of_every_drive_shows_its_results_and_not_the_this_pc_page(cx: &mut TestAppContext) {
+        use crate::components::sidebar::{label_search, tag_search};
+        use glint_model::paths::THIS_PC;
+        use glint_model::store::SavedSearch;
+        let _guard = testing::lock();
+        // Two photos tagged "city" on C:, answered by the index as they would be; the rest are searched on the disk.
+        let mut tagged = None;
+        let mut labelled = None;
+        let (mut visual, workspace) = open_workspace_on(cx, false, |disk| {
+            disk.set_drives(vec![explorer::Drive {
+                path: "C:\\".into(),
+                label: String::new(),
+                kind: explorer::DriveKind::Fixed,
+                fs: "NTFS".into(),
+                total: 1000,
+                free: 400,
+            }]);
+            disk.folder(
+                "C:\\Photos",
+                vec![
+                    file("C:\\Photos", "city-hall.jpg", 10, 0),
+                    file("C:\\Photos", "city-night.png", 20, 0),
+                    file("C:\\Photos", "park.jpg", 30, 0),
+                ],
+            );
+            tagged = Some(disk.live_find(&tag_search("city").query));
+            labelled = Some(disk.live_find(&label_search("Red").query));
+        });
+        let (tagged, labelled) = (tagged.expect("a live search"), labelled.expect("a live search"));
+        let draw = |visual: &mut VisualTestContext| {
+            for _ in 0..3 {
+                visual.update(|window, cx| window.render_frame(cx));
+                visual.run_until_parked();
+            }
+        };
+        let answer = |live: &async_channel::Sender<explorer::Found>, names: &[&str]| {
+            let entries = names.iter().map(|name| file("C:\\Photos", name, 10, 0)).collect();
+            live.try_send(explorer::Found::Started { engine: "index".into() })
+                .expect("open");
+            live.try_send(explorer::Found::Entries(entries)).expect("open");
+            live.try_send(explorer::Found::Finished {
+                count: names.len(),
+                elapsed: 18.,
+                limited: false,
+                fuzzy: false,
+            })
+            .expect("open");
+        };
+        let press = |visual: &mut VisualTestContext, search: SavedSearch| {
+            let sidebar = workspace.read_with(visual, |workspace, _| workspace.sidebar.clone());
+            sidebar.update(visual, |_, cx| cx.emit(SidebarEvent::RunSavedSearch(search)));
+        };
+        // What the pane shows: which view, whether the This PC page is drawn, and which of `names` have a row.
+        let shows = |visual: &mut VisualTestContext, names: &[&str]| {
+            visual.update(|window, cx| {
+                window.render_frame(cx);
+                let rows: Vec<String> = names
+                    .iter()
+                    .filter(|name| window.try_find_by_label(name).is_some())
+                    .map(|name| (*name).to_string())
+                    .collect();
+                (Workspace::shown_in(0, cx), window.try_find("this-pc").is_some(), rows)
+            })
+        };
+        let on_this_pc_searching = |visual: &mut VisualTestContext| {
+            visual.update(|_, cx| {
+                let explorer = explorer::explorer(cx);
+                let tab = explorer.read(cx).active_tab().expect("a tab");
+                (tab.is_this_pc(), tab.find.as_ref().map(|find| find.query.clone()))
+            })
+        };
+
+        // A press on a tag's chip searches every drive from This PC, and the pane lists what has the tag.
+        press(&mut visual, tag_search("city"));
+        visual.run_until_parked();
+        answer(&tagged, &["city-hall.jpg", "city-night.png"]);
+        draw(&mut visual);
+        assert_eq!(on_this_pc_searching(&mut visual), (true, Some("tag:\"city\"".into())));
+        assert_eq!(
+            shows(&mut visual, &["city-hall.jpg", "city-night.png", "park.jpg"]),
+            (
+                Some(Shown::List),
+                false,
+                vec!["city-hall.jpg".into(), "city-night.png".into()]
+            )
+        );
+        let list = visual.update(|window, cx| {
+            window.render_frame(cx);
+            window.try_find("file-list-box").and_then(|list| list.role())
+        });
+        assert_eq!(list, Some(Role::ListBox));
+
+        // Leaving the search shows the This PC page again.
+        visual.update(|_, cx| Workspace::explorer(cx, |e, cx| e.clear_find(cx)));
+        draw(&mut visual);
+        assert_eq!(on_this_pc_searching(&mut visual), (true, None));
+        assert_eq!(
+            shows(&mut visual, &["city-hall.jpg"]),
+            (Some(Shown::ThisPc), true, Vec::new())
+        );
+
+        // A label's dot does the same.
+        press(&mut visual, label_search("Red"));
+        visual.run_until_parked();
+        answer(&labelled, &["park.jpg"]);
+        draw(&mut visual);
+        assert_eq!(
+            shows(&mut visual, &["city-hall.jpg", "park.jpg"]),
+            (Some(Shown::List), false, vec!["park.jpg".into()])
+        );
+
+        // So does a saved search of every drive, and a search typed at This PC.
+        press(
+            &mut visual,
+            SavedSearch {
+                query: "todo".into(),
+                folder: THIS_PC.into(),
+            },
+        );
+        draw(&mut visual);
+        assert_eq!(on_this_pc_searching(&mut visual), (true, Some("todo".into())));
+        assert_eq!(
+            shows(&mut visual, &["todo.txt", "notes.txt"]),
+            (Some(Shown::List), false, vec!["todo.txt".into()])
+        );
+        // As the address bar does: it filters as it's typed, and Enter searches.
+        visual.update(|_, cx| {
+            Workspace::explorer(cx, |e, cx| {
+                e.set_filter("notes", None, cx);
+                e.run_find("notes", explorer::Wider::default(), cx).detach()
+            })
+        });
+        draw(&mut visual);
+        assert_eq!(on_this_pc_searching(&mut visual), (true, Some("notes".into())));
+        assert_eq!(
+            shows(&mut visual, &["todo.txt", "notes.txt"]),
+            (Some(Shown::List), false, vec!["notes.txt".into()])
+        );
     }
 
     #[gpui_kit::test]

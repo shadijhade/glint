@@ -981,11 +981,12 @@ impl ThisPc {
 impl Render for ThisPc {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme::tokens(cx).clone();
-        // The view belongs to a pane whose tab is This PC; when that tab shows a folder, nothing is drawn here.
+        // The view belongs to a pane whose tab is This PC; when that tab shows a folder, or a search of every drive,
+        // nothing is drawn here.
         let shown = crate::explorer::explorer(cx)
             .read(cx)
             .pane_tab(self.pane)
-            .is_some_and(|tab| tab.is_this_pc());
+            .is_some_and(|tab| tab.shows_this_pc());
         // Not while the tab is still on its way to another folder (at start, the first folder is asked for from a
         // tab that says This PC until it arrives).
         let settled = shown

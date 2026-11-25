@@ -63,9 +63,11 @@ use glint_model::paths::{same_path, RECYCLE_BIN, THIS_PC};
 use glint_model::store::{RemoteConnection, RemoteKind, SavedSearch};
 use portals::{PortalChanges, PortalWork, PortalsSource};
 use rows::{
-    build_rows, count_key, is_label, label_search, lines as lay_out, reads_files, shown_labels, shown_tags,
-    tag_search, Glyph, Inputs, Label, LabelRow, Line, Place, PortalItem, Row, Space,
+    build_rows, count_key, is_label, lines as lay_out, reads_files, shown_labels, shown_tags, Glyph, Inputs, Label,
+    LabelRow, Line, Place, PortalItem, Row, Space,
 };
+/// What a press on a label or a tag runs (the window's tests run it as the sidebar would).
+pub(crate) use rows::{label_search, tag_search};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;

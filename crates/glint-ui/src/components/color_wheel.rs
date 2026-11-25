@@ -696,7 +696,8 @@ impl Render for ColorWheelBar {
             let Some(t_state) = exp.tab(tab) else {
                 return div().into_any_element();
             };
-            if t_state.is_this_pc() {
+            // The This PC page has no files to filter; a search of every drive has.
+            if t_state.shows_this_pc() {
                 return div().into_any_element();
             }
             let files = t_state.entries().iter().filter(|e| !e.dir).count();
