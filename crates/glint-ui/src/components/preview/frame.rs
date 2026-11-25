@@ -900,7 +900,14 @@ impl EntryView {
                             .text_color(t.muted_foreground)
                             .child(label),
                     )
-                    .child(div().flex_1().min_w_0().child(shown))
+                    // A place's link keeps to its text's width, at the start of the column like the other values (a
+                    // button alone in a block stretches across it and centers its label).
+                    .child(
+                        if is_place { row_start() } else { div() }
+                            .flex_1()
+                            .min_w_0()
+                            .child(shown),
+                    )
             }))
     }
 }
