@@ -1136,6 +1136,7 @@ msgstr ""
 #: crates/glint-ui/src/components/pane_head/mod.rs
 #: crates/glint-ui/src/components/preview/cards.rs
 #: crates/glint-ui/src/components/sidebar/mod.rs
+#: crates/glint-ui/src/components/status_bar/summary.rs
 #: crates/glint-ui/src/dialogs/batch_rename.rs
 #: crates/glint-ui/src/dialogs/check.rs crates/glint-ui/src/dialogs/comment.rs
 #: crates/glint-ui/src/dialogs/marks_export.rs
@@ -1156,6 +1157,7 @@ msgstr ""
 #: crates/glint-ui/src/components/pane_head/mod.rs
 #: crates/glint-ui/src/components/preview/cards.rs
 #: crates/glint-ui/src/components/sidebar/mod.rs
+#: crates/glint-ui/src/components/status_bar/summary.rs
 #: crates/glint-ui/src/dialogs/batch_rename.rs
 #: crates/glint-ui/src/dialogs/check.rs crates/glint-ui/src/dialogs/comment.rs
 #: crates/glint-ui/src/dialogs/compress_in_place.rs
@@ -2162,6 +2164,7 @@ msgstr ""
 
 #. a count of one: {n} is 1
 #: crates/glint-ui/src/components/copy_queue/job.rs
+#: crates/glint-ui/src/components/pane_head/mod.rs
 #: crates/glint-ui/src/components/preview/cards.rs
 #: crates/glint-ui/src/components/preview/pane.rs
 #: crates/glint-ui/src/dialogs/action_run.rs
@@ -2181,6 +2184,7 @@ msgstr ""
 #: crates/glint-ui/src/components/copy_queue/job.rs
 #: crates/glint-ui/src/components/file_list/cells.rs
 #: crates/glint-ui/src/components/menus/head.rs
+#: crates/glint-ui/src/components/pane_head/mod.rs
 #: crates/glint-ui/src/components/preview/cards.rs
 #: crates/glint-ui/src/components/preview/pane.rs
 #: crates/glint-ui/src/dialogs/action_run.rs
@@ -2932,7 +2936,6 @@ msgstr ""
 
 #: crates/glint-ui/src/components/file_list/cells.rs
 #: crates/glint-ui/src/components/menus/head.rs
-#: crates/glint-ui/src/components/status_bar/summary.rs
 msgid "1 item"
 msgstr ""
 
@@ -2954,7 +2957,6 @@ msgstr ""
 
 #: crates/glint-ui/src/components/file_list/cells.rs
 #: crates/glint-ui/src/components/menus/head.rs
-#: crates/glint-ui/src/components/pane_head/mod.rs
 msgid "1 file"
 msgstr ""
 
@@ -3807,12 +3809,12 @@ msgid "Changed {when}"
 msgstr ""
 
 #: crates/glint-ui/src/components/menus/head.rs
-#: crates/glint-ui/src/components/pane_head/mod.rs
 msgid "1 folder"
 msgstr ""
 
 #. a count other than one: {n} is the number
 #: crates/glint-ui/src/components/menus/head.rs
+#: crates/glint-ui/src/components/pane_head/mod.rs
 #: crates/glint-ui/src/components/preview/cards.rs
 #: crates/glint-ui/src/components/preview/pane.rs
 #: crates/glint-ui/src/dialogs/cleanup.rs crates/glint-ui/src/dialogs/shrink.rs
@@ -5223,12 +5225,12 @@ msgstr ""
 msgid "{shown} of {count} shown"
 msgstr ""
 
+#. a count of one: {n} is 1
 #: crates/glint-ui/src/components/pane_head/mod.rs
-msgid "{count} folders"
-msgstr ""
-
-#: crates/glint-ui/src/components/pane_head/mod.rs
-msgid "{count} files"
+#: crates/glint-ui/src/components/preview/cards.rs
+#: crates/glint-ui/src/components/preview/pane.rs
+#: crates/glint-ui/src/dialogs/cleanup.rs crates/glint-ui/src/dialogs/shrink.rs
+msgid "{n} folder"
 msgstr ""
 
 #: crates/glint-ui/src/components/pane_head/mod.rs
@@ -5461,13 +5463,6 @@ msgstr ""
 msgid ""
 "Windows keeps the folder this file is in closed to your account, so it can't "
 "be previewed or opened. Get access to the folder first."
-msgstr ""
-
-#. a count of one: {n} is 1
-#: crates/glint-ui/src/components/preview/cards.rs
-#: crates/glint-ui/src/components/preview/pane.rs
-#: crates/glint-ui/src/dialogs/cleanup.rs crates/glint-ui/src/dialogs/shrink.rs
-msgid "{n} folder"
 msgstr ""
 
 #: crates/glint-ui/src/components/preview/cards.rs
@@ -5769,6 +5764,11 @@ msgid "This isn't a data file Glint shows as a tree or a table"
 msgstr ""
 
 #: crates/glint-ui/src/components/preview/details.rs
+#: crates/glint-ui/src/components/preview/hex.rs
+msgid "{size} ({count} bytes)"
+msgstr ""
+
+#: crates/glint-ui/src/components/preview/details.rs
 #: crates/glint-ui/src/components/time_machine/mod.rs
 #: crates/glint-ui/src/dialogs/history.rs
 msgid "Deleted"
@@ -5866,10 +5866,6 @@ msgstr ""
 
 #: crates/glint-ui/src/components/preview/hex.rs
 msgid "Click a byte, or go to an offset"
-msgstr ""
-
-#: crates/glint-ui/src/components/preview/hex.rs
-msgid "{size} ({count} bytes)"
 msgstr ""
 
 #: crates/glint-ui/src/components/preview/hex.rs
@@ -8060,7 +8056,6 @@ msgid "Index file names and folder sizes"
 msgstr ""
 
 #: crates/glint-ui/src/components/settings/instant.rs
-#: crates/glint-ui/src/dialogs/media_tools.rs
 msgid "Start"
 msgstr ""
 
@@ -8347,11 +8342,13 @@ msgstr ""
 
 #. a count of one: {n} is 1
 #: crates/glint-ui/src/components/settings/overview.rs
+#: crates/glint-ui/src/components/status_bar/summary.rs
 msgid "{n} drive"
 msgstr ""
 
 #. a count other than one: {n} is the number
 #: crates/glint-ui/src/components/settings/overview.rs
+#: crates/glint-ui/src/components/status_bar/summary.rs
 msgid "{n} drives"
 msgstr ""
 
@@ -9290,18 +9287,6 @@ msgstr ""
 
 #: crates/glint-ui/src/components/status_bar/summary.rs
 msgid "{engine} sized {size} in {time}"
-msgstr ""
-
-#: crates/glint-ui/src/components/status_bar/summary.rs
-msgid "{count} items"
-msgstr ""
-
-#: crates/glint-ui/src/components/status_bar/summary.rs
-msgid "1 drive"
-msgstr ""
-
-#: crates/glint-ui/src/components/status_bar/summary.rs
-msgid "{count} drives"
 msgstr ""
 
 #: crates/glint-ui/src/components/status_bar/summary.rs
@@ -12616,6 +12601,14 @@ msgid "Open file location of {path}"
 msgstr ""
 
 #: crates/glint-ui/src/dialogs/duplicates.rs
+msgid "Checked {files} in {time}."
+msgstr ""
+
+#: crates/glint-ui/src/dialogs/duplicates.rs
+msgid "{n} already-hardlinked files were skipped."
+msgstr ""
+
+#: crates/glint-ui/src/dialogs/duplicates.rs
 msgid "{size} reclaimable"
 msgstr ""
 
@@ -12633,14 +12626,6 @@ msgstr ""
 
 #: crates/glint-ui/src/dialogs/duplicates.rs
 msgid "No duplicate files found"
-msgstr ""
-
-#: crates/glint-ui/src/dialogs/duplicates.rs
-msgid "Checked {files} in {time}."
-msgstr ""
-
-#: crates/glint-ui/src/dialogs/duplicates.rs
-msgid "{n} already-hardlinked files were skipped."
 msgstr ""
 
 #: crates/glint-ui/src/dialogs/duplicates.rs
@@ -12951,7 +12936,6 @@ msgid "End {name} (PID {pid})"
 msgstr ""
 
 #: crates/glint-ui/src/dialogs/locks.rs
-#: crates/glint-ui/src/dialogs/media_tools.rs
 msgid "End"
 msgstr ""
 
@@ -13608,6 +13592,14 @@ msgstr ""
 
 #: crates/glint-ui/src/dialogs/media.rs
 msgid "No videos or recordings chosen"
+msgstr ""
+
+#: crates/glint-ui/src/dialogs/media_tools.rs
+msgid "Start of the part"
+msgstr ""
+
+#: crates/glint-ui/src/dialogs/media_tools.rs
+msgid "End of the part"
 msgstr ""
 
 #: crates/glint-ui/src/dialogs/media_tools.rs

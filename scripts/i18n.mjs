@@ -58,6 +58,7 @@ function summary(s) {
     const pct = s.total ? Math.floor((s.translated * 100) / s.total) : 0;
     const parts = [`${s.translated} of ${s.total} translated (${pct}%)`];
     if (s.fuzzy) parts.push(`${s.fuzzy} fuzzy`);
+    if (s.forms?.total) parts.push(`${s.forms.translated} of ${s.forms.total} count forms`);
     if (s.obsolete) parts.push(`${s.obsolete} obsolete`);
     return parts.join(", ");
 }

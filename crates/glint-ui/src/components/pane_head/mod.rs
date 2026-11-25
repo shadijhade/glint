@@ -160,19 +160,16 @@ pub fn holds(entries: usize, kinds: &[Category]) -> SharedString {
         .filter(|kind| kind.group.name != FOLDERS.name)
         .map(|kind| kind.bytes)
         .sum();
+    // Counts through `plural`, so a language with more forms for a count says each as it should ("13 ملفًا").
     let mut parts: Vec<String> = Vec::new();
-    match folders {
-        0 => {}
-        1 => parts.push(t!("1 folder").to_string()),
-        n => parts.push(t!("{count} folders", count = format_count(n)).to_string()),
+    if folders > 0 {
+        parts.push(plural(folders, "folder"));
     }
-    match files {
-        0 => {}
-        1 => parts.push(t!("1 file").to_string()),
-        n => parts.push(t!("{count} files", count = format_count(n)).to_string()),
+    if files > 0 {
+        parts.push(plural(files, "file"));
     }
     if bytes > 0 {
-        parts.push(format_size(bytes));
+        parts.push(crate::kit::ltr_unit(format_size(bytes)).to_string());
     }
     parts.join(" · ").into()
 }

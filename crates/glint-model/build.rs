@@ -1,12 +1,15 @@
 //! Compiles the interface's catalogs, the gettext files in the repository's `locales/` folder, into tables
-//! sorted by their English: `zh-CN.po` becomes `ZH_CN` in `$OUT_DIR/catalogs.rs`, which src/i18n.rs includes.
-//! Nothing is read or parsed when Glint starts, and a lookup is a binary search over static text.
+//! sorted by their English: `zh-CN.po` becomes `ZH_CN` in `$OUT_DIR/catalogs.rs` (and `de.po` `DE`, `ar.po`
+//! `AR`), which src/i18n.rs includes. Nothing is read or parsed when Glint starts, and a lookup is a binary
+//! search over static text. A count's other forms (Arabic's "few"…) are in the same table, keyed
+//! "few\u{4}{n} files".
 //!
 //! What goes in is src/po.rs's `usable`: an entry no one has translated yet, or marked `fuzzy`, is left out and
-//! its English shows. So is an entry that can't stand in for its English (placeholders that differ, a context,
-//! plural forms, the same English twice): those go in `REJECTED` too, which a test requires to be empty, and the
-//! build prints them as warnings. A translator's slip never breaks the build, and never reaches the window
-//! either. A catalog that can't be read at all (a quote left open) stops the build, with the file and line.
+//! its English shows. So is an entry that can't stand in for its English (placeholders that differ, a context
+//! that isn't a count's form, gettext's plural forms, the same English twice): those go in `REJECTED` too,
+//! which a test requires to be empty, and the build prints them as warnings. A translator's slip never breaks
+//! the build, and never reaches the window either. A catalog that can't be read at all (a quote left open)
+//! stops the build, with the file and line.
 
 #[path = "src/po.rs"]
 #[allow(dead_code)]
@@ -17,7 +20,7 @@ use std::path::Path;
 
 /// The catalogs src/i18n.rs's `Language` names. One that's missing becomes an empty table (all English), so the
 /// crate still builds; a file not listed here is compiled too, for the day its language joins.
-const KNOWN: &[&str] = &["zh-CN"];
+const KNOWN: &[&str] = &["zh-CN", "de", "ar"];
 
 fn main() {
     let locales = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../locales");

@@ -1,9 +1,17 @@
 # Translating Glint
 
 Glint's interface is written in English, and each language's translation is a gettext catalog in
-[`locales/`](../locales): `zh-CN.po` is Chinese (Simplified), the first one ([#9](https://github.com/shadijhade/glint/issues/9)).
+[`locales/`](../locales):
+
+| Catalog | Language |
+| --- | --- |
+| `zh-CN.po` | Chinese (Simplified), the first ([#9](https://github.com/shadijhade/glint/issues/9)) |
+| `de.po` | German |
+| `ar.po` | Arabic, written right to left: the window mirrors itself for it |
+
 Glint shows a language when Windows' display language is that language. Any text a catalog hasn't translated yet
-shows in English, so a catalog can be finished a piece at a time.
+shows in English, so a catalog can be finished a piece at a time. The German and Arabic catalogs are complete
+first drafts: corrections from people who speak them are welcome.
 
 ## Translating
 
@@ -34,11 +42,26 @@ shows in English, so a catalog can be finished a piece at a time.
   English has, in whatever order your language needs, and add none. A translation that loses or adds one is left
   out, and the English shows instead.
 - **Counts are two texts:** "{n} file" (for 1) and "{n} files" (for any other number). In Chinese both are
-  usually the same: "{n} 个文件".
+  usually the same: "{n} 个文件". The text for 1 may leave `{n}` out ("eine Datei", "ملف واحد").
+- **Arabic counts have four more forms.** In `ar.po`, each count's "{n} files" is followed by entries of the same
+  English with a `msgctxt`. Glint picks the form by CLDR's rules for the number:
+
+  | `msgctxt` | Numbers | Example |
+  | --- | --- | --- |
+  | `zero` | 0 | لا ملفات |
+  | `two` | 2 | ملفان |
+  | `few` | 3 to 10, 103 to 110… | {n} ملفات |
+  | `many` | 11 to 99, 111 to 199… | {n} ملفًا |
+
+  The entry without a context is "other": 100 to 102, 200 to 202…, and any form left empty. `zero` and `two` may
+  leave `{n}` out. Poedit shows the context beside each one. `update` adds these entries to every count.
 - **`{0}`, `{1}` in a menu's text are its keys** ("Cut ({0})" shows "Cut (Ctrl+X)"). Put them where your language
   puts them.
 - **Use Windows' own words** where Windows has them: 此电脑, 回收站, 快速访问, 桌面, 文档, 下载, 图片, 音乐, 视频,
-  文件资源管理器. People read Glint next to File Explorer.
+  文件资源管理器 (Dieser PC, Papierkorb, Schnellzugriff; هذا الكمبيوتر، سلة المحذوفات، الوصول السريع). People read
+  Glint next to File Explorer.
+- **Label, tag and comment are three different things,** and "marks" is all of them. A label is the one colored
+  label a file can have, and tags are any number of free words. Give each its own word.
 - **Leave the search box's words in English:** `ext:`, `tag:`, `size:`, `label:`… are what people type. Glint
   already reads them typed with a Chinese keyboard's `：` and `，`.
 - **Fuzzy entries aren't used.** When you've checked one, remove its `fuzzy` mark (Poedit: "Needs work" off).
@@ -60,8 +83,10 @@ shows in English, so a catalog can be finished a piece at a time.
   where it's written. Run `node scripts/i18n.mjs update` before a release so the catalogs carry the new texts.
 - `GLINT_LANGUAGE=qps-ploc` shows every text accented, a third longer and in brackets: `[Ďéĺéťé ··]`. A text that
   stays plain skips the catalog. A text that lost its `]` is cut off where a longer language would be.
-- `GLINT_LANGUAGE=en` (or `zh-CN`) picks a language whatever Windows speaks. The e2e run pins `en`, because its
-  checks find controls by their English names.
+- `GLINT_LANGUAGE=en` (or `zh-CN`, `de`, `ar`) picks a language whatever Windows speaks. The e2e run pins `en`,
+  because its checks find controls by their English names.
+- Arabic mirrors the window: views lay out with the kit's start/end helpers and ask `i18n::is_rtl()` where they
+  must. The view tests check them mirrored (`testing::set_rtl`).
 
 ## How it works
 
@@ -70,9 +95,17 @@ nothing at start, and a lookup is a binary search over static text. It leaves ou
 translated, a fuzzy one, and one it can't use. It warns about the ones it can't use, and
 `every_translation_in_locales_is_used` fails on them. `crates/glint-model/src/i18n.rs` picks the language: it
 takes the first of Windows' display languages that has a catalog, and English counts as one. Chinese
-(Traditional), `zh-TW` and `zh-HK`, has no catalog yet, so it shows English, not Simplified.
+(Traditional), `zh-TW` and `zh-HK`, has no catalog yet, so it shows English, not Simplified. A count's other
+forms are keyed `few\u{4}{n} files` in the same table, and `count_form` says which form a number takes.
 
-**Adding a language:** `node scripts/i18n.mjs update de-DE` starts `locales/de-DE.po`. Then give it a `Language`
-in i18n.rs (its code in `from_code`, its table in `catalog`) and add it to build.rs's `KNOWN`. Glint's counts have
-two forms, one and other, which fits Chinese, English, German, French, Spanish and Japanese. A language with more
-forms, such as Russian, Polish or Arabic, needs `plural` taught about them first.
+**Adding a language:** `node scripts/i18n.mjs update fr` starts `locales/fr.po`. Then:
+
+1. Give it a `Language` in i18n.rs: its code in `code` and `from_code`, its table in `catalog`, its byte in
+   `from_byte`.
+2. Add it to build.rs's `KNOWN`.
+3. If it's written right to left, add it to `is_rtl`.
+4. If its counts have more forms than one and other (Russian, Polish, Czech…), add them:
+   - its rules in `count_form`;
+   - its forms in `COUNT_FORMS` in scripts/lib/i18n.mjs.
+
+   CLDR's names are `zero`, `two`, `few` and `many`.

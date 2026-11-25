@@ -187,10 +187,12 @@ impl Handle {
         }
     }
 
+    /// What a screen reader calls the handle. Not "Start" and "End" alone: those are the instant search
+    /// service's button and the end of a process elsewhere, and other languages say them differently.
     fn label(self) -> SharedString {
         match self {
-            Handle::Start => t!("Start"),
-            Handle::End => t!("End"),
+            Handle::Start => t!("Start of the part"),
+            Handle::End => t!("End of the part"),
         }
     }
 }
@@ -1156,8 +1158,8 @@ mod tests {
         assert!(present(&mut visual, "trim-open") && !present(&mut visual, "trim-track"));
         assert_eq!(bar.read_with(&visual, |b, _| b.stop_at()), None);
         open_bar(&mut visual, &bar, 100.);
-        assert_eq!(role_of(&mut visual, "Start"), Some(Role::Slider));
-        assert_eq!(role_of(&mut visual, "End"), Some(Role::Slider));
+        assert_eq!(role_of(&mut visual, "Start of the part"), Some(Role::Slider));
+        assert_eq!(role_of(&mut visual, "End of the part"), Some(Role::Slider));
         assert_eq!(description_of(&mut visual, 0).as_deref(), Some("0:00.0"));
         assert_eq!(description_of(&mut visual, 1).as_deref(), Some("1:40.0"));
         assert!(has(&mut visual, "0:00.0 – 1:40.0 · keeps 1:40.0"));
@@ -1238,7 +1240,7 @@ mod tests {
             window.press("left", cx);
         });
         assert!((bar.read_with(&visual, |b, _| b.range().0) - STEP).abs() < 1e-9);
-        assert_eq!(role_of(&mut visual, "Start"), Some(Role::Slider));
+        assert_eq!(role_of(&mut visual, "Start of the part"), Some(Role::Slider));
         testing::set_rtl(false);
     }
 

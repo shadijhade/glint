@@ -8,11 +8,26 @@ The plan for 0.12 that was here is in git history (`git show df1245a:NEXT_RELEAS
 before it (`git show 47c33fa:NEXT_RELEASE.md`), and 0.13's own plan, the menu and the dock that know the selection,
 is [docs/gpui/aware/PLAN.md](docs/gpui/aware/PLAN.md) with its task cards beside it.*
 
-## Next: Glint in other languages, Chinese first ([#9](https://github.com/shadijhade/glint/issues/9))
+## Next: Glint in other languages: Chinese, German and Arabic ([#9](https://github.com/shadijhade/glint/issues/9))
 
 A contributor offered a Chinese translation (2026-11-25). The interface already went through `t!("English")` (the
 hook 0.13 kept when Arabic went), so the work was everything around it. [docs/translating.md](docs/translating.md)
-is the guide.
+is the guide. The same day German and Arabic followed, translated here: `locales/de.po` and `locales/ar.po`,
+complete first drafts of all 3,851 texts.
+
+- **Arabic is right to left again:** `i18n::is_rtl()` is true for it, so the window mirrors itself with the
+  start/end layout that 0.13 kept. Its counts take CLDR's six forms: "{n} files" is followed by entries of the
+  same English with `msgctxt` zero, two, few and many (`ملفان`, `{n} ملفات`, `{n} ملفًا`), which
+  `format::plural` picks by the number (`i18n::count_form`). `update ar` gives every count those entries, and the
+  text for one may leave `{n}` out ("ملف واحد").
+- **Which language**: German for any `de-…`, Arabic for any `ar-…`, as Windows lists them.
+- **Found by looking at them:**
+  - A Quick access tile's name of two words wraps onto a second line instead of losing its end ("Zuletzt verwendet", "مقاطع الفيديو"). Tiles sit a little tighter, so "Dokumente" fits; "Benutzerordner" is still cut, with its tooltip.
+  - The folder line ("4 folders · 13 files · 158 KB") and the status bar's counts go through `plural`, so Arabic says "13 ملفًا".
+  - In Arabic, a size or time keeps its order ("158 KB", not "KB 158") through `kit::ltr_unit` (LRE…PDF: the window's text ignores LRI…PDI). The status bar's timing is set as a right-to-left line.
+  - The preview's size line said "bytes" in English, and is now translated.
+  - The trim handles' screen-reader names became "Start of the part" and "End of the part": "Start" and "End" were also the instant search button and ending a process.
+  - The Time Machine's arrow tooltips in Arabic name the keys it swaps when mirrored.
 
 - **Catalogs:** gettext files in `locales/`, `zh-CN.po` first, compiled into Glint by glint-model's build.rs
   (sorted tables, a binary search over static text, nothing read at start). A translation whose placeholders
@@ -30,8 +45,16 @@ is the guide.
   preview's item count now go through the catalog. Known folders and the fixed places are named in the
   interface's language in tabs, crumbs and drags ("桌面"), and a folder that only happens to be called "Music"
   keeps its name.
-- **Left:** messages made by glint-core (an archive that can't be read, a backup that failed) are still English
-  inside the translated sentence around them. The installer, the Store listing and the website are English too.
+- **Left:**
+  - Messages made by glint-core (an archive that can't be read, a backup that failed) are still English inside
+    the translated sentence around them.
+  - The installer, the Store listing and the website are English too.
+  - In Arabic, the window's own minimize, maximize and close buttons stay at the top right.
+  - Key names stay as the code writes them (Ctrl, not German's Strg).
+  - Dates follow Windows' format, not the interface's language.
+  - Counts written straight into a sentence with `t!` (not `plural`) have one form in Arabic. The translators
+    worded those to read right for any number.
+  - action_run.rs fills an English noun into "Next to each {noun}…".
 
 ### Checks
 
@@ -39,6 +62,16 @@ is the guide.
 was looked at in `qps-ploc` and with a 37-text Chinese file: Chinese draws in a Chinese font on an English
 Windows, mixed "JPG 图像" lines sit on one baseline, and a broken entry is reported on stderr. The e2e now pins
 `GLINT_LANGUAGE=en`: 22/22 on 2026-11-25.
+
+German and Arabic, the same evening:
+- `cargo test -p glint-model` passes (442), and so does `-p glint-ui` (2,901), with both catalogs built in.
+- `cargo clippy -p glint-model -p glint-ui --all-targets -D warnings` is clean, and `node scripts/lib/i18n.test.mjs`
+  passes.
+- `node scripts/i18n.mjs status` reports none left out.
+- The debug build was looked at with `GLINT_LANGUAGE=de` and `ar`: the main window, the right-click menu and the
+  preview. In Arabic the window mirrors: the sidebar is on the right, the crumbs and arrows point the other way,
+  and the columns run from the right.
+- The e2e wasn't run again: it pins English.
 
 ## Next: speed, from an outside list of 30 (checked against the code 2026-11-25)
 

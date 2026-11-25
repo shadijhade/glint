@@ -51,11 +51,12 @@ pub fn rows(entry: &FileEntry, media: Option<&Media>) -> Vec<Row> {
     if !entry.dir || recycled {
         rows.push(Row {
             label: t!("Size"),
-            value: format!(
-                "{} ({} bytes)",
-                format_size(entry.size),
-                format_count(usize::try_from(entry.size).unwrap_or(usize::MAX))
-            ),
+            value: t!(
+                "{size} ({count} bytes)",
+                size = format_size(entry.size),
+                count = format_count(usize::try_from(entry.size).unwrap_or(usize::MAX))
+            )
+            .to_string(),
         });
     }
     rows.push(Row {

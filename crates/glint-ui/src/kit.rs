@@ -439,6 +439,20 @@ pub fn rtl_line(text: impl Into<SharedString>) -> SharedString {
     }
 }
 
+/// A number and its unit ("158 KB", "72 ms") kept in their reading order inside a right-to-left language's line:
+/// LRE … PDF around `text` while the interface's language is written right to left (Arabic), else as it is.
+/// Without it, "158 KB" at the end of an Arabic line reads "KB 158": the bidirectional algorithm sets the number
+/// apart from its unit. An embedding, as [`rtl_line`] uses: the window's text doesn't honour the newer isolates
+/// for this (LRI … PDI changed nothing on screen). Visual text only, as with [`isolate`].
+pub fn ltr_unit(text: impl Into<SharedString>) -> SharedString {
+    let text = text.into();
+    if glint_model::i18n::is_rtl(i18n::language()) {
+        format!("\u{202A}{text}\u{202C}").into()
+    } else {
+        text
+    }
+}
+
 /// A stand-in for a component a later wave builds: says what it is and what replaces it. Placeholders use
 /// `t!`, theme tokens and the kit like everything else.
 #[derive(IntoElement)]

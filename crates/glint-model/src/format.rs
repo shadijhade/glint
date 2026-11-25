@@ -109,6 +109,12 @@ fn plural_in(n: usize, word: &str, locale: Option<&str>, language: Language) -> 
     let count = format_count_in(n, locale);
     let s = if n == 1 { "" } else { "s" };
     if language != Language::En {
+        // Arabic's two, few, many…: entries of the "other" text with the form as their context.
+        if let Some(form) = crate::i18n::count_form(language, n) {
+            if let Some(said) = crate::i18n::translate_form(language, form, &format!("{{n}} {word}s")) {
+                return said.replace("{n}", &count);
+            }
+        }
         let english = format!("{{n}} {word}{s}");
         let said = translate(language, &english);
         // The catalog's own text, even where it reads as the English does ("{n} PDF").
@@ -766,6 +772,22 @@ mod tests {
             plural_in(2, "no such noun", Some("en-US"), Language::ZhHans),
             "2 no such nouns"
         );
+        assert_eq!(
+            plural_in(2, "no such noun", Some("en-US"), Language::Ar),
+            "2 no such nouns",
+            "a form the catalog lacks falls back to the other text, then the English"
+        );
+        // Arabic's forms: each count reads the form its number asks for, where ar.po has it.
+        for (n, form) in [(0, "zero"), (2, "two"), (5, "few"), (12, "many")] {
+            if let Some(said) = crate::i18n::translate_form(Language::Ar, form, "{n} files") {
+                let shown = said.replace("{n}", &format_count_in(n, Some("en-US")));
+                assert_eq!(
+                    plural_in(n, "file", Some("en-US"), Language::Ar),
+                    shown,
+                    "{n} files ({form})"
+                );
+            }
+        }
     }
 
     #[test]

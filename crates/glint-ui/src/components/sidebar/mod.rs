@@ -1732,16 +1732,18 @@ impl Sidebar {
                     .text_color(t.muted_foreground)
                     .child(t!("{size} free", size = format_size(free)))
             });
+        // A tile's name of two words or more ("Zuletzt verwendet", "مقاطع الفيديو") goes on to a second line rather
+        // than lose its end: a tile is half the rail wide, and other languages' names run longer than English's.
+        let name = div().flex_1().min_w_0().child(isolate(label.clone()));
+        let name = if p.tile && label.trim().contains(' ') {
+            name.text_ellipsis().line_clamp(2)
+        } else {
+            name.truncate()
+        };
         let text = col()
             .flex_1()
             .min_w_0()
-            .child(
-                row_start()
-                    .items_center()
-                    .gap(space(2.))
-                    .child(div().flex_1().min_w_0().truncate().child(isolate(label.clone())))
-                    .children(free),
-            )
+            .child(row_start().items_center().gap(space(2.)).child(name).children(free))
             .children(bar.map(|b| div().mt(space(0.75)).child(b)));
         let tip = tooltip_of(label.clone(), p.detail.clone());
         let (active, accent) = (p.active, t.accent);
@@ -1761,8 +1763,8 @@ impl Sidebar {
             .relative()
             .w_full()
             // A tile is half the rail wide: its picture and its name sit closer, and it keeps no room for an arrow.
-            .gap(space(if p.tile { 2. } else { 2.5 }))
-            .px(space(if p.tile { 1.5 } else { 2. }))
+            .gap(space(if p.tile { 1.5 } else { 2.5 }))
+            .px(space(if p.tile { 1. } else { 2. }))
             .py(space(ROW_PAD))
             .when(p.gutter && !p.tile, |d| d.ps(6.))
             .rounded(theme::size::RADIUS_ROW)

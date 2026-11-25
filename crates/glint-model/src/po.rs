@@ -3,8 +3,19 @@
 //! building Glint). Std only, so build.rs can take this file as it is (`#[path = "src/po.rs"]`).
 //!
 //! Only what Glint's catalogs use is understood: `msgid`, `msgstr`, strings that go on over several lines, the
-//! `fuzzy` flag, comments and obsolete (`#~`) entries. `msgctxt` and plural forms are read so they can be
-//! reported, not used: `t!` has neither (a count's two forms are two texts, "{n} file" and "{n} files").
+//! `fuzzy` flag, comments and obsolete (`#~`) entries. A count is two texts, "{n} file" and "{n} files"; a
+//! language with more forms than those two (Arabic: zero, two, few, many) gives each as an entry of the "other"
+//! text with the form as its `msgctxt` ([`COUNT_FORMS`]). Any other `msgctxt`, and gettext's own plural forms,
+//! are read so they can be reported, not used.
+
+/// The forms a count takes besides "one" and "other", by CLDR's names: a catalog gives them as entries of the
+/// "other" text ("{n} files") with the form as the `msgctxt`. Glint asks for one when its language's rules say
+/// so (`i18n::count_form`), and a form the catalog lacks shows the "other" text.
+pub const COUNT_FORMS: &[&str] = &["zero", "two", "few", "many"];
+
+/// What separates a count's form from its English in a table's key ("few\u{4}{n} files"), as gettext keys a
+/// context.
+pub const FORM_SEPARATOR: char = '\u{4}';
 
 /// One entry: an English text (`msgid`) and what it is in the catalog's language (`msgstr`, empty while no one
 /// has translated it).
@@ -16,8 +27,8 @@ pub struct Entry {
     pub translation: String,
     /// Marked `#, fuzzy`: a guess (an older English's translation) that a person hasn't checked. Not used.
     pub fuzzy: bool,
-    /// The entry has a `msgctxt`.
-    pub context: bool,
+    /// The entry's `msgctxt`, if it has one: a count's form ("few"), or something Glint doesn't use.
+    pub context: Option<String>,
     /// The entry has plural forms (`msgid_plural`).
     pub plural: bool,
     /// The line its `msgid` is on, for messages.
@@ -46,7 +57,7 @@ struct Partial {
     english: Option<String>,
     translation: Option<String>,
     fuzzy: bool,
-    context: bool,
+    context: Option<String>,
     plural: bool,
     line: usize,
 }
@@ -56,7 +67,6 @@ pub fn parse(text: &str) -> Result<Catalog, String> {
     let mut catalog = Catalog::default();
     let mut entry = Partial::default();
     let mut field: Option<Field> = None;
-    let mut context = String::new();
     let mut plural = String::new();
     let mut other = String::new();
     for (index, raw) in text.lines().enumerate() {
@@ -86,8 +96,7 @@ pub fn parse(text: &str) -> Result<Catalog, String> {
         }
         let at = |message: &str| format!("line {number}: {message}");
         if let Some(rest) = line.strip_prefix("msgctxt") {
-            entry.context = true;
-            context = unquote(rest.trim()).map_err(|e| at(&e))?;
+            entry.context = Some(unquote(rest.trim()).map_err(|e| at(&e))?);
             field = Some(Field::Context);
         } else if let Some(rest) = line.strip_prefix("msgid_plural") {
             if entry.english.is_none() {
@@ -127,7 +136,7 @@ pub fn parse(text: &str) -> Result<Catalog, String> {
         } else if line.starts_with('"') {
             let more = unquote(line).map_err(|e| at(&e))?;
             let target = match field {
-                Some(Field::Context) => &mut context,
+                Some(Field::Context) => entry.context.get_or_insert_with(String::new),
                 Some(Field::Id) => entry.english.get_or_insert_with(String::new),
                 Some(Field::Plural) => &mut plural,
                 Some(Field::Str) => entry.translation.get_or_insert_with(String::new),
@@ -159,7 +168,7 @@ fn finish(catalog: &mut Catalog, entry: Partial) -> Result<(), String> {
         return Err(format!("line {}: msgid without a msgstr", entry.line));
     };
     // The header: the catalog's language and the tools that wrote it, which Glint doesn't need.
-    if english.is_empty() && !entry.context {
+    if english.is_empty() && entry.context.is_none() {
         return Ok(());
     }
     catalog.entries.push(Entry {
@@ -210,22 +219,50 @@ pub struct Rejected {
     pub why: String,
 }
 
-/// The translations a catalog can use, sorted by their English with each English once, and the entries it
-/// can't, with why: placeholders that differ from the English's, a context or plural forms (`t!` has neither),
-/// the same English twice. An entry no one has translated, or marked `fuzzy` (a guess no one has checked), is
-/// neither: its English shows, which is no mistake.
+/// The translations a catalog can use, sorted by their key with each key once, and the entries it can't, with
+/// why: placeholders that differ from the English's, a context that isn't a count's form, gettext's plural
+/// forms, the same English twice. An entry no one has translated, or marked `fuzzy` (a guess no one has
+/// checked), is neither: its English shows, which is no mistake.
+///
+/// The key is the English, and a count's form is keyed "few\u{4}{n} files" ([`FORM_SEPARATOR`]). A count of
+/// one ("{n} file", beside "{n} files") and the forms "zero" and "two" may leave `{n}` out ("ملفان" is "two
+/// files"): the number is known.
 pub fn usable(catalog: Catalog) -> (Vec<(String, String)>, Vec<Rejected>) {
+    let englishes: std::collections::HashSet<String> = catalog
+        .entries
+        .iter()
+        .filter(|entry| entry.context.is_none())
+        .map(|entry| entry.english.clone())
+        .collect();
     let mut rejected = Vec::new();
     let mut pairs: Vec<(String, String, usize)> = Vec::new();
     for entry in catalog.entries {
-        let why = if entry.context {
-            Some("it has a msgctxt, and Glint's texts have no context".to_string())
+        let form = entry.context.as_deref();
+        let why = if form.is_some_and(|form| !COUNT_FORMS.contains(&form)) {
+            Some(format!(
+                "its msgctxt isn't a count's form ({}), and Glint's texts have no other context",
+                COUNT_FORMS.join(", ")
+            ))
+        } else if form.is_some() && !entry.english.contains("{n}") {
+            Some("a count's form, but the English has no {n} to count".to_string())
         } else if entry.plural {
-            Some("it has plural forms: Glint's counts are two texts, \"{n} file\" and \"{n} files\"".to_string())
+            Some(
+                "it has gettext's plural forms: Glint's counts are two texts, \"{n} file\" and \"{n} files\", and \
+                 a language's other forms are entries with a msgctxt"
+                    .to_string(),
+            )
         } else if entry.fuzzy || entry.translation.is_empty() {
             continue;
         } else {
-            placeholders_differ(&entry.english, &entry.translation)
+            let one = form.is_none()
+                && entry.english.starts_with("{n} ")
+                && englishes.contains(&format!("{}s", entry.english));
+            let number_known = one || matches!(form, Some("zero" | "two"));
+            if number_known && !entry.translation.contains("{n}") {
+                placeholders_differ(&entry.english.replace("{n}", ""), &entry.translation)
+            } else {
+                placeholders_differ(&entry.english, &entry.translation)
+            }
         };
         match why {
             Some(why) => rejected.push(Rejected {
@@ -233,7 +270,13 @@ pub fn usable(catalog: Catalog) -> (Vec<(String, String)>, Vec<Rejected>) {
                 english: entry.english,
                 why,
             }),
-            None => pairs.push((entry.english, entry.translation, entry.line)),
+            None => {
+                let key = match form {
+                    Some(form) => format!("{form}{FORM_SEPARATOR}{}", entry.english),
+                    None => entry.english,
+                };
+                pairs.push((key, entry.translation, entry.line));
+            }
         }
     }
     pairs.sort_by(|a, b| a.0.cmp(&b.0));
@@ -375,7 +418,8 @@ msgstr[0] "{n} 个文件"
         assert!(!entry("This PC").fuzzy);
         assert_eq!(entry("Line one\nand \"two\"").translation, "第一行\n和“二”");
         assert_eq!(entry("Not yet").translation, "");
-        assert!(entry("Open").context);
+        assert_eq!(entry("Open").context.as_deref(), Some("verb"));
+        assert_eq!(entry("This PC").context, None);
         assert!(entry("{n} file").plural);
         assert_eq!(entry("{n} file").translation, "{n} 个文件");
         assert!(!english.contains(&"Gone"), "obsolete entries are left out");
@@ -432,14 +476,64 @@ msgstr[0] "{n} 个文件"
         assert_eq!(
             why,
             [
-                (29, "it has a msgctxt, and Glint's texts have no context"),
+                (
+                    29,
+                    "its msgctxt isn't a count's form (zero, two, few, many), and Glint's texts have no other context"
+                ),
                 (
                     32,
-                    "it has plural forms: Glint's counts are two texts, \"{n} file\" and \"{n} files\""
+                    "it has gettext's plural forms: Glint's counts are two texts, \"{n} file\" and \"{n} files\", \
+                     and a language's other forms are entries with a msgctxt"
                 ),
                 (42, "the translation lacks %1"),
                 (45, "the same English is in the file twice"),
             ]
+        );
+    }
+
+    #[test]
+    fn a_counts_other_forms_are_entries_of_its_other_text() {
+        let text = r#"msgid "{n} file"
+msgstr "ملف واحد"
+
+msgid "{n} files"
+msgstr "{n} ملف"
+
+msgctxt "two"
+msgid "{n} files"
+msgstr "ملفان"
+
+msgctxt "few"
+msgid "{n} files"
+msgstr "{n} ملفات"
+
+msgctxt "many"
+msgid "{n} files"
+msgstr "ملفات كثيرة"
+
+msgctxt "few"
+msgid "Open"
+msgstr "فتح"
+
+msgid "{n} items left"
+msgstr "بقيت عناصر"
+"#;
+        let (kept, rejected) = usable(parse(text).unwrap());
+        let keys: Vec<&str> = kept.iter().map(|(key, _)| key.as_str()).collect();
+        assert_eq!(
+            keys,
+            ["few\u{4}{n} files", "two\u{4}{n} files", "{n} file", "{n} files"],
+            "a form is keyed by its name and the English; one, and the forms zero and two, may leave {{n}} out"
+        );
+        let why: Vec<(usize, &str)> = rejected.iter().map(|r| (r.line, r.why.as_str())).collect();
+        assert_eq!(
+            why,
+            [
+                (16, "the translation lacks {n}"),
+                (20, "a count's form, but the English has no {n} to count"),
+                (23, "the translation lacks {n}"),
+            ],
+            "many needs its number, a form needs a count, and only a count of one (with its other beside it) is known"
         );
     }
 

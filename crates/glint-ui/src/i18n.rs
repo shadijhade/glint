@@ -6,15 +6,15 @@
 //! through [`translate`] where they're drawn, and are marked `english!("…")` where they're written, so
 //! `node scripts/i18n.mjs` finds them for the translators (docs/translating.md).
 //!
-//! **The language** is Windows' display language where Glint has a catalog for it, else English; there is no
-//! choice in Settings. `GLINT_LANGUAGE` overrides it ([`init`], at start, before the first frame): `en`,
-//! `zh-CN`, `qps-ploc` (the pseudo-language: what skips the catalog stays plain, what gets cut off loses its
-//! closing bracket), or a catalog file, `GLINT_LANGUAGE=D:\work\zh-CN.po`, which its language reads instead of
-//! the built-in one.
+//! **The language** is the first of Windows' display languages Glint has a catalog for (English counts), else
+//! English; there is no choice in Settings. `GLINT_LANGUAGE` overrides it ([`init`], at start, before the first
+//! frame): `en`, `zh-CN`, `de`, `ar`, `qps-ploc` (the pseudo-language: what skips the catalog stays plain, what
+//! gets cut off loses its closing bracket), or a catalog file, `GLINT_LANGUAGE=D:\work\zh-CN.po`, which its
+//! language reads instead of the built-in one.
 //!
 //! **Direction.** Views lay themselves out with the kit's start/end helpers (`row_start`, `align_start`,
-//! `ps`/`pe`…) and ask [`is_rtl`] where they must. No language Glint speaks is written right to left, so in
-//! the app it answers false; the tests turn the mirror on ([`set_mirror`]) to keep the layouts direction-neutral.
+//! `ps`/`pe`…) and ask [`is_rtl`] where they must. Arabic is written right to left, and the window mirrors
+//! itself for it; the tests turn the mirror on ([`set_mirror`]) to keep the layouts direction-neutral.
 //!
 //! **Usage:**
 //! ```ignore
@@ -27,7 +27,7 @@ use glint_model::i18n::{self as model, Language};
 use gpui_kit::SharedString;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// The layout mirrored, as for a right-to-left language: only ever set by tests.
+/// The layout mirrored as for a right-to-left language whatever the language: only ever set by tests.
 static MIRROR: AtomicBool = AtomicBool::new(false);
 
 /// Start-up, before the theme: picks the language (`GLINT_LANGUAGE`, else Windows' display languages).
@@ -101,9 +101,10 @@ pub fn language() -> Language {
     model::current()
 }
 
-/// Whether views mirror themselves now. False in the app; tests set it ([`set_mirror`]).
+/// Whether views mirror themselves now: the language is written right to left (Arabic), or a test set the
+/// mirror ([`set_mirror`]). Two atomic loads, so views ask it every frame.
 pub fn is_rtl() -> bool {
-    MIRROR.load(Ordering::Relaxed)
+    MIRROR.load(Ordering::Relaxed) || model::is_rtl(language())
 }
 
 /// Mirrors the layout (tests that check a view is direction-neutral).
@@ -147,7 +148,7 @@ mod tests {
         assert_eq!(t!("Drive health"), "Drive health");
         assert_eq!(t!("Delete {name}?", name = "a.txt"), "Delete a.txt?");
         assert_eq!(t!("{n} of {total}", n = 3, total = 10), "3 of 10");
-        assert!(!is_rtl(), "nothing in the app mirrors the layout");
+        assert!(!is_rtl(), "English doesn't mirror the layout");
         set_mirror(true);
         assert!(is_rtl());
         set_mirror(false);
@@ -162,6 +163,9 @@ mod tests {
         };
         assert_eq!(chosen(None, windows(&["zh-CN", "en-US"])), Language::ZhHans);
         assert_eq!(chosen(None, windows(&["en-US", "zh-CN"])), Language::En);
+        assert_eq!(chosen(None, windows(&["de-DE", "en-US"])), Language::De);
+        assert_eq!(chosen(None, windows(&["ar-SA"])), Language::Ar);
+        assert_eq!(chosen(Some("ar"), windows(&["en-US"])), Language::Ar);
         assert_eq!(chosen(None, windows(&[])), Language::En);
         assert_eq!(chosen(Some("en"), windows(&["zh-CN"])), Language::En);
         assert_eq!(chosen(Some(" zh-CN "), windows(&["en-US"])), Language::ZhHans);

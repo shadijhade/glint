@@ -11,7 +11,17 @@ use crate::explorer::{Engine, Rows, Selection, SizeRun, Tab, TabId};
 use crate::t;
 use glint_model::entries::FileEntry;
 use glint_model::file_types::{group_filter, type_group, TypeGroup, TYPE_GROUPS};
-use glint_model::format::{format_count, format_duration, format_size};
+use glint_model::format::{format_count, plural};
+
+/// A size as the status bar says it: in its reading order inside an Arabic line too ([`crate::kit::ltr_unit`]).
+fn format_size(bytes: u64) -> String {
+    crate::kit::ltr_unit(glint_model::format::format_size(bytes)).to_string()
+}
+
+/// A time as the status bar says it: in its reading order inside an Arabic line too ([`crate::kit::ltr_unit`]).
+fn format_duration(ms: f64) -> String {
+    crate::kit::ltr_unit(glint_model::format::format_duration(ms)).to_string()
+}
 use glint_model::store::ViewMode;
 use gpui_kit::SharedString;
 use std::cell::RefCell;
@@ -350,22 +360,15 @@ pub fn spectrum_of(entries: &Arc<[FileEntry]>, sizes: Option<&SizeRun>) -> Vec<C
 
 // ---- Words ------------------------------------------------------------------------------------------------
 
-/// "1 item" or "12 items", counted in the user's grouping (`items` in StatusBar.tsx).
+/// "1 item" or "12 items", counted in the user's grouping (`items` in StatusBar.tsx): through `plural`, so a
+/// language with more forms for a count says each as it should ("17 عنصرًا").
 pub fn items(n: usize) -> SharedString {
-    if n == 1 {
-        t!("1 item")
-    } else {
-        t!("{count} items", count = format_count(n))
-    }
+    plural(n, "item").into()
 }
 
 /// "1 drive" or "3 drives" (the This PC line).
 pub fn drives(n: usize) -> SharedString {
-    if n == 1 {
-        t!("1 drive")
-    } else {
-        t!("{count} drives", count = n)
-    }
+    plural(n, "drive").into()
 }
 
 /// The counts on the left: items, hidden, selected, and the selection's size.

@@ -342,8 +342,8 @@ export function extractFromRust(source) {
             const nouns = (args[1] ?? []).filter((a) => a.kind === "str");
             if (!nouns.length) variables.push({ line: t.line, call: "plural(n, …)" });
             for (const noun of nouns) {
-                add(`{n} ${noun.value}`, noun.line, "a count of one: {n} is 1");
-                add(`{n} ${noun.value}s`, noun.line, "a count other than one: {n} is the number");
+                add(`{n} ${noun.value}`, noun.line, COUNT_ONE_NOTE);
+                add(`{n} ${noun.value}s`, noun.line, COUNT_OTHER_NOTE);
             }
         } else if (t.value === "translate" && tokens[i - 1]?.value === ":") {
             // i18n::translate(text) in the window, glint_model::i18n::translate(language, text).
@@ -420,6 +420,34 @@ export function extractAll(root, read = (path) => readFileSync(join(root, path),
 
 // --------------------------------------------------------------------------------------------------- PO
 
+/** The extractor's notes on a count's two texts, `plural(n, "file")`'s "{n} file" and "{n} files". */
+export const COUNT_ONE_NOTE = "a count of one: {n} is 1";
+export const COUNT_OTHER_NOTE = "a count other than one: {n} is the number";
+
+/**
+ * The forms a count takes besides "one" and "other", by CLDR's names, for the languages that have them: each is
+ * an entry of the "other" text with the form as its msgctxt, as src/po.rs's `COUNT_FORMS` reads them, and
+ * `update` gives them to every count. Glint picks one by the language's rules (src/i18n.rs's `count_form`).
+ */
+export const COUNT_FORMS = { ar: ["zero", "two", "few", "many"] };
+const ANY_FORM = ["zero", "two", "few", "many"];
+const FORM_NOTES = {
+    zero: "the count is 0: {n} may be left out",
+    two: "the count is 2: {n} may be left out",
+    few: "the count is 3 to 10, or 103 to 110…",
+    many: "the count is 11 to 99, or 111 to 199…",
+};
+
+/** The forms besides one and other that `code`'s catalog gives each count ("ar": zero, two, few, many). */
+export function countForms(code) {
+    return COUNT_FORMS[String(code ?? "").split(/[-_]/)[0].toLowerCase()] ?? [];
+}
+
+/** Whether `msgid` is a count of one ("{n} file") among `msgids`, which then has its "{n} files". */
+function countOfOne(msgid, msgids) {
+    return msgid.startsWith("{n} ") && msgids.has(`${msgid}s`);
+}
+
 /** The `{name}`, `%1` and `%` placeholders in a text, each once, in order: as src/po.rs's `placeholders`. */
 export function placeholders(text) {
     const found = [];
@@ -428,7 +456,9 @@ export function placeholders(text) {
 }
 
 /** Why a translation can't stand in for its English, or null: as src/po.rs's `placeholders_differ`. */
-export function placeholdersDiffer(english, translation) {
+export function placeholdersDiffer(english, translation, numberKnown = false) {
+    // A count of one, or the forms zero and two, may leave {n} out: the number is known ("ملفان", two files).
+    if (numberKnown && !translation.includes("{n}")) english = english.replaceAll("{n}", "");
     const want = placeholders(english);
     const have = placeholders(translation);
     const missing = want.filter((p) => !have.includes(p));
@@ -588,6 +618,7 @@ export function writePo({ headerComments = [], header = "", entries = [], obsole
         if (entry.refs?.length) out.push(...refLines(entry.refs));
         if (entry.flags?.length) out.push(`#, ${entry.flags.join(", ")}`);
         if (entry.previous !== null && entry.previous !== undefined) out.push(...poField("msgid", entry.previous, "#| "));
+        if (entry.context !== null && entry.context !== undefined) out.push(...poField("msgctxt", entry.context));
         out.push(...poField("msgid", entry.msgid), ...poField("msgstr", entry.msgstr ?? ""));
     }
     for (const entry of obsolete) {
@@ -659,19 +690,20 @@ export function likeness(a, b) {
  */
 export function merge(tmpl, catalog, code) {
     const old = new Map((catalog?.entries ?? []).filter((e) => e.context === null && e.plural === null).map((e) => [e.msgid, e]));
+    const forms = countForms(code);
+    const oldForms = new Map((catalog?.entries ?? []).filter((e) => forms.includes(e.context)).map((e) => [`${e.context}\u0004${e.msgid}`, e]));
     const wanted = new Set(tmpl.entries.map((e) => e.msgid));
-    const entries = tmpl.entries.map((t) => {
-        const had = old.get(t.msgid);
+    const keep = (had, entry) => {
         const fuzzy = had?.flags.includes("fuzzy") ?? false;
-        return {
-            msgid: t.msgid,
-            msgstr: had?.msgstr ?? "",
-            comments: had?.comments ?? [],
-            notes: t.notes ?? [],
-            refs: t.refs ?? [],
-            flags: fuzzy ? ["fuzzy"] : [],
-            previous: fuzzy ? (had.previous ?? null) : null,
-        };
+        return { ...entry, msgstr: had?.msgstr ?? "", comments: had?.comments ?? [], flags: fuzzy ? ["fuzzy"] : [], previous: fuzzy ? (had.previous ?? null) : null };
+    };
+    const entries = tmpl.entries.flatMap((t) => {
+        const count = forms.length > 0 && (t.notes ?? []).includes(COUNT_OTHER_NOTE);
+        const notes = count ? [...t.notes, `and in this language 100 to 102, 200 to 202…, and any of the next ${forms.length} forms left empty`] : (t.notes ?? []);
+        const base = keep(old.get(t.msgid), { msgid: t.msgid, context: null, notes, refs: t.refs ?? [] });
+        if (!count) return [base];
+        // The language's other forms of this count, each an entry of the "other" text with the form as context.
+        return [base, ...forms.map((form) => keep(oldForms.get(`${form}\u0004${t.msgid}`), { msgid: t.msgid, context: form, notes: [FORM_NOTES[form]], refs: [] }))];
     });
     const gone = [...old.values()].filter((e) => !wanted.has(e.msgid) && e.msgstr);
     const before = [...gone, ...(catalog?.obsolete ?? []).filter((e) => e.msgstr && !wanted.has(e.msgid))];
@@ -698,7 +730,9 @@ export function merge(tmpl, catalog, code) {
 /** How far a catalog has come against the template, and the entries Glint can't use (as build.rs judges them). */
 export function catalogStatus(tmpl, catalog) {
     const wanted = new Set(tmpl.entries.map((e) => e.msgid));
-    const have = new Map(catalog.entries.map((e) => [e.msgid, e]));
+    const base = catalog.entries.filter((e) => e.context === null);
+    const have = new Map(base.map((e) => [e.msgid, e]));
+    const msgids = new Set(base.map((e) => e.msgid));
     let translated = 0;
     let fuzzy = 0;
     for (const msgid of wanted) {
@@ -707,18 +741,26 @@ export function catalogStatus(tmpl, catalog) {
         if (e.flags.includes("fuzzy")) fuzzy++;
         else translated++;
     }
+    // A count's other forms (Arabic's), counted apart from the texts.
+    const formEntries = catalog.entries.filter((e) => ANY_FORM.includes(e.context) && wanted.has(e.msgid));
+    const forms = { total: formEntries.length, translated: formEntries.filter((e) => e.msgstr && !e.flags.includes("fuzzy")).length };
     const problems = [];
     const seen = new Set();
     for (const e of catalog.entries) {
         let why = null;
-        if (e.context !== null) why = "it has a msgctxt, and Glint's texts have no context";
-        else if (e.plural !== null) why = 'it has plural forms: Glint\'s counts are two texts, "{n} file" and "{n} files"';
-        else if (e.msgstr && !e.flags.includes("fuzzy")) why = placeholdersDiffer(e.msgid, e.msgstr);
-        if (!why && seen.has(e.msgid)) why = "the same English is in the file twice";
-        seen.add(e.msgid);
-        if (why) problems.push({ line: e.line, msgid: e.msgid, why });
+        if (e.context !== null && !ANY_FORM.includes(e.context)) why = `its msgctxt isn't a count's form (${ANY_FORM.join(", ")}), and Glint's texts have no other context`;
+        else if (e.context !== null && !e.msgid.includes("{n}")) why = "a count's form, but the English has no {n} to count";
+        else if (e.plural !== null) why = 'it has gettext\'s plural forms: Glint\'s counts are two texts, "{n} file" and "{n} files", and a language\'s other forms are entries with a msgctxt';
+        else if (e.msgstr && !e.flags.includes("fuzzy")) {
+            const numberKnown = e.context === "zero" || e.context === "two" || (e.context === null && countOfOne(e.msgid, msgids));
+            why = placeholdersDiffer(e.msgid, e.msgstr, numberKnown);
+        }
+        const key = `${e.context ?? ""}\u0004${e.msgid}`;
+        if (!why && seen.has(key)) why = e.context === null ? "the same English is in the file twice" : `the "${e.context}" form of this English is in the file twice`;
+        seen.add(key);
+        if (why) problems.push({ line: e.line, msgid: e.context === null ? e.msgid : `${e.msgid} (${e.context})`, why });
     }
     const missing = [...wanted].filter((msgid) => !have.has(msgid)).length;
-    const stale = catalog.entries.filter((e) => !wanted.has(e.msgid)).length;
-    return { total: wanted.size, translated, fuzzy, untranslated: wanted.size - translated - fuzzy, missing, stale, obsolete: catalog.obsolete.length, problems };
+    const stale = base.filter((e) => !wanted.has(e.msgid)).length;
+    return { total: wanted.size, translated, fuzzy, untranslated: wanted.size - translated - fuzzy, missing, stale, obsolete: catalog.obsolete.length, forms, problems };
 }

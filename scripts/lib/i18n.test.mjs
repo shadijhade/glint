@@ -5,7 +5,7 @@
 // Usage: node scripts/lib/i18n.test.mjs      (npm run test:i18n)
 
 import assert from "node:assert/strict";
-import { catalogStatus, extractFromRust, likeness, merge, parsePo, placeholders, placeholdersDiffer, template, tokenize, writePo } from "./i18n.mjs";
+import { catalogStatus, COUNT_ONE_NOTE, COUNT_OTHER_NOTE, countForms, extractFromRust, likeness, merge, parsePo, placeholders, placeholdersDiffer, template, tokenize, writePo } from "./i18n.mjs";
 
 const texts = (source) => extractFromRust(source).texts.map((t) => t.text);
 
@@ -202,7 +202,55 @@ msgstr ""
     const bad = parsePo('msgid "Delete {name}?"\nmsgstr "删除？"\n\nmsgctxt "verb"\nmsgid "Open"\nmsgstr "打开"\n');
     assert.deepEqual(catalogStatus(tmpl, bad).problems.map((p) => [p.line, p.why]), [
         [1, "the translation lacks {name}"],
-        [5, "it has a msgctxt, and Glint's texts have no context"],
+        [5, "its msgctxt isn't a count's form (zero, two, few, many), and Glint's texts have no other context"],
+    ]);
+}
+
+{
+    // A language with more forms for a count (Arabic): update gives each count's "other" text its forms, as
+    // entries with the form as msgctxt, keeping what was translated; status counts them and checks them.
+    const tmpl = template([
+        { msgid: "{n} file", refs: ["a.rs"], notes: [COUNT_ONE_NOTE] },
+        { msgid: "{n} files", refs: ["a.rs"], notes: [COUNT_OTHER_NOTE] },
+        { msgid: "Open", refs: ["a.rs"], notes: [] },
+    ]);
+    const old = parsePo(`msgid "{n} file"
+msgstr "ملف واحد"
+
+msgid "{n} files"
+msgstr "{n} ملف"
+
+msgctxt "two"
+msgid "{n} files"
+msgstr "ملفان"
+`);
+    assert.deepEqual(countForms("ar"), ["zero", "two", "few", "many"]);
+    assert.deepEqual(countForms("ar-SA"), ["zero", "two", "few", "many"]);
+    assert.deepEqual(countForms("de"), []);
+    const merged = merge(tmpl, old, "ar");
+    assert.deepEqual(
+        merged.entries.map((e) => [e.context, e.msgid, e.msgstr]),
+        [
+            [null, "{n} file", "ملف واحد"],
+            [null, "{n} files", "{n} ملف"],
+            ["zero", "{n} files", ""],
+            ["two", "{n} files", "ملفان"],
+            ["few", "{n} files", ""],
+            ["many", "{n} files", ""],
+            [null, "Open", ""],
+        ],
+    );
+    const written = writePo(merged);
+    assert.match(written, /msgctxt "two"\nmsgid "\{n\} files"\nmsgstr "ملفان"/);
+    const s = catalogStatus(tmpl, parsePo(written));
+    assert.deepEqual([s.total, s.translated, s.forms.total, s.forms.translated, s.problems.length], [3, 2, 4, 1, 0], "one and two may leave {n} out");
+    // German has no other forms: the same template gives it none.
+    assert.equal(merge(tmpl, null, "de").entries.length, 3);
+    // A form that needs its number, and a context that isn't a form, are problems.
+    const bad = parsePo('msgctxt "many"\nmsgid "{n} files"\nmsgstr "ملفات كثيرة"\n\nmsgctxt "few"\nmsgid "Open"\nmsgstr "فتح"\n');
+    assert.deepEqual(catalogStatus(tmpl, bad).problems.map((p) => [p.line, p.msgid, p.why]), [
+        [2, "{n} files (many)", "the translation lacks {n}"],
+        [6, "Open (few)", "a count's form, but the English has no {n} to count"],
     ]);
 }
 

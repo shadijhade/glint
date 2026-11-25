@@ -1069,8 +1069,8 @@ impl StatusBar {
                     .items_center()
                     .gap(space(1.))
                     .child(icon(IconName::FileArchive).size_3().text_color(t.warning).flex_none())
-                    .children(wide.large.then(|| div().child(lead.clone())))
-                    .children(wide.work.then(|| div().child(shown.clone())))
+                    .children(wide.large.then(|| div().child(crate::kit::rtl_line(lead.clone()))))
+                    .children(wide.work.then(|| div().child(crate::kit::rtl_line(shown.clone()))))
                     .into_any_element(),
             ),
             Work::Index { lead, shown, title } => (
@@ -1079,8 +1079,8 @@ impl StatusBar {
                     .items_center()
                     .gap(space(1.))
                     .child(icon(IconName::FolderLock).size_3().text_color(t.warning).flex_none())
-                    .children(wide.large.then(|| div().child(lead.clone())))
-                    .children(wide.work.then(|| div().child(shown.clone())))
+                    .children(wide.large.then(|| div().child(crate::kit::rtl_line(lead.clone()))))
+                    .children(wide.work.then(|| div().child(crate::kit::rtl_line(shown.clone()))))
                     .into_any_element(),
             ),
             Work::Disk {
@@ -1105,8 +1105,9 @@ impl StatusBar {
                         .items_center()
                         .gap(space(1.))
                         .child(icon(IconName::Zap).size_3().flex_none())
-                        .children(wide.large.then(|| div().child(lead.clone())))
-                        .children(wide.work.then(|| div().child(shown.clone())))
+                        // "عُرض خلال 77 ms" as its own right-to-left line, or its time lands first.
+                        .children(wide.large.then(|| div().child(crate::kit::rtl_line(lead.clone()))))
+                        .children(wide.work.then(|| div().child(crate::kit::rtl_line(shown.clone()))))
                         .children(sized)
                         .children(git)
                         .into_any_element(),
