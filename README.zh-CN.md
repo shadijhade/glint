@@ -11,7 +11,7 @@
 
 **[下载安装程序](https://github.com/shadijhade/glint/releases/latest/download/Glint-setup.exe)** · [Microsoft Store](https://apps.microsoft.com/detail/9NQLRJ3HF1C9) · [官网](https://glint.rafd.tech/) · [English](README.md)
 
-<img src="screenshots/demo.gif" alt="Glint 演示：打开照片文件夹，滚轮从列表切换到缩略图，空格键快速预览，Ctrl+K 打开双窗格" width="100%">
+<img src="screenshots/demo-zh.gif" alt="中文界面的 Glint 演示：打开照片文件夹，滚轮从列表切换到缩略图，空格键快速预览，Ctrl+K 输入“双窗格”打开双窗格" width="100%">
 
 </div>
 

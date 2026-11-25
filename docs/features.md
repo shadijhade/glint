@@ -86,7 +86,7 @@ What Glint finds out about what you point at, and what it does with it. All of i
 
 ## Grid view
 
-<img src="../screenshots/grid-view.png" alt="A folder of 36 photos as a grid of thumbnails, shown in 6 ms" width="100%">
+<img src="../screenshots/grid-view.png" alt="A folder of 36 photos as a grid of thumbnails, shown in 7.4 ms" width="100%">
 
 The **List** and **Grid** buttons in the command bar (or `Ctrl+Shift+6` and `Ctrl+Shift+2`, as in Explorer, or `Ctrl+K`) switch the tab you're in; each tab keeps its own view, and new tabs start in the view of the tab they came from. The grid works like the list: click, `Ctrl` and `Shift` to select, arrow keys in all four directions, `Enter` to open, `Space` for Quick Look, `F2` to rename, drag and drop (into the other pane too), the right-click menu and folder sizes under each folder. Sort it from the bar above it.
 
@@ -120,7 +120,7 @@ Bigger tiles ask for bigger thumbnails, one screen pixel to one (Huge at 125% sc
 
 The search box at the end of the address field looks for what you type in two places at once: in the names below the folder you're in, and inside the files there. Both come back as one list.
 
-<img src="../screenshots/text-search.png" alt="A search for one word: five files with it in their names, the lines that matched under two of them, then nine files with it inside them" width="100%">
+<img src="../screenshots/text-search.png" alt="A search for one word: five files with it in their names and the lines that matched under two of them, three with it in their comments or tags, then 25 lines in 12 files with it inside them" width="100%">
 
 -   **Files found by what's in them are rows like any other.** They are listed under **Inside files**, each with the lines that matched under it (the line's number, the match marked; the first three, then a count of the rest: press it to list them all under the file). Press a line to show it in the preview (Quick Look too), and double-press it to open the file in the editor **Settings → Inside files** names, at that line (VS Code and its kin, Notepad++, Sublime Text, Zed, Vim and the JetBrains IDEs take a line; another editor opens the file at its top). Open, copy, rename, delete, drag or preview them as you would any result.
 -   **Typing filters the folder; Enter searches below it.** Names come as you type where instant search covers the drive. What the files hold is read on Enter by ripgrep, streaming in as it's found. A whole drive is read inside only when you ask (**Inside files too** on the results' bar).
@@ -137,7 +137,7 @@ Up to version 0.10, searching inside files was a mode of its own (Text), with it
 
 ### Instant search (NTFS index)
 
-<img src="../screenshots/instant-search.png" alt="5,046 DLLs found under System32 and its subfolders in 20 ms, from the index" width="100%">
+<img src="../screenshots/instant-search.png" alt="5,176 DLLs found under System32 and its subfolders in 18 ms, from the index" width="100%">
 
 It's off until you turn it on: on This PC, with the status bar's **Turn on instant search**, or in **Settings → Instant search**. Windows asks for administrator approval once, and a small service indexes your fixed NTFS drives. When Glint updates, the service updates itself too, without asking again: it takes only a build signed with Glint's update key, and only a newer one. It reads each drive's Master File Table in one sequential pass (2.3–2.5 s for C: with 2.9 million records here), then follows the USN journal, so a file created, renamed or deleted anywhere is in the index within about 0.3 s. Name searches, folder sizes and disk-usage maps then answer from memory. fd and pdu take over wherever the index can't answer: network shares, FAT and exFAT drives, and searches that read `.gitignore`.
 
@@ -152,7 +152,7 @@ The service only runs once you opt in, with every privilege removed except the t
 
 ### Disk usage map
 
-<img src="../screenshots/disk-usage.png" alt="The disk usage map of C:\Windows, 75 GB: every folder and file as a block sized by how much space it takes, colored by its kind" width="100%">
+<img src="../screenshots/disk-usage.png" alt="The disk usage map of C:\Windows, 69 GB: every folder and file as a block sized by how much space it takes, colored by its kind" width="100%">
 
 **Disk usage** (in the command bar, or `Ctrl+K`) draws the open folder as a squarified treemap, the way WizTree and WinDirStat do: folders nest six levels deep, files are colored by type, and the 20,000 biggest items are drawn, with everything smaller grouped in its folder. Hover for the name, path and size, click a folder to go into it (or a file to go to its folder), `Backspace` or `Alt+Up` to go back out, `Enter` to open, and right-click for the usual menu.
 

@@ -66,6 +66,8 @@ Glint needs Windows 10 or 11, 64-bit, and nothing else: it draws its own window,
 
 **0.18.0** (November 25, 2026) speaks **Chinese, German and Arabic**, whichever your Windows does, and is quicker in a dozen places where it used to wait ([#9](https://github.com/shadijhade/glint/issues/9)).
 
+<p align="center"><img src="screenshots/languages.gif" alt="The same folder in English, Chinese, German and Arabic, the Arabic window mirrored from right to left" width="76%"></p>
+
 -   **Your language.** Glint shows its whole interface in the first of Windows' display languages it has: Chinese (Simplified), translated by Helius; German; or Arabic. Anything not translated yet shows in English, and dates and numbers follow Windows, as before.
 -   **Arabic, right to left.** The window mirrors itself: the sidebar moves to the right, the columns and the path run from the right, and counts read the way Arabic says them ("ملفان", "5 ملفات", "17 عنصرًا").
 -   **Translate it.** Each language is a gettext file in `locales/` that Poedit opens, and `GLINT_LANGUAGE` set to your file shows your latest work in Glint as installed, without building it. [How to translate Glint](docs/translating.md).
@@ -116,12 +118,10 @@ A tour of what Glint does. **Every feature, in detail: [docs/features.md](docs/f
 
 <table>
 <tr>
-<td width="50%"><img src="screenshots/folder-sizes.png" alt="C:\Windows sorted by size, with the size of every folder"></td>
-<td width="50%"><img src="screenshots/disk-usage.png" alt="The disk usage map of C:\Windows, 75 GB: every folder and file as a block sized by how much space it takes, colored by its kind"></td>
+<td colspan="2"><img src="screenshots/sizes.gif" alt="C:\Windows: Folder sizes puts every folder's size in the list at once and sorts by it, then the disk usage map draws all 69 GB as blocks sized by the space they take, and the pointer rests on System32's" width="100%"></td>
 </tr>
 <tr>
-<td align="center">The size of every folder, in the list</td>
-<td align="center"><b>Disk usage</b>: what fills a drive</td>
+<td colspan="2" align="center">The size of every folder, in the list, then <b>Disk usage</b>: what fills it</td>
 </tr>
 <tr>
 <td width="50%"><img src="screenshots/hero.png" alt="A project folder in the dark theme: its head with a chip for every kind of file in it, and the preview pane showing a picture"></td>
@@ -160,19 +160,19 @@ A tour of what Glint does. **Every feature, in detail: [docs/features.md](docs/f
 
 <table>
 <tr>
-<td width="50%"><img src="screenshots/text-search.png" alt="A search for one word: five files with it in their names, the lines that matched under two of them, then nine files with it inside them"></td>
-<td width="50%"><img src="screenshots/instant-search.png" alt="5,046 DLLs found under System32 and its subfolders in 20 ms, from the index"></td>
+<td width="50%"><img src="screenshots/text-search.png" alt="A search for one word: five files with it in their names and the lines that matched under two of them, three with it in their comments or tags, then 25 lines in 12 files with it inside them"></td>
+<td width="50%"><img src="screenshots/instant-search.png" alt="5,176 DLLs found under System32 and its subfolders in 18 ms, from the index"></td>
 </tr>
 <tr>
 <td align="center">One search: names, and what the files hold</td>
 <td align="center">Instant search over every NTFS drive</td>
 </tr>
 <tr>
-<td width="50%"><img src="screenshots/search.gif" alt="Typing a word filters the folder; Enter lists the files with it in their names and the files with it inside them"></td>
+<td width="50%"><img src="screenshots/search.gif" alt="A word typed in the search box: the files with it in their names and in their comments come up as it is typed, and Enter adds the files with it inside them"></td>
 <td width="50%"><img src="screenshots/color-wheel.gif" alt="The pointer drags round the Color Wheel, and the photos closest to each color come first"></td>
 </tr>
 <tr>
-<td align="center">Typing filters the folder, <b>Enter</b> looks below it and inside the files</td>
+<td align="center">Names turn up as you type, <b>Enter</b> looks inside the files</td>
 <td align="center"><b>Color Wheel</b>: the pictures closest to a color</td>
 </tr>
 </table>
@@ -188,6 +188,17 @@ A tour of what Glint does. **Every feature, in detail: [docs/features.md](docs/f
 
 ### Labels, tags and comments
 
+<table>
+<tr>
+<td width="50%"><img src="screenshots/marks.png" alt="A project folder with Label, Tags and Comment columns: Approved, Final, In progress and Urgent rows washed in their colors, tags as chips, and each comment's first line"></td>
+<td width="50%"><img src="screenshots/marks.gif" alt="The theme song gets the Final label with Alt+5, a launch tag with Alt+T and a comment with Alt+N, then label:final finds the two files labeled Final"></td>
+</tr>
+<tr>
+<td align="center">Label, tags and comment, as columns that sort</td>
+<td align="center"><b>Alt+5</b>, <b>Alt+T</b>, <b>Alt+N</b>, then <code>label:final</code></td>
+</tr>
+</table>
+
 -   **Three marks on any file or folder.** A **label** is one named color that says a status (*Important*, *Waiting*, *Done*: the names and colors are yours, in **Settings → Files → Labels**), **tags** are words, and a **comment** is free text.
 -   **One key each.** `Alt+1`…`Alt+9` give the selection a label and `Alt+0` takes it off; `Alt+T` edits the tags (suggesting the ones you use) and `Alt+N` the comment. The right-click menu has a row of the labels' dots, and the preview pane and Quick Look have a **Marks** block. Every change is one **Undo**.
 -   **Seen where you work.** **Label**, **Tags** and **Comment** are columns that sort, **Group by → Label** groups, a labeled row is washed in its color, and a row with a comment has a small note whose tooltip is the comment. The sidebar has the labels as a line of dots and the tags as chips: a press finds everything that has one, on every drive.
@@ -202,7 +213,7 @@ A tour of what Glint does. **Every feature, in detail: [docs/features.md](docs/f
 <table>
 <tr>
 <td width="50%"><img src="screenshots/dual-pane.png" alt="Two panes side by side, each with its own list of tabs in the rail: a project folder as a list, and its photos as a grid"></td>
-<td width="50%"><img src="screenshots/grid-view.png" alt="A folder of 36 photos as a grid of thumbnails, shown in 6 ms"></td>
+<td width="50%"><img src="screenshots/grid-view.png" alt="A folder of 36 photos as a grid of thumbnails, shown in 7.4 ms"></td>
 </tr>
 <tr>
 <td align="center"><b>Ctrl+Shift+D</b>: two panes, each with its tabs</td>
@@ -233,8 +244,8 @@ A tour of what Glint does. **Every feature, in detail: [docs/features.md](docs/f
 
 <table>
 <tr>
-<td width="50%"><img src="screenshots/quick-look.png" alt="Quick Look showing a photo of the northern lights full size, with its dimensions and when it was taken"></td>
-<td width="50%"><img src="screenshots/command-palette.png" alt="The command palette listing the commands that match what was typed"></td>
+<td width="50%"><img src="screenshots/quick-look.png" alt="Quick Look showing a photo of the northern lights full size, with when, with which camera and where it was taken, and its label, tags and comment to set"></td>
+<td width="50%"><img src="screenshots/command-palette.png" alt="The command palette with photo typed: the Photos folder, then the commands that match, from the photo map to the Color Wheel"></td>
 </tr>
 <tr>
 <td align="center"><b>Space</b>: Quick Look</td>
