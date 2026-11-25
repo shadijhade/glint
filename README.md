@@ -64,7 +64,7 @@ Glint needs Windows 10 or 11, 64-bit, and nothing else: it draws its own window,
 
 ## What's new
 
-**0.18.0** (coming soon) speaks **Chinese, German and Arabic**, whichever your Windows does, and is quicker in a dozen places where it used to wait ([#9](https://github.com/shadijhade/glint/issues/9)).
+**0.18.0** (November 25, 2026) speaks **Chinese, German and Arabic**, whichever your Windows does, and is quicker in a dozen places where it used to wait ([#9](https://github.com/shadijhade/glint/issues/9)).
 
 -   **Your language.** Glint shows its whole interface in the first of Windows' display languages it has: Chinese (Simplified), translated by Helius; German; or Arabic. Anything not translated yet shows in English, and dates and numbers follow Windows, as before.
 -   **Arabic, right to left.** The window mirrors itself: the sidebar moves to the right, the columns and the path run from the right, and counts read the way Arabic says them ("ملفان", "5 ملفات", "17 عنصرًا").
