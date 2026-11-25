@@ -76,6 +76,29 @@ impl Checksum {
 
 /// Writes the snapshot to `path` atomically (a temporary file, then a rename).
 pub fn save(path: &Path, tree: &Tree, meta: &Meta) -> io::Result<()> {
+    write(path, tree, meta)?.finish()
+}
+
+/// A snapshot written to its temporary file, not yet on the disk for sure nor in its place.
+pub struct Written {
+    file: fs::File,
+    temp: std::path::PathBuf,
+    path: std::path::PathBuf,
+}
+
+impl Written {
+    /// Waits for the disk to have it (`FlushFileBuffers`: up to half a second for a big index), then puts it in
+    /// its place. Needs no tree: the engine calls it after letting go of the tree's lock, so a change arriving
+    /// meanwhile (a writer) doesn't hold every search up behind it.
+    pub fn finish(self) -> io::Result<()> {
+        self.file.sync_all()?;
+        drop(self.file);
+        fs::rename(&self.temp, &self.path)
+    }
+}
+
+/// Writes the snapshot of `tree` to `path`'s temporary file; [`Written::finish`] completes [`save`].
+pub fn write(path: &Path, tree: &Tree, meta: &Meta) -> io::Result<Written> {
     let temp = path.with_extension("tmp");
     let mut file = io::BufWriter::with_capacity(1 << 20, fs::File::create(&temp)?);
     let mut sum = Checksum::default();
@@ -141,8 +164,12 @@ pub fn save(path: &Path, tree: &Tree, meta: &Meta) -> io::Result<()> {
         put(&mut file, &buf)?;
     }
     file.write_all(&sum.finish().to_le_bytes())?;
-    file.into_inner().map_err(|e| e.into_error())?.sync_all()?;
-    fs::rename(&temp, path)
+    let file = file.into_inner().map_err(|e| e.into_error())?;
+    Ok(Written {
+        file,
+        temp,
+        path: path.to_path_buf(),
+    })
 }
 
 pub fn load(path: &Path) -> Result<(Tree, Meta), String> {

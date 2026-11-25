@@ -58,6 +58,7 @@ use glint_model::format::plural;
 use glint_model::paths::{base_name, same_path};
 use glint_model::store::ViewMode;
 use std::cell::Cell;
+use std::collections::HashSet;
 use std::ops::Range;
 use std::rc::Rc;
 use std::time::Instant;
@@ -835,8 +836,9 @@ impl Workspace {
         let here = explorer.active_pane().min(1);
         let files_chosen = |tab: &explorer::Tab| -> Vec<FileEntry> {
             tab.rows
-                .iter()
-                .filter(|e| tab.selection.contains(&e.path) && !e.dir && menus::on_disk(e))
+                .chosen(&tab.selection)
+                .into_iter()
+                .filter(|e| !e.dir && menus::on_disk(e))
                 .cloned()
                 .collect()
         };
@@ -1504,9 +1506,11 @@ impl Workspace {
                 let entries: Vec<_> = e
                     .active_tab()
                     .map(|tab| {
+                        // A set: restoring or purging thousands of a big bin's items compared every row with each.
+                        let wanted: HashSet<&str> = paths.iter().map(String::as_str).collect();
                         tab.rows
                             .iter()
-                            .filter(|entry| paths.contains(&entry.path))
+                            .filter(|entry| wanted.contains(entry.path.as_str()))
                             .cloned()
                             .collect()
                     })
@@ -1920,8 +1924,8 @@ impl Workspace {
             return Vec::new();
         };
         tab.rows
-            .iter()
-            .filter(|entry| tab.selection.contains(&entry.path))
+            .chosen(&tab.selection)
+            .into_iter()
             .map(|entry| entry.path.clone())
             .collect()
     }
@@ -1958,9 +1962,11 @@ impl Workspace {
                 let entries: Vec<_> = e
                     .active_tab()
                     .map(|tab| {
+                        // A set: restoring or purging thousands of a big bin's items compared every row with each.
+                        let wanted: HashSet<&str> = paths.iter().map(String::as_str).collect();
                         tab.rows
                             .iter()
-                            .filter(|entry| paths.contains(&entry.path))
+                            .filter(|entry| wanted.contains(entry.path.as_str()))
                             .cloned()
                             .collect()
                     })
@@ -2835,6 +2841,11 @@ impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let _span = crate::perf::span("workspace");
         self.cue_stages(window, cx);
+        // Pictures of previews that are gone leave memory and the GPU's atlas here too: a preview's own frame does
+        // it, but with the pane hidden, the picture a closed Quick Look showed (a photo is hundreds of MB decoded)
+        // stayed until the next preview was drawn.
+        crate::components::preview::picture::release_retired(window);
+        crate::components::preview::player::release_retired(window);
         let t = theme::tokens(cx).clone();
         // The window is chrome all over (over Mica, the material with a veil); the sheet lies on it.
         let fill = theme::window_fill(cx);

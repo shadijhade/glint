@@ -29,6 +29,7 @@ use windows::Win32::Globalization::{
 
 const UNITS: [&str; 6] = ["B", "KB", "MB", "GB", "TB", "PB"];
 const DAY: i64 = 86_400_000;
+const MINUTE: i64 = 60_000;
 /// How many formatted dates the caches hold before they start over, as the TypeScript did.
 const MAX_CACHE_SIZE: usize = 4096;
 
@@ -167,14 +168,18 @@ fn empty_text() -> Arc<str> {
 fn cached_date(ms: i64, now: i64, locale: Option<&str>, language: Language) -> Arc<str> {
     with_cache(|cache| {
         let today = today_start_cached(cache, now);
-        if let Some(hit) = cache.short.get(&(ms, language)) {
+        // The label has no seconds, so every moment of a minute reads the same: a folder of files written a few
+        // milliseconds apart (a camera's burst, a build's output) makes one label a minute, not one a file. Midnight,
+        // where "Today" turns into "Yesterday", is always on a minute.
+        let minute = ms.div_euclid(MINUTE);
+        if let Some(hit) = cache.short.get(&(minute, language)) {
             return hit.clone();
         }
         let formatted: Arc<str> = format_date_with_today(ms, today, locale, language).into();
         if cache.short.len() >= MAX_CACHE_SIZE {
             cache.short.clear();
         }
-        cache.short.insert((ms, language), formatted.clone());
+        cache.short.insert((minute, language), formatted.clone());
         formatted
     })
 }
@@ -206,6 +211,7 @@ fn format_full_date_in(ms: i64, locale: Option<&str>) -> String {
 struct DateCache {
     today_start: i64,
     today_end: i64,
+    /// Short labels by minute (Unix milliseconds / 60,000) and language.
     short: HashMap<(i64, Language), Arc<str>>,
     full: HashMap<i64, Arc<str>>,
 }
@@ -316,9 +322,16 @@ impl LocaleName {
     }
 }
 
-/// Runs a Win32 call that writes text into a buffer. The first call asks for the length, the second fills the
-/// buffer. Returns None when Windows writes nothing, so the caller can fall back.
+/// Runs a Win32 call that writes text into a buffer: first into one on the stack, which holds any date, time or
+/// locale string in practice; only when that is too small, a call for the length and one to fill a buffer that
+/// size. Returns None when Windows writes nothing, so the caller can fall back.
 fn read_wide(call: impl Fn(Option<&mut [u16]>) -> i32) -> Option<String> {
+    let mut stack = [0u16; 128];
+    if let Ok(written @ 1..) = usize::try_from(call(Some(&mut stack))) {
+        // The count includes the terminating NUL, which is not part of the text.
+        let len = written.min(stack.len()).saturating_sub(1);
+        return String::from_utf16(&stack[..len]).ok();
+    }
     let needed = usize::try_from(call(None)).ok()?;
     if needed == 0 {
         return None;
@@ -971,6 +984,22 @@ mod tests {
         let first = format_date_shared(now - 40 * DAY, now, Language::En);
         let again = format_date_shared(now - 40 * DAY, now, Language::En);
         assert!(Arc::ptr_eq(&first, &again));
+    }
+
+    #[test]
+    fn moments_of_one_minute_share_a_label_and_the_next_minute_has_its_own() {
+        let noon = noon_oct_14_2026();
+        let minute = noon - 3_600_000 - (noon - 3_600_000).rem_euclid(MINUTE);
+        let first = format_date_shared(minute + 1, noon, Language::En);
+        let later = format_date_shared(minute + 59_999, noon, Language::En);
+        assert!(Arc::ptr_eq(&first, &later), "{first:?} and {later:?}");
+        assert_eq!(&*first, format_date(minute + 59_999, Some(noon), Language::En).as_str());
+        let next = format_date_shared(minute + MINUTE, noon, Language::En);
+        assert_ne!(first, next);
+        // Midnight is on a minute: the last moment of yesterday stays yesterday's.
+        let midnight = local_midnight(noon);
+        assert!(format_date_shared(midnight - 1, noon, Language::En).starts_with("Yesterday "));
+        assert!(format_date_shared(midnight, noon, Language::En).starts_with("Today "));
     }
 
     #[test]

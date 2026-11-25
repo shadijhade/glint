@@ -68,6 +68,18 @@ fn api() -> Result<&'static Api> {
     })
 }
 
+/// Starts Media Foundation once for the rest of the run, the first time something needs it. Every user still
+/// pairs its own `MFStartup` with `MFShutdown`; with this reference held those are counts, not a start and a
+/// stop of the platform's work queues each time (a scrubbed video tile, a video's frame, one after another).
+pub fn keep_started() {
+    use windows::Win32::Media::MediaFoundation::{MFSTARTUP_FULL, MF_VERSION};
+    static KEPT: std::sync::Once = std::sync::Once::new();
+    // SAFETY: a plain start of the platform, never shut down: the process's end tears it down.
+    KEPT.call_once(|| unsafe {
+        let _ = MFStartup(MF_VERSION, MFSTARTUP_FULL);
+    });
+}
+
 pub unsafe fn MFStartup(version: u32, flags: u32) -> Result<()> {
     unsafe { (api()?.startup)(version, flags).ok() }
 }

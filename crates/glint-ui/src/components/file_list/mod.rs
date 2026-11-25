@@ -1109,12 +1109,7 @@ impl FileList {
         let Some(tab) = self.explorer.read(cx).pane_tab(self.pane) else {
             return;
         };
-        let chosen: Vec<FileEntry> = tab
-            .rows
-            .iter()
-            .filter(|entry| tab.selection.contains(&entry.path))
-            .cloned()
-            .collect();
+        let chosen: Vec<FileEntry> = tab.rows.chosen(&tab.selection).into_iter().cloned().collect();
         // Enter closes the preview that Space opened.
         let many = chosen.len() > 1;
         let files: Vec<FileEntry> = chosen.iter().filter(|e| !e.dir).cloned().collect();
@@ -1146,8 +1141,9 @@ impl FileList {
         };
         let paths: Vec<String> = tab
             .rows
-            .iter()
-            .filter(|e| tab.selection.contains(&e.path) && (e.dir || is_archive_file(e)) && !is_recycled(e))
+            .chosen(&tab.selection)
+            .into_iter()
+            .filter(|e| (e.dir || is_archive_file(e)) && !is_recycled(e))
             .map(|e| e.path.clone())
             .collect();
         self.explorer.update(cx, |explorer, cx| {

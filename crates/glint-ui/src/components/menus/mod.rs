@@ -868,11 +868,7 @@ impl MenuHost {
         let mut chosen: Vec<FileEntry> = if tab.selection.is_empty() {
             Vec::new()
         } else {
-            tab.rows
-                .iter()
-                .filter(|e| tab.selection.contains(&e.path))
-                .cloned()
-                .collect()
+            tab.rows.chosen(&tab.selection).into_iter().cloned().collect()
         };
         if let Some(path) = target {
             if !chosen.iter().any(|e| e.path == path) {
@@ -920,8 +916,9 @@ impl MenuHost {
                 }
                 ctx.other_selected = tab
                     .rows
-                    .iter()
-                    .filter(|e| tab.selection.contains(&e.path) && !e.dir && kinds::on_disk(e))
+                    .chosen(&tab.selection)
+                    .into_iter()
+                    .filter(|e| !e.dir && kinds::on_disk(e))
                     .cloned()
                     .collect();
                 if tab.archive().is_none() {

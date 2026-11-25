@@ -23,6 +23,11 @@ use crate::{actions, t, theme};
 use glint_model::entries::FileEntry;
 use std::cell::Cell;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
+
+/// The shortest time between two items shown: a held arrow key (30 steps a second) shows an item each 70 ms,
+/// not a full picture decoded for every row it passes. A single press is still shown at once.
+const SETTLE: Duration = Duration::from_millis(70);
 
 /// The dialog's size in the usual state: at most `max-w-[80rem]` by `max-h-[56rem]`, with a margin of `p-8`.
 const MAX_WIDTH: f32 = 1280.;
@@ -43,6 +48,9 @@ pub struct QuickLook {
     focus: FocusHandle,
     /// Read by the dialog's builder, which runs again whenever the window draws.
     maximized: Rc<Cell<bool>>,
+    /// When the item shown last changed (the executor's clock), and the change waiting for `SETTLE` to pass.
+    shown_at: Option<Instant>,
+    _settling: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -91,6 +99,8 @@ impl QuickLook {
             view,
             focus: cx.focus_handle(),
             maximized,
+            shown_at: None,
+            _settling: None,
             _subscriptions: subscriptions,
         }
     }
@@ -137,21 +147,52 @@ impl QuickLook {
             None => close(window, cx),
             Some(entry) => {
                 let shown = self.view.read(cx).entry();
-                if shown.path != entry.path || shown.modified != entry.modified {
-                    let maximized = self.maximized.get();
-                    let view = cx.new(|cx| EntryView::new(entry, Place::QuickLook, window, cx));
-                    view.update(cx, |view, cx| view.set_maximized(maximized, cx));
-                    self._subscriptions.truncate(1);
-                    self._subscriptions.push(cx.subscribe_in(
-                        &view,
-                        window,
-                        |this, _, event: &EntryEvent, window, cx| this.on_header(event, window, cx),
-                    ));
-                    self.view = view;
-                    cx.notify();
+                if shown.path == entry.path && shown.modified == entry.modified {
+                    self._settling = None;
+                    return;
+                }
+                let now = cx.background_executor().now();
+                let wait = self.shown_at.map_or(Duration::ZERO, |at| {
+                    SETTLE.saturating_sub(now.saturating_duration_since(at))
+                });
+                if wait.is_zero() {
+                    self._settling = None;
+                    self.show(entry, window, cx);
+                } else if self._settling.is_none() {
+                    // The item the keyboard is on when the wait is over is the one shown.
+                    self._settling = Some(cx.spawn_in(window, async move |this, cx| {
+                        cx.background_executor().timer(wait).await;
+                        this.update_in(cx, |this, window, cx| {
+                            this._settling = None;
+                            if let Some(entry) = looked(this.explorer.read(cx)) {
+                                this.show(entry, window, cx);
+                            }
+                        })
+                        .ok();
+                    }));
                 }
             }
         }
+    }
+
+    /// Shows `entry`, unless it is already the one shown.
+    fn show(&mut self, entry: FileEntry, window: &mut Window, cx: &mut Context<Self>) {
+        let shown = self.view.read(cx).entry();
+        if shown.path == entry.path && shown.modified == entry.modified {
+            return;
+        }
+        self.shown_at = Some(cx.background_executor().now());
+        let maximized = self.maximized.get();
+        let view = cx.new(|cx| EntryView::new(entry, Place::QuickLook, window, cx));
+        view.update(cx, |view, cx| view.set_maximized(maximized, cx));
+        self._subscriptions.truncate(1);
+        self._subscriptions.push(
+            cx.subscribe_in(&view, window, |this, _, event: &EntryEvent, window, cx| {
+                this.on_header(event, window, cx)
+            }),
+        );
+        self.view = view;
+        cx.notify();
     }
 
     /// Next or previous item of the list: the list's own selection moves, and Quick Look follows.

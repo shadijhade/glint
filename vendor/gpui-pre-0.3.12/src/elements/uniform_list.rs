@@ -72,6 +72,9 @@ pub struct UniformList {
 pub struct UniformListFrameState {
     items: SmallVec<[AnyElement; 32]>,
     decorations: SmallVec<[AnyElement; 2]>,
+    /// The measured item's size, when `request_layout` measured it (Glint: `prepaint` reuses it instead of
+    /// building and laying out the same row a second time in the frame).
+    item_size: Option<Size<Pixels>>,
 }
 
 /// A handle for controlling the scroll position of a uniform list.
@@ -280,7 +283,11 @@ impl Element for UniformList {
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
         let max_items = self.item_count;
-        let item_size = self.measure_item(None, window, cx);
+        // Glint: only `Infer` sizes the list from its item; `Auto` lays it out by its style alone, and measuring
+        // an item (building a whole row and laying it out) for nothing cost a row each frame.
+        let item_size = (self.sizing_behavior == ListSizingBehavior::Infer)
+            .then(|| self.measure_item(None, window, cx));
+        let measured = item_size.unwrap_or_default();
         let layout_id = self.interactivity.request_layout(
             global_id,
             inspector_id,
@@ -292,13 +299,13 @@ impl Element for UniformList {
                         window.request_measured_layout(
                             style,
                             move |known_dimensions, available_space, _window, _cx| {
-                                let desired_height = item_size.height * max_items;
+                                let desired_height = measured.height * max_items;
                                 let width = known_dimensions.width.unwrap_or(match available_space
                                     .width
                                 {
                                     AvailableSpace::Definite(x) => x,
                                     AvailableSpace::MinContent | AvailableSpace::MaxContent => {
-                                        item_size.width
+                                        measured.width
                                     }
                                 });
                                 let height = match available_space.height {
@@ -324,6 +331,7 @@ impl Element for UniformList {
             UniformListFrameState {
                 items: SmallVec::new(),
                 decorations: SmallVec::new(),
+                item_size,
             },
         )
     }
@@ -356,7 +364,10 @@ impl Element for UniformList {
             ListHorizontalSizingBehavior::Unconstrained
         );
 
-        let longest_item_size = self.measure_item(None, window, cx);
+        let longest_item_size = match frame_state.item_size {
+            Some(size) => size,
+            None => self.measure_item(None, window, cx),
+        };
         let content_width = if can_scroll_horizontally {
             padded_bounds.size.width.max(longest_item_size.width)
         } else {

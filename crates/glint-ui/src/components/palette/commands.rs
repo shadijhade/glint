@@ -26,7 +26,7 @@ use glint_model::paths::{
 };
 use glint_model::rank::{frecency, fuzzy_indices, fuzzy_score, Visit};
 use glint_model::store::{RemoteConnection, RemoteKind, SavedSearch, Theme};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 /// How many folders the list shows before anything is typed.
@@ -341,43 +341,54 @@ pub struct ArchiveTop {
     pub single_file: bool,
 }
 
-/// How much a folder is used: its visits here (frecency) and its zoxide score, together (`usedScore`).
-fn used_score(path: &str, inputs: &Inputs) -> f64 {
-    let visit = inputs
-        .visits
-        .iter()
-        .find(|(p, _)| p == path)
-        .map_or(0., |(_, v)| frecency(v, inputs.now));
-    let lower = path.to_lowercase();
-    let zoxide = inputs
-        .zoxide
-        .iter()
-        .find(|(p, _)| p.to_lowercase() == lower)
-        .map_or(0., |(_, score)| *score);
-    visit + zoxide
+/// How much each folder is used: its visits here (frecency) and its zoxide score, together (`usedScore`). Built
+/// once per list: asked for every candidate folder with a scan of both lists each time, opening the palette with
+/// a few thousand visits and zoxide entries lowercased millions of strings.
+struct UsedScores<'a> {
+    /// The first visit of each exact path (as `find` took it).
+    visits: HashMap<&'a str, f64>,
+    /// The first zoxide score of each lowercased path.
+    zoxide: HashMap<String, f64>,
+}
+
+impl<'a> UsedScores<'a> {
+    fn new(inputs: &'a Inputs) -> Self {
+        let mut visits = HashMap::with_capacity(inputs.visits.len());
+        for (path, visit) in &inputs.visits {
+            visits
+                .entry(path.as_str())
+                .or_insert_with(|| frecency(visit, inputs.now));
+        }
+        let mut zoxide = HashMap::with_capacity(inputs.zoxide.len());
+        for (path, score) in &inputs.zoxide {
+            zoxide.entry(path.to_lowercase()).or_insert(*score);
+        }
+        UsedScores { visits, zoxide }
+    }
+
+    fn of(&self, path: &str) -> f64 {
+        self.visits.get(path).copied().unwrap_or(0.) + self.zoxide.get(&path.to_lowercase()).copied().unwrap_or(0.)
+    }
 }
 
 /// The folders used most, here and (shared) in terminals, best first (`usedFolders`).
-fn used_folders(inputs: &Inputs, limit: usize) -> Vec<String> {
-    let mut all: Vec<(String, String)> = Vec::new();
+fn used_folders(inputs: &Inputs, scores: &UsedScores, limit: usize) -> Vec<String> {
+    let mut all: Vec<&String> = Vec::new();
     let mut seen = HashSet::new();
-    for (path, _) in &inputs.visits {
+    for path in inputs
+        .visits
+        .iter()
+        .map(|(p, _)| p)
+        .chain(inputs.zoxide.iter().map(|(p, _)| p))
+    {
         if seen.insert(path.to_lowercase()) {
-            all.push((path.to_lowercase(), path.clone()));
+            all.push(path);
         }
     }
-    for (path, _) in &inputs.zoxide {
-        if seen.insert(path.to_lowercase()) {
-            all.push((path.to_lowercase(), path.clone()));
-        }
-    }
-    let mut scored: Vec<(f64, String)> = all
-        .into_iter()
-        .map(|(_, path)| (used_score(&path, inputs), path))
-        .collect();
+    let mut scored: Vec<(f64, &String)> = all.into_iter().map(|path| (scores.of(path), path)).collect();
     // JS sorts stably, best first.
     scored.sort_by(|a, b| b.0.total_cmp(&a.0));
-    scored.into_iter().take(limit).map(|(_, path)| path).collect()
+    scored.into_iter().take(limit).map(|(_, path)| path.clone()).collect()
 }
 
 fn remote_icon(remote: &RemoteConnection) -> IconName {
@@ -390,6 +401,7 @@ fn remote_icon(remote: &RemoteConnection) -> IconName {
 
 /// The folders on offer: pinned, known, used, drives, remotes (`paletteCommands`' first half).
 pub fn folders(inputs: &Inputs) -> Vec<Command> {
+    let scores = UsedScores::new(inputs);
     let mut seen: HashSet<String> = HashSet::new();
     let mut out: Vec<Command> = Vec::new();
     let mut add = |path: &str, label: SharedString, icon: IconName, weight: f64, tone: Option<&'static str>| {
@@ -406,7 +418,7 @@ pub fn folders(inputs: &Inputs) -> Vec<Command> {
         );
         command.detail = Some(path.to_string().into());
         command.tone = tone;
-        command.weight = weight + (1. + used_score(path, inputs)).log2();
+        command.weight = weight + (1. + scores.of(path)).log2();
         out.push(command);
     };
     for path in &inputs.pinned {
@@ -415,7 +427,7 @@ pub fn folders(inputs: &Inputs) -> Vec<Command> {
     for (id, path) in &inputs.known {
         add(path, i18n::translate(id.name()), crate::kit::known_icon(*id), 0.5, None);
     }
-    for path in used_folders(inputs, USED_FOLDERS) {
+    for path in used_folders(inputs, &scores, USED_FOLDERS) {
         add(
             &path,
             base_name(&path).to_string().into(),

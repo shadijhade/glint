@@ -883,7 +883,10 @@ impl Engine {
         if let Err(e) = saved_marks {
             self.log.line(&format!("{}: couldn't save the marks: {e}", slot.letter));
         }
-        let saved = snapshot::save(path, &slot.tree.read().unwrap(), &meta);
+        // Written under the tree's read lock; flushed to the disk and renamed after it, so a change waiting for
+        // the lock (and every search behind that change) doesn't wait on the disk too.
+        let written = snapshot::write(path, &slot.tree.read().unwrap(), &meta);
+        let saved = written.and_then(snapshot::Written::finish);
         match saved {
             Ok(()) => self
                 .log
@@ -1046,24 +1049,36 @@ impl Engine {
     pub fn marks_in(&self, path: &str) -> Result<Vec<crate::proto::MarkedChild>, String> {
         let (letter, rest) = split_drive(path).ok_or("Not a folder on a local drive")?;
         let slot = self.ready_slot(letter).ok_or("This drive isn't indexed")?;
-        let tree = slot.tree.read().unwrap();
+        let guard = slot.tree.read().unwrap();
+        let tree: &Tree = &guard;
         let dir = tree.resolve(rest).ok_or("This folder isn't in the index")?;
         tree.rec(dir).filter(|r| r.dir()).ok_or("Not a folder")?;
-        let children = tree.list(dir);
+        // Asked on every folder opened: the marked records (and those still to be read) are a few hundred, the
+        // drive's names millions, so it goes through those records' names rather than listing the folder.
+        let inside = |rec: u32| {
+            tree.links_of(rec).filter(move |&id| {
+                let link = tree.link(id);
+                link.flags & tree::LINK_USED != 0 && link.parent == dir && link.rec >= tree::FIRST_USER_RECORD
+            })
+        };
         // An item whose marks are still to be read (far.rs) would answer as unmarked: the app reads the files.
-        if children.iter().any(|&id| tree.far.contains(&tree.link(id).rec)) {
+        if tree.far.iter().any(|&rec| inside(rec).next().is_some()) {
             return Err("Some marks here are still being read".into());
         }
+        let mut children: Vec<(u32, &Marked)> = tree
+            .marks
+            .iter()
+            .flat_map(|(&rec, marked)| inside(rec).map(move |id| (id, marked)))
+            .collect();
+        // In the folder's own order (by name record), not the map's.
+        children.sort_unstable_by_key(|&(id, _)| id);
         Ok(children
             .into_iter()
-            .filter_map(|id| {
-                let marked = tree.marked(tree.link(id).rec)?;
-                Some(crate::proto::MarkedChild {
-                    name: tree.name(id).to_string(),
-                    label: marked.label.to_string(),
-                    tags: marked.tags.lines().map(str::to_string).collect(),
-                    comment: !marked.comment.is_empty(),
-                })
+            .map(|(id, marked)| crate::proto::MarkedChild {
+                name: tree.name(id).to_string(),
+                label: marked.label.to_string(),
+                tags: marked.tags.lines().map(str::to_string).collect(),
+                comment: !marked.comment.is_empty(),
             })
             .collect())
     }

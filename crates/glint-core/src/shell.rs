@@ -1198,12 +1198,15 @@ mod imp {
             Err(e) if e.code() == ERROR_CANCELLED.to_hresult() || e.code().0 == COPYENGINE_E_USER_CANCELLED => false,
             Err(e) => return Err(message(e)),
         };
-        let same = |a: &str, b: &str| a.trim_end_matches('\\').eq_ignore_ascii_case(b.trim_end_matches('\\'));
+        // The items asked for as a set (same path in any ASCII case, with or without a trailing backslash): the
+        // engine reports every item inside the folders too, and a big delete compared each with every one asked.
+        let key = |p: &str| p.trim_end_matches('\\').to_ascii_lowercase();
+        let wanted: std::collections::HashSet<String> = asked.iter().map(|a| key(a)).collect();
         let items: Vec<Done> = track
             .done
             .take()
             .into_iter()
-            .filter(|d| asked.iter().any(|a| same(a, &d.from)))
+            .filter(|d| wanted.contains(&key(&d.from)))
             .collect();
         if restoring {
             items

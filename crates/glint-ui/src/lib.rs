@@ -69,6 +69,11 @@ pub fn run() -> i32 {
         platform::launch::Startup::Exit => return 0,
         platform::launch::Startup::Run(request) => request,
     };
+    // The last session's folders are read now, on a thread of their own, while GPUI and the GPU are made (that
+    // takes 85-155 ms): a tab's first listing is then waiting for it. A secondary window leaves it to the main one.
+    if !platform::secondary::is_secondary() {
+        glint_core::startup::begin();
+    }
     // The language before anything says a word: Windows' display language, or GLINT_LANGUAGE.
     i18n::init();
     // The assets are the icons: without them every icon, the title bar's buttons included, is invisible.

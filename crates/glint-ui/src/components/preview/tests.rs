@@ -1407,6 +1407,7 @@ fn the_arrows_in_quick_look_move_through_the_list(cx: &mut TestAppContext) {
             .unwrap_or_default()
     });
     let at = rows.iter().position(|n| n == "notes.txt").expect("listed");
+    // The first step shows at once.
     env.press("down");
     assert_eq!(ql.read_with(&env.visual, |q, cx| q.entry(cx).name), rows[at + 1]);
     // The list underneath moved with it.
@@ -1415,16 +1416,21 @@ fn the_arrows_in_quick_look_move_through_the_list(cx: &mut TestAppContext) {
             .and_then(|t| t.selection.iter().next().map(str::to_string))
     });
     assert_eq!(selected, Some(env.path(&rows[at + 1])));
+    // A step right after it waits for the 70 ms to pass (a held key shows an item each 70 ms, not every row).
     env.press("right");
+    assert_eq!(ql.read_with(&env.visual, |q, cx| q.entry(cx).name), rows[at + 1]);
+    env.settle();
     assert_eq!(ql.read_with(&env.visual, |q, cx| q.entry(cx).name), rows[at + 2]);
+    // Steps while it waits: the row the keyboard is on when the wait is over is the one shown.
     env.press("up");
     env.press("left");
+    env.settle();
     assert_eq!(ql.read_with(&env.visual, |q, cx| q.entry(cx).name), "notes.txt");
     // At the first row there is no previous: it stays.
     env.explorer.update(&mut env.visual, |e, cx| {
         e.select_only(Some(&format!("{}\\{}", env.folder, rows[0])), cx)
     });
-    env.visual.run_until_parked();
+    env.settle();
     env.press("up");
     assert_eq!(ql.read_with(&env.visual, |q, cx| q.entry(cx).name), rows[0]);
     // The pane beside it settles on the same item.

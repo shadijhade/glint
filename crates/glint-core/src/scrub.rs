@@ -30,6 +30,7 @@ fn frames(path: &str, count: u32, width: u32) -> Result<VideoFrames, String> {
     let failed = |what: &'static str| move |e: windows::core::Error| format!("{what}: {}", e.message());
     unsafe {
         let com = CoInitializeEx(None, COINIT_MULTITHREADED).is_ok();
+        crate::mfapi::keep_started();
         MFStartup(MF_VERSION, MFSTARTUP_LITE).map_err(failed("Media Foundation didn't start"))?;
         let result = (|| -> Result<VideoFrames, String> {
             let mut attributes = None;
@@ -277,6 +278,7 @@ fn frame_at_sync(path: &str, at_seconds: f64, max_width: u32) -> Result<(u32, u3
     // SAFETY: COM & dynamically loaded MF APIs are initialized on this worker thread and torn down before return.
     unsafe {
         let co = CoInitializeEx(None, COINIT_MULTITHREADED).is_ok();
+        crate::mfapi::keep_started();
         let mf = MFStartup(MF_VERSION, 0).is_ok();
         let res = (|| -> Result<(u32, u32, Vec<u8>), String> {
             let mut attrs: Option<IMFAttributes> = None;

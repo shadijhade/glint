@@ -168,6 +168,16 @@ fn listing(path: &str) -> Option<[bool; 3]> {
     None
 }
 
+/// Whether `raw` (a stream's name as `FILE_STREAM_INFO` gives it: UTF-16LE) is `:{stream}:$DATA`, in any case.
+#[cfg(windows)]
+fn names_stream(raw: &[u8], stream: &str) -> bool {
+    let (units, rest) = raw.as_chunks::<2>();
+    let wanted = [":", stream, ":$DATA"].into_iter().flat_map(str::bytes);
+    rest.is_empty()
+        && units.len() == stream.len() + 7
+        && units.iter().zip(wanted).all(|(unit, b)| u16::from_le_bytes(*unit) < 0x80 && (u16::from_le_bytes(*unit) as u8).eq_ignore_ascii_case(&b))
+}
+
 /// Walks `FILE_STREAM_INFO` entries: next offset (u32), name length in bytes (u32), two sizes (i64 each), the name.
 #[cfg(windows)]
 fn walk(bytes: &[u8]) -> [bool; 3] {
@@ -176,10 +186,9 @@ fn walk(bytes: &[u8]) -> [bool; 3] {
     let mut off = 0usize;
     while let (Some(next), Some(len)) = (u32_at(off), u32_at(off + 4)) {
         let Some(raw) = off.checked_add(24).and_then(|s| bytes.get(s..s.checked_add(len)?)) else { break };
-        let units: Vec<u16> = raw.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect();
-        let name = String::from_utf16_lossy(&units);
+        // Compared as the UTF-16 it is: every file has its unnamed `::$DATA`, and rows are read by the screenful.
         for (i, stream) in [STREAM_TAGS, STREAM_LABEL, STREAM_COMMENT].into_iter().enumerate() {
-            if name.eq_ignore_ascii_case(&format!(":{stream}:$DATA")) {
+            if names_stream(raw, stream) {
                 found[i] = true;
             }
         }

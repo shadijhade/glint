@@ -543,7 +543,9 @@ impl Explorer {
         }
     }
 
-    /// Loads cached OKLab palettes for images in `id` immediately and warms uncached images off the UI thread.
+    /// Loads the cached OKLab palettes of the images in `id` and warms the uncached ones, all off the UI thread (the
+    /// first time, the cache is read from disk). The warming stops when another one starts for the tab, or once the
+    /// tab shows another folder: its photos are no longer on screen.
     pub fn warm_color_palettes(&mut self, id: TabId, cx: &mut Context<Self>) {
         let Some(t) = self.tabs.get(&id) else {
             return;
@@ -557,43 +559,73 @@ impl Explorer {
         if items.is_empty() {
             return;
         }
-        let cached = glint_core::color_index::lookup_batch(&items);
-        let needs_warm = cached.len() < items.len();
-        self.update_tab(id, |t| t.color_palettes = Arc::new(cached));
-        self.rebuild_rows(id, cx);
-        self.tab_changed(id, cx);
-        if needs_warm {
+        let folder = t.path.clone();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.update_tab(id, |t| {
+            if let Some(old) = t.color_warm.replace(stop.clone()) {
+                old.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        });
+        // Still wanted: no newer warming, and the tab still on the folder.
+        let wanted = move |this: &Self, stop: &std::sync::atomic::AtomicBool| {
+            !stop.load(std::sync::atomic::Ordering::Relaxed)
+                && this
+                    .tabs
+                    .get(&id)
+                    .is_some_and(|t| glint_model::paths::same_path(&t.path, &folder))
+        };
+        cx.spawn(async move |this, cx| {
+            let (items, cached) = cx
+                .background_executor()
+                .spawn(async move {
+                    let cached = glint_core::color_index::lookup_batch(&items);
+                    (items, cached)
+                })
+                .await;
+            let needs_warm = cached.len() < items.len();
+            let shown = this.update(cx, |this, cx| {
+                if !wanted(this, &stop) {
+                    return false;
+                }
+                this.update_tab(id, |t| t.color_palettes = Arc::new(cached));
+                this.rebuild_rows(id, cx);
+                this.tab_changed(id, cx);
+                true
+            });
+            if !needs_warm || !matches!(shown, Ok(true)) {
+                return;
+            }
             // The palettes come in groups as they are made, so the photos that match show while the rest are still
             // being read; groups that arrive close together are merged and ranked once.
-            cx.spawn(async move |this, cx| {
-                let (sender, receiver) = async_channel::unbounded();
-                let work = cx.background_executor().spawn(async move {
-                    glint_core::color_index::warm_missing_streaming(&items, |batch| {
-                        let _ = sender.try_send(batch);
-                    });
+            let (sender, receiver) = async_channel::unbounded();
+            let working = stop.clone();
+            let work = cx.background_executor().spawn(async move {
+                glint_core::color_index::warm_missing_streaming(&items, &working, |batch| {
+                    let _ = sender.try_send(batch);
                 });
-                while let Ok(mut merged) = receiver.recv().await {
-                    while let Ok(more) = receiver.try_recv() {
-                        merged.extend(more);
-                    }
-                    let alive = this.update(cx, |this, cx| {
-                        this.update_tab(id, |t| {
-                            let mut all = (*t.color_palettes).clone();
-                            all.extend(merged);
-                            t.color_palettes = Arc::new(all);
-                        });
-                        this.rebuild_rows(id, cx);
-                        this.tab_changed(id, cx);
-                    });
-                    if alive.is_err() {
-                        break;
-                    }
-                    cx.background_executor().timer(WARM_MERGE_EVERY).await;
+            });
+            while let Ok(mut merged) = receiver.recv().await {
+                while let Ok(more) = receiver.try_recv() {
+                    merged.extend(more);
                 }
-                work.await;
-            })
-            .detach();
-        }
+                let alive = this.update(cx, |this, cx| {
+                    if !wanted(this, &stop) {
+                        return false;
+                    }
+                    this.update_tab(id, |t| Arc::make_mut(&mut t.color_palettes).extend(merged));
+                    this.rebuild_rows(id, cx);
+                    this.tab_changed(id, cx);
+                    true
+                });
+                if !matches!(alive, Ok(true)) {
+                    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                    break;
+                }
+                cx.background_executor().timer(WARM_MERGE_EVERY).await;
+            }
+            work.await;
+        })
+        .detach();
     }
 
     // ---- Flash, scroll, timing --------------------------------------------------------------------------

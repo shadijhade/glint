@@ -138,7 +138,8 @@ pub fn resolve(rows: &Rows, selection: &Selection) -> Shown {
                 paths: Vec::new(),
                 writable: true,
             };
-            for entry in rows.iter().filter(|e| selection.contains(&e.path)) {
+            // Rows::chosen: asked on every selection change, and it stops at the last selected row.
+            for entry in rows.chosen(selection) {
                 many.count += 1;
                 if entry.dir {
                     many.folders += 1;

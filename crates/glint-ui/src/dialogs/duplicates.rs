@@ -204,7 +204,8 @@ pub struct Duplicates {
     effects: Effects,
     state: State,
     report: Option<DedupReport>,
-    rows: Vec<Row>,
+    /// Shared with the list's row builder, which each draw takes a handle to (not a copy).
+    rows: std::sync::Arc<[Row]>,
     /// Per group (its hash), the path chosen to keep. Unset: the first (oldest) copy.
     kept: HashMap<String, String>,
     /// Linking or recycling is under way.
@@ -224,7 +225,7 @@ impl Duplicates {
             effects,
             state: State::Loading,
             report: None,
-            rows: Vec::new(),
+            rows: std::sync::Arc::from([]),
             kept: HashMap::new(),
             busy: false,
             run: 0,
@@ -245,6 +246,11 @@ impl Duplicates {
 
     pub fn rows(&self) -> &[Row] {
         &self.rows
+    }
+
+    /// The rows, as a handle the list's row builder keeps.
+    fn shared_rows(&self) -> std::sync::Arc<[Row]> {
+        self.rows.clone()
     }
 
     pub fn busy(&self) -> bool {
@@ -276,7 +282,7 @@ impl Duplicates {
                 }
                 match result {
                     Ok(report) => {
-                        this.rows = flatten(&report);
+                        this.rows = flatten(&report).into();
                         this.report = Some(report);
                         this.state = State::Ready;
                     }
@@ -945,12 +951,32 @@ impl Render for DuplicatesDialog {
         let busy = model.busy();
         let loading = state == State::Loading;
         let root = model.root().to_string();
-        let report = model.report().cloned();
-        let rows = model.rows().to_vec();
+        // What the report says is read here, not the report copied: it holds every duplicate's path.
+        let report = model.report();
+        let stats = report.map(|r| Self::stats(r, &t).into_any_element());
+        let checked = report.map(|r| {
+            let mut text = t!(
+                "Checked {files} in {time}.",
+                files = plural(r.files_scanned, "file"),
+                time = format_duration(r.elapsed_ms)
+            )
+            .to_string();
+            if r.hardlinks_skipped > 0 {
+                text.push_str(&format!(
+                    " ({})",
+                    t!(
+                        "{n} already-hardlinked files were skipped.",
+                        n = format_count(r.hardlinks_skipped)
+                    )
+                ));
+            }
+            text
+        });
+        let wasted = report.map_or(0, |r| r.total_wasted_bytes);
+        let rows = model.shared_rows();
         let method = model.method();
         let mono = theme::mono_font(cx);
 
-        let wasted = report.as_ref().map_or(0, |r| r.total_wasted_bytes);
         let header = align_row(3.)
             .items_center()
             .justify_between()
@@ -1062,29 +1088,8 @@ impl Render for DuplicatesDialog {
                     .into_any_element()
             }
             State::Ready if rows.is_empty() => {
-                let report = report.clone();
                 let headline = t!("No duplicate files found");
-                let checked = report
-                    .as_ref()
-                    .map(|r| {
-                        let mut text = t!(
-                            "Checked {files} in {time}.",
-                            files = plural(r.files_scanned, "file"),
-                            time = format_duration(r.elapsed_ms)
-                        )
-                        .to_string();
-                        if r.hardlinks_skipped > 0 {
-                            text.push_str(&format!(
-                                " ({})",
-                                t!(
-                                    "{n} already-hardlinked files were skipped.",
-                                    n = format_count(r.hardlinks_skipped)
-                                )
-                            ));
-                        }
-                        text
-                    })
-                    .unwrap_or_default();
+                let checked = checked.unwrap_or_default();
                 Self::message("duplicates-empty", Role::Status, headline.clone(), t.muted_foreground)
                     .child(icon(IconName::CircleCheck).size_8().text_color(t.success))
                     .child(
@@ -1209,7 +1214,7 @@ impl Render for DuplicatesDialog {
             .text_start()
             .pt(space(1.))
             .child(header)
-            .children(report.as_ref().map(|r| Self::stats(r, &t)))
+            .children(stats)
             .child(div().relative().h(space(LIST_HEIGHT)).child(body))
             .child(footer)
     }

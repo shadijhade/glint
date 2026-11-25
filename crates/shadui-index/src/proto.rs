@@ -471,23 +471,25 @@ pub fn write_message<W: Write + ?Sized>(w: &mut W, message: &Message) -> io::Res
 
 /// The next frame, or None once the other side has finished.
 pub fn read_frame<R: Read + ?Sized>(r: &mut R, max: usize) -> io::Result<Option<(u8, Vec<u8>)>> {
-    let mut len = [0u8; 4];
-    match r.read_exact(&mut len) {
+    // The length (which counts the kind) and the kind in one read; then the payload straight into its buffer,
+    // not shifted down a byte after (a search's batch of hits is hundreds of KB).
+    // A writer never sends a frame of length 0 (it has a kind), so there are always five bytes to read.
+    let mut head = [0u8; 5];
+    match r.read_exact(&mut head) {
         Ok(()) => {}
         Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
         Err(e) => return Err(e),
     }
-    let len = u32::from_le_bytes(len) as usize;
+    let len = u32::from_le_bytes([head[0], head[1], head[2], head[3]]) as usize;
     if len == 0 || len > max {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("frame of {len} bytes"),
         ));
     }
-    let mut frame = vec![0u8; len];
-    r.read_exact(&mut frame)?;
-    let kind = frame.remove(0);
-    Ok(Some((kind, frame)))
+    let mut payload = vec![0u8; len - 1];
+    r.read_exact(&mut payload)?;
+    Ok(Some((head[4], payload)))
 }
 
 pub fn write_request<W: Write + ?Sized>(w: &mut W, request: &Request) -> io::Result<()> {

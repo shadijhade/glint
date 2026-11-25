@@ -779,13 +779,7 @@ pub fn read_inputs(cx: &mut App) -> Inputs {
         mapped: tab.is_some_and(|t| crate::components::disk_usage::shows(cx, t.id)),
         chosen_entries: tab
             .filter(|t| !t.selection.is_empty())
-            .map(|t| {
-                t.rows
-                    .iter()
-                    .filter(|entry| t.selection.contains(&entry.path))
-                    .cloned()
-                    .collect()
-            })
+            .map(|t| t.rows.chosen(&t.selection).into_iter().cloned().collect())
             .unwrap_or_default(),
         selected: tab.map(|t| t.selection.to_vec()).unwrap_or_default(),
         focus_path: tab.and_then(|t| t.selection.focus().map(str::to_string)),

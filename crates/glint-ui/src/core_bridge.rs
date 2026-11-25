@@ -162,7 +162,7 @@ fn register_states(app: &AppHandle) {
 /// What src-tauri's `setup` did on start-up that is not a window: crash reports, the tools folder, secrets'
 /// app name, the thumbnail workers and the sweeps of what earlier runs left behind.
 fn start_housekeeping(app: &AppHandle) {
-    glint_core::startup::begin();
+    // `glint_core::startup::begin` ran already, before GPUI (lib.rs's `run`).
     if let Ok(data) = app.path().app_local_data_dir() {
         glint_core::crash::install(&data);
         glint_core::tools::set_dir(data.join("tools"));

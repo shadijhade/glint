@@ -23,8 +23,8 @@ fn selection(cx: &App) -> Vec<String> {
         return Vec::new();
     };
     tab.rows
-        .iter()
-        .filter(|entry| tab.selection.contains(&entry.path))
+        .chosen(&tab.selection)
+        .into_iter()
         .map(|entry| entry.path.clone())
         .collect()
 }

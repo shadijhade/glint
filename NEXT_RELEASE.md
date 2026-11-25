@@ -40,6 +40,63 @@ was looked at in `qps-ploc` and with a 37-text Chinese file: Chinese draws in a 
 Windows, mixed "JPG 图像" lines sit on one baseline, and a broken entry is reported on stderr. The e2e now pins
 `GLINT_LANGUAGE=en`: 22/22 on 2026-11-25.
 
+## Next: speed, from an outside list of 30 (checked against the code 2026-11-25)
+
+The user's Antigravity agent wrote a ranked list of 30 speed fixes. Each was read against the code before
+anything changed; several premises were wrong, so the numbers below are the list's own unless they say
+"measured".
+
+**Built:**
+- **Start (1):** the last session's folders are read ahead before GPUI and the GPU are made
+  (`glint_core::startup::begin` from `glint_ui::run`), not after; a secondary window still doesn't.
+- **Dates (2):** a row's short date is cached by the minute (it has no seconds), so a folder of files written
+  milliseconds apart makes one label a minute, not one a file and a cache wiped at 4,096. Windows' date, time
+  and locale calls write into a stack buffer first: one call instead of two.
+- **Index service (4, 11, 12):** a snapshot is written under the tree's read lock but flushed to the disk
+  (`FlushFileBuffers`) and renamed after it, so a change waiting for the lock no longer holds every search behind
+  the disk. `marks_in` (asked on every folder opened) goes through the marked records' names instead of all of the
+  drive's. A frame's length and kind are read in one call and the payload straight into its buffer.
+- **Video (6):** Media Foundation is started once for the run (`mfapi::keep_started`); a scrubbed tile's start and
+  stop are counts after that.
+- **Lists (8, vendored GPUI):** a uniform list measures its sizing row once a frame, not twice (docs/gpui/VENDOR.md).
+- **Git (10):** changes inside `target`, `node_modules`, `__pycache__`, `.venv`, `.next`, `.nuxt` and `.turbo` no
+  longer count, so a build in a watched repository doesn't work out its whole status every half second.
+- **Marks (14):** a stream listing is compared as UTF-16, with no strings made per stream.
+- **Ctrl+K (15):** the folders' usage scores are looked up in maps built once, not by scanning the visits and
+  zoxide lists (lowercasing each entry) for every candidate.
+- **Duplicates (16):** the dialog no longer copies the whole report (every duplicate's path) on each draw; its rows
+  are shared.
+- **Bulk work and selections (18):** restoring or purging a big Recycle Bin selection and the file engine's report
+  match through sets, not a scan per item; the menu, Enter, the palette, Copy path and the preview pane's
+  several-items card use `Rows::chosen` (it stops at the last selected row) instead of walking every row.
+- **Color Wheel (19):** the cached palettes are read off the UI thread (the first time, from disk), and a warming
+  stops once the tab shows another folder or another warming starts.
+- **Documents (20):** a deck's slides and a book's chapters are read from one opening of the zip, not one each.
+- **Quick Look (22):** a held arrow key shows an item each 70 ms instead of starting a full decode for every row it
+  passes; a single press still shows at once.
+- **Memory (29):** the picture a closed Quick Look showed leaves memory and the GPU atlas on the next frame
+  (the workspace drains it too), not when a preview is next drawn.
+
+**Left, and why:**
+- **Wrong premise:** 13 (core's thumbnail cache isn't a duplicate: the list, columns, preview, photo map and more
+  read it, not only the grid) and 17 (a splitter's `on_resize` fires once, on mouse up, not per pixel).
+- **No measured problem, a cost either way:** 3 (thin LTO already inlines across a crate's units, and 0.16 measured
+  no gain from one unit for glint-ui and glint-core), 5 (background mode is what keeps the quiet lane's disk reads
+  from slowing the window's own), 7 (a 2048² atlas page is 16 MB of VRAM for the first picture), 9 (the service's
+  memory is a few huge arrays; the heap barely sees it).
+- **Small, on paths already measured fast:** 21, 23, 24, 26, 27; and the ColorWheelBar half of 16.
+- **Bigger, worth their own pass:** 25 (index queries: rank before select, subtree bitset for scoped search), 28
+  (a find box filter of more than 5,000 rows off the UI thread; Batch Rename's pattern compiled once), 30 (LIFO
+  thumbnails, a pipe pool, an STA thread for Windows' previewers), 22's decode cancel, and 11's question: the head
+  reads every row's marks (up to 5,000 files) to count label chips in a folder the index doesn't cover.
+
+### Checks
+
+`cargo test` for glint-core (536), glint-model (440, one new: a minute's moments share a label), glint-ui (2,901;
+Quick Look's arrow test now waits out the settle) and shadui-index (160) pass, and `cargo clippy --workspace
+--all-targets -- -D warnings` is clean (2026-11-25). Not measured in the app yet (no start bench, no frame log), no
+release build, and the e2e wasn't run.
+
 ## In 0.17.0: a label, tags and a comment that stay with the file (released 2026-11-24)
 
 *[Issue #8](https://github.com/shadijhade/glint/issues/8), Label, Tags and Comment as in XYplorer, and XYplorer's own brought along.

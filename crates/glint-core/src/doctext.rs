@@ -151,10 +151,22 @@ fn pdf(path: &str) -> Result<Lines, String> {
         .collect())
 }
 
+/// A zip-based document, opened once for the parts read from it.
+type Zip = zip::ZipArchive<std::fs::File>;
+
+fn open_zip(path: &str) -> Result<Zip, String> {
+    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    zip::ZipArchive::new(file).map_err(|e| e.to_string())
+}
+
 /// A file inside a zip-based document, as text.
 fn part(path: &str, member: &str) -> Result<String, String> {
-    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
-    let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+    part_in(&mut open_zip(path)?, member)
+}
+
+/// A file inside an open zip-based document, as text: a deck's slides and a book's chapters are read from the one
+/// opening (each opening reads the zip's whole directory again).
+fn part_in(archive: &mut Zip, member: &str) -> Result<String, String> {
     let mut entry = archive.by_name(member).map_err(|e| format!("{member}: {e}"))?;
     let mut text = String::new();
     (&mut entry).take(MAX_PART).read_to_string(&mut text).map_err(|e| e.to_string())?;
@@ -241,8 +253,7 @@ fn numbered(paragraphs: Vec<String>) -> Lines {
 }
 
 fn slides(path: &str) -> Result<Lines, String> {
-    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
-    let archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+    let mut archive = open_zip(path)?;
     let mut numbers: Vec<u32> = archive
         .file_names()
         .filter_map(|name| {
@@ -253,7 +264,7 @@ fn slides(path: &str) -> Result<Lines, String> {
     numbers.sort_unstable();
     let mut lines = Vec::new();
     for n in numbers {
-        let xml = part(path, &format!("ppt/slides/slide{n}.xml"))?;
+        let xml = part_in(&mut archive, &format!("ppt/slides/slide{n}.xml"))?;
         lines.extend(paragraphs(&xml, &["p"], Some(&["t"])).into_iter().map(|p| (format!("slide {n}"), p)));
     }
     Ok(lines)
@@ -314,7 +325,8 @@ fn attribute(e: &quick_xml::events::BytesStart, name: &str) -> Option<String> {
 /// (id → file) and spine (the order).
 fn epub(path: &str) -> Result<Lines, String> {
     use quick_xml::events::Event;
-    let container = part(path, "META-INF/container.xml")?;
+    let mut archive = open_zip(path)?;
+    let container = part_in(&mut archive, "META-INF/container.xml")?;
     let mut reader = quick_xml::Reader::from_str(&container);
     let mut package = None;
     loop {
@@ -329,7 +341,7 @@ fn epub(path: &str) -> Result<Lines, String> {
     }
     let package = package.ok_or("no package file named in META-INF/container.xml")?;
     let base = package.rsplit_once('/').map(|(dir, _)| format!("{dir}/")).unwrap_or_default();
-    let opf = part(path, &package)?;
+    let opf = part_in(&mut archive, &package)?;
     let (mut manifest, mut spine) = (HashMap::new(), Vec::new());
     let mut reader = quick_xml::Reader::from_str(&opf);
     loop {
@@ -354,7 +366,7 @@ fn epub(path: &str) -> Result<Lines, String> {
         let Some(href) = manifest.get(id) else { continue };
         let href = href.split('#').next().unwrap_or(href);
         // Hrefs are URLs: "Chapter%201.xhtml" is "Chapter 1.xhtml" in the zip.
-        let Ok(xhtml) = part(path, &format!("{base}{}", unescape_url(href))) else { continue };
+        let Ok(xhtml) = part_in(&mut archive, &format!("{base}{}", unescape_url(href))) else { continue };
         lines.extend(paragraphs(&xhtml, BLOCKS, None).into_iter().map(|p| (format!("chapter {}", n + 1), p)));
     }
     Ok(lines)

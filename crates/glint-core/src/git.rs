@@ -893,8 +893,23 @@ fn write_git_tree(tree: &gix::Tree<'_>, dest: &Path) -> Result<(), String> {
 #[derive(Default)]
 pub struct RepoWatcher(Arc<Mutex<HashMap<String, RecommendedWatcher>>>);
 
-/// Changes that don't change status: Git's own object store and logs, and lock files mid-write. Told from the
-/// path's parts as they are, without making a copy of it: a build in the repository sends thousands of these.
+/// Build output and package folders that every project ignores: a build or an install writes thousands of
+/// files there, and with a change there counted, the repository's whole status was worked out again every
+/// half second for as long as `cargo build` or `npm install` ran. (Were one ever tracked, its badges would wait
+/// for the next change elsewhere.)
+const BUILD_FOLDERS: [&str; 7] = [
+    "target",
+    "node_modules",
+    "__pycache__",
+    ".venv",
+    ".next",
+    ".nuxt",
+    ".turbo",
+];
+
+/// Changes that don't change status: Git's own object store and logs, lock files mid-write, and build and
+/// package folders (`BUILD_FOLDERS`). Told from the path's parts as they are, without making a copy of it: a
+/// build in the repository sends thousands of these.
 fn noise(path: &Path) -> bool {
     let name = path.file_name().map(|n| n.as_encoded_bytes()).unwrap_or_default();
     if name.len() >= 5 && name[name.len() - 5..].eq_ignore_ascii_case(b".lock") {
@@ -907,6 +922,9 @@ fn noise(path: &Path) -> bool {
             continue;
         };
         if in_git && (part.eq_ignore_ascii_case("objects") || part.eq_ignore_ascii_case("logs")) {
+            return true;
+        }
+        if BUILD_FOLDERS.iter().any(|folder| part.eq_ignore_ascii_case(folder)) {
             return true;
         }
         in_git = part.eq_ignore_ascii_case(".git");
@@ -975,6 +993,9 @@ mod tests {
             r"C:\repo\.git\index.lock",
             "C:/repo/.git/objects/pack/x.pack",
             r"C:\repo\a\Cargo.LOCK",
+            r"C:\repo\target\release\deps\glint.d",
+            r"C:\repo\web\node_modules\react\index.js",
+            r"C:\repo\Target\debug",
         ] {
             assert!(noise(Path::new(path)), "{path}");
         }
@@ -984,6 +1005,8 @@ mod tests {
             r"C:\repo\.git\HEAD",
             r"C:\repo\objects\a.txt",
             r"C:\repo\logs\today.log",
+            r"C:\repo\src\targets.rs",
+            r"C:\repo\docs\node_modules.md",
         ] {
             assert!(!noise(Path::new(path)), "{path}");
         }

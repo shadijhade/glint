@@ -338,15 +338,20 @@ const WARM_STREAM: usize = 8;
 /// Extracts and caches palettes for uncached images in `items` (up to 256 per call), returning the merged map.
 pub fn warm_missing(items: &[(String, i64)]) -> HashMap<String, Palette3> {
     let mut result = lookup_batch(items);
-    warm_missing_streaming(items, |batch| result.extend(batch));
+    warm_missing_streaming(items, &AtomicBool::new(false), |batch| result.extend(batch));
     result
 }
 
 /// Like [`warm_missing`] but hands each group of palettes made to `on_batch` as it is ready (on the calling thread),
 /// keyed by lowercase path, so the photos that match can show before the rest are done. Photos already in the cache
-/// are not repeated: the caller has them from [`lookup_batch`].
-pub fn warm_missing_streaming(items: &[(String, i64)], on_batch: impl FnMut(HashMap<String, Palette3>)) {
-    warm_with(items, WARM_WORKERS, on_batch);
+/// are not repeated: the caller has them from [`lookup_batch`]. Setting `stop` ends it after the photos being read
+/// (the folder was left, the filter cleared): what was made by then is kept.
+pub fn warm_missing_streaming(
+    items: &[(String, i64)],
+    stop: &AtomicBool,
+    on_batch: impl FnMut(HashMap<String, Palette3>),
+) {
+    warm_with(items, WARM_WORKERS, stop, on_batch);
 }
 
 /// The photos among `items` with no palette yet (at most [`WARM_LIMIT`]), as (key, path, modified).
@@ -368,7 +373,12 @@ fn missing_of(items: &[(String, i64)]) -> Vec<(String, String, i64)> {
 
 /// [`warm_missing_streaming`] with `workers` threads: each is set up like the thumbnail threads
 /// (`thumbs::win::init_thread`), takes the next photo from a shared counter, and sends its palettes in groups.
-fn warm_with(items: &[(String, i64)], workers: usize, mut on_batch: impl FnMut(HashMap<String, Palette3>)) {
+fn warm_with(
+    items: &[(String, i64)],
+    workers: usize,
+    stop: &AtomicBool,
+    mut on_batch: impl FnMut(HashMap<String, Palette3>),
+) {
     let missing = missing_of(items);
     if missing.is_empty() {
         return;
@@ -387,6 +397,9 @@ fn warm_with(items: &[(String, i64)], workers: usize, mut on_batch: impl FnMut(H
                     crate::thumbs::win::init_thread(true);
                     let mut group: Made = Vec::with_capacity(WARM_STREAM);
                     loop {
+                        if stop.load(Ordering::Relaxed) {
+                            break;
+                        }
                         let at = next_ref.fetch_add(1, Ordering::SeqCst);
                         let Some((key, path, modified)) = missing_ref.get(at) else {
                             break;
@@ -432,7 +445,7 @@ fn warm_with(items: &[(String, i64)], workers: usize, mut on_batch: impl FnMut(H
 
     #[cfg(not(windows))]
     {
-        let _ = (workers, &mut on_batch, Outcome::NotCached);
+        let _ = (workers, stop, &mut on_batch, Outcome::NotCached);
     }
 }
 
@@ -629,14 +642,14 @@ mod tests {
         };
         // Windows' thumbnail machinery wakes up on the first few; those aren't what is measured.
         let warmup = make("warm", 8);
-        warm_with(&warmup, 1, |_| {});
+        warm_with(&warmup, 1, &AtomicBool::new(false), |_| {});
         let alone = make("one", 256);
         let together = make("four", 256);
 
         let time = |items: &[(String, i64)], workers: usize| {
             let started = std::time::Instant::now();
             let (mut batches, mut photos) = (0usize, 0usize);
-            warm_with(items, workers, |batch| {
+            warm_with(items, workers, &AtomicBool::new(false), |batch| {
                 batches += 1;
                 photos += batch.len();
             });
