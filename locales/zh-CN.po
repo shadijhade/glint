@@ -61,7 +61,7 @@ msgstr "专辑"
 #: crates/glint-ui/src/components/preview/marks.rs
 #: crates/glint-ui/src/dialogs/rules.rs
 msgid "Label"
-msgstr "标签"
+msgstr "颜色标签"
 
 #: crates/glint-model/src/columns.rs
 #: crates/glint-ui/src/components/file_grid/mod.rs
@@ -575,11 +575,11 @@ msgstr "属性"
 
 #: crates/glint-ui/src/actions.rs
 msgid "Label what's selected (again: take it off)"
-msgstr "给选中项加标签（再次：取消标签）"
+msgstr "给选中项加颜色标签（再次：取消颜色标签）"
 
 #: crates/glint-ui/src/actions.rs
 msgid "Take the label off what's selected"
-msgstr "取消选中项的标签"
+msgstr "取消选中项的颜色标签"
 
 #: crates/glint-ui/src/actions.rs
 msgid "Edit the tags of what's selected"
@@ -2878,7 +2878,7 @@ msgstr "Git：被 .gitignore 排除"
 #: crates/glint-ui/src/components/file_grid/tile.rs
 #: crates/glint-ui/src/components/file_list/cells.rs
 msgid "label {name}"
-msgstr "标签 {name}"
+msgstr "颜色标签 {name}"
 
 #: crates/glint-ui/src/components/file_grid/tile.rs
 #: crates/glint-ui/src/components/file_list/cells.rs
@@ -4306,7 +4306,7 @@ msgstr "脚本"
 #: crates/glint-ui/src/components/menus/item.rs
 #: crates/glint-ui/src/components/palette/commands.rs
 msgid "No label"
-msgstr "无标签"
+msgstr "无颜色标签"
 
 #: crates/glint-ui/src/components/menus/item.rs
 msgid "Nothing here is marked"
@@ -4929,7 +4929,7 @@ msgstr "为选中的视频制作字幕（在本机识别语音）"
 
 #: crates/glint-ui/src/components/palette/commands.rs
 msgid "Label: {name}"
-msgstr "标签：{name}"
+msgstr "颜色标签：{name}"
 
 #: crates/glint-ui/src/components/palette/commands.rs
 msgid "Edit tags…"
@@ -4949,7 +4949,7 @@ msgstr "导出标记…"
 
 #: crates/glint-ui/src/components/palette/commands.rs
 msgid "Labels, tags and comments into one file, for XYplorer too"
-msgstr "将标签和注释汇入一个文件，也适用于 XYplorer"
+msgstr "将颜色标签、标签和注释汇入一个文件，也适用于 XYplorer"
 
 #: crates/glint-ui/src/components/palette/commands.rs
 msgid "Copy the selection to the other pane"
@@ -5247,7 +5247,7 @@ msgstr "已将 {n} 项的标记移入文件"
 
 #: crates/glint-ui/src/components/pane_head/mod.rs
 msgid "Label {name}: {n}"
-msgstr "标签 {name}：{n}"
+msgstr "颜色标签 {name}：{n}"
 
 #: crates/glint-ui/src/components/pane_head/mod.rs
 msgid "{name}: {count}"
@@ -7175,7 +7175,7 @@ msgid ""
 "labels, tags and comments you gave files."
 msgstr ""
 "支持 Model Context Protocol 的 AI agent 可以要求 Glint "
-"在毫秒级按名称查找每个驱动器上的文件（开启即时搜索）、测量文件夹（在可显示应用的地图中显示为地图）、列出最大的文件、说明最近移动或删除了什么、搜索文件内文本，并读取你给文件的标签和注释。"
+"在毫秒级按名称查找每个驱动器上的文件（开启即时搜索）、测量文件夹（在可显示应用的地图中显示为地图）、列出最大的文件、说明最近移动或删除了什么、搜索文件内文本，并读取你给文件的颜色标签、标签和注释。"
 
 #: crates/glint-ui/src/components/settings/agents.rs
 msgid ""
@@ -7185,7 +7185,7 @@ msgid ""
 "told how, the agent starts Glint for itself, and sees the names and text it "
 "asks for."
 msgstr ""
-"它们还可以要求移动、重命名、新建文件夹、回收以及给文件加标签或注释：每次 Glint 都会先在 Windows "
+"它们还可以要求移动、重命名、新建文件夹、回收以及给文件加颜色标签、标签或注释：每次 Glint 都会先在 Windows "
 "对话框中确切说明将要发生的事情，并在下方列出已完成的操作，可撤销。一旦被告知如何操作，agent 会自行启动 Glint，并查看它请求的名称和文本。"
 
 #: crates/glint-ui/src/components/settings/agents.rs
@@ -8218,28 +8218,28 @@ msgstr "其他颜色"
 
 #: crates/glint-ui/src/components/settings/labels.rs
 msgid "Give the label a name"
-msgstr "给标签起个名字"
+msgstr "给颜色标签起个名字"
 
 #: crates/glint-ui/src/components/settings/labels.rs
 msgid "A label's name is one line of 64 characters at most"
-msgstr "标签名称最多一行 64 个字符"
+msgstr "颜色标签名称最多一行 64 个字符"
 
 #: crates/glint-ui/src/components/settings/labels.rs
 msgid "Another label is or was called that"
-msgstr "另一个标签是或曾叫这个名字"
+msgstr "另一个颜色标签是或曾叫这个名字"
 
 #: crates/glint-ui/src/components/settings/labels.rs
 msgid "32 labels at most"
-msgstr "最多 32 个标签"
+msgstr "最多 32 个颜色标签"
 
 #: crates/glint-ui/src/components/settings/labels.rs
 #: crates/glint-ui/src/dialogs/marks_import.rs
 msgid "New label"
-msgstr "新建标签"
+msgstr "新建颜色标签"
 
 #: crates/glint-ui/src/components/settings/labels.rs
 msgid "Labels changed"
-msgstr "标签已更改"
+msgstr "颜色标签已更改"
 
 #: crates/glint-ui/src/components/settings/labels.rs
 msgid "Color of {name}"
@@ -8247,7 +8247,7 @@ msgstr "{name} 的颜色"
 
 #: crates/glint-ui/src/components/settings/labels.rs
 msgid "Name of the label"
-msgstr "标签的名称"
+msgstr "颜色标签的名称"
 
 #: crates/glint-ui/src/components/settings/labels.rs
 msgid "Move up"
@@ -8265,12 +8265,12 @@ msgstr "移除“{name}”"
 msgid ""
 "A label is kept in the file by its name. Renaming one changes nothing on "
 "disk: files that say the old name show the new one."
-msgstr "标签按名称保存在文件中。重命名不会改变磁盘上的任何内容：显示旧名称的文件会显示新名称。"
+msgstr "颜色标签按名称保存在文件中。重命名不会改变磁盘上的任何内容：显示旧名称的文件会显示新名称。"
 
 #: crates/glint-ui/src/components/settings/labels.rs
 #: crates/glint-ui/src/components/settings/pages.rs
 msgid "Add a label"
-msgstr "添加标签"
+msgstr "添加颜色标签"
 
 #: crates/glint-ui/src/components/settings/labels.rs
 msgid "Back to the seven colors"
@@ -8282,7 +8282,7 @@ msgstr "回到七种颜色"
 #: crates/glint-ui/src/components/sidebar/rows.rs
 #: crates/glint-ui/src/dialogs/marks_import.rs
 msgid "Labels"
-msgstr "标签"
+msgstr "颜色标签"
 
 #: crates/glint-ui/src/components/settings/labels.rs
 msgid "{n} from {name}, {when}"
@@ -8896,11 +8896,11 @@ msgstr "从侧边栏移除"
 
 #: crates/glint-ui/src/components/sidebar/mod.rs
 msgid "Label {name}, {n}"
-msgstr "标签 {name}，{n}"
+msgstr "颜色标签 {name}，{n}"
 
 #: crates/glint-ui/src/components/sidebar/mod.rs
 msgid "Label {name}"
-msgstr "标签 {name}"
+msgstr "颜色标签 {name}"
 
 #: crates/glint-ui/src/components/sidebar/mod.rs
 msgid "What's labeled “{label}”"
@@ -10284,7 +10284,7 @@ msgstr "YYYY-MM-DD"
 
 #: crates/glint-ui/src/dialogs/batch_rename.rs
 msgid "The item's label"
-msgstr "项目的标签"
+msgstr "项目的颜色标签"
 
 #: crates/glint-ui/src/dialogs/batch_rename.rs
 msgid "The item's tags, with a space between"
@@ -12490,8 +12490,9 @@ msgid ""
 "file: changing any of them changes them all, and they share one set of dates "
 "and attributes. Each copy is compared byte for byte first."
 msgstr ""
-"用指向它的硬链接替换“{name}”的 {what}？每个路径都保留原位并释放 {freed} "
-"空间，但它们会合并为一个文件：更改其中任何一个都会更改全部，它们共享一套日期和属性。每个副本都会先逐字节比较。"
+"用指向它的硬链接替换“{name}”的 {what}？\n"
+"\n"
+"每个路径都保留原位并释放 {freed} 空间，但它们会合并为一个文件：更改其中任何一个都会更改全部，它们共享一套日期和属性。每个副本都会先逐字节比较。"
 
 #: crates/glint-ui/src/dialogs/duplicates.rs
 msgid ""
@@ -12502,7 +12503,9 @@ msgid ""
 "own, with its own dates. Each copy is compared byte for byte first, and its "
 "clone again before it takes its place."
 msgstr ""
-"用块克隆替换“{name}”的 {what}？每个路径都保留原位并释放 {freed} "
+"用块克隆替换“{name}”的 {what}？\n"
+"\n"
+"每个路径都保留原位并释放 {freed} "
 "空间：克隆在此驱动器上共享空间，直到其中一个更改，各自仍为独立文件，拥有自己的日期。每个副本都会先逐字节比较，且其克隆在就位前会再次比较。"
 
 #: crates/glint-ui/src/dialogs/duplicates.rs
@@ -12522,8 +12525,9 @@ msgid ""
 "one file: changing any copy changes them all. Each copy is compared byte for "
 "byte first."
 msgstr ""
-"用硬链接替换全部 {groups} 组中的 {files} 个重复文件，指向你保留的副本？每个路径都保留原位并释放 {freed} "
-"空间，但每组会合并为一个文件：更改任何副本都会更改全部。每个副本都会先逐字节比较。"
+"用硬链接替换全部 {groups} 组中的 {files} 个重复文件，指向你保留的副本？\n"
+"\n"
+"每个路径都保留原位并释放 {freed} 空间，但每组会合并为一个文件：更改任何副本都会更改全部。每个副本都会先逐字节比较。"
 
 #: crates/glint-ui/src/dialogs/duplicates.rs
 msgid ""
@@ -12534,8 +12538,9 @@ msgid ""
 "its space until one changes, and each stays a file of its own. Each copy is "
 "compared byte for byte first."
 msgstr ""
-"用块克隆替换全部 {groups} 组中的 {files} 个重复文件，指向你保留的副本？每个路径都保留原位并释放 {freed} "
-"空间：每组的克隆共享空间，直到其中一个更改，各自仍为独立文件。每个副本都会先逐字节比较。"
+"用块克隆替换全部 {groups} 组中的 {files} 个重复文件，指向你保留的副本？\n"
+"\n"
+"每个路径都保留原位并释放 {freed} 空间：每组的克隆共享空间，直到其中一个更改，各自仍为独立文件。每个副本都会先逐字节比较。"
 
 #: crates/glint-ui/src/dialogs/duplicates.rs
 msgid "Hard-link all duplicates"
@@ -13039,7 +13044,7 @@ msgstr "将“{name}”及其下方所有标记导出到一个文件。"
 
 #: crates/glint-ui/src/dialogs/marks_export.rs
 msgid "Text that Import marks… reads on any PC"
-msgstr "“导入标记…”可读取的、任何电脑上都能读取的文本"
+msgstr "任何电脑上的“导入标记…”都能读取的文本"
 
 #: crates/glint-ui/src/dialogs/marks_export.rs
 msgid "XYplorer"
@@ -13152,12 +13157,12 @@ msgstr "更改于 {when}"
 #. a count of one: {n} is 1
 #: crates/glint-ui/src/dialogs/marks_import.rs
 msgid "{n} label"
-msgstr "{n} 个标签"
+msgstr "{n} 个颜色标签"
 
 #. a count other than one: {n} is the number
 #: crates/glint-ui/src/dialogs/marks_import.rs
 msgid "{n} labels"
-msgstr "{n} 个标签"
+msgstr "{n} 个颜色标签"
 
 #. a count of one: {n} is 1
 #: crates/glint-ui/src/dialogs/marks_import.rs
@@ -13199,7 +13204,7 @@ msgstr "正在导入标记…"
 
 #: crates/glint-ui/src/dialogs/marks_import.rs
 msgid "import of labels"
-msgstr "标签的导入"
+msgstr "颜色标签的导入"
 
 #: crates/glint-ui/src/dialogs/marks_import.rs
 msgid "import of {what}"
@@ -13646,11 +13651,11 @@ msgstr "未选择视频或录音"
 
 #: crates/glint-ui/src/dialogs/media_tools.rs
 msgid "Start of the part"
-msgstr ""
+msgstr "片段开始"
 
 #: crates/glint-ui/src/dialogs/media_tools.rs
 msgid "End of the part"
-msgstr ""
+msgstr "片段结束"
 
 #: crates/glint-ui/src/dialogs/media_tools.rs
 msgid "trim of “{name}”"
@@ -14373,7 +14378,7 @@ msgstr "重命名"
 
 #: crates/glint-ui/src/dialogs/rules.rs
 msgid "Give it a label"
-msgstr "给标签"
+msgstr "加上颜色标签"
 
 #: crates/glint-ui/src/dialogs/rules.rs
 msgid "Unblock it (take off Windows' downloaded-from-the-internet mark)"
@@ -14477,7 +14482,7 @@ msgstr "已重命名"
 
 #: crates/glint-ui/src/dialogs/rules.rs
 msgid "labeled"
-msgstr "已加标签"
+msgstr "已加颜色标签"
 
 #: crates/glint-ui/src/dialogs/rules.rs
 msgid "put in the Recycle Bin"
@@ -14585,11 +14590,11 @@ msgstr "此处文件停止更改半分钟后、Glint 启动一分钟后，以及
 
 #: crates/glint-ui/src/dialogs/rules.rs
 msgid "There are no labels yet: Settings → Files → Labels makes them"
-msgstr "还没有标签：设置 → 文件 → 标签 可创建"
+msgstr "还没有颜色标签：设置 → 文件 → 颜色标签 可创建"
 
 #: crates/glint-ui/src/dialogs/rules.rs
 msgid "Replace a label a file already has"
-msgstr "替换文件已有的标签"
+msgstr "替换文件已有的颜色标签"
 
 #: crates/glint-ui/src/dialogs/rules.rs
 msgid "The two are in sync already: it would wait for changes."
@@ -15233,11 +15238,11 @@ msgstr "“编辑歌曲详情”适用于 MP3、FLAC、M4A、Ogg、Opus、WAV �
 
 #: crates/glint-ui/src/dialogs/tags.rs
 msgid "label of {what}"
-msgstr "{what} 的标签"
+msgstr "{what} 的颜色标签"
 
 #: crates/glint-ui/src/dialogs/tags.rs
 msgid "Changed the label of {what}"
-msgstr "已更改 {what} 的标签"
+msgstr "已更改 {what} 的颜色标签"
 
 #: crates/glint-ui/src/dialogs/tags.rs
 msgid "tags of {what}"
@@ -15694,7 +15699,9 @@ msgid ""
 "mark, so Windows (SmartScreen, Office's Protected View) stops warning you "
 "before it opens. Only unblock files you trust."
 msgstr ""
-"解除阻止“{name}”？Windows 将其标记为来自互联网的下载。解除阻止会移除该标记，使 Windows（SmartScreen、Office "
+"解除阻止“{name}”？\n"
+"\n"
+"Windows 将其标记为来自互联网的下载。解除阻止会移除该标记，使 Windows（SmartScreen、Office "
 "的受保护视图）在打开前不再警告。仅解除阻止你信任的文件。"
 
 #: crates/glint-ui/src/dialogs/xray.rs
@@ -15706,7 +15713,10 @@ msgid ""
 "Delete the hidden stream “:{stream}” from “{name}”?\n"
 "\n"
 "What another program stored in it is gone for good."
-msgstr "从“{name}”删除隐藏流“:{stream}”？另一程序存储其中的内容将永久消失。"
+msgstr ""
+"从“{name}”删除隐藏流“:{stream}”？\n"
+"\n"
+"另一程序存储其中的内容将永久消失。"
 
 #: crates/glint-ui/src/dialogs/xray.rs
 msgid "Checksums"
@@ -16562,7 +16572,7 @@ msgstr "更新它们"
 
 #: crates/glint-ui/src/suggestions/mod.rs
 msgid "Bring your XYplorer labels, tags and comments"
-msgstr "带过来你的 XYplorer 标签和注释"
+msgstr "带过来你的 XYplorer 颜色标签、标签和注释"
 
 #: crates/glint-ui/src/suggestions/mod.rs
 msgid ""
@@ -16586,13 +16596,13 @@ msgstr "与 XYplorer 保持同步"
 msgid ""
 "What you label, tag or comment in XYplorer from now on can show in Glint by "
 "itself, each time Glint comes to the front."
-msgstr "从现在起你在 XYplorer 中做的标签或注释，每次 Glint 回到前台时都会自动显示在 Glint 中。"
+msgstr "从现在起你在 XYplorer 中加的颜色标签、标签或注释，每次 Glint 回到前台时都会自动显示在 Glint 中。"
 
 #: crates/glint-ui/src/suggestions/mod.rs
 msgid ""
 "XYplorer is on this PC. What you label, tag or comment there can show in "
 "Glint too, each time Glint comes to the front."
-msgstr "XYplorer 在此电脑上。你在那里做的标签或注释，每次 Glint 回到前台时也会显示在 Glint 中。"
+msgstr "XYplorer 在此电脑上。你在那里加的颜色标签、标签或注释，每次 Glint 回到前台时也会显示在 Glint 中。"
 
 #: crates/glint-ui/src/suggestions/mod.rs
 msgid "Follow XYplorer"
@@ -16801,7 +16811,7 @@ msgstr "展示给我"
 
 #: crates/glint-ui/src/suggestions/moments.rs
 msgid "Make the labels yours"
-msgstr "打造你自己的标签"
+msgstr "打造你自己的颜色标签"
 
 #: crates/glint-ui/src/suggestions/moments.rs
 msgid ""
@@ -16811,7 +16821,7 @@ msgstr "红色可以是“紧急”，绿色可以是“完成”：重命名、
 
 #: crates/glint-ui/src/suggestions/moments.rs
 msgid "Name the labels"
-msgstr "命名标签"
+msgstr "命名颜色标签"
 
 #: crates/glint-ui/src/suggestions/moments.rs
 msgid "Find it again by its tag"
