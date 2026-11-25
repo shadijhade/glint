@@ -457,7 +457,7 @@ pub fn build_rows(i: &Inputs) -> Vec<Row> {
     // (a tile has no room to hang folders from); as a list each opens its folders as a drive does.
     let quick_folded = is_folded("Quick access");
     rows.push(Row::Heading {
-        title: "Quick access",
+        title: glint_model::english!("Quick access"),
         link: None,
         active: false,
         first: true,
@@ -517,7 +517,7 @@ pub fn build_rows(i: &Inputs) -> Vec<Row> {
 
     if !i.pinned.is_empty() {
         let folded = is_folded("Pinned");
-        rows.push(heading("Pinned", Some(folded)));
+        rows.push(heading(glint_model::english!("Pinned"), Some(folded)));
         for p in i.pinned.iter().filter(|_| !folded) {
             rows.push(Row::Place(Place {
                 glyph: Glyph::Folder,
@@ -542,7 +542,7 @@ pub fn build_rows(i: &Inputs) -> Vec<Row> {
     // sight without a scroll.
     let pc_folded = is_folded("This PC");
     rows.push(Row::Heading {
-        title: "This PC",
+        title: glint_model::english!("This PC"),
         link: Some(THIS_PC.to_string()),
         active: i.path == THIS_PC,
         first: false,
@@ -577,7 +577,7 @@ pub fn build_rows(i: &Inputs) -> Vec<Row> {
     if !pc_folded {
         rows.push(Row::Place(Place {
             glyph: Glyph::RecycleBin,
-            label: Label::Fixed("Recycle Bin"),
+            label: Label::Fixed(glint_model::english!("Recycle Bin")),
             path: RECYCLE_BIN.to_string(),
             active: here(RECYCLE_BIN),
             detail: "What you deleted, to restore or delete for good. Files dropped here are deleted.".into(),
@@ -592,13 +592,13 @@ pub fn build_rows(i: &Inputs) -> Vec<Row> {
 
     // The labels are one line of dots under their title (the view lays them so), so there is nothing to fold.
     if !i.labels.is_empty() {
-        rows.push(heading("Labels", None));
+        rows.push(heading(glint_model::english!("Labels"), None));
         rows.extend(i.labels.iter().cloned().map(Row::Label));
     }
 
     if !i.tags.is_empty() {
         let folded = is_folded("Tags");
-        rows.push(heading("Tags", Some(folded)));
+        rows.push(heading(glint_model::english!("Tags"), Some(folded)));
         if !folded {
             rows.extend(i.tags.iter().cloned().map(Row::Tag));
         }
@@ -606,7 +606,7 @@ pub fn build_rows(i: &Inputs) -> Vec<Row> {
 
     if !i.saved.is_empty() {
         let folded = is_folded("Searches");
-        rows.push(heading("Searches", Some(folded)));
+        rows.push(heading(glint_model::english!("Searches"), Some(folded)));
         for s in i.saved.iter().filter(|_| !folded) {
             rows.push(Row::Search(Search {
                 query: s.query.clone(),
@@ -620,7 +620,7 @@ pub fn build_rows(i: &Inputs) -> Vec<Row> {
     // are some.
     if !i.portals.is_empty() {
         let folded = is_folded("Portals");
-        rows.push(heading("Portals", Some(folded)));
+        rows.push(heading(glint_model::english!("Portals"), Some(folded)));
         for p in i.portals.iter().filter(|_| !folded) {
             rows.push(Row::Portal(PortalItem {
                 active: i.path != THIS_PC && is_inside(&p.path, i.path),
@@ -632,7 +632,7 @@ pub fn build_rows(i: &Inputs) -> Vec<Row> {
     // Remote connections: a title only once there is one. The way to add one is always the last row.
     let remote_folded = is_folded("Remote");
     if !i.remotes.is_empty() {
-        rows.push(heading("Remote", Some(remote_folded)));
+        rows.push(heading(glint_model::english!("Remote"), Some(remote_folded)));
     }
     for r in i.remotes.iter().filter(|_| !remote_folded) {
         let path = remote_path(r);

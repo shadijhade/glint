@@ -672,9 +672,8 @@ impl DiskUsage {
 
     /// The words on the drag's picture for a drop into `dest`.
     fn drop_words(&self, dest: &str, cx: &App) -> Under {
-        let name = self.explorer.read(cx).tab_name(dest);
         Under {
-            name: glint_model::i18n::translate(i18n::language(), &name).to_string(),
+            name: self.explorer.read(cx).tab_name(dest),
             copy: t!("Copy to %1").to_string(),
             moves: t!("Move to %1").to_string(),
             always_move: is_recycle_bin(dest),

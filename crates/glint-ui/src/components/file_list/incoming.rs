@@ -16,7 +16,6 @@ use super::lego;
 use super::pointer::layout_rows;
 use super::{FileList, FileListEvent, ROW_HEIGHT};
 use crate::drops;
-use crate::i18n;
 use crate::kit::prelude::*;
 use crate::platform::dragdrop::{Answer, DropEffect, Under};
 use crate::t;
@@ -156,8 +155,7 @@ impl FileList {
     /// What a folder is called on the dragged picture: a drive's name, a known folder's, else its own, in the
     /// interface language (`dropName`).
     fn drop_name(&self, path: &str, cx: &App) -> String {
-        let name = self.explorer.read(cx).tab_name(path);
-        glint_model::i18n::translate(i18n::language(), &name).to_string()
+        self.explorer.read(cx).tab_name(path)
     }
 
     /// Files are dragged over the list (every pointer move, for every list: only the one under the pointer

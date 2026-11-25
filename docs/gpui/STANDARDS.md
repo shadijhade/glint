@@ -76,10 +76,10 @@ Retired with the migration (0.10). What it said about strings still holds: indic
   - Lists and tables expose rows with names, as gpui-component's DataTable does.
   - Keyboard-only use must work: focus order, Enter, Escape, the arrows.
 - **Layouts stay direction-neutral, and right-to-left text works:**
-  - No left/right assumptions: use the kit's start/end helpers and row direction. The interface is English since 0.13 (the Arabic catalog went), but the tests still mirror layouts (`testing::set_rtl`) to keep them that way.
+  - No left/right assumptions: use the kit's start/end helpers and row direction. No language Glint speaks is written right to left (the Arabic catalog went in 0.13), but the tests still mirror layouts (`testing::set_rtl`) to keep them that way.
   - Never assume x grows with the text index. Use `LineLayout`'s caret functions, and `x_ranges_for_index_range` for highlights.
   - Test with an Arabic name in every text you lay out: file names, folders and documents are often Arabic or Hebrew.
-- **Strings go through `t!`:** every user-visible string is `t!("English text")`, with English as the key, so a language could come back without touching the views.
+- **Strings go through `t!`:** every user-visible string is `t!("English text")`, with English as the key; the catalogs in `locales/` translate it (Chinese first). A table's text is `english!("…")` where it's written and `i18n::translate` where it's shown, and a count is `plural(n, "file")` with the noun written there, so `node scripts/i18n.mjs` finds every text for the translators. Never build a sentence out of translated pieces, and never compare a translated text with an English one. Look at a new view with `GLINT_LANGUAGE=qps-ploc`: what stays plain skips the catalog, and what loses its `]` gets cut off. [docs/translating.md](../translating.md) has the rest.
 - **The UI thread never waits:**
   - File system, index service, process work and hashing go to `cx.background_spawn`, with results coming back to the entity.
   - Streams arrive through `Sink`s and update the view at most once per frame.

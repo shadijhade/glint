@@ -9,17 +9,33 @@ pub(super) type Offer = (&'static str, &'static str, &'static str);
 
 /// The search box's filters, as it offers them when empty.
 pub(super) const FILTERS: [Offer; 7] = [
-    ("ext:", "ext:pdf", "of a type (ext:jpg,png for more)"),
-    ("tag:", "tag:work", "with that tag (tag:red;blue for either)"),
+    (
+        "ext:",
+        "ext:pdf",
+        glint_model::english!("of a type (ext:jpg,png for more)"),
+    ),
+    (
+        "tag:",
+        "tag:work",
+        glint_model::english!("with that tag (tag:red;blue for either)"),
+    ),
     (
         "path:",
         "path:src\\lib",
-        "matching folder or file path (or type \\ or /)",
+        glint_model::english!("matching folder or file path (or type \\ or /)"),
     ),
-    ("size:>", "size:>10mb", "bigger than (size:<1kb smaller)"),
-    ("dm:", "dm:7d", "changed in the last 7 days (dm:>1y before)"),
-    ("file:", "file:", "files only"),
-    ("folder:", "folder:", "folders only"),
+    (
+        "size:>",
+        "size:>10mb",
+        glint_model::english!("bigger than (size:<1kb smaller)"),
+    ),
+    (
+        "dm:",
+        "dm:7d",
+        glint_model::english!("changed in the last 7 days (dm:>1y before)"),
+    ),
+    ("file:", "file:", glint_model::english!("files only")),
+    ("folder:", "folder:", glint_model::english!("folders only")),
 ];
 
 /// What photos, videos and songs say of themselves (media.rs reads it): as you type.
@@ -27,24 +43,36 @@ pub(super) const PROP_FILTERS: [Offer; 5] = [
     (
         "width:>",
         "width:>1920",
-        "wider than (height:<1080 too), photos and videos",
+        glint_model::english!("wider than (height:<1080 too), photos and videos"),
     ),
     (
         "taken:",
         "taken:2024",
-        "taken in 2024 (taken:2024-06, taken:>2023, taken:7d)",
+        glint_model::english!("taken in 2024 (taken:2024-06, taken:>2023, taken:7d)"),
     ),
-    ("camera:", "camera:pixel", "taken with that camera"),
+    (
+        "camera:",
+        "camera:pixel",
+        glint_model::english!("taken with that camera"),
+    ),
     (
         "duration:>",
         "duration:>5m",
-        "longer than 5 minutes (1:30, 90s), videos and songs",
+        glint_model::english!("longer than 5 minutes (1:30, 90s), videos and songs"),
     ),
-    ("artist:", "artist:beatles", "songs by (album: too)"),
+    (
+        "artist:",
+        "artist:beatles",
+        glint_model::english!("songs by (album: too)"),
+    ),
 ];
 
 /// Offered too in a Git repository: it filters what's on screen.
-pub(super) const GIT_FILTER: Offer = ("git:", "git:changed", "changed in Git (git:new, git:staged…), here");
+pub(super) const GIT_FILTER: Offer = (
+    "git:",
+    "git:changed",
+    glint_model::english!("changed in Git (git:new, git:staged…), here"),
+);
 
 /// Whether a search holds a `git:` filter, which works on the folder shown only (`hasGitFilter`).
 pub(super) fn has_git_filter(text: &str) -> bool {

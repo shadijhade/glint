@@ -8,6 +8,38 @@ The plan for 0.12 that was here is in git history (`git show df1245a:NEXT_RELEAS
 before it (`git show 47c33fa:NEXT_RELEASE.md`), and 0.13's own plan, the menu and the dock that know the selection,
 is [docs/gpui/aware/PLAN.md](docs/gpui/aware/PLAN.md) with its task cards beside it.*
 
+## Next: Glint in other languages, Chinese first ([#9](https://github.com/shadijhade/glint/issues/9))
+
+A contributor offered a Chinese translation (2026-11-25). The interface already went through `t!("English")` (the
+hook 0.13 kept when Arabic went), so the work was everything around it. [docs/translating.md](docs/translating.md)
+is the guide.
+
+- **Catalogs:** gettext files in `locales/`, `zh-CN.po` first, compiled into Glint by glint-model's build.rs
+  (sorted tables, a binary search over static text, nothing read at start). A translation whose placeholders
+  differ from the English is left out with a warning, and `every_translation_in_locales_is_used` fails on it.
+- **Which language:** Windows' display languages, the first with a catalog (English counts). Traditional Chinese
+  shows English. There's still no choice in Settings. `GLINT_LANGUAGE` overrides it: `en`, `zh-CN`, `qps-ploc`
+  (the pseudo-language) or a catalog file (`GLINT_LANGUAGE=D:\zh-CN.po`), which lets a translator see their work
+  in Glint as installed.
+- **Every text found:** `node scripts/i18n.mjs extract | update | status` writes `locales/glint.pot` (3,851
+  texts) and merges it into each catalog, keeping changed texts as fuzzy guesses. Table texts are marked
+  `english!("…")` (columns, file kinds, group headings, tile sizes, the search box's hints, the sidebar, Settings'
+  index, the shortcuts sheet).
+- **English-only bits made translatable:** `plural(n, "file")` is "{n} file" and "{n} files" in the catalog. The
+  Type column ("PNG image"), group headings ("Today", "Folders"), the menus' key templates ("Cut ({0})") and the
+  preview's item count now go through the catalog. Known folders and the fixed places are named in the
+  interface's language in tabs, crumbs and drags ("桌面"), and a folder that only happens to be called "Music"
+  keeps its name.
+- **Left:** messages made by glint-core (an archive that can't be read, a backup that failed) are still English
+  inside the translated sentence around them. The installer, the Store listing and the website are English too.
+
+### Checks
+
+`cargo test -p glint-model` and `-p glint-ui` pass, and `node scripts/lib/i18n.test.mjs` passes. The debug build
+was looked at in `qps-ploc` and with a 37-text Chinese file: Chinese draws in a Chinese font on an English
+Windows, mixed "JPG 图像" lines sit on one baseline, and a broken entry is reported on stderr. The e2e now pins
+`GLINT_LANGUAGE=en`: 22/22 on 2026-11-25.
+
 ## In 0.17.0: a label, tags and a comment that stay with the file (released 2026-11-24)
 
 *[Issue #8](https://github.com/shadijhade/glint/issues/8), Label, Tags and Comment as in XYplorer, and XYplorer's own brought along.

@@ -72,9 +72,9 @@ fn amber(cx: &App) -> Hsla {
     .unwrap_or_default()
 }
 
-/// `1 item`, `3 items` (the TypeScript's `${n} ${n === 1 ? "item" : "items"}`).
+/// `1 item`, `3 items` (the TypeScript's `${n} ${n === 1 ? "item" : "items"}`), in the interface's language.
 pub fn items(n: usize) -> String {
-    format!("{} {}", format_count(n), if n == 1 { "item" } else { "items" })
+    glint_model::format::plural(n, "item")
 }
 
 // ---- A folder ---------------------------------------------------------------------------------------------

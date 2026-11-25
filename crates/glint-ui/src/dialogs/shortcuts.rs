@@ -115,44 +115,49 @@ const DOCUMENTED: &[(Group, &str, &str, &str)] = &[
     (
         Group::Files,
         "A–Z",
-        "The next name starting with what's typed",
+        glint_model::english!("The next name starting with what's typed"),
         "Rename (several selected: all at once)",
     ),
     (
         Group::Tabs,
         "Shift+drop",
-        "Move what's dropped (a plain drop copies)",
+        glint_model::english!("Move what's dropped (a plain drop copies)"),
         "The terminal, under the files (it follows the folder shown)",
     ),
     (
         Group::Text,
         "Enter",
-        "Search below the folder: names, and inside the files",
+        glint_model::english!("Search below the folder: names, and inside the files"),
         "Match case, inside files",
     ),
     (
         Group::Text,
         "↓",
-        "From the search box on to the results",
+        glint_model::english!("From the search box on to the results"),
         "Match case, inside files",
     ),
     (
         Group::Text,
         "Tab",
-        "Take the filters read from plain words",
+        glint_model::english!("Take the filters read from plain words"),
         "Match case, inside files",
     ),
-    (Group::Text, "Esc", "Clear the search: back to the folder", ""),
+    (
+        Group::Text,
+        "Esc",
+        glint_model::english!("Clear the search: back to the folder"),
+        "",
+    ),
     (
         Group::Compare,
         "Double-click",
-        "Edit a line (Enter keeps it, Esc doesn't)",
+        glint_model::english!("Edit a line (Enter keeps it, Esc doesn't)"),
         "Save what's changed",
     ),
     (
         Group::Compare,
         "Ctrl+Z",
-        "Undo the last copy or edit",
+        glint_model::english!("Undo the last copy or edit"),
         "Save what's changed",
     ),
 ];
@@ -263,7 +268,7 @@ pub fn sheet(quick_shortcut: Option<&str>) -> Vec<(Group, Vec<Row>)> {
                         &mut rows,
                         "Settings",
                         vec![keys.to_string()],
-                        "Quick search, from any app",
+                        glint_model::english!("Quick search, from any app"),
                     );
                 }
             }

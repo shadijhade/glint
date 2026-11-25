@@ -71,13 +71,13 @@ impl KnownId {
     /// The name the sidebar shows, in English (the view translates it).
     pub fn name(self) -> &'static str {
         match self {
-            KnownId::Home => "Home",
-            KnownId::Desktop => "Desktop",
-            KnownId::Documents => "Documents",
-            KnownId::Downloads => "Downloads",
-            KnownId::Pictures => "Pictures",
-            KnownId::Music => "Music",
-            KnownId::Videos => "Videos",
+            KnownId::Home => glint_model::english!("Home"),
+            KnownId::Desktop => glint_model::english!("Desktop"),
+            KnownId::Documents => glint_model::english!("Documents"),
+            KnownId::Downloads => glint_model::english!("Downloads"),
+            KnownId::Pictures => glint_model::english!("Pictures"),
+            KnownId::Music => glint_model::english!("Music"),
+            KnownId::Videos => glint_model::english!("Videos"),
         }
     }
 }
@@ -170,24 +170,25 @@ pub fn drive_name(drive: &Drive) -> String {
     }
 }
 
-/// "This PC", "Recycle Bin", a drive's name, or the folder's (`tabName`). English; the view translates the
-/// fixed names ("This PC", "Recycle Bin", "Recent", "Gallery"). `remote_name` says what a remote connection's
-/// top is called (its connection's name, or its id for one that's gone: `remoteName` in remotes.ts).
+/// "This PC", "Recycle Bin", a drive's name, or the folder's (`tabName`). The fixed names ("This PC", "Recycle
+/// Bin", "Recent", "Gallery") are in the interface's language; a folder's own name is as it is. `remote_name`
+/// says what a remote connection's top is called (its connection's name, or its id for one that's gone:
+/// `remoteName` in remotes.ts).
 pub fn tab_name(path: &str, drives: &[Drive], remote_name: &dyn Fn(&str) -> String) -> String {
     if path == THIS_PC {
-        return "This PC".to_string();
+        return crate::t!("This PC").to_string();
     }
     if is_remote_path(path) && is_root(path) {
         return remote_name(path);
     }
     if is_recycle_bin(path) {
-        return "Recycle Bin".to_string();
+        return crate::t!("Recycle Bin").to_string();
     }
     if is_recent(path) {
-        return "Recent".to_string();
+        return crate::t!("Recent").to_string();
     }
     if is_gallery(path) {
-        return "Gallery".to_string();
+        return crate::t!("Gallery").to_string();
     }
     if is_shadow_path(path) && is_root(path) {
         return shadow_name(path);

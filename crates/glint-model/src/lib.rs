@@ -37,6 +37,8 @@ pub mod oklab;
 pub mod paths;
 pub mod places;
 pub mod plain;
+/// The interface's catalogs as gettext files (`locales/*.po`): what build.rs compiles in, and a translator's file.
+pub mod po;
 pub mod rank;
 pub mod small_kinds;
 pub mod store;

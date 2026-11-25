@@ -207,120 +207,236 @@ pub const SEARCH: &[Entry] = &[
     // Overview
     entry(
         Page::Overview,
-        "Suggest these as I work",
+        glint_model::english!("Suggest these as I work"),
         "suggestions tips hints notifications toasts",
     ),
     // Appearance
-    entry(Page::Appearance, "Theme", "dark mode light mode colors night"),
-    entry(Page::Appearance, "Backdrop", "mica transparency glass solid window"),
-    entry(Page::Appearance, "Accent color", "pink highlight colour windows color"),
-    entry(Page::Appearance, "Text size", "font size bigger smaller zoom scale"),
-    entry(Page::Appearance, "Line numbers in preview", "code lines numbers"),
     entry(
         Page::Appearance,
-        "Touchpad haptics",
+        glint_model::english!("Theme"),
+        "dark mode light mode colors night",
+    ),
+    entry(
+        Page::Appearance,
+        glint_model::english!("Backdrop"),
+        "mica transparency glass solid window",
+    ),
+    entry(
+        Page::Appearance,
+        glint_model::english!("Accent color"),
+        "pink highlight colour windows color",
+    ),
+    entry(
+        Page::Appearance,
+        glint_model::english!("Text size"),
+        "font size bigger smaller zoom scale",
+    ),
+    entry(
+        Page::Appearance,
+        glint_model::english!("Line numbers in preview"),
+        "code lines numbers",
+    ),
+    entry(
+        Page::Appearance,
+        glint_model::english!("Touchpad haptics"),
         "haptics feedback touchpad vibration tactile",
     ),
     // Files
-    entry(Page::Files, "Reopen my tabs", "restore session tabs startup"),
-    entry(Page::Files, "Show hidden items", "hidden files system files dotfiles"),
-    entry(Page::Files, "Folders first", "sort order folders on top"),
     entry(
         Page::Files,
-        "Each folder keeps its own view",
+        glint_model::english!("Reopen my tabs"),
+        "restore session tabs startup",
+    ),
+    entry(
+        Page::Files,
+        glint_model::english!("Show hidden items"),
+        "hidden files system files dotfiles",
+    ),
+    entry(
+        Page::Files,
+        glint_model::english!("Folders first"),
+        "sort order folders on top",
+    ),
+    entry(
+        Page::Files,
+        glint_model::english!("Each folder keeps its own view"),
         "per folder view sort columns",
     ),
-    entry(Page::Files, "Preview pane", "preview panel quick look side"),
-    entry(Page::Files, "Folders in the sidebar", "tree navigation pane sidebar"),
     entry(
         Page::Files,
-        "Open the sidebar to the folder shown",
+        glint_model::english!("Preview pane"),
+        "preview panel quick look side",
+    ),
+    entry(
+        Page::Files,
+        glint_model::english!("Folders in the sidebar"),
+        "tree navigation pane sidebar",
+    ),
+    entry(
+        Page::Files,
+        glint_model::english!("Open the sidebar to the folder shown"),
         "tree follows expand",
     ),
     entry(
         Page::Files,
-        "Quick access as tiles",
+        glint_model::english!("Quick access as tiles"),
         "sidebar tiles grid list compact places rail",
     ),
     entry(
         Page::Files,
-        "Copy and move with Glint's queue",
+        glint_model::english!("Copy and move with Glint's queue"),
         "copy queue transfers paste",
     ),
-    entry(Page::Files, "Check each copy the queue makes", "verify copies checksum"),
-    entry(Page::Files, "Thumbnails in the list", "pictures previews icons"),
-    entry(Page::Files, "A folder's README above the list", "readme markdown"),
-    entry(Page::Files, "Tile size in the grid", "icons size grid zoom"),
     entry(
         Page::Files,
-        "Ask before moving to the Recycle Bin",
+        glint_model::english!("Check each copy the queue makes"),
+        "verify copies checksum",
+    ),
+    entry(
+        Page::Files,
+        glint_model::english!("Thumbnails in the list"),
+        "pictures previews icons",
+    ),
+    entry(
+        Page::Files,
+        glint_model::english!("A folder's README above the list"),
+        "readme markdown",
+    ),
+    entry(
+        Page::Files,
+        glint_model::english!("Tile size in the grid"),
+        "icons size grid zoom",
+    ),
+    entry(
+        Page::Files,
+        glint_model::english!("Ask before moving to the Recycle Bin"),
         "delete confirm recycle bin trash",
     ),
-    entry(Page::Files, "Gallery folders", "photos pictures gallery"),
-    entry(Page::Files, "Labels", "label colors names rename tags marks"),
-    entry(Page::Files, "Add a label", "new label color"),
-    entry(Page::Files, "Keep following XYplorer", "xyplorer tag.dat marks follow import"),
-    entry(Page::Files, "Take back the last import", "undo import xyplorer marks"),
+    entry(
+        Page::Files,
+        glint_model::english!("Gallery folders"),
+        "photos pictures gallery",
+    ),
+    entry(
+        Page::Files,
+        glint_model::english!("Labels"),
+        "label colors names rename tags marks",
+    ),
+    entry(Page::Files, glint_model::english!("Add a label"), "new label color"),
+    entry(
+        Page::Files,
+        glint_model::english!("Keep following XYplorer"),
+        "xyplorer tag.dat marks follow import",
+    ),
+    entry(
+        Page::Files,
+        glint_model::english!("Take back the last import"),
+        "undo import xyplorer marks",
+    ),
     // History
-    entry(Page::History, "Save search history", "searches history privacy"),
-    entry(Page::History, "Keep up to", "history length limit"),
     entry(
         Page::History,
-        "Share folder history with zoxide",
+        glint_model::english!("Save search history"),
+        "searches history privacy",
+    ),
+    entry(
+        Page::History,
+        glint_model::english!("Keep up to"),
+        "history length limit",
+    ),
+    entry(
+        Page::History,
+        glint_model::english!("Share folder history with zoxide"),
         "zoxide terminal cd jump",
     ),
     entry(
         Page::History,
-        "Suggest the next step",
+        glint_model::english!("Suggest the next step"),
         "smart suggestions suggested menu dock",
     ),
-    entry(Page::History, "Learn from what I do", "habits learning usual"),
-    entry(Page::History, "Forget what Glint learned", "habits clear reset privacy"),
+    entry(
+        Page::History,
+        glint_model::english!("Learn from what I do"),
+        "habits learning usual",
+    ),
+    entry(
+        Page::History,
+        glint_model::english!("Forget what Glint learned"),
+        "habits clear reset privacy",
+    ),
     // Terminal
-    entry(Page::Terminal, "Shell", "powershell cmd bash wsl terminal"),
-    entry(Page::Terminal, "Follow the folder shown", "terminal cd follow"),
+    entry(
+        Page::Terminal,
+        glint_model::english!("Shell"),
+        "powershell cmd bash wsl terminal",
+    ),
+    entry(
+        Page::Terminal,
+        glint_model::english!("Follow the folder shown"),
+        "terminal cd follow",
+    ),
     // Find files
-    entry(Page::Find, "Result limit", "find files results maximum"),
-    entry(Page::Find, "Skip what .gitignore lists", "gitignore ignore"),
+    entry(
+        Page::Find,
+        glint_model::english!("Result limit"),
+        "find files results maximum",
+    ),
+    entry(
+        Page::Find,
+        glint_model::english!("Skip what .gitignore lists"),
+        "gitignore ignore",
+    ),
     // Quick search
-    entry(Page::Quick, "Shortcut", "hotkey keyboard shortcut ctrl alt"),
     entry(
         Page::Quick,
-        "Keep running in the tray",
+        glint_model::english!("Shortcut"),
+        "hotkey keyboard shortcut ctrl alt",
+    ),
+    entry(
+        Page::Quick,
+        glint_model::english!("Keep running in the tray"),
         "tray background close minimize notification area",
     ),
     entry(
         Page::Quick,
-        "Start with Windows",
+        glint_model::english!("Start with Windows"),
         "startup sign in boot autostart login",
     ),
     // Inside files
-    entry(Page::Inside, "Open files with", "editor code notepad open with"),
+    entry(
+        Page::Inside,
+        glint_model::english!("Open files with"),
+        "editor code notepad open with",
+    ),
     // Pages themselves, by the words people use for them.
     entry(
         Page::Instant,
-        "Instant search",
+        glint_model::english!("Instant search"),
         "index indexing everything drives ntfs mft service fast search",
     ),
     entry(
         Page::Clouds,
-        "Clouds",
+        glint_model::english!("Clouds"),
         "google drive onedrive dropbox rclone cloud sync remote",
     ),
-    entry(Page::Agents, "AI agents", "mcp claude copilot agent ai"),
+    entry(
+        Page::Agents,
+        glint_model::english!("AI agents"),
+        "mcp claude copilot agent ai",
+    ),
     entry(
         Page::Tools,
-        "Tools",
+        glint_model::english!("Tools"),
         "ffmpeg pandoc restic rclone 7-zip pdfcpu exiftool install update programs",
     ),
     entry(
         Page::About,
-        "About",
+        glint_model::english!("About"),
         "version updates help diagnostics export import settings file shortcuts",
     ),
     entry(
         Page::About,
-        "Install updates automatically",
+        glint_model::english!("Install updates automatically"),
         "update upgrade new version background restart scoop",
     ),
 ];

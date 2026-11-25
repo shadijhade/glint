@@ -36,22 +36,22 @@ pub fn keys_of(action: &dyn Action) -> Option<String> {
         .map(|binding| key_text(binding.keys))
 }
 
-/// A tooltip: `template` with `{0}`, `{1}`… replaced by the keys `BINDINGS` gives the actions, translated. The
-/// catalog's keys are whole sentences with the shortcut in them ("Cut (Ctrl+X)"), as the TypeScript wrote them,
-/// so the finished English is looked up; a sentence nobody translated stays English.
+/// A tooltip: `template` translated ("Cut ({0})" is a catalog's text, so the shortcut can sit where the language
+/// puts it), then `{0}`, `{1}`… replaced by the keys `BINDINGS` gives the actions.
 pub fn keyed(template: &'static str, actions: &[&dyn Action]) -> SharedString {
     keyed_with(template, actions, &[])
 }
 
-/// [`keyed`] with `{name}` placeholders (a count, a file's name) filled in after the lookup, the way `t!` does.
+/// [`keyed`] with `{name}` placeholders (a count, a file's name) filled in after the keys, the way `t!` does.
 pub fn keyed_with(template: &'static str, actions: &[&dyn Action], vars: &[(&str, &str)]) -> SharedString {
-    let mut english = template.to_string();
+    let mut text = glint_model::i18n::translate(i18n::language(), template).to_string();
     for (i, action) in actions.iter().enumerate() {
-        english = english.replace(&format!("{{{i}}}"), &keys_of(*action).unwrap_or_default());
+        text = text.replace(&format!("{{{i}}}"), &keys_of(*action).unwrap_or_default());
     }
-    glint_model::i18n::t(i18n::language(), &english, vars)
-        .into_owned()
-        .into()
+    for (name, value) in vars {
+        text = text.replace(&format!("{{{name}}}"), value);
+    }
+    text.into()
 }
 
 /// A row that runs a workspace action by `Pick`, showing the key the action has.

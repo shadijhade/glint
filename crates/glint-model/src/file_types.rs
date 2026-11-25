@@ -44,18 +44,18 @@ const fn group(name: &'static str, hue: u32, sat: u32) -> TypeGroup {
 
 /// The groups of the disk-usage map.
 pub static TYPE_GROUPS: TypeGroups = TypeGroups {
-    images: group("Images", 199, 78),
-    video: group("Videos", 262, 66),
-    audio: group("Audio", 322, 66),
-    archives: group("Archives", 36, 86),
-    documents: group("Documents", 4, 70),
-    code: group("Code and text", 150, 50),
-    programs: group("Programs", 188, 60),
-    system: group("System files", 216, 46),
-    disks: group("Disk images", 240, 56),
-    data: group("Databases", 172, 56),
-    fonts: group("Fonts", 345, 62),
-    other: group("Other files", 30, 8),
+    images: group(crate::english!("Images"), 199, 78),
+    video: group(crate::english!("Videos"), 262, 66),
+    audio: group(crate::english!("Audio"), 322, 66),
+    archives: group(crate::english!("Archives"), 36, 86),
+    documents: group(crate::english!("Documents"), 4, 70),
+    code: group(crate::english!("Code and text"), 150, 50),
+    programs: group(crate::english!("Programs"), 188, 60),
+    system: group(crate::english!("System files"), 216, 46),
+    disks: group(crate::english!("Disk images"), 240, 56),
+    data: group(crate::english!("Databases"), 172, 56),
+    fonts: group(crate::english!("Fonts"), 345, 62),
+    other: group(crate::english!("Other files"), 30, 8),
 };
 
 /// The icon a kind of file gets. The names are lucide's, which the old UI used; the UI layer maps each to its own.
@@ -135,12 +135,13 @@ const G: &TypeGroups = &TYPE_GROUPS;
 const CODE_EXTS: &str = "js mjs cjs ts mts cts tsx jsx rs go py rb java kt kts c h cpp hpp cc cs php swift scala sh bash zsh ps1 psm1 psd1 bat cmd lua sql vue svelte html htm css scss sass less xml xaml csproj sln props targets yml yaml toml ini cfg conf gradle dart r pl ex exs erl hs fs fsx clj zig nim dockerfile makefile cmake";
 
 /// Space-separated extensions and their kind; later rows win for an extension listed twice (as the Map did).
+// For translators: the Type column's words; % is the file's extension in capitals ("% image" reads "PNG image").
 static KINDS: &[(&str, Kind)] = &[
     (
         "png jpg jpeg gif webp bmp ico svg avif",
         kind(
             Icon::FileImage,
-            "% image",
+            crate::english!("% image"),
             Some(PreviewKind::Image),
             &G.images,
             "text-sky-500",
@@ -149,13 +150,19 @@ static KINDS: &[(&str, Kind)] = &[
     // Pictures the webview can't show: Windows' codecs and previewer do (JPEG XL's with its extension).
     (
         "tif tiff heic heif jxl psd raw cr2 nef arw dng",
-        kind(Icon::FileImage, "% image", None, &G.images, "text-sky-500"),
+        kind(
+            Icon::FileImage,
+            crate::english!("% image"),
+            None,
+            &G.images,
+            "text-sky-500",
+        ),
     ),
     (
         "mp4 webm m4v mov ogv",
         kind(
             Icon::FileVideo,
-            "% video",
+            crate::english!("% video"),
             Some(PreviewKind::Video),
             &G.video,
             "text-violet-500",
@@ -163,13 +170,19 @@ static KINDS: &[(&str, Kind)] = &[
     ),
     (
         "mkv avi wmv flv mpg mpeg 3gp m2ts",
-        kind(Icon::FileVideo, "% video", None, &G.video, "text-violet-500"),
+        kind(
+            Icon::FileVideo,
+            crate::english!("% video"),
+            None,
+            &G.video,
+            "text-violet-500",
+        ),
     ),
     (
         "mp3 wav ogg oga opus m4a aac flac",
         kind(
             Icon::FileAudio,
-            "% audio",
+            crate::english!("% audio"),
             Some(PreviewKind::Audio),
             &G.audio,
             "text-pink-500",
@@ -177,13 +190,19 @@ static KINDS: &[(&str, Kind)] = &[
     ),
     (
         "wma aiff aif mid midi",
-        kind(Icon::FileAudio, "% audio", None, &G.audio, "text-pink-500"),
+        kind(
+            Icon::FileAudio,
+            crate::english!("% audio"),
+            None,
+            &G.audio,
+            "text-pink-500",
+        ),
     ),
     (
         "zip rar 7z tar gz tgz txz tbz tbz2 tzst bz2 xz zst lz4 cab",
         kind(
             Icon::FileArchive,
-            "% archive",
+            crate::english!("% archive"),
             None,
             &G.archives,
             "text-amber-600 dark:text-amber-500",
@@ -193,7 +212,7 @@ static KINDS: &[(&str, Kind)] = &[
         "pdf",
         kind(
             Icon::FileText,
-            "PDF document",
+            crate::english!("PDF document"),
             Some(PreviewKind::Pdf),
             &G.documents,
             "text-red-500",
@@ -203,7 +222,7 @@ static KINDS: &[(&str, Kind)] = &[
         "doc docx odt rtf pages",
         kind(
             Icon::FileText,
-            "Word document",
+            crate::english!("Word document"),
             None,
             &G.documents,
             "text-blue-600 dark:text-blue-400",
@@ -213,7 +232,7 @@ static KINDS: &[(&str, Kind)] = &[
         "xls xlsx xlsm xlsb xltx ods numbers",
         kind(
             Icon::FileSpreadsheet,
-            "Spreadsheet",
+            crate::english!("Spreadsheet"),
             None,
             &G.documents,
             "text-green-600 dark:text-green-500",
@@ -223,7 +242,7 @@ static KINDS: &[(&str, Kind)] = &[
         "csv tsv",
         kind(
             Icon::FileSpreadsheet,
-            "% file",
+            crate::english!("% file"),
             Some(PreviewKind::Text),
             &G.documents,
             "text-green-600 dark:text-green-500",
@@ -233,7 +252,7 @@ static KINDS: &[(&str, Kind)] = &[
         "ppt pptx odp key",
         kind(
             Icon::Presentation,
-            "Presentation",
+            crate::english!("Presentation"),
             None,
             &G.documents,
             "text-orange-500",
@@ -243,7 +262,7 @@ static KINDS: &[(&str, Kind)] = &[
         "json jsonc json5 geojson webmanifest har",
         kind(
             Icon::FileJson,
-            "JSON file",
+            crate::english!("JSON file"),
             Some(PreviewKind::Text),
             &G.code,
             "text-yellow-600 dark:text-yellow-500",
@@ -253,7 +272,7 @@ static KINDS: &[(&str, Kind)] = &[
         CODE_EXTS,
         kind(
             Icon::FileCode,
-            "% source file",
+            crate::english!("% source file"),
             Some(PreviewKind::Text),
             &G.code,
             "text-emerald-500",
@@ -263,7 +282,7 @@ static KINDS: &[(&str, Kind)] = &[
         "txt md markdown mdown mkd mkdn log nfo text env gitignore gitattributes editorconfig properties lock",
         kind(
             Icon::FileText,
-            "% file",
+            crate::english!("% file"),
             Some(PreviewKind::Text),
             &G.code,
             "text-muted-foreground",
@@ -273,7 +292,7 @@ static KINDS: &[(&str, Kind)] = &[
         "exe msi com scr appx msix appinstaller",
         kind(
             Icon::AppWindow,
-            "Application",
+            crate::english!("Application"),
             None,
             &G.programs,
             "text-slate-500 dark:text-slate-400",
@@ -283,7 +302,7 @@ static KINDS: &[(&str, Kind)] = &[
         "dll sys so dylib ocx drv cpl mui",
         kind(
             Icon::FileCog,
-            "% system file",
+            crate::english!("% system file"),
             None,
             &G.system,
             "text-slate-500 dark:text-slate-400",
@@ -291,17 +310,29 @@ static KINDS: &[(&str, Kind)] = &[
     ),
     (
         "ttf otf woff woff2 eot fon",
-        kind(Icon::FileType, "% font", None, &G.fonts, "text-rose-500"),
+        kind(
+            Icon::FileType,
+            crate::english!("% font"),
+            None,
+            &G.fonts,
+            "text-rose-500",
+        ),
     ),
     (
         "iso img vhd vhdx vmdk dmg",
-        kind(Icon::Disc, "Disk image", None, &G.disks, "text-indigo-500"),
+        kind(
+            Icon::Disc,
+            crate::english!("Disk image"),
+            None,
+            &G.disks,
+            "text-indigo-500",
+        ),
     ),
     (
         "cast",
         kind(
             Icon::SquareTerminal,
-            "Terminal recording",
+            crate::english!("Terminal recording"),
             Some(PreviewKind::Text),
             &G.video,
             "text-emerald-600 dark:text-emerald-400",
@@ -311,7 +342,7 @@ static KINDS: &[(&str, Kind)] = &[
         "lnk url",
         kind(
             Icon::Link,
-            "Shortcut",
+            crate::english!("Shortcut"),
             None,
             &G.other,
             "text-cyan-600 dark:text-cyan-400",
@@ -321,7 +352,7 @@ static KINDS: &[(&str, Kind)] = &[
         "db sqlite sqlite3 mdb accdb",
         kind(
             Icon::Database,
-            "Database",
+            crate::english!("Database"),
             None,
             &G.data,
             "text-teal-600 dark:text-teal-400",
@@ -331,7 +362,7 @@ static KINDS: &[(&str, Kind)] = &[
         "parquet",
         kind(
             Icon::Database,
-            "Parquet file",
+            crate::english!("Parquet file"),
             None,
             &G.data,
             "text-teal-600 dark:text-teal-400",
@@ -341,7 +372,7 @@ static KINDS: &[(&str, Kind)] = &[
         "epub mobi azw3 cbz cbr",
         kind(
             Icon::BookOpen,
-            "E-book",
+            crate::english!("E-book"),
             None,
             &G.documents,
             "text-amber-700 dark:text-amber-400",
@@ -351,7 +382,7 @@ static KINDS: &[(&str, Kind)] = &[
         "pem key crt cer pfx p12 gpg asc",
         kind(
             Icon::FileLock,
-            "Certificate or key",
+            crate::english!("Certificate or key"),
             None,
             &G.other,
             "text-yellow-700 dark:text-yellow-500",
@@ -371,12 +402,18 @@ static BY_EXT: LazyLock<HashMap<&'static str, &'static Kind>> = LazyLock::new(||
 
 static FOLDER: Kind = kind(
     Icon::Folder,
-    "File folder",
+    crate::english!("File folder"),
     None,
     &G.other,
     "fill-amber-400/80 text-amber-500 dark:fill-amber-400/70",
 );
-static GENERIC: Kind = kind(Icon::File, "% file", None, &G.other, "text-muted-foreground");
+static GENERIC: Kind = kind(
+    Icon::File,
+    crate::english!("% file"),
+    None,
+    &G.other,
+    "text-muted-foreground",
+);
 
 /// Names without an extension that are still text, e.g. Dockerfile or LICENSE.
 const TEXT_NAMES: [&str; 8] = [
@@ -410,7 +447,8 @@ pub fn kind_of(entry: &FileEntry) -> &'static Kind {
     &GENERIC
 }
 
-/// The Type column's text: the kind's label with `%` replaced by the uppercased extension ("File" without one).
+/// The Type column's text, in the interface's language: the kind's label with `%` replaced by the uppercased
+/// extension ("File" without one).
 pub fn type_label(entry: &FileEntry) -> String {
     let mut out = String::new();
     push_type_label(entry, &mut out);
@@ -421,11 +459,13 @@ pub fn type_label(entry: &FileEntry) -> String {
 /// description of a row, made for every visible row on every frame): no string of its own, and the uppercased
 /// extension is written a letter at a time.
 pub fn push_type_label(entry: &FileEntry, out: &mut String) {
-    let label = kind_of(entry).label;
+    let language = crate::i18n::current();
+    // A catalog keeps the `%` ("% 图像"): build.rs leaves out a translation that drops it.
+    let label = crate::i18n::translate(language, kind_of(entry).label);
     if !label.contains('%') {
         out.push_str(label);
     } else if entry.ext().is_empty() {
-        out.push_str("File");
+        out.push_str(crate::i18n::translate(language, crate::english!("File")));
     } else {
         for (n, part) in label.split('%').enumerate() {
             if n > 0 {

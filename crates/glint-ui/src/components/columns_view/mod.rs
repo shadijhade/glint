@@ -629,9 +629,8 @@ impl ColumnsView {
 
     /// What a folder is called on the dragged picture, with the words for copying and moving into it.
     fn drop_words(&self, dest: &str, cx: &App) -> Under {
-        let name = explorer(cx).read(cx).tab_name(dest);
         Under {
-            name: glint_model::i18n::translate(i18n::language(), &name).to_string(),
+            name: explorer(cx).read(cx).tab_name(dest),
             copy: t!("Copy to %1").to_string(),
             moves: t!("Move to %1").to_string(),
             always_move: is_recycle_bin(dest),

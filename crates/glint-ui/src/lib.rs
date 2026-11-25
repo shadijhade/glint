@@ -9,8 +9,9 @@
 //! 5. [`dialogs::drive_health`]: the exemplar, a whole dialog with model, view, states, accessibility and test.
 //! 6. [`workspace`]: the main window the components plug into.
 //!
-//! **Start-up order** (in [`run`]): one copy per session (`platform::launch::begin`), then `gpui_kit::init`,
-//! `state::init`, `persistence::init`, `theme::init`, `actions::init`, `core_bridge::init`;
+//! **Start-up order** (in [`run`]): one copy per session (`platform::launch::begin`), the language
+//! (`i18n::init`), then `gpui_kit::init`, `state::init`, `persistence::init`, `theme::init`, `actions::init`,
+//! `core_bridge::init`;
 //! then `startup::start`: the preview host, the explorer and its saved share, the tray, the Jump List, the
 //! main window (hidden, placed, shown), the first folders and later launches. startup.rs is where the
 //! services meet.
@@ -68,6 +69,8 @@ pub fn run() -> i32 {
         platform::launch::Startup::Exit => return 0,
         platform::launch::Startup::Run(request) => request,
     };
+    // The language before anything says a word: Windows' display language, or GLINT_LANGUAGE.
+    i18n::init();
     // The assets are the icons: without them every icon, the title bar's buttons included, is invisible.
     // `AllAssets`, not `Assets`: the default set embeds only gpui-component's own 101 icons, and any other
     // Lucide icon (HeartPulse, ShieldAlert, file types…) would silently draw nothing. All of them add about
@@ -86,7 +89,7 @@ pub fn run() -> i32 {
         }
         glint_core::startup::mark("kit");
         state::init(cx);
-        // The saved state, its settings first: the theme and the language read them.
+        // The saved state, its settings first: the theme reads them.
         persistence::init(cx);
         glint_core::startup::mark("saved state");
         theme::init(cx);

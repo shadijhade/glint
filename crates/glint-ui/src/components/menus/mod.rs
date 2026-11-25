@@ -406,8 +406,9 @@ impl MenuHost {
 
     /// A folder's name as the tabs say it, in the language shown.
     fn folder_title(folder: &str, cx: &App) -> SharedString {
-        let name = try_explorer(cx).map_or_else(|| base_name(folder).to_string(), |e| e.read(cx).tab_name(folder));
-        glint_model::i18n::t(i18n::language(), &name, &[]).into_owned().into()
+        try_explorer(cx)
+            .map_or_else(|| base_name(folder).to_string(), |e| e.read(cx).tab_name(folder))
+            .into()
     }
 
     /// The menu closed: what was being found out for it is no longer wanted.
@@ -915,8 +916,7 @@ impl MenuHost {
                     && tab.archive().is_none()
                     && tab.no_access().is_none()
                 {
-                    let name = ex.tab_name(&tab.path);
-                    ctx.other_folder = Some(glint_model::i18n::t(i18n::language(), &name, &[]).into_owned());
+                    ctx.other_folder = Some(ex.tab_name(&tab.path));
                 }
                 ctx.other_selected = tab
                     .rows

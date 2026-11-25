@@ -19,7 +19,7 @@ use glint_model::columns::{folder_kind_of, in_order, ColumnId, FolderKind, Folde
 use glint_model::entries::{FileEntry, Sort};
 use glint_model::grid::zoom_tiles;
 use glint_model::groups::GroupBy;
-use glint_model::paths::{is_gallery, is_recent, is_recycle_bin, same_path, THIS_PC};
+use glint_model::paths::{base_name, is_gallery, is_recent, is_recycle_bin, same_path, THIS_PC};
 use glint_model::store::{FolderViewPatch, Settings, StartFolder};
 use gpui_kit::{App, AppContext as _, Context, EventEmitter, Subscription, Task};
 use std::collections::{HashMap, HashSet};
@@ -384,9 +384,15 @@ impl Explorer {
         !self.closed_tabs.is_empty()
     }
 
-    /// What a path is called in a tab or crumb: "This PC", the folder's name, a drive's name… (`tabName`).
-    /// English; translate the fixed names.
+    /// What a path is called in a tab or crumb: "This PC", the folder's name, a drive's name… (`tabName`), in the
+    /// interface's language. A known folder whose name on disk is Windows' own ("Desktop") takes the name the
+    /// sidebar gives it, as File Explorer does ("桌面" in Chinese); Home keeps the user's own name.
     pub fn tab_name(&self, path: &str) -> String {
+        if let Some(id) = self.known_id_of(path).filter(|id| *id != KnownId::Home) {
+            if base_name(path).eq_ignore_ascii_case(id.name()) {
+                return crate::t!(id.name()).to_string();
+            }
+        }
         tab_name(path, &self.drives, &|p| {
             let id = remote_id(p);
             self.remote_names.get(&id.to_lowercase()).cloned().unwrap_or(id)

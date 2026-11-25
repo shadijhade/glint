@@ -203,7 +203,12 @@ impl Seen {
                     .flatten();
                 // A drive by its name; a place by its own; a remote by its connection's name.
                 let name = if i != 0 {
-                    crumb.name.clone()
+                    // A known folder ("Desktop") by the name the sidebar gives it, in the interface's language.
+                    if explorer.known_id_of(&crumb.path).is_some() {
+                        explorer.tab_name(&crumb.path)
+                    } else {
+                        crumb.name.clone()
+                    }
                 } else if place {
                     place_name(&crumb.name)
                 } else if is_remote_path(&crumb.path) {
@@ -233,7 +238,7 @@ impl Seen {
             editing: explorer.editing_address,
             dual: explorer.is_dual(),
             pane: explorer.active_pane(),
-            folder_name: place_name(&explorer.tab_name(&path)),
+            folder_name: explorer.tab_name(&path),
             path,
             drives,
             known: explorer.known_folders().clone(),
@@ -759,7 +764,7 @@ impl AddressBar {
             };
         };
         // The folder by the name its tab would have ("Local Disk (C:)", "Documents", "This PC").
-        let name = || place_name(&self.explorer.read(cx).tab_name(&place.path));
+        let name = || self.explorer.read(cx).tab_name(&place.path);
         match (&place.query, back) {
             // No words: the flat view of the folder.
             (Some(query), true) if query.is_empty() => t!("Back to every file in {place} (Alt+Left)", place = name()),
@@ -1147,11 +1152,11 @@ impl AddressBar {
     fn pane_side(&self, t: &theme::Tokens, cx: &mut Context<Self>) -> impl IntoElement {
         // The first pane is on the left, or on the right in a right-to-left language.
         let left = (self.seen.pane == 0) != i18n::is_rtl();
-        let label = t!(if left {
-            "The left pane: F6 for the right one"
+        let label = if left {
+            t!("The left pane: F6 for the right one")
         } else {
-            "The right pane: F6 for the left one"
-        });
+            t!("The right pane: F6 for the left one")
+        };
         Button::new("address-pane")
             .ghost()
             .xsmall()

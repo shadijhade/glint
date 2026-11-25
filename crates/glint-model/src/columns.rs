@@ -110,7 +110,7 @@ pub static COLUMNS: [(ColumnId, ColumnDef); 11] = [
     (
         ColumnId::Modified,
         def(
-            "Date modified",
+            crate::english!("Date modified"),
             Column::Date,
             SortKey::Modified,
             Some(DropAt::Sm),
@@ -121,7 +121,7 @@ pub static COLUMNS: [(ColumnId, ColumnDef); 11] = [
     (
         ColumnId::Taken,
         def(
-            "Date taken",
+            crate::english!("Date taken"),
             Column::Taken,
             SortKey::Taken,
             Some(DropAt::Md),
@@ -131,16 +131,23 @@ pub static COLUMNS: [(ColumnId, ColumnDef); 11] = [
     ),
     (
         ColumnId::Type,
-        def("Type", Column::Type, SortKey::Type, Some(DropAt::Md), false, false),
+        def(
+            crate::english!("Type"),
+            Column::Type,
+            SortKey::Type,
+            Some(DropAt::Md),
+            false,
+            false,
+        ),
     ),
     (
         ColumnId::Size,
-        def("Size", Column::Size, SortKey::Size, None, false, true),
+        def(crate::english!("Size"), Column::Size, SortKey::Size, None, false, true),
     ),
     (
         ColumnId::Dimensions,
         def(
-            "Dimensions",
+            crate::english!("Dimensions"),
             Column::Dimensions,
             SortKey::Dimensions,
             Some(DropAt::Md),
@@ -151,7 +158,7 @@ pub static COLUMNS: [(ColumnId, ColumnDef); 11] = [
     (
         ColumnId::Duration,
         def(
-            "Duration",
+            crate::english!("Duration"),
             Column::Duration,
             SortKey::Duration,
             Some(DropAt::Md),
@@ -161,24 +168,52 @@ pub static COLUMNS: [(ColumnId, ColumnDef); 11] = [
     ),
     (
         ColumnId::Artist,
-        def("Artist", Column::Artist, SortKey::Artist, Some(DropAt::Md), true, false),
+        def(
+            crate::english!("Artist"),
+            Column::Artist,
+            SortKey::Artist,
+            Some(DropAt::Md),
+            true,
+            false,
+        ),
     ),
     (
         ColumnId::Album,
-        def("Album", Column::Album, SortKey::Album, Some(DropAt::Md), true, false),
+        def(
+            crate::english!("Album"),
+            Column::Album,
+            SortKey::Album,
+            Some(DropAt::Md),
+            true,
+            false,
+        ),
     ),
     (
         ColumnId::Label,
-        def("Label", Column::Label, SortKey::Label, Some(DropAt::Md), false, false),
+        def(
+            crate::english!("Label"),
+            Column::Label,
+            SortKey::Label,
+            Some(DropAt::Md),
+            false,
+            false,
+        ),
     ),
     (
         ColumnId::Tags,
-        def("Tags", Column::Tags, SortKey::Tags, Some(DropAt::Md), false, false),
+        def(
+            crate::english!("Tags"),
+            Column::Tags,
+            SortKey::Tags,
+            Some(DropAt::Md),
+            false,
+            false,
+        ),
     ),
     (
         ColumnId::Comment,
         def(
-            "Comment",
+            crate::english!("Comment"),
             Column::Comment,
             SortKey::Comment,
             Some(DropAt::Md),
@@ -264,7 +299,7 @@ pub static KINDS: [(FolderKind, KindDef); 7] = [
     (
         FolderKind::General,
         KindDef {
-            label: "Any folder",
+            label: crate::english!("Any folder"),
             columns: &[ColumnId::Modified, ColumnId::Type, ColumnId::Size],
             sort: None,
             view: None,
@@ -273,7 +308,7 @@ pub static KINDS: [(FolderKind, KindDef); 7] = [
     (
         FolderKind::Pictures,
         KindDef {
-            label: "Pictures",
+            label: crate::english!("Pictures"),
             columns: &[ColumnId::Taken, ColumnId::Dimensions, ColumnId::Type, ColumnId::Size],
             sort: None,
             view: None,
@@ -282,7 +317,7 @@ pub static KINDS: [(FolderKind, KindDef); 7] = [
     (
         FolderKind::Videos,
         KindDef {
-            label: "Videos",
+            label: crate::english!("Videos"),
             columns: &[
                 ColumnId::Modified,
                 ColumnId::Duration,
@@ -296,7 +331,7 @@ pub static KINDS: [(FolderKind, KindDef); 7] = [
     (
         FolderKind::Music,
         KindDef {
-            label: "Music",
+            label: crate::english!("Music"),
             columns: &[ColumnId::Artist, ColumnId::Album, ColumnId::Duration, ColumnId::Size],
             sort: None,
             view: None,
@@ -305,7 +340,7 @@ pub static KINDS: [(FolderKind, KindDef); 7] = [
     (
         FolderKind::Downloads,
         KindDef {
-            label: "Downloads",
+            label: crate::english!("Downloads"),
             columns: &[ColumnId::Modified, ColumnId::Type, ColumnId::Size],
             sort: NEWEST_FIRST,
             view: None,
@@ -314,7 +349,7 @@ pub static KINDS: [(FolderKind, KindDef); 7] = [
     (
         FolderKind::Recent,
         KindDef {
-            label: "Recent",
+            label: crate::english!("Recent"),
             columns: &[ColumnId::Modified, ColumnId::Size],
             sort: NEWEST_FIRST,
             view: None,
@@ -323,7 +358,7 @@ pub static KINDS: [(FolderKind, KindDef); 7] = [
     (
         FolderKind::Gallery,
         KindDef {
-            label: "Gallery",
+            label: crate::english!("Gallery"),
             columns: &[ColumnId::Modified, ColumnId::Dimensions, ColumnId::Size],
             sort: NEWEST_FIRST,
             view: Some(ViewMode::Grid),

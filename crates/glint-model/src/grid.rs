@@ -57,27 +57,27 @@ pub struct TileSpec {
 pub const TILE_SIZES: [TileSpec; 5] = [
     TileSpec {
         size: TileSize::Small,
-        label: "Small",
+        label: crate::english!("Small"),
         rem: 4.0,
     },
     TileSpec {
         size: TileSize::Medium,
-        label: "Medium",
+        label: crate::english!("Medium"),
         rem: 6.0,
     },
     TileSpec {
         size: TileSize::Large,
-        label: "Large",
+        label: crate::english!("Large"),
         rem: 8.0,
     },
     TileSpec {
         size: TileSize::XLarge,
-        label: "Extra large",
+        label: crate::english!("Extra large"),
         rem: 12.0,
     },
     TileSpec {
         size: TileSize::Huge,
-        label: "Huge",
+        label: crate::english!("Huge"),
         rem: 16.0,
     },
 ];

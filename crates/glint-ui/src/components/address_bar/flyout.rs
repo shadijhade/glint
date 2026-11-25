@@ -146,7 +146,7 @@ impl AddressBar {
         places
             .into_iter()
             .map(|visit| {
-                let name = place_name(&explorer.tab_name(&visit.path));
+                let name = explorer.tab_name(&visit.path);
                 match visit.search_query() {
                     // No words: the flat view of the folder.
                     Some("") => Suggestion {

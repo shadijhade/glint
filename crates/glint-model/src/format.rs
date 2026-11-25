@@ -9,8 +9,7 @@
 //! such as "en-US" (or `None` for the user's locale), so the tests do not depend on this PC's settings.
 //!
 //! Dates are local time, as in the TypeScript: "Today" and "Yesterday" are judged against the local midnight.
-//! Those two words go through the i18n catalog for the given `Language`; the Arabic catalog has no entry for them
-//! yet, so they stay English there until it does.
+//! Those two words go through the i18n catalog for the given `Language`, and so do [`plural`]'s counts.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -97,13 +96,26 @@ fn ascii_digits(mut n: u64, buf: &mut [u8; 20]) -> &str {
     std::str::from_utf8(&buf[at..]).unwrap_or_default()
 }
 
-/// 1 becomes "1 item", 3 becomes "3 items".
+/// 1 becomes "1 item", 3 becomes "3 items", in the interface's language: a catalog translates the count's two
+/// texts, "{n} item" for one and "{n} items" for any other count (Chinese: "{n} 项" for both).
+/// `node scripts/i18n.mjs` lists the two for each noun written here as text, as in `plural(n, "file")`; where
+/// a catalog has neither, the English shows.
 pub fn plural(n: usize, word: &str) -> String {
-    plural_in(n, word, None)
+    plural_in(n, word, None, crate::i18n::current())
 }
 
-fn plural_in(n: usize, word: &str, locale: Option<&str>) -> String {
-    format!("{} {word}{}", format_count_in(n, locale), if n == 1 { "" } else { "s" })
+fn plural_in(n: usize, word: &str, locale: Option<&str>, language: Language) -> String {
+    let count = format_count_in(n, locale);
+    let s = if n == 1 { "" } else { "s" };
+    if language != Language::En {
+        let english = format!("{{n}} {word}{s}");
+        let said = translate(language, &english);
+        // The catalog's own text, even where it reads as the English does ("{n} PDF").
+        if !std::ptr::eq(said, english.as_str()) {
+            return said.replace("{n}", &count);
+        }
+    }
+    format!("{count} {word}{s}")
 }
 
 /// 0.42 becomes "0.4 ms", 12.3 becomes "12 ms", 1234 becomes "1.23 s".
@@ -227,9 +239,9 @@ fn format_date_with_today(ms: i64, today: i64, locale: Option<&str>, language: L
     };
     let time = format_time(&date, locale, TIME_NOSECONDS);
     if ms >= today && ms < today + DAY {
-        format!("{} {time}", translate(language, "Today"))
+        format!("{} {time}", translate(language, crate::english!("Today")))
     } else if ms >= today - DAY && ms < today {
-        format!("{} {time}", translate(language, "Yesterday"))
+        format!("{} {time}", translate(language, crate::english!("Yesterday")))
     } else {
         format!("{} {time}", format_short_date(&date, locale))
     }
@@ -723,9 +735,24 @@ mod tests {
     #[test]
     fn counts_are_grouped_and_plural_for_anything_but_one() {
         assert_eq!(format_count_in(1234, Some("en-US")), "1,234");
-        assert_eq!(plural_in(1, "item", Some("en-US")), "1 item");
-        assert_eq!(plural_in(0, "item", Some("en-US")), "0 items");
-        assert_eq!(plural_in(3, "item", Some("en-US")), "3 items");
+        assert_eq!(plural_in(1, "item", Some("en-US"), Language::En), "1 item");
+        assert_eq!(plural_in(0, "item", Some("en-US"), Language::En), "0 items");
+        assert_eq!(plural_in(3, "item", Some("en-US"), Language::En), "3 items");
+    }
+
+    #[test]
+    fn counts_go_through_the_catalog_as_two_texts() {
+        // The pseudo-language translates every text, so it shows which one was asked for.
+        assert_eq!(plural_in(1, "file", Some("en-US"), Language::Pseudo), "[1 fíĺé ··]");
+        assert_eq!(
+            plural_in(1234, "file", Some("en-US"), Language::Pseudo),
+            "[1,234 fíĺéš ··]"
+        );
+        // A catalog without the noun's texts: the English.
+        assert_eq!(
+            plural_in(2, "no such noun", Some("en-US"), Language::ZhHans),
+            "2 no such nouns"
+        );
     }
 
     #[test]

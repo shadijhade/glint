@@ -42,31 +42,31 @@ pub struct GroupByOption {
 pub const GROUP_BYS: [GroupByOption; 7] = [
     GroupByOption {
         by: GroupBy::None,
-        label: "Nothing",
+        label: crate::english!("Nothing"),
     },
     GroupByOption {
         by: GroupBy::Kind,
-        label: "Kind",
+        label: crate::english!("Kind"),
     },
     GroupByOption {
         by: GroupBy::Date,
-        label: "Date modified",
+        label: crate::english!("Date modified"),
     },
     GroupByOption {
         by: GroupBy::Size,
-        label: "Size",
+        label: crate::english!("Size"),
     },
     GroupByOption {
         by: GroupBy::Type,
-        label: "Type",
+        label: crate::english!("Type"),
     },
     GroupByOption {
         by: GroupBy::Git,
-        label: "Git status",
+        label: crate::english!("Git status"),
     },
     GroupByOption {
         by: GroupBy::Label,
-        label: "Label",
+        label: crate::english!("Label"),
     },
 ];
 
@@ -81,6 +81,17 @@ fn group(rank: i64, label: &'static str) -> Group {
     Group {
         rank,
         label: Cow::Borrowed(label),
+    }
+}
+
+impl Group {
+    /// Its header as the interface says it: a fixed name ("Today", "Folders") in the interface's language, a
+    /// name made from the files (a type, a label's own name) as it is.
+    fn said(&self) -> String {
+        match &self.label {
+            Cow::Borrowed(fixed) => crate::i18n::translate(crate::i18n::current(), fixed).to_string(),
+            Cow::Owned(made) => made.clone(),
+        }
     }
 }
 
@@ -149,32 +160,32 @@ impl DateBounds {
 
     fn group(&self, t: i64) -> Group {
         if t >= self.start + DAY {
-            return group(0, "Later");
+            return group(0, crate::english!("Later"));
         }
         if t >= self.start {
-            return group(1, "Today");
+            return group(1, crate::english!("Today"));
         }
         if t >= self.start - DAY {
-            return group(2, "Yesterday");
+            return group(2, crate::english!("Yesterday"));
         }
         if t >= self.week_start {
-            return group(3, "Earlier this week");
+            return group(3, crate::english!("Earlier this week"));
         }
         if t >= self.week_start - 7 * DAY {
-            return group(4, "Last week");
+            return group(4, crate::english!("Last week"));
         }
         if t >= self.month_start {
-            return group(5, "Earlier this month");
+            return group(5, crate::english!("Earlier this month"));
         }
         if t >= self.last_month {
-            return group(6, "Last month");
+            return group(6, crate::english!("Last month"));
         }
         if t >= self.year_start {
-            return group(7, "Earlier this year");
+            return group(7, crate::english!("Earlier this year"));
         }
         // NOTE(port): a time chrono can't place (JavaScript's Invalid Date would give "NaN") is "Unknown".
         let Some(year) = Local.timestamp_millis_opt(t).earliest().map(|d| d.year()) else {
-            return group(99, "Unknown");
+            return group(99, crate::english!("Unknown"));
         };
         Group {
             rank: 8 + i64::from(self.year) - i64::from(year),
@@ -185,17 +196,17 @@ impl DateBounds {
 
 fn size_group(size: u64) -> Group {
     if size == 0 {
-        group(0, "Empty")
+        group(0, crate::english!("Empty"))
     } else if size < 16 << 10 {
-        group(1, "Tiny (under 16 KB)")
+        group(1, crate::english!("Tiny (under 16 KB)"))
     } else if size < 1 << 20 {
-        group(2, "Small (16 KB to 1 MB)")
+        group(2, crate::english!("Small (16 KB to 1 MB)"))
     } else if size < 128 << 20 {
-        group(3, "Medium (1 to 128 MB)")
+        group(3, crate::english!("Medium (1 to 128 MB)"))
     } else if size < 1 << 30 {
-        group(4, "Large (128 MB to 1 GB)")
+        group(4, crate::english!("Large (128 MB to 1 GB)"))
     } else {
-        group(5, "Huge (over 1 GB)")
+        group(5, crate::english!("Huge (over 1 GB)"))
     }
 }
 
@@ -210,7 +221,7 @@ fn group_in(
     match by {
         GroupBy::Kind => {
             if entry.dir {
-                return group(-1, "Folders");
+                return group(-1, crate::english!("Folders"));
             }
             let name = kind_of(entry).group.name;
             let rank = kind_order().iter().position(|n| *n == name).map_or(-1, |i| i as i64);
@@ -218,7 +229,7 @@ fn group_in(
         }
         GroupBy::Type => {
             if entry.dir {
-                group(-1, "Folders")
+                group(-1, crate::english!("Folders"))
             } else {
                 Group {
                     rank: 0,
@@ -228,11 +239,11 @@ fn group_in(
         }
         GroupBy::Date => {
             if entry.modified == 0 {
-                return group(99, "Unknown");
+                return group(99, crate::english!("Unknown"));
             }
             match bounds {
                 Some(b) => b.group(entry.modified),
-                None => group(99, "Unknown"),
+                None => group(99, crate::english!("Unknown")),
             }
         }
         GroupBy::Size => {
@@ -240,7 +251,7 @@ fn group_in(
             let size = if entry.dir {
                 match size_of.and_then(|f| f(entry)) {
                     Some(size) => size,
-                    None => return group(-1, "Folders"),
+                    None => return group(-1, crate::english!("Folders")),
                 }
             } else {
                 entry.size
@@ -248,12 +259,12 @@ fn group_in(
             size_group(size)
         }
         GroupBy::Git => match git.and_then(|g| g.get(&entry.lower)) {
-            Some(GitMark::Conflicted) => group(0, "Conflicts"),
-            Some(GitMark::Modified) => group(1, "Changed"),
-            Some(GitMark::Staged) => group(2, "Staged"),
-            Some(GitMark::Untracked) => group(3, "New"),
-            Some(GitMark::Ignored) => group(5, "Ignored"),
-            None => group(4, "Unchanged"),
+            Some(GitMark::Conflicted) => group(0, crate::english!("Conflicts")),
+            Some(GitMark::Modified) => group(1, crate::english!("Changed")),
+            Some(GitMark::Staged) => group(2, crate::english!("Staged")),
+            Some(GitMark::Untracked) => group(3, crate::english!("New")),
+            Some(GitMark::Ignored) => group(5, crate::english!("Ignored")),
+            None => group(4, crate::english!("Unchanged")),
         },
         // Without the marks, a label is one nameless group, as None is.
         GroupBy::Label if marks.is_some() => {
@@ -405,7 +416,7 @@ pub fn group_order_marked<E: std::borrow::Borrow<FileEntry>>(
         if current != Some(group.label.as_ref()) {
             current = Some(group.label.as_ref());
             headers.push(GroupHeader {
-                label: group.label.to_string(),
+                label: group.said(),
                 count: 0,
                 size: 0,
                 first: order.len(),

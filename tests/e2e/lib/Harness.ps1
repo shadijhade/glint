@@ -155,10 +155,11 @@ function Test-OtherGlintRunning {
 }
 
 function Set-ChildEnv {
-    # The debug app reads these; the run pins them so the theme is fixed and no suggestion pops up mid-check. APPDATA and
+    # The debug app reads these; the run pins them so the theme is fixed, no suggestion pops up mid-check, and the
+    # interface is English whatever Windows speaks (the checks find controls by their English names). APPDATA and
     # LOCALAPPDATA are the run's own profile (Set-FreshProfile): the app never reads or writes the user's.
     if (-not $script:E2E.Roaming -or -not $script:E2E.Local) { throw 'the run has no profile of its own (Set-FreshProfile)' }
-    $want = @{ GLINT_THEME = 'light'; GLINT_SUGGESTIONS = 'off'; GLINT_SELFTEST = $null; GLINT_BENCH_START = $null
+    $want = @{ GLINT_THEME = 'light'; GLINT_SUGGESTIONS = 'off'; GLINT_LANGUAGE = 'en'; GLINT_SELFTEST = $null; GLINT_BENCH_START = $null
                APPDATA = $script:E2E.Roaming; LOCALAPPDATA = $script:E2E.Local }
     foreach ($key in $want.Keys) {
         $script:E2E.EnvSaved[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')

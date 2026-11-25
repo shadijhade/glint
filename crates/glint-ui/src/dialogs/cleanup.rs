@@ -349,16 +349,20 @@ impl Kind {
         }
     }
 
-    /// One of what it finds, for `plural` (English, as the page's `noun`).
-    pub fn noun(self) -> &'static str {
-        match self {
-            Kind::Junk => "folder",
-            Kind::Empty => "empty folder",
-            Kind::Temporary | Kind::Big | Kind::Broken | Kind::Misnamed => "file",
-            Kind::Images => "picture",
-            Kind::Videos => "video",
-            Kind::Music => "song",
-        }
+    /// How many of what it finds: "3 files", "1 empty folder" (the page's `noun`, counted with `plural`, which
+    /// is where the extractor finds the nouns).
+    pub fn count(self, n: usize) -> String {
+        plural(
+            n,
+            match self {
+                Kind::Junk => "folder",
+                Kind::Empty => "empty folder",
+                Kind::Temporary | Kind::Big | Kind::Broken | Kind::Misnamed => "file",
+                Kind::Images => "picture",
+                Kind::Videos => "video",
+                Kind::Music => "song",
+            },
+        )
     }
 
     /// The date's tooltip.
@@ -691,7 +695,7 @@ pub fn in_root(root: &str, path: &str) -> String {
 
 /// The summary line under the results (`summary`), for the kind's own report.
 pub fn summary(kind: Kind, scan: &Scan) -> String {
-    let mut parts = vec![plural(scan.items.len() + scan.more, kind.noun())];
+    let mut parts = vec![kind.count(scan.items.len() + scan.more)];
     if !kind.folders() || kind == Kind::Junk {
         parts.push(format_size(scan.total));
     }
@@ -760,7 +764,8 @@ pub fn groups_of(kind: Kind, items: &[Item]) -> Vec<Group> {
         } else if !item.kind.is_empty() {
             (item.kind.clone(), None)
         } else if kind.folders() {
-            ("Empty folders".to_string(), Some("Empty folders"))
+            let empty = glint_model::english!("Empty folders");
+            (empty.to_string(), Some(empty))
         } else {
             let name = kind_of(&entry_of(kind, item)).group.name;
             (name.to_string(), Some(name))
@@ -2699,7 +2704,7 @@ impl CleanupDialog {
                         size = format_size(chosen_bytes)
                     )
                 } else {
-                    t!("Recycle {what}", what = plural(chosen_count, snap.kind.noun()))
+                    t!("Recycle {what}", what = snap.kind.count(chosen_count))
                 };
                 Button::new("cleanup-recycle")
                     .danger()
@@ -3186,8 +3191,8 @@ mod tests {
         assert!(Kind::Junk.folders() && Kind::Empty.folders() && !Kind::Big.folders());
         assert!(Kind::Images.grouped() && Kind::Music.grouped() && !Kind::Broken.grouped());
         assert!(Kind::Misnamed.renames() && !Kind::Broken.renames());
-        assert_eq!(Kind::Videos.noun(), "video");
-        assert_eq!(Kind::Empty.noun(), "empty folder");
+        assert_eq!(Kind::Videos.count(1), "1 video");
+        assert_eq!(Kind::Empty.count(2), "2 empty folders");
         assert_eq!(
             Kind::Junk.helpers(),
             [Helper::All, Helper::ProjectsUntouched30].as_slice()

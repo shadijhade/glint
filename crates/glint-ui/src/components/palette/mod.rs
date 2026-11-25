@@ -453,9 +453,9 @@ fn rows_for(results: &[Command], empty: bool) -> Vec<Row> {
         let new_kind = i == 0 || results[i - 1].kind != command.kind;
         if empty && new_kind && !is_calculator(command) {
             rows.push(Row::Header(if command.kind == Kind::Folder {
-                "Go to"
+                glint_model::english!("Go to")
             } else {
-                "Commands"
+                glint_model::english!("Commands")
             }));
         }
         rows.push(Row::Item(i));

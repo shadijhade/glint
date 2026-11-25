@@ -6,6 +6,7 @@ Thanks for helping make Glint faster and better! Bug reports, ideas, docs fixes 
 
 -   **Bugs:** open an issue with the bug template. The app version is in **Settings → About**.
 -   **Features:** open an issue first for anything bigger than a small fix, so we can agree on the approach before you spend time on it.
+-   **Translations:** each language is a gettext file in `locales/`; [docs/translating.md](docs/translating.md) says how to translate one and see it in Glint without building it.
 -   **Good first issues** are labelled [`good first issue`](https://github.com/shadijhade/glint/labels/good%20first%20issue).
 
 ## Set up
@@ -37,6 +38,7 @@ Five crates make a workspace (`Cargo.toml`): `crates/glint` is `Glint.exe` (a th
 | `crates/glint-ui/src/components/settings/` | Settings, one file per page |
 | `crates/glint-ui/src/dialogs/` | The dialogs: Clean up, Find duplicates, X-Ray, Compare two files, Send, Remote, Rules, Convert, Media, PDF tools, Backups, Drive health… (`drive_health.rs` is the exemplar) |
 | `crates/glint-ui/src/core_bridge.rs`, `crates/glint-ui/src/actions.rs`, `crates/glint-ui/src/kit.rs`, `crates/glint-ui/src/theme.rs`, `crates/glint-ui/src/i18n.rs` | How a view calls the engine without waiting; commands and their keys; the controls every view uses (the only place gpui-component is touched); colors and sizes as tokens; every string (`t!`), right to left |
+| `locales/`, `crates/glint-model/src/i18n.rs`, `crates/glint-model/src/po.rs`, `crates/glint-model/build.rs`, `scripts/i18n.mjs` | The interface's languages: the gettext catalogs, compiling them into Glint, picking Windows' language, and finding every text for the translators ([docs/translating.md](docs/translating.md)) |
 | `crates/glint-ui/src/platform/` | Windows-only code behind the window: one copy at a time and later launches (`launch.rs`), the tray, the window's place, drag and drop, file pickers, Windows' preview handlers (`preview_host.rs`), read-aloud |
 | `crates/glint-ui/src/updater.rs`, `crates/glint-ui/src/old_settings/` | Finding and installing updates (latest.json, the signed installer); reading the old WebView app's settings at the first start |
 | `crates/glint-model/src/store.rs`, `crates/glint-model/src/paths.rs`, `crates/glint-model/src/entries.rs`, `crates/glint-model/src/collate.rs`, `crates/glint-model/src/format.rs`, `crates/glint-model/src/rank.rs`, `crates/glint-model/src/plain.rs`, `crates/glint-model/src/grid.rs` | Pure logic: settings and saved things, paths and places (`shell:RecycleBinFolder`, `remote:<id>\…`), listings, natural sort, how sizes and times read, ranking folders by how often and recently they're opened, plain words in the search box read as filters, the grid's tile sizes |
@@ -96,6 +98,8 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 npm run test:signing                       # if you touched scripts/lib/minisign.mjs
 npm run test:store                         # if you touched scripts/store.mjs or scripts/lib/store-submission.mjs
+npm run test:i18n                          # if you touched scripts/i18n.mjs or scripts/lib/i18n.mjs
+node scripts/i18n.mjs status               # if you touched locales/: the translations Glint can't use
 powershell -STA -File tests\e2e\run.ps1    # the real app, driven by real clicks: leave the mouse and keyboard alone while it runs
 ```
 
