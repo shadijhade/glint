@@ -8,6 +8,23 @@ The plan for 0.12 that was here is in git history (`git show df1245a:NEXT_RELEAS
 before it (`git show 47c33fa:NEXT_RELEASE.md`), and 0.13's own plan, the menu and the dock that know the selection,
 is [docs/gpui/aware/PLAN.md](docs/gpui/aware/PLAN.md) with its task cards beside it.*
 
+## 0.18.1: a tag's search shows what it found, and network shares below the Recycle Bin ([#11](https://github.com/shadijhade/glint/issues/11), [#10](https://github.com/shadijhade/glint/issues/10))
+
+Both reported by Helius hours after 0.18.0 came out, both answered on their issues.
+
+- **#11, a tag's chip or a label's dot showed This PC** (`5853bcc`). A search of every drive keeps This PC as the
+  tab's path, and the pane chose the This PC page by the path alone, so the status bar said "5 found" over the folders
+  and drives. `Tab::shows_this_pc` (This PC with no search) now decides it for the pane, the This PC page and the
+  Color Wheel; `a_tag_label_or_saved_search_of_every_drive_shows_its_results_and_not_the_this_pc_page`.
+- **#10, a NAS share in the sidebar as "nShare"** (`3a2e529`). A pinned place on another computer
+  (`paths::is_network_path`: `\\server\…`, not WSL's or `\\?\`) sits with the drives, below the Recycle Bin, as a
+  network drive; a share is called "share (\\server)" until it has a name. **Rename in sidebar…** on a pinned place's
+  menu keeps a name in `AppState::pin_names` ("pinNames"), shown only in the rail: the tooltip keeps the path,
+  unpinning forgets the name, and the settings file carries it. Checked in a debug build on `\\localhost\D$\glint-look`
+  (pin, rename, tooltip, one click, a second share, a restart, the Chinese menu). Not tried: a real NAS that asks for
+  a password (Glint uses the connection Windows keeps; it has no sign-in box of its own).
+- **A photo's Place link** in Quick Look and the preview pane starts at the edge of its column (`c229150`).
+
 ## In 0.18.0: Glint in Chinese, German and Arabic ([#9](https://github.com/shadijhade/glint/issues/9)) (released 2026-11-25)
 
 *Released 2026-11-25 from `4fe038f` ([its release](https://github.com/shadijhade/glint/releases/tag/v0.18.0)) by
