@@ -8,7 +8,11 @@ The plan for 0.12 that was here is in git history (`git show df1245a:NEXT_RELEAS
 before it (`git show 47c33fa:NEXT_RELEASE.md`), and 0.13's own plan, the menu and the dock that know the selection,
 is [docs/gpui/aware/PLAN.md](docs/gpui/aware/PLAN.md) with its task cards beside it.*
 
-## 0.18.1: a tag's search shows what it found, and network shares below the Recycle Bin ([#11](https://github.com/shadijhade/glint/issues/11), [#10](https://github.com/shadijhade/glint/issues/10))
+## 0.18.1: a tag's search shows what it found, and network shares below the Recycle Bin ([#11](https://github.com/shadijhade/glint/issues/11), [#10](https://github.com/shadijhade/glint/issues/10)) (released 2026-11-26)
+
+*Released 2026-11-26 from `174efd4` ([its release](https://github.com/shadijhade/glint/releases/tag/v0.18.1)) by
+`ship`, in one build (run 45843462820, its crate checks passing on GitHub). Scoop has it, winget's pull request is
+microsoft/winget-pkgs#490384, and the Store's package was left for Partner Center's pages.*
 
 Both reported by Helius hours after 0.18.0 came out, both answered on their issues.
 
