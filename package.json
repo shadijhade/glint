@@ -1,7 +1,7 @@
 {
   "name": "glint",
   "private": true,
-  "version": "0.18.0",
+  "version": "0.18.1",
   "type": "module",
   "scripts": {
     "ship": "node scripts/ship.mjs",
