@@ -124,6 +124,16 @@ pub fn folder_menu(folder: &str, current: bool, c: &FolderCtx) -> Vec<Node> {
         )
         .active(pinned)
     };
+    // A pinned place's own name in the sidebar: from the place's menu (in the rail, or a tile), not the folder's.
+    let name_pin = || {
+        when(pinned && !current, || {
+            Node::Item(Entry::task(
+                t!("Rename in sidebar…"),
+                IconName::PenLine,
+                Task::NamePin(owned.clone()),
+            ))
+        })
+    };
     let copy_path = || {
         Entry::task(
             t!("Copy path"),
@@ -155,6 +165,7 @@ pub fn folder_menu(folder: &str, current: bool, c: &FolderCtx) -> Vec<Node> {
             separator(),
             copy_path().node(),
             when(remote.is_none(), || Node::Item(pin())),
+            name_pin(),
         ];
         if let Some(r) = remote {
             m.push(separator());
@@ -280,6 +291,7 @@ pub fn folder_menu(folder: &str, current: bool, c: &FolderCtx) -> Vec<Node> {
         when(can_get, || Node::Separator),
         when(!current, || Node::Item(open_entry(&owned))),
         when(!current, || Node::Item(open_in_new_tab_entry(&owned))),
+        name_pin(),
         when(current, || {
             Node::Item(
                 Entry::command(t!("New folder"), IconName::FolderPlus, Command::NewFolder).disabled_because(

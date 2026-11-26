@@ -245,13 +245,22 @@ pub struct Workspace {
 /// A workspace's name as it is kept: the words with single spaces between them, at most
 /// [`LONGEST_WORKSPACE_NAME`] characters.
 pub fn clean_workspace_name(name: &str) -> String {
+    clean_name(name, LONGEST_WORKSPACE_NAME)
+}
+
+/// The longest name a pinned place is given in the sidebar, in characters.
+pub const LONGEST_PIN_NAME: usize = 60;
+
+/// A pinned place's name in the sidebar as it is kept: the words with single spaces between them, at most
+/// [`LONGEST_PIN_NAME`] characters.
+pub fn clean_pin_name(name: &str) -> String {
+    clean_name(name, LONGEST_PIN_NAME)
+}
+
+/// `name`'s words with single spaces between them, at most `longest` characters.
+fn clean_name(name: &str, longest: usize) -> String {
     let words = name.split_whitespace().collect::<Vec<_>>().join(" ");
-    words
-        .chars()
-        .take(LONGEST_WORKSPACE_NAME)
-        .collect::<String>()
-        .trim_end()
-        .to_string()
+    words.chars().take(longest).collect::<String>().trim_end().to_string()
 }
 
 /// The interface's theme.
@@ -792,6 +801,10 @@ pub struct AppState {
     pub settings: Settings,
     pub mode: Mode,
     pub pinned: Vec<String>,
+    /// The names pinned places were given in the sidebar ("nShare" for `\\192.168.1.6\share`), by their path as it
+    /// is in `pinned`; the rest go by their own. Not written while empty.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub pin_names: BTreeMap<String, String>,
     pub saved_searches: Vec<SavedSearch>,
     pub remotes: Vec<RemoteConnection>,
     pub rules: Vec<FolderRule>,
@@ -830,6 +843,7 @@ impl Default for AppState {
             settings: Settings::default(),
             mode: Mode::Files,
             pinned: Vec::new(),
+            pin_names: BTreeMap::new(),
             saved_searches: Vec::new(),
             remotes: Vec::new(),
             rules: Vec::new(),
@@ -1033,6 +1047,7 @@ lenient_deserialize!(AppState {
     "settings" => settings,
     "mode" => mode,
     "pinned" => pinned,
+    "pinNames" => pin_names,
     "savedSearches" => saved_searches,
     "remotes" => remotes,
     "rules" => rules,
@@ -1091,6 +1106,11 @@ pub fn parse_persisted(text: &str) -> Option<AppState> {
     state.remotes.retain(|remote| !remote.id.is_empty());
     // A workspace entry that wasn't one (damaged, or from a newer Glint) loads as an empty shell: it goes too.
     state.workspaces.retain(|w| !w.id.is_empty() && !w.name.is_empty());
+    // A name is for a place that is pinned, and has something in it.
+    let pinned = &state.pinned;
+    state
+        .pin_names
+        .retain(|path, name| !name.trim().is_empty() && pinned.iter().any(|p| p == path));
     Some(state)
 }
 
@@ -1145,13 +1165,35 @@ impl AppState {
         }
     }
 
-    /// Pins a folder, or unpins it if it's pinned.
+    /// Pins a folder, or unpins it if it's pinned (and forgets the name it was given in the sidebar).
     pub fn toggle_pin(&mut self, path: &str) {
         if self.pinned.iter().any(|p| p == path) {
             self.pinned.retain(|p| p != path);
+            self.pin_names.remove(path);
         } else {
             self.pinned.push(path.to_string());
         }
+    }
+
+    /// The name a pinned place was given in the sidebar, if it was given one.
+    pub fn pin_name(&self, path: &str) -> Option<&str> {
+        self.pin_names.get(path).map(String::as_str)
+    }
+
+    /// Gives a pinned place a name of its own in the sidebar: its words with single spaces between, at most
+    /// [`LONGEST_PIN_NAME`] characters. A name with nothing in it gives the place back its own. `false` for a path
+    /// that isn't pinned.
+    pub fn name_pin(&mut self, path: &str, name: &str) -> bool {
+        if !self.pinned.iter().any(|p| p == path) {
+            return false;
+        }
+        let name = clean_pin_name(name);
+        if name.is_empty() {
+            self.pin_names.remove(path);
+        } else {
+            self.pin_names.insert(path.to_string(), name);
+        }
+        true
     }
 
     /// The workspace with this id.
@@ -1591,6 +1633,52 @@ mod tests {
         assert!(!s.options.documents);
         s.set_option(SearchOptionKey::Regex, true);
         assert!(s.options.regex);
+    }
+
+    #[test]
+    fn a_pinned_share_takes_a_name_of_its_own_which_is_kept_and_goes_with_its_pin() {
+        let share = "\\\\192.168.1.6\\share";
+        let mut s = AppState::default();
+        // Only a pinned place has a name in the sidebar.
+        assert!(!s.name_pin(share, "nShare"));
+        assert!(s.pin_names.is_empty());
+        s.toggle_pin(share);
+        s.toggle_pin("D:\\Work");
+        assert!(s.name_pin(share, "  my   NAS\tshare "));
+        assert_eq!(s.pin_name(share), Some("my NAS share"));
+        assert!(s.name_pin(share, "nShare"));
+        assert_eq!(s.pin_name(share), Some("nShare"));
+        assert_eq!(s.pin_name("D:\\Work"), None);
+        // A long name is cut; nothing at all gives the share back its own.
+        assert!(s.name_pin("D:\\Work", &"x".repeat(LONGEST_PIN_NAME + 9)));
+        assert_eq!(
+            s.pin_name("D:\\Work").map(|n| n.chars().count()),
+            Some(LONGEST_PIN_NAME)
+        );
+        assert!(s.name_pin("D:\\Work", "   "));
+        assert_eq!(s.pin_name("D:\\Work"), None);
+
+        // Kept between runs, as "pinNames"; a state without any is written as before.
+        let text = persisted_json(&s).expect("json");
+        assert!(
+            text.contains(r#""pinNames":{"\\\\192.168.1.6\\share":"nShare"}"#),
+            "{text}"
+        );
+        assert!(!persisted_json(&AppState::default()).expect("json").contains("pinNames"));
+        let back = load_persisted(&text);
+        assert_eq!(back.pin_name(share), Some("nShare"));
+        assert_eq!(back.pinned, s.pinned);
+
+        // A name for a place no longer pinned (a file another version saved), or an empty one, is dropped.
+        let stale = r#"{"state":{"pinned":["D:\\Work"],
+            "pinNames":{"D:\\Work":"  ","\\\\gone\\share":"Gone","D:\\Other":"x"}},"version":0}"#;
+        assert!(load_persisted(stale).pin_names.is_empty());
+
+        // Unpinning forgets the name: pinned again, the share goes by its own.
+        s.toggle_pin(share);
+        assert_eq!(s.pin_name(share), None);
+        s.toggle_pin(share);
+        assert_eq!(s.pin_name(share), None);
     }
 
     #[test]

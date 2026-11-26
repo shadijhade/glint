@@ -764,6 +764,9 @@ pub struct SettingsFileOut<'a> {
     pub settings: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pinned: Option<&'a Vec<String>>,
+    /// The names the pinned places were given in the sidebar, with the Pinned part (none while there are none).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pin_names: Option<&'a std::collections::BTreeMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub saved_searches: Option<&'a Vec<SavedSearch>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -831,6 +834,7 @@ pub fn export_settings(state: &AppState, parts: &[Part], now_ms: i64) -> Result<
         app: env!("CARGO_PKG_VERSION"),
         settings,
         pinned: has(Part::Pinned).then_some(&state.pinned),
+        pin_names: (has(Part::Pinned) && !state.pin_names.is_empty()).then_some(&state.pin_names),
         saved_searches: has(Part::SavedSearches).then_some(&state.saved_searches),
         remotes: has(Part::Remotes).then_some(&state.remotes),
         rules: has(Part::Rules).then_some(&state.rules),
@@ -1103,6 +1107,29 @@ pub fn import_settings(state: &mut AppState, file: &SettingsFile, parts: &[Part]
         let mut all = if replace { Vec::new() } else { state.pinned.clone() };
         all.extend(pins.iter().filter(|p| !lower.contains(&p.to_lowercase())).cloned());
         state.pinned = all;
+        // Their names in the sidebar come along: a pin this PC has already keeps the name it has here.
+        if replace {
+            state.pin_names.clear();
+        }
+        if let Some(Value::Object(names)) = file.root.get("pinNames") {
+            for (path, name) in names {
+                let Some(name) = name.as_str().map(glint_model::store::clean_pin_name) else {
+                    continue;
+                };
+                let here = state
+                    .pinned
+                    .iter()
+                    .find(|p| p.to_lowercase() == path.to_lowercase())
+                    .cloned();
+                if let (Some(here), false) = (here, name.is_empty()) {
+                    if pins.iter().any(|p| p.to_lowercase() == path.to_lowercase()) {
+                        state.pin_names.entry(here).or_insert(name);
+                    }
+                }
+            }
+        }
+        let pinned = &state.pinned;
+        state.pin_names.retain(|path, _| pinned.contains(path));
         did.push(format!("{} pinned", pins.len()));
     }
     if has(Part::SavedSearches) {
@@ -1726,6 +1753,51 @@ mod tests {
         let did = import_settings(&mut state, &file, &[Part::Pinned, Part::Settings], true);
         assert_eq!(state.pinned, vec!["c:\\work".to_string(), "D:\\new".to_string()]);
         assert_eq!(did, vec!["settings".to_string(), "2 pinned".to_string()]);
+    }
+
+    #[test]
+    fn pinned_places_names_go_with_them_to_another_pc() {
+        let share = "\\\\192.168.1.6\\share";
+        let mut here = AppState::default();
+        here.toggle_pin(share);
+        here.toggle_pin("D:\\Work");
+        here.name_pin(share, "nShare");
+        // Exported with the pins, and only with them; no names, no field.
+        let text = export_settings(&here, &[Part::Pinned], 0).expect("exports");
+        let file = SettingsFile::parse(&text).expect("parses");
+        assert!(text.contains("pinNames") && text.contains("nShare"), "{text}");
+        assert!(!export_settings(&here, &[Part::Settings], 0)
+            .expect("exports")
+            .contains("pinNames"));
+        assert!(!export_settings(&AppState::default(), &[Part::Pinned], 0)
+            .expect("exports")
+            .contains("pinNames"));
+
+        // Into a PC that has none of them: the share comes with its name.
+        let mut there = AppState::default();
+        import_settings(&mut there, &file, &[Part::Pinned], false);
+        assert_eq!(there.pinned, here.pinned);
+        assert_eq!(there.pin_name(share), Some("nShare"));
+        // A PC that has the share pinned, in other letters, under a name of its own keeps its own.
+        let mut named = AppState::default();
+        named.toggle_pin("\\\\192.168.1.6\\SHARE");
+        named.name_pin("\\\\192.168.1.6\\SHARE", "NAS");
+        import_settings(&mut named, &file, &[Part::Pinned], false);
+        assert_eq!(named.pin_name("\\\\192.168.1.6\\SHARE"), Some("NAS"));
+        assert_eq!(named.pinned.len(), 2, "the same share isn't pinned twice");
+        // Replacing takes the file's names; a name for a path the file doesn't pin, or a blank one, is not taken.
+        import_settings(&mut named, &file, &[Part::Pinned], true);
+        assert_eq!(named.pin_name(share), Some("nShare"));
+        assert_eq!(named.pin_names.len(), 1);
+        let odd = SettingsFile::parse(
+            r#"{"glint":"settings","version":1,"pinned":["D:\\a"],
+                "pinNames":{"D:\\a":"   ","\\\\elsewhere\\x":"X","D:\\b":7}}"#,
+        )
+        .expect("parses");
+        let mut fresh = AppState::default();
+        import_settings(&mut fresh, &odd, &[Part::Pinned], false);
+        assert_eq!(fresh.pinned, vec!["D:\\a".to_string()]);
+        assert!(fresh.pin_names.is_empty());
     }
 
     #[test]

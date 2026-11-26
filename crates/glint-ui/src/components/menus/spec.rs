@@ -395,6 +395,8 @@ pub enum Task {
     CopyText { text: String, paths: usize },
     /// Pins a folder to the sidebar, or unpins it (`togglePin`).
     TogglePin(String),
+    /// Asks what a pinned place is called in the sidebar ("Rename in sidebar…"), and keeps it.
+    NamePin(String),
     /// Reads the drives again (`refreshDrives`): This PC's Refresh.
     RefreshDrives,
     /// Windows' "Continue": asks for access to a folder that is closed (`getAccess`).

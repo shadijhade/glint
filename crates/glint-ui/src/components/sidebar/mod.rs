@@ -41,6 +41,7 @@
 //! the window width's business in CSS, and the GPUI workspace resizes the sidebar between fixed limits instead.
 
 mod drop;
+pub mod pins;
 mod portals;
 mod rows;
 mod tree;
@@ -69,7 +70,7 @@ use rows::{
 /// What a press on a label or a tag runs (the window's tests run it as the sidebar would).
 pub(crate) use rows::{label_search, tag_search};
 use std::cell::Cell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::rc::Rc;
@@ -302,6 +303,7 @@ struct Seen {
     tiles: bool,
     folded: Vec<String>,
     pinned: Vec<String>,
+    pin_names: BTreeMap<String, String>,
     saved: Vec<SavedSearch>,
     remotes: Vec<RemoteConnection>,
     portals: Vec<PortalItem>,
@@ -516,8 +518,15 @@ impl Sidebar {
             )
         };
         let labels = state::settings(cx).labels.clone();
-        let (pinned, saved, remotes) = persistence::app(cx)
-            .map(|a| (a.pinned.clone(), a.saved_searches.clone(), a.remotes.clone()))
+        let (pinned, pin_names, saved, remotes) = persistence::app(cx)
+            .map(|a| {
+                (
+                    a.pinned.clone(),
+                    a.pin_names.clone(),
+                    a.saved_searches.clone(),
+                    a.remotes.clone(),
+                )
+            })
             .unwrap_or_default();
 
         // Hidden folders shown or hidden: what is open is read again.
@@ -594,6 +603,7 @@ impl Sidebar {
             known: &known,
             drives: &drives,
             pinned: &pinned,
+            pin_names: &pin_names,
             saved: &saved,
             remotes: &remotes,
             portals: &self.portals,
@@ -622,6 +632,7 @@ impl Sidebar {
             tiles,
             folded,
             pinned,
+            pin_names,
             saved,
             remotes,
             portals: self.portals.clone(),
@@ -643,7 +654,12 @@ impl Sidebar {
         let e = self.explorer.read(cx);
         let s = state::settings(cx);
         let kept = match persistence::app(cx) {
-            Some(app) => seen.pinned == app.pinned && seen.saved == app.saved_searches && seen.remotes == app.remotes,
+            Some(app) => {
+                seen.pinned == app.pinned
+                    && seen.pin_names == app.pin_names
+                    && seen.saved == app.saved_searches
+                    && seen.remotes == app.remotes
+            }
             None => seen.pinned.is_empty() && seen.saved.is_empty() && seen.remotes.is_empty(),
         };
         let same_listing = match (&seen.listing, tree_listing(e)) {

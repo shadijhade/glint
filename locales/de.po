@@ -1486,6 +1486,7 @@ msgstr "{n} Elemente umbenennen"
 #: crates/glint-ui/src/components/menus/item.rs
 #: crates/glint-ui/src/components/preview/pane.rs
 #: crates/glint-ui/src/components/sidebar/mod.rs
+#: crates/glint-ui/src/components/sidebar/pins.rs
 #: crates/glint-ui/src/components/sidebar/workspaces.rs
 #: crates/glint-ui/src/components/status_bar/mod.rs
 msgid "Rename"
@@ -2318,6 +2319,7 @@ msgstr "Anhalten: eine halb kopierte Datei wartet, wo sie ist"
 #: crates/glint-ui/src/components/settings/transfer.rs
 #: crates/glint-ui/src/components/settings/widgets.rs
 #: crates/glint-ui/src/components/sidebar/mod.rs
+#: crates/glint-ui/src/components/sidebar/pins.rs
 #: crates/glint-ui/src/components/sidebar/workspaces.rs
 #: crates/glint-ui/src/dialogs/action_run.rs
 #: crates/glint-ui/src/dialogs/batch_rename.rs
@@ -3767,6 +3769,10 @@ msgstr "Von der Seitenleiste lösen"
 #: crates/glint-ui/src/components/menus/item.rs
 msgid "Pin to sidebar"
 msgstr "An die Seitenleiste anheften"
+
+#: crates/glint-ui/src/components/menus/folder.rs
+msgid "Rename in sidebar…"
+msgstr "In der Seitenleiste umbenennen…"
 
 #: crates/glint-ui/src/components/menus/folder.rs
 #: crates/glint-ui/src/components/menus/item.rs
@@ -9281,6 +9287,18 @@ msgstr "Entfernen"
 #: crates/glint-ui/src/components/sidebar/mod.rs
 msgid "Places"
 msgstr "Orte"
+
+#: crates/glint-ui/src/components/sidebar/pins.rs
+msgid "Rename in sidebar"
+msgstr "In der Seitenleiste umbenennen"
+
+#: crates/glint-ui/src/components/sidebar/pins.rs
+msgid "Name in the sidebar"
+msgstr "Name in der Seitenleiste"
+
+#: crates/glint-ui/src/components/sidebar/pins.rs
+msgid "Leave it empty to use its own name."
+msgstr "Leer lassen, um den eigenen Namen zu verwenden."
 
 #: crates/glint-ui/src/components/sidebar/portals.rs
 msgid "Unmount"

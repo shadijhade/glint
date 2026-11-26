@@ -925,6 +925,32 @@ fn a_place_or_tile_opens_pastes_into_and_pins_but_has_no_new_or_select_all() {
 }
 
 #[test]
+fn a_pinned_places_menu_renames_it_in_the_sidebar_and_no_other_menu_does() {
+    let _guard = english();
+    let share = "\\\\192.168.1.6\\share";
+    let pinned = FolderCtx {
+        pinned: vec![share.into()],
+        ..FolderCtx::default()
+    };
+    // The place's menu (in the rail): right after Open and Open in new tab.
+    let menu = folder_menu(share, false, &pinned);
+    let all = labels(&menu);
+    in_order(
+        &all,
+        &["Open", "Open in new tab", "Rename in sidebar…", "Open in Terminal"],
+    );
+    assert_eq!(
+        find(&menu, "Rename in sidebar…").map(|e| e.run.clone()),
+        Some(Run::Do(Task::NamePin(share.into())))
+    );
+    // Not pinned, or the folder open in a pane (its empty space): nothing to name in the sidebar.
+    assert!(find(&folder_menu(share, false, &FolderCtx::default()), "Rename in sidebar…").is_none());
+    let mut open = shown_folder();
+    open.pinned = vec![share.into()];
+    assert!(find(&folder_menu(share, true, &open), "Rename in sidebar…").is_none());
+}
+
+#[test]
 fn a_folder_windows_keeps_closed_leads_with_get_access_and_greys_out_changes() {
     let _guard = english();
     let mut c = shown_folder();

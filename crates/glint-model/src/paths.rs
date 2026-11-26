@@ -64,6 +64,33 @@ pub fn remote_id_of(path: &str) -> &str {
         .unwrap_or("")
 }
 
+/// On another computer: a share or a folder in one (`\\nas\photos\2024`), or a server's list of shares (`\\nas`).
+/// Not `\\?\` and `\\.\` paths (this PC's long paths, devices and shadow copies), nor WSL's (`\\wsl.localhost\…`,
+/// `\\wsl$\…`), which are on this PC.
+pub fn is_network_path(path: &str) -> bool {
+    let Some(rest) = path.strip_prefix("\\\\") else {
+        return false;
+    };
+    let server = rest.split('\\').next().unwrap_or("");
+    !server.is_empty()
+        && server != "?"
+        && server != "."
+        && !server.eq_ignore_ascii_case("wsl.localhost")
+        && !server.eq_ignore_ascii_case("wsl$")
+}
+
+/// A share's server and name: `\\nas\photos` (with or without a closing backslash) gives `("nas", "photos")`. None
+/// for anything else: a folder in a share, a server on its own, a drive.
+pub fn share_root(path: &str) -> Option<(&str, &str)> {
+    if !is_network_path(path) {
+        return None;
+    }
+    let rest = path.get(2..)?;
+    let rest = rest.strip_suffix('\\').unwrap_or(rest);
+    let (server, share) = rest.split_once('\\')?;
+    (!share.is_empty() && !share.contains('\\')).then_some((server, share))
+}
+
 /// The start of a shadow copy's device name, as Windows spells it (compared in any case).
 const SHADOW_PREFIX: &str = "\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy";
 
@@ -614,6 +641,46 @@ mod tests {
             ["\\\\nas", "\\\\nas\\media", "\\\\nas\\media\\tv"]
         );
         assert_eq!(crumbs(THIS_PC), Vec::<Crumb>::new());
+    }
+
+    #[test]
+    fn shares_and_folders_on_other_computers_are_network_paths_and_this_pcs_own_are_not() {
+        for network in [
+            "\\\\192.168.1.6\\share",
+            "\\\\192.168.1.6\\share\\",
+            "\\\\nas\\photos\\2024",
+            "\\\\nas",
+            "\\\\localhost\\D$\\glint-look",
+        ] {
+            assert!(is_network_path(network), "{network}");
+        }
+        for local in [
+            "C:\\Users",
+            "D:\\",
+            "\\\\wsl.localhost\\Ubuntu\\home",
+            "\\\\WSL$\\Ubuntu",
+            "\\\\?\\C:\\long\\path",
+            "\\\\.\\PhysicalDrive0",
+            SHADOW_TOP,
+            "\\\\",
+            THIS_PC,
+            RECYCLE_BIN,
+            "remote:nas\\a",
+        ] {
+            assert!(!is_network_path(local), "{local}");
+        }
+        // Only a share itself has a server and a share name.
+        assert_eq!(share_root("\\\\192.168.1.6\\share"), Some(("192.168.1.6", "share")));
+        assert_eq!(share_root("\\\\nas\\photos\\"), Some(("nas", "photos")));
+        for not_a_share in [
+            "\\\\nas",
+            "\\\\nas\\",
+            "\\\\nas\\photos\\2024",
+            "\\\\wsl.localhost\\Ubuntu",
+            "C:\\a",
+        ] {
+            assert_eq!(share_root(not_a_share), None, "{not_a_share}");
+        }
     }
 
     #[test]

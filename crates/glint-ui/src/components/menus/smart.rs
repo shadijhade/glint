@@ -64,6 +64,7 @@ fn task_key(task: &Task) -> String {
         Task::OpenInOtherPane { .. } => "task:open-in-other-pane",
         Task::CopyText { .. } => "task:copy-text",
         Task::TogglePin(_) => "task:toggle-pin",
+        Task::NamePin(_) => "task:name-pin",
         Task::RefreshDrives => "task:refresh-drives",
         Task::GetAccess(_) => "task:get-access",
         Task::WindowsMenu { .. } => "task:windows-menu",

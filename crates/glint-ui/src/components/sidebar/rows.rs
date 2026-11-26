@@ -11,12 +11,12 @@ use super::tree::{Kids, Tree};
 use crate::explorer::{drive_name, Drive, DriveKind, KnownFolder, KnownId};
 use glint_model::marks::{label_of, Label as MarkLabel};
 use glint_model::paths::{
-    base_name, in_archive_path, is_gallery, is_recent, is_remote_path, join_path, same_path, GALLERY, RECENT,
-    RECYCLE_BIN, REMOTE, THIS_PC,
+    base_name, in_archive_path, is_gallery, is_network_path, is_recent, is_remote_path, join_path, same_path,
+    share_root, GALLERY, RECENT, RECYCLE_BIN, REMOTE, THIS_PC,
 };
 use glint_model::store::{RemoteConnection, RemoteKind, SavedSearch};
 use gpui_kit::SharedString;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// What a place's icon is. The view maps it to an icon and a color.
 #[derive(Clone, Debug, PartialEq)]
@@ -314,6 +314,8 @@ pub struct Inputs<'a> {
     pub known: &'a [KnownFolder],
     pub drives: &'a [Drive],
     pub pinned: &'a [String],
+    /// The names pinned places were given in the sidebar, by path (`AppState::pin_names`).
+    pub pin_names: &'a BTreeMap<String, String>,
     pub saved: &'a [SavedSearch],
     pub remotes: &'a [RemoteConnection],
     /// The live portals mounted now.
@@ -333,6 +335,24 @@ pub struct Inputs<'a> {
     pub spaces: &'a HashMap<String, Space>,
     /// Saved searches' counts, by [`count_key`].
     pub counts: &'a HashMap<String, String>,
+}
+
+/// What a pinned place is called when it wasn't given a name: a share as File Explorer calls one ("share
+/// (\\192.168.1.6)"), anything else by its own name.
+pub fn own_name(path: &str) -> String {
+    match share_root(path) {
+        Some((server, share)) => format!("{share} (\\\\{server})"),
+        None => base_name(path).to_string(),
+    }
+}
+
+/// What a pinned place is called in the sidebar: the name it was given there, else its own ([`own_name`]).
+pub fn pinned_name(path: &str, names: &BTreeMap<String, String>) -> String {
+    names
+        .get(path)
+        .filter(|name| !name.trim().is_empty())
+        .cloned()
+        .unwrap_or_else(|| own_name(path))
 }
 
 /// Where a saved search's count is kept.
@@ -440,8 +460,9 @@ pub fn reads_files(query: &str) -> bool {
     .any(|filter| lower.contains(filter))
 }
 
-/// The rows, top to bottom: where you go first (Quick access, the pinned folders, the drives), then what finds things
-/// (the labels, the tags, the saved searches), then what is mounted and connected. A folded section is its title.
+/// The rows, top to bottom: where you go first (Quick access, the pinned folders, the drives and the shares pinned
+/// below them), then what finds things (the labels, the tags, the saved searches), then what is mounted and
+/// connected. A folded section is its title.
 pub fn build_rows(i: &Inputs) -> Vec<Row> {
     let here = |p: &str| i.path != THIS_PC && same_path(p, i.path);
     let tree_of = |path: &str| -> Option<Opens> {
@@ -515,13 +536,15 @@ pub fn build_rows(i: &Inputs) -> Vec<Row> {
         }
     }
 
-    if !i.pinned.is_empty() {
+    // Pinned: the folders on this PC. A place pinned on another computer sits with the drives instead.
+    let (shares, pinned): (Vec<&String>, Vec<&String>) = i.pinned.iter().partition(|p| is_network_path(p));
+    if !pinned.is_empty() {
         let folded = is_folded("Pinned");
         rows.push(heading(glint_model::english!("Pinned"), Some(folded)));
-        for p in i.pinned.iter().filter(|_| !folded) {
+        for p in pinned.into_iter().filter(|_| !folded) {
             rows.push(Row::Place(Place {
                 glyph: Glyph::Folder,
-                label: Label::Plain(base_name(p).to_string().into()),
+                label: Label::Plain(pinned_name(p, i.pin_names).into()),
                 path: p.clone(),
                 active: here(p),
                 detail: p.clone().into(),
@@ -588,6 +611,26 @@ pub fn build_rows(i: &Inputs) -> Vec<Row> {
             gutter: i.folder_tree,
             tile: false,
         }));
+        // The shares and folders on other computers that were pinned (`\\nas\photos`): below the Recycle Bin, as a
+        // network drive is drawn, by the name they were given or the share's, with the path in the tooltip.
+        for p in shares {
+            rows.push(Row::Place(Place {
+                glyph: Glyph::Drive(DriveKind::Network),
+                label: Label::Plain(pinned_name(p, i.pin_names).into()),
+                path: p.clone(),
+                active: here(p),
+                detail: p.clone().into(),
+                tree: tree_of(p),
+                capacity: None,
+                eject: None,
+                remote: None,
+                gutter: i.folder_tree,
+                tile: false,
+            }));
+            if tree_of(p).is_some() {
+                push_kids(&mut rows, i, p, 0);
+            }
+        }
     }
 
     // The labels are one line of dots under their title (the view lays them so), so there is nothing to fold.
@@ -833,6 +876,7 @@ mod tests {
         known: Vec<KnownFolder>,
         drives: Vec<Drive>,
         pinned: Vec<String>,
+        pin_names: BTreeMap<String, String>,
         saved: Vec<SavedSearch>,
         remotes: Vec<RemoteConnection>,
         portals: Vec<PortalItem>,
@@ -859,6 +903,7 @@ mod tests {
                     drive("\\\\wsl.localhost\\Ubuntu", "Ubuntu", DriveKind::Wsl, 0, 0),
                 ],
                 pinned: vec!["D:\\Work\\تقارير".to_string()],
+                pin_names: BTreeMap::new(),
                 saved: vec![SavedSearch {
                     query: "invoice".into(),
                     folder: THIS_PC.into(),
@@ -881,6 +926,7 @@ mod tests {
                 known: &self.known,
                 drives: &self.drives,
                 pinned: &self.pinned,
+                pin_names: &self.pin_names,
                 saved: &self.saved,
                 remotes: &self.remotes,
                 portals: &self.portals,
@@ -947,6 +993,87 @@ mod tests {
         bare.saved.clear();
         let text = describe(&bare.rows("", true));
         assert!(!text.contains(&"# Pinned".to_string()) && !text.contains(&"# Searches".to_string()));
+    }
+
+    #[test]
+    fn a_pinned_share_sits_below_the_recycle_bin_by_its_name_with_its_path_in_the_tooltip() {
+        let mut world = World::new();
+        let share = "\\\\192.168.1.6\\share";
+        world.pinned = vec![
+            share.to_string(),
+            "D:\\Work\\تقارير".to_string(),
+            "\\\\nas\\photos\\2024".to_string(),
+            "\\\\wsl.localhost\\Ubuntu\\home\\me".to_string(),
+        ];
+        // Rows `from` up to `to`, by their text.
+        fn between<'a>(text: &'a [String], from: &str, to: &str) -> &'a [String] {
+            let at = |name: &str| {
+                text.iter()
+                    .position(|t| t == name)
+                    .unwrap_or_else(|| panic!("{name} in {text:?}"))
+            };
+            &text[at(from)..at(to)]
+        }
+        // Before it has a name: the share as File Explorer calls one, a folder in a share by its own name. WSL's
+        // folders are on this PC: they stay in Pinned.
+        let text = describe(&world.rows("C:\\Users\\me", true));
+        assert_eq!(between(&text, "# Pinned", "# This PC"), ["# Pinned", "تقارير", "me"]);
+        assert_eq!(
+            between(&text, "Recycle Bin", "# Searches"),
+            ["Recycle Bin", "share (\\\\192.168.1.6)", "2024"]
+        );
+
+        // Named "nShare" (#10): that is what the sidebar says, a network drive's picture, and the tooltip and the
+        // description say where it goes. A click opens the share.
+        world.pin_names.insert(share.to_string(), "nShare".to_string());
+        world
+            .pin_names
+            .insert("D:\\Work\\تقارير".to_string(), "Reports".to_string());
+        let rows = world.rows(share, true);
+        let text = describe(&rows);
+        assert_eq!(
+            between(&text, "Recycle Bin", "# Searches"),
+            ["Recycle Bin", "nShare", "2024"]
+        );
+        assert_eq!(between(&text, "# Pinned", "# This PC"), ["# Pinned", "Reports", "me"]);
+        let Some(Row::Place(place)) = rows.iter().find(|r| r.key() == format!("p:{share}")) else {
+            panic!("no row for the share");
+        };
+        assert_eq!(place.label, Label::Plain("nShare".into()));
+        assert_eq!(place.glyph, Glyph::Drive(DriveKind::Network));
+        assert_eq!(place.detail.as_ref(), share);
+        assert!(place.active, "the share is the folder shown");
+        assert_eq!(
+            rows.iter()
+                .find(|r| r.key() == format!("p:{share}"))
+                .and_then(Row::target),
+            Some(share)
+        );
+        // The tree can open it, as a pinned folder.
+        assert!(place.tree.is_some());
+
+        // Only network places pinned: no Pinned title. This PC folded: its drives, bin and shares go with it.
+        world.pinned = vec![share.to_string()];
+        let text = describe(&world.rows("", true));
+        assert!(!text.contains(&"# Pinned".to_string()));
+        assert!(text.contains(&"nShare".to_string()));
+        world.folded = vec!["This PC".to_string()];
+        let text = describe(&world.rows("", true));
+        assert!(!text.contains(&"nShare".to_string()) && !text.contains(&"Recycle Bin".to_string()));
+    }
+
+    #[test]
+    fn a_pinned_place_without_a_name_goes_by_its_own_and_a_blank_name_is_none() {
+        let mut names = BTreeMap::new();
+        assert_eq!(own_name("\\\\192.168.1.6\\share"), "share (\\\\192.168.1.6)");
+        assert_eq!(own_name("\\\\nas\\photos\\"), "photos (\\\\nas)");
+        assert_eq!(own_name("\\\\nas\\photos\\2024"), "2024");
+        assert_eq!(own_name("D:\\Work\\تقارير"), "تقارير");
+        assert_eq!(pinned_name("D:\\Work", &names), "Work");
+        names.insert("D:\\Work".to_string(), "  ".to_string());
+        assert_eq!(pinned_name("D:\\Work", &names), "Work");
+        names.insert("D:\\Work".to_string(), "Job".to_string());
+        assert_eq!(pinned_name("D:\\Work", &names), "Job");
     }
 
     fn portal(id: &str, name: &str, path: &str, kind: PortalKind) -> PortalItem {

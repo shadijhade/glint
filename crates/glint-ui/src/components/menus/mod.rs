@@ -1078,6 +1078,7 @@ impl MenuHost {
                 );
             }
             Task::TogglePin(path) => persistence::update_app(cx, |app| app.toggle_pin(&path)),
+            Task::NamePin(path) => crate::components::sidebar::pins::ask_name(window, cx, path),
             Task::RefreshDrives => {
                 if let Some(explorer) = explorer {
                     explorer.update(cx, |e, cx| e.refresh_drives(cx).detach());

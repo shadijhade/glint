@@ -547,6 +547,83 @@ fn pinned_folders_show_with_their_names_and_the_menu_pins_and_unpins(cx: &mut Te
 }
 
 #[gpui_kit::test]
+fn a_pinned_share_sits_below_the_recycle_bin_and_takes_a_name_from_the_rename_box(cx: &mut TestAppContext) {
+    // Issue #10: `\\192.168.1.6\share` below the Recycle Bin as "nShare", opened with one click, its path in the
+    // tooltip, and more than one of them.
+    let _guard = testing::lock();
+    let mut w = world(cx, "shares");
+    let share = r"\\192.168.1.6\share";
+    let other = r"\\nas\photos";
+    w.disk.folder(share, vec![file(share, "movie.mkv", 5, 1)]);
+    w.pin(share);
+    w.pin(other);
+    let names = w.names();
+    let bin = names.iter().position(|n| n == "Recycle Bin").expect("the bin");
+    assert_eq!(
+        names[bin..bin + 3],
+        ["Recycle Bin", r"share (\\192.168.1.6)", r"photos (\\nas)"]
+    );
+    assert!(
+        !names.contains(&"# Pinned".to_string()),
+        "a share isn't a pinned folder of this PC"
+    );
+
+    // Rename in sidebar…: the box shows the path and the share's own name; Enter keeps the name typed.
+    w.cx.update(|window, cx| pins::ask_name(window, cx, share.to_string()));
+    w.frame();
+    assert!(w.has("Name in the sidebar"));
+    w.press("ctrl-a");
+    w.cx.update(|window, cx| window.input("  nShare ", cx));
+    w.cx.run_until_parked();
+    w.press("enter");
+    w.settle(|w| w.names().contains(&"nShare".to_string()));
+    assert!(!w.has("Name in the sidebar"), "the box closed");
+    let names = w.names();
+    assert_eq!(names[bin..bin + 3], ["Recycle Bin", "nShare", r"photos (\\nas)"]);
+    assert_eq!(w.role_of("nShare"), Some(Role::Button));
+    // Its tooltip's second line is its description: where it goes.
+    let described = w.cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.find_by_label("nShare").description().map(str::to_string)
+    });
+    assert_eq!(described.as_deref(), Some(share));
+    // Kept in the saved state.
+    let kept =
+        w.cx.update(|_, cx| persistence::app(cx).and_then(|a| a.pin_name(share).map(str::to_string)));
+    assert_eq!(kept.as_deref(), Some("nShare"));
+
+    // One click opens the share.
+    w.click("nShare");
+    w.settle(|w| w.path() == share && !w.tab_loading());
+    assert_eq!(w.selected("nShare"), Some(true));
+
+    // Its menu is the shared folder menu (with Rename in sidebar… for a pinned place).
+    let id = w.id_of("nShare");
+    w.cx.update(|window, cx| window.right_click(id, cx));
+    assert!(
+        matches!(w.requests.borrow().last(), Some(SidebarRequest::ContextMenu { path, .. }) if path == share),
+        "{:?}",
+        w.requests.borrow()
+    );
+
+    // The share's own name typed back, through the button: no name of its own any more.
+    w.cx.update(|window, cx| pins::ask_name(window, cx, share.to_string()));
+    w.frame();
+    w.press("ctrl-a");
+    w.cx.update(|window, cx| window.input(r"share (\\192.168.1.6)", cx));
+    w.cx.run_until_parked();
+    w.click("Rename");
+    w.settle(|w| w.names().contains(&r"share (\\192.168.1.6)".to_string()));
+    let kept =
+        w.cx.update(|_, cx| persistence::app(cx).map(|a| a.pin_names.is_empty()));
+    assert_eq!(kept, Some(true));
+
+    // Unpinned, it leaves the list.
+    w.pin(share);
+    assert!(!w.names().iter().any(|n| n.contains("192.168.1.6")));
+}
+
+#[gpui_kit::test]
 fn the_tree_opens_and_closes_from_the_keyboard_as_the_typescript_did(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let mut w = world(cx, "keys");

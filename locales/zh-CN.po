@@ -1464,6 +1464,7 @@ msgstr "重命名 {n} 个项目"
 #: crates/glint-ui/src/components/menus/item.rs
 #: crates/glint-ui/src/components/preview/pane.rs
 #: crates/glint-ui/src/components/sidebar/mod.rs
+#: crates/glint-ui/src/components/sidebar/pins.rs
 #: crates/glint-ui/src/components/sidebar/workspaces.rs
 #: crates/glint-ui/src/components/status_bar/mod.rs
 msgid "Rename"
@@ -2259,6 +2260,7 @@ msgstr "暂停：复制到一半的文件在原处等待"
 #: crates/glint-ui/src/components/settings/transfer.rs
 #: crates/glint-ui/src/components/settings/widgets.rs
 #: crates/glint-ui/src/components/sidebar/mod.rs
+#: crates/glint-ui/src/components/sidebar/pins.rs
 #: crates/glint-ui/src/components/sidebar/workspaces.rs
 #: crates/glint-ui/src/dialogs/action_run.rs
 #: crates/glint-ui/src/dialogs/batch_rename.rs
@@ -3649,6 +3651,10 @@ msgstr "从侧边栏取消固定"
 #: crates/glint-ui/src/components/menus/item.rs
 msgid "Pin to sidebar"
 msgstr "固定到侧边栏"
+
+#: crates/glint-ui/src/components/menus/folder.rs
+msgid "Rename in sidebar…"
+msgstr "在侧边栏中重命名…"
 
 #: crates/glint-ui/src/components/menus/folder.rs
 #: crates/glint-ui/src/components/menus/item.rs
@@ -8953,6 +8959,18 @@ msgstr "移除"
 #: crates/glint-ui/src/components/sidebar/mod.rs
 msgid "Places"
 msgstr "位置"
+
+#: crates/glint-ui/src/components/sidebar/pins.rs
+msgid "Rename in sidebar"
+msgstr "在侧边栏中重命名"
+
+#: crates/glint-ui/src/components/sidebar/pins.rs
+msgid "Name in the sidebar"
+msgstr "侧边栏中的名称"
+
+#: crates/glint-ui/src/components/sidebar/pins.rs
+msgid "Leave it empty to use its own name."
+msgstr "留空则使用其原名。"
 
 #: crates/glint-ui/src/components/sidebar/portals.rs
 msgid "Unmount"
