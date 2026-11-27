@@ -7,6 +7,7 @@ use crate::kit::prelude::*;
 use crate::platform::pickers::{self, Options};
 use crate::theme::Tokens;
 use crate::{core_bridge, state, t, theme};
+use glint_core::remote::smb::Trouble;
 use glint_model::paths::{base_name, is_gallery, same_path, THIS_PC};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -495,6 +496,9 @@ impl FileList {
                     cx.emit(FileListEvent::ShowProperties { path: path.clone() });
                 }))
         };
+        if let Some(trouble) = info.share {
+            return self.share_view(view, trouble, t, cx);
+        }
         let mut heading = t!("You don't have permission to open “{name}”", name = name);
         let text: SharedString;
         let mut actions: Vec<AnyElement> = Vec::new();
@@ -548,5 +552,262 @@ impl FileList {
             )
             .test_support()
             .into_any_element()
+    }
+
+    /// A Windows share Windows won't open, for a reason Glint can help with (glint-core's remote/smb.rs): why, in
+    /// words for this Windows, and what fits: signing in right here, opening it read-only through rclone (which
+    /// leaves Windows' settings as they are), waking its server.
+    fn share_view(&self, view: &TabView, trouble: Trouble, t: &Tokens, cx: &mut Context<Self>) -> AnyElement {
+        let path = view.path.clone();
+        let (server, share) = share_names(&path, cx);
+        let tab = view.id;
+        let sign_in = |label: SharedString, primary: bool, cx: &mut Context<Self>| {
+            let path = path.clone();
+            Button::new("file-list-share-sign-in")
+                .small()
+                .when(!primary, |b| b.outline())
+                .icon(IconName::KeyRound)
+                .label(label)
+                .on_click(cx.listener(move |_, _, _, cx| {
+                    cx.emit(FileListEvent::SignInToShare { path: path.clone() });
+                }))
+                .into_any_element()
+        };
+        let guest = trouble == Trouble::GuestOnly;
+        let read_only = |cx: &mut Context<Self>| {
+            let path = path.clone();
+            Button::new("file-list-share-read-only")
+                .small()
+                .icon(IconName::Eye)
+                .label(t!("Open read-only"))
+                .on_click(cx.listener(move |_, _, _, cx| {
+                    cx.emit(FileListEvent::OpenShareReadOnly {
+                        path: path.clone(),
+                        guest,
+                    });
+                }))
+                .into_any_element()
+        };
+        let open_in_explorer = |cx: &mut Context<Self>| {
+            let path = path.clone();
+            Button::new("file-list-open-in-file-explorer")
+                .outline()
+                .small()
+                .icon(IconName::FolderSearch)
+                .label(t!("Open in File Explorer"))
+                .on_click(cx.listener(move |_, _, _, cx| {
+                    cx.emit(FileListEvent::OpenInFileExplorer { path: path.clone() });
+                }))
+                .into_any_element()
+        };
+        let try_again = |cx: &mut Context<Self>| {
+            Button::new("file-list-share-try-again")
+                .outline()
+                .small()
+                .icon(IconName::RotateCw)
+                .label(t!("Try again"))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.explorer.update(cx, |e, cx| e.reload(Some(tab), cx).detach());
+                }))
+                .into_any_element()
+        };
+        let strict = glint_core::remote::smb::strict_windows();
+        let (icon_name, heading, text, actions): (IconName, SharedString, SharedString, Vec<AnyElement>) = match trouble {
+            Trouble::SignIn => (
+                IconName::KeyRound,
+                t!("Sign in to {server}", server = server),
+                t!(
+                    "{server} wants a user name and password for “{share}”. Glint keeps them in Windows Credential Manager and signs in by itself from then on.",
+                    server = server,
+                    share = share
+                ),
+                vec![sign_in(t!("Sign in…"), true, cx), open_in_explorer(cx)],
+            ),
+            Trouble::WrongPassword => (
+                IconName::KeyRound,
+                t!("{server} didn't take the password", server = server),
+                t!(
+                    "The user name and password Glint keeps for “{share}” didn't work. If they changed on {server}, type the new ones.",
+                    server = server,
+                    share = share
+                ),
+                vec![sign_in(t!("Sign in again…"), true, cx)],
+            ),
+            Trouble::NotAllowed => (
+                IconName::FolderLock,
+                t!("You don't have permission to open “{name}”", name = share),
+                t!(
+                    "{server} knows this account but doesn't let it in here. Another account may be.",
+                    server = server
+                ),
+                vec![sign_in(t!("Sign in as someone else…"), true, cx), open_in_explorer(cx)],
+            ),
+            Trouble::Locked => (
+                IconName::Lock,
+                t!("{server} locked the account", server = server),
+                t!(
+                    "Too many wrong passwords. It unlocks after a while, or when someone unlocks it on {server}.",
+                    server = server
+                ),
+                vec![sign_in(t!("Sign in…"), false, cx), try_again(cx)],
+            ),
+            Trouble::Disabled => (
+                IconName::Lock,
+                t!("The account is turned off on {server}", server = server),
+                t!(
+                    "Someone who looks after {server} can turn it back on, or you can sign in with another account.",
+                    server = server
+                ),
+                vec![sign_in(t!("Sign in…"), true, cx)],
+            ),
+            Trouble::Expired => (
+                IconName::Lock,
+                t!("The account's password has expired"),
+                t!("Set a new password on {server}, then sign in here with it.", server = server),
+                vec![sign_in(t!("Sign in…"), true, cx)],
+            ),
+            Trouble::OtherAccount => (
+                IconName::User,
+                t!("Windows is signed in to {server} as someone else", server = server),
+                t!(
+                    "Windows lets this PC use one account per server, and File Explorer or a mapped drive already uses another one there. Glint can open “{share}” read-only on its own, or sign out there and try again.",
+                    share = share
+                ),
+                vec![read_only(cx), try_again(cx)],
+            ),
+            Trouble::GuestOnly => (
+                IconName::User,
+                t!("Windows won't sign in to {server} as a guest", server = server),
+                if strict {
+                    t!(
+                        "{server} lets in guests only, which Windows 11 24H2 and later refuse to keep this PC safe. Glint can open “{share}” read-only on its own, without changing Windows, or you can give {server} an account and sign in with it.",
+                        server = server,
+                        share = share
+                    )
+                } else {
+                    t!(
+                        "{server} lets in guests only, which this edition of Windows refuses to keep this PC safe. Glint can open “{share}” read-only on its own, without changing Windows, or you can give {server} an account and sign in with it.",
+                        server = server,
+                        share = share
+                    )
+                },
+                vec![read_only(cx), sign_in(t!("Sign in with an account…"), false, cx)],
+            ),
+            Trouble::Unsigned => (
+                IconName::ShieldCheck,
+                t!("Windows won't sign in to {server}", server = server),
+                t!(
+                    "{server} doesn't sign what it sends, which Windows 11 24H2 and later require. Turn on SMB signing in {server}'s settings, or Glint can open “{share}” read-only on its own, without changing Windows.",
+                    server = server,
+                    share = share
+                ),
+                vec![read_only(cx), try_again(cx)],
+            ),
+            Trouble::Asleep { wakeable } => {
+                let waking = Waking::since(&server, cx).is_some_and(|at| at.elapsed() < WAKING_FOR);
+                let mut actions = Vec::new();
+                if wakeable && waking {
+                    actions.push(
+                        Button::new("file-list-share-wake")
+                            .small()
+                            .loading(true)
+                            .label(t!("Waking {server}…", server = server))
+                            .into_any_element(),
+                    );
+                } else if wakeable {
+                    let (path, woken) = (path.clone(), server.clone());
+                    actions.push(
+                        Button::new("file-list-share-wake")
+                            .small()
+                            .icon(IconName::Power)
+                            .label(t!("Wake {server}", server = server))
+                            .on_click(cx.listener(move |_, _, _, cx| {
+                                Waking::start(&woken, cx);
+                                cx.emit(FileListEvent::WakeServer { path: path.clone() });
+                                cx.notify();
+                            }))
+                            .into_any_element(),
+                    );
+                }
+                actions.push(try_again(cx));
+                (
+                    IconName::Moon,
+                    t!("{server} isn't answering", server = server),
+                    t!(
+                        "It may be asleep, switched off, or on another network. “{share}” opens as soon as {server} answers.",
+                        server = server,
+                        share = share
+                    ),
+                    actions,
+                )
+            }
+        };
+        centered(t, "file-list-share")
+            .role(Role::Group)
+            .aria_label(heading.clone())
+            .aria_description(text.clone())
+            .child(faded(t, icon_name))
+            .child(title(t, heading))
+            .child(div().max_w(rems(26.)).child(text))
+            .child(
+                row_start()
+                    .mt(space(1.))
+                    .flex_wrap()
+                    .justify_center()
+                    .gap(space(2.))
+                    .children(actions),
+            )
+            .test_support()
+            .into_any_element()
+    }
+}
+
+/// The server and share a share's page names: from its path, or (opened through rclone, at `remote:<id>`) from its
+/// connection's address.
+fn share_names(path: &str, cx: &App) -> (String, String) {
+    let address = match glint_model::paths::is_remote_path(path) {
+        true => {
+            let id = glint_model::paths::remote_id_of(path).to_lowercase();
+            crate::persistence::app(cx)
+                .and_then(|app| {
+                    app.remotes
+                        .iter()
+                        .find(|r| r.id.to_lowercase() == id)
+                        .map(|r| r.endpoint.clone())
+                })
+                .unwrap_or_else(|| path.to_string())
+        }
+        false => path.to_string(),
+    };
+    let server = glint_core::remote::smb::server_of(&address).to_string();
+    let share = glint_core::remote::smb::share_of(&address)
+        .map(|s| base_name(&s).to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| server.clone());
+    (server, share)
+}
+
+/// How long "Waking…" shows after Wake was pressed: a NAS takes a minute or two to come up.
+const WAKING_FOR: Duration = Duration::from_secs(120);
+
+/// The servers Wake was pressed for, and when (lower case).
+#[derive(Default)]
+struct Waking(std::collections::HashMap<String, Instant>);
+
+impl Global for Waking {}
+
+impl Waking {
+    fn since(server: &str, cx: &App) -> Option<Instant> {
+        cx.try_global::<Waking>()
+            .and_then(|w| w.0.get(&server.to_lowercase()).copied())
+    }
+
+    fn start(server: &str, cx: &mut App) {
+        if !cx.has_global::<Waking>() {
+            cx.set_global(Waking::default());
+        }
+        cx.global_mut::<Waking>()
+            .0
+            .insert(server.to_lowercase(), Instant::now());
     }
 }

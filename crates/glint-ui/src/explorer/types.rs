@@ -232,10 +232,12 @@ impl ListFailure {
     }
 }
 
-/// "denied": Windows doesn't let this account open the folder; anything else is said in the message.
+/// "denied": Windows doesn't let this account open the folder; a share's trouble the folder view helps with (signing in,
+/// opening it read-only, waking its server: glint-core's remote/smb.rs); anything else is said in the message.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FailureKind {
     Denied,
+    Share(glint_core::remote::smb::Trouble),
     Other,
 }
 
@@ -299,6 +301,9 @@ pub struct NoAccess {
     pub refused: bool,
     /// Get access gave this account permission, yet a rule in the folder's permissions denies it.
     pub still_denied: bool,
+    /// A Windows share Windows won't open, and why, when the folder view can help: a sign-in right there, opening it
+    /// read-only through rclone, waking its server.
+    pub share: Option<glint_core::remote::smb::Trouble>,
 }
 
 /// How much of a tab's folder is there to show.

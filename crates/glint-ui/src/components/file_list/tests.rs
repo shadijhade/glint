@@ -620,6 +620,132 @@ fn a_folder_windows_keeps_closed_says_why_and_offers_to_get_access(cx: &mut Test
 }
 
 #[gpui_kit::test]
+fn a_share_that_wants_a_password_offers_a_sign_in_right_there(cx: &mut TestAppContext) {
+    use glint_core::remote::smb::Trouble;
+    let _guard = testing::lock();
+    let disk = FakeDisk::new();
+    let share = "\\\\nas\\photos";
+    disk.refuse_share(share, Trouble::SignIn);
+    let mut ui = open(cx, &disk, share);
+    assert_eq!(ui.role_of("Sign in to nas"), Some(Role::Group));
+    assert_eq!(ui.role_of("Sign in…"), Some(Role::Button));
+    assert_eq!(ui.role_of("Open in File Explorer"), Some(Role::Button));
+    ui.visual
+        .update(|window, cx| window.click("file-list-share-sign-in", cx));
+    ui.frame();
+    assert!(
+        matches!(ui.events.borrow().last(), Some(FileListEvent::SignInToShare { path }) if path == share),
+        "Sign in… asks for the share's connection dialog"
+    );
+    // A refused password, an account Windows won't let in: what fits is offered.
+    disk.refuse_share(share, Trouble::WrongPassword);
+    ui.explorer.update(&mut ui.visual, |e, cx| e.reload(None, cx).detach());
+    ui.frame();
+    assert_eq!(ui.role_of("nas didn't take the password"), Some(Role::Group));
+    assert_eq!(ui.role_of("Sign in again…"), Some(Role::Button));
+    // Signed in, it opens.
+    disk.accept_share(share);
+    disk.folder(share, vec![file(share, "beach.jpg", 1, 0)]);
+    ui.explorer.update(&mut ui.visual, |e, cx| e.reload(None, cx).detach());
+    for _ in 0..20 {
+        ui.frame();
+        if !ui.labels().is_empty() {
+            break;
+        }
+    }
+    assert_eq!(ui.labels(), ["beach.jpg"]);
+}
+
+#[gpui_kit::test]
+fn a_share_windows_wont_sign_in_to_opens_read_only_around_it(cx: &mut TestAppContext) {
+    use glint_core::remote::smb::Trouble;
+    let _guard = testing::lock();
+    let disk = FakeDisk::new();
+    let share = "\\\\192.168.1.6\\share";
+    disk.refuse_share(share, Trouble::GuestOnly);
+    let mut ui = open(cx, &disk, share);
+    assert_eq!(
+        ui.role_of("Windows won't sign in to 192.168.1.6 as a guest"),
+        Some(Role::Group)
+    );
+    assert_eq!(ui.role_of("Sign in with an account…"), Some(Role::Button));
+    ui.visual
+        .update(|window, cx| window.click("file-list-share-read-only", cx));
+    ui.frame();
+    assert!(
+        matches!(ui.events.borrow().last(), Some(FileListEvent::OpenShareReadOnly { path, guest: true }) if path == share),
+        "a guest-only server opens read-only with nothing to type"
+    );
+    for (trouble, heading) in [
+        (Trouble::Unsigned, "Windows won't sign in to 192.168.1.6"),
+        (
+            Trouble::OtherAccount,
+            "Windows is signed in to 192.168.1.6 as someone else",
+        ),
+    ] {
+        disk.refuse_share(share, trouble);
+        ui.explorer.update(&mut ui.visual, |e, cx| e.reload(None, cx).detach());
+        ui.frame();
+        assert_eq!(ui.role_of(heading), Some(Role::Group), "{trouble:?}");
+        assert_eq!(ui.role_of("Open read-only"), Some(Role::Button), "{trouble:?}");
+        ui.visual
+            .update(|window, cx| window.click("file-list-share-read-only", cx));
+        ui.frame();
+        assert!(
+            matches!(
+                ui.events.borrow().last(),
+                Some(FileListEvent::OpenShareReadOnly { guest: false, .. })
+            ),
+            "{trouble:?}: an account may be needed, so the dialog asks"
+        );
+    }
+}
+
+#[gpui_kit::test]
+fn a_sleeping_nas_says_so_and_wakes_when_asked(cx: &mut TestAppContext) {
+    use glint_core::remote::smb::Trouble;
+    let _guard = testing::lock();
+    let disk = FakeDisk::new();
+    let share = "\\\\nas-asleep-for-glint\\photos";
+    disk.refuse_share(share, Trouble::Asleep { wakeable: true });
+    let mut ui = open(cx, &disk, share);
+    assert_eq!(ui.role_of("nas-asleep-for-glint isn't answering"), Some(Role::Group));
+    assert_eq!(ui.role_of("Try again"), Some(Role::Button));
+    ui.visual.update(|window, cx| window.click("file-list-share-wake", cx));
+    ui.frame();
+    assert!(
+        matches!(ui.events.borrow().last(), Some(FileListEvent::WakeServer { path }) if path == share),
+        "Wake sends the packet"
+    );
+    assert_eq!(
+        ui.role_of("Waking nas-asleep-for-glint…"),
+        Some(Role::Button),
+        "and says it's waking"
+    );
+    // Up again, Try again opens it.
+    disk.accept_share(share);
+    disk.folder(share, vec![file(share, "a.jpg", 1, 0)]);
+    ui.visual
+        .update(|window, cx| window.click("file-list-share-try-again", cx));
+    for _ in 0..20 {
+        ui.frame();
+        if !ui.labels().is_empty() {
+            break;
+        }
+    }
+    assert_eq!(ui.labels(), ["a.jpg"]);
+    // One Glint doesn't know the network card of: nothing to wake, only Try again.
+    let other = "\\\\nas-unknown-for-glint\\x";
+    disk.refuse_share(other, Trouble::Asleep { wakeable: false });
+    ui.explorer
+        .update(&mut ui.visual, |e, cx| e.navigate(other, NavOptions::default(), cx));
+    ui.frame();
+    assert_eq!(ui.role_of("nas-unknown-for-glint isn't answering"), Some(Role::Group));
+    assert_eq!(ui.role_of("Try again"), Some(Role::Button));
+    assert!(ui.role_of("Wake nas-unknown-for-glint").is_none());
+}
+
+#[gpui_kit::test]
 fn a_folder_that_could_not_be_listed_says_so(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let mut ui = open(cx, &FakeDisk::new(), "C:\\nope");

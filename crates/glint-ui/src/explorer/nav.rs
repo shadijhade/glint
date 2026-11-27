@@ -394,8 +394,11 @@ impl Explorer {
         let (listing, denied) = match outcome {
             None => (None, None),
             Some(Ok(listing)) => (Some(listing), None),
-            // A folder Windows keeps this account out of opens all the same.
-            Some(Err(failure)) if failure.kind == FailureKind::Denied => (None, Some(failure)),
+            // A folder Windows keeps this account out of opens all the same, and so does a share Windows won't open
+            // for a reason the folder view can help with.
+            Some(Err(failure)) if matches!(failure.kind, FailureKind::Denied | FailureKind::Share(_)) => {
+                (None, Some(failure))
+            }
             Some(Err(failure)) => {
                 if self.tabs.get(&id).is_some_and(|t| t.nav_seq == seq) {
                     self.update_tab(id, |t| {
@@ -441,6 +444,10 @@ impl Explorer {
         let closed = match (&denied, &listing) {
             (Some(d), _) => Some(NoAccess {
                 remote: d.remote,
+                share: match d.kind {
+                    FailureKind::Share(trouble) => Some(trouble),
+                    _ => None,
+                },
                 ..Default::default()
             }),
             (None, Some(l)) if l.from_index => Some(NoAccess::default()),
@@ -457,10 +464,13 @@ impl Explorer {
             self.freezes.release(id, &self.ops.cut);
             listing
         };
+        // A share's trouble is as it's said now (asleep a moment ago, refusing a password now).
         let no_access = closed.map(|closed| match state.no_access() {
-            Some(known) if same => *known,
+            Some(known) if same && closed.share.is_none() && known.share.is_none() => *known,
             _ => closed,
         });
+        let asleep =
+            no_access.is_some_and(|n| matches!(n.share, Some(glint_core::remote::smb::Trouble::Asleep { .. })));
         // Select what was asked for; on a refresh keep the selection; a new tab selects what it was opened
         // with; going up selects where we came from.
         let wanted: Vec<String> = if let Some(select) = &options.select {
@@ -559,6 +569,9 @@ impl Explorer {
             // Going to another folder ends the search, as `navigate` did with `cancelFind`.
             self.stop_find_job(id, was_running);
             cx.emit(ExplorerEvent::FindDropped { tab: id, was_running });
+        }
+        if asleep {
+            self.watch_server(id, path.clone(), cx);
         }
         if options.select.is_some() && !selected.is_empty() {
             self.flash_paths(selected.clone(), cx);
@@ -837,6 +850,54 @@ impl Explorer {
         for tab in leaving {
             self.navigate(THIS_PC, NavOptions::in_tab(tab), cx);
         }
+    }
+
+    /// A share whose server doesn't answer: knocked on every few seconds while the tab shows it so, and read again as
+    /// soon as it answers (asleep, it may take a minute or two to wake). Gives up after ten minutes.
+    pub fn watch_server(&mut self, id: TabId, path: String, cx: &mut Context<Self>) {
+        thread_local! {
+            /// The tabs a server is watched for (Try again lands on the same page again: one watch is enough).
+            static WATCHED: std::cell::RefCell<HashSet<TabId>> = Default::default();
+        }
+        if !WATCHED.with(|w| w.borrow_mut().insert(id)) {
+            return;
+        }
+        let server = glint_core::remote::smb::server_of(&path).to_string();
+        cx.spawn(async move |this, cx| {
+            struct Done(TabId);
+            impl Drop for Done {
+                fn drop(&mut self) {
+                    WATCHED.with(|w| w.borrow_mut().remove(&self.0));
+                }
+            }
+            let _done = Done(id);
+            let started = Instant::now();
+            while started.elapsed() < Duration::from_secs(600) {
+                cx.background_executor().timer(Duration::from_secs(4)).await;
+                let still = this
+                    .update(cx, |e, _| {
+                        e.tabs.get(&id).is_some_and(|t| {
+                            same_path(&t.path, &path)
+                                && t.no_access().is_some_and(|n| {
+                                    matches!(n.share, Some(glint_core::remote::smb::Trouble::Asleep { .. }))
+                                })
+                        })
+                    })
+                    .unwrap_or(false);
+                if !still {
+                    return;
+                }
+                let knocking = server.clone();
+                let answered = cx
+                    .background_spawn(async move { glint_core::remote::smb::answers(&knocking) })
+                    .await;
+                if answered {
+                    let _ = this.update(cx, |e, cx| e.reload(Some(id), cx).detach());
+                    return;
+                }
+            }
+        })
+        .detach();
     }
 
     /// F5: runs the search again when one is shown, otherwise re-reads the folder (`refresh`).

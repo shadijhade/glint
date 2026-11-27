@@ -616,21 +616,25 @@ pub fn build_rows(i: &Inputs) -> Vec<Row> {
         // network drive is drawn, by their name, the path in the tooltip; their menu edits and removes them.
         let connected: Vec<&RemoteConnection> = i.remotes.iter().filter(|r| r.kind == RemoteKind::Smb).collect();
         for r in &connected {
+            // Opened through rclone (Windows won't sign in to it), it's at remote:<id>, read-only, with no tree.
+            let place = r.place();
+            let tree = (!r.through_rclone()).then(|| tree_of(&place)).flatten();
+            let has_tree = tree.is_some();
             rows.push(Row::Place(Place {
                 glyph: Glyph::Drive(DriveKind::Network),
                 label: Label::Plain(r.name.clone().into()),
-                path: r.endpoint.clone(),
-                active: here(&r.endpoint),
+                path: place.clone(),
+                active: here(&place),
                 detail: r.endpoint.clone().into(),
-                tree: tree_of(&r.endpoint),
+                tree,
                 capacity: None,
                 eject: None,
                 remote: Some(r.id.clone()),
                 gutter: i.folder_tree,
                 tile: false,
             }));
-            if tree_of(&r.endpoint).is_some() {
-                push_kids(&mut rows, i, &r.endpoint, 0);
+            if has_tree {
+                push_kids(&mut rows, i, &place, 0);
             }
         }
         // The shares and folders on other computers that were pinned (`\\nas\photos`): there too, by the name they
@@ -1127,6 +1131,22 @@ mod tests {
         let text = describe(&world.rows("", true));
         assert!(!text.contains(&"# Remote".to_string()) && text.contains(&"nShare".to_string()));
         assert_eq!(text.last().map(String::as_str), Some("+ add"));
+        // Opened through rclone where Windows won't sign in: the same row, at remote:<id>, read-only, with no tree;
+        // the pinned path is still listed once.
+        world.remotes[0].via_rclone = Some(true);
+        let rows = world.rows("remote:nshare", true);
+        let text = describe(&rows);
+        assert_eq!(text.iter().filter(|t| *t == "nShare").count(), 1, "{text:?}");
+        let Some(Row::Place(place)) = rows.iter().find(|r| r.key() == "p:remote:nshare") else {
+            panic!("no row for the share through rclone: {text:?}");
+        };
+        assert!(place.active && place.tree.is_none());
+        assert_eq!(
+            place.detail.as_ref(),
+            share,
+            "its address is still what the tooltip says"
+        );
+        assert_eq!(place.remote.as_deref(), Some("nshare"));
     }
 
     #[test]

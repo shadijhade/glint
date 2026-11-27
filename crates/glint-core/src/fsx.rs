@@ -102,7 +102,11 @@ where
         return shaped(warm, shape).await;
     }
     if crate::remote::is_remote(path.trim()) {
-        let listing = crate::remote::listing(path.trim(), Instant::now()).await.map_err(|e| ListError::other(path.trim(), e))?;
+        // A share opened through rclone that refuses its account says so as one opened through Windows would.
+        let listing = crate::remote::listing(path.trim(), Instant::now()).await.map_err(|e| match crate::remote::refused(path.trim(), &e) {
+            Some(refusal) => share_error(path.trim(), refusal),
+            None => ListError::other(path.trim(), e),
+        })?;
         return shaped(listing, shape).await;
     }
     let asked = path.clone();
@@ -127,16 +131,24 @@ fn read_listing(path: String) -> Result<Listing, ListError> {
     if let Some(listing) = crate::archive::list(&path, started) {
         return listing.map_err(|e| ListError::other(&path, e));
     }
-    // A Windows share Glint has a connection for: signed in to first, once a session (remote/smb.rs).
-    crate::remote::smb::ensure(&path).map_err(|message| ListError {
-        kind: "other",
-        message,
-        path: path.clone(),
-        remote: true,
-    })?;
+    // A server noted before that doesn't answer now is said to be asleep at once, not after Windows' half-minute try.
+    if let Some(refusal) = crate::remote::smb::asleep(&path) {
+        return Err(share_error(&path, refusal));
+    }
+    // A Windows share Glint has a connection for: signed in to first, once a session (remote/smb.rs). On a share
+    // Windows reached by another name of its server (it was signed in there as someone else), the folder is read
+    // there, and the tab goes along.
+    let path = match crate::remote::smb::ensure(&path) {
+        Ok(moved) => moved.unwrap_or(path),
+        Err(refusal) => return Err(share_error(&path, refusal)),
+    };
     if let Some(server) = server_of(&path) {
-        let mut entries = shares(server).map_err(|e| ListError { kind: "other", message: format!("Glint couldn't list the shares on {server}: {e}"), path: path.clone(), remote: true })?;
+        let mut entries = shares(server).map_err(|e| match refused_share(&path, &e) {
+            Some(refused) => refused,
+            None => ListError { kind: "other", message: format!("Glint couldn't list the shares on {server}: {e}"), path: path.clone(), remote: true },
+        })?;
         sort_entries(&mut entries);
+        crate::remote::smb::opened(&path);
         return Ok(Listing::Folder { path, entries, elapsed: ms_since(started), from_index: false, remote: false, archive: None });
     }
     let mut from_index = false;
@@ -149,6 +161,9 @@ fn read_listing(path: String) -> Result<Listing, ListError> {
             } else if let Some(entries) = (!remote).then(|| crate::index::listing(&path)).flatten() {
                 from_index = true;
                 (path, entries)
+            } else if let Some(refused) = refused_share(&path, &e) {
+                // A share that doesn't let this account in: the folder view offers signing in as someone else.
+                return Err(refused);
             } else {
                 return Err(ListError { kind: "denied", message: describe(&e), remote, path });
             }
@@ -157,13 +172,30 @@ fn read_listing(path: String) -> Result<Listing, ListError> {
         // "Open as archive". Its first bytes say so, and it's remembered from then on.
         Err(e) => match crate::archive::sniff(&path).then(|| crate::archive::list(&path, started)).flatten() {
             Some(listing) => return listing.map_err(|e| ListError::other(&path, e)),
-            None => return Err(ListError::other(&path, describe(&e))),
+            // A share Windows wouldn't open: why, in words the folder view can act on (a sign-in, a guest-only
+            // server, one that's asleep…).
+            None => return Err(refused_share(&path, &e).unwrap_or_else(|| ListError::other(&path, describe(&e)))),
         },
     };
+    if path.starts_with(r"\\") {
+        crate::remote::smb::opened(&path);
+    }
     sort_entries(&mut entries);
     // Marks that waited for an item of this folder move into it now (docs/gpui/marks, F31): nothing while none waits.
     crate::marks::wake::listed(&path);
     Ok(Listing::Folder { path, entries, elapsed: ms_since(started), from_index, remote: false, archive: None })
+}
+
+/// A share's (or a server's) refusal as a listing's error: the trouble's word for the folder view, and why.
+fn share_error(path: &str, refusal: crate::remote::smb::Refusal) -> ListError {
+    ListError { kind: refusal.trouble.map_or("other", |t| t.kind()), message: refusal.message, path: path.to_string(), remote: true }
+}
+
+/// Windows' error `e` for a path on a share (or a server) as a listing's error, when it's one the folder view can
+/// help with.
+fn refused_share(path: &str, e: &io::Error) -> Option<ListError> {
+    let code = e.raw_os_error()? as u32;
+    crate::remote::smb::listing_refused(path, code).map(|refusal| share_error(path, refusal))
 }
 
 /// A folder's own last-write time, in ms: every add, delete and rename in it changes it. Prefetched
@@ -221,7 +253,8 @@ pub struct Subfolder {
 pub async fn list_subfolders(path: String, hidden: bool) -> Result<Vec<Subfolder>, String> {
     blocking(move || {
         let path = normalize(&path)?;
-        crate::remote::smb::ensure(&path)?;
+        // On a share reached by another name of its server, its folders are read there (the names are the same).
+        let path = crate::remote::smb::ensure(&path).map_err(|r| r.message)?.unwrap_or(path);
         let mut entries = read_dir(&path).map_err(|e| describe(&e))?;
         entries.retain(|e| e.dir && (hidden || e.attrs & 0x6 == 0));
         sort_entries(&mut entries);
@@ -349,6 +382,11 @@ pub async fn resolve_path(path: String) -> Result<Resolved, String> {
             return Ok(Resolved { path: crate::recycle::PLACE.into(), dir: true });
         }
         let path = normalize(&path)?;
+        // On a server Glint noted before that doesn't answer now: a folder at once, which says it's asleep and can wake
+        // it (remote/smb.rs), rather than Windows' half-minute wait to say the path isn't there.
+        if crate::remote::smb::asleep(&path).is_some() {
+            return Ok(Resolved { path, dir: true });
+        }
         // A first read stopped (a big .tar.gz) is "cancelled" as it is: there's nothing to report.
         let archive_error = |e: String| if e == "cancelled" { e } else { format!("Can't open “{path}”. {e}") };
         if let Some(found) = crate::archive::resolve(&path) {

@@ -76,6 +76,9 @@ pub struct Connection {
     pub thumbnails: bool,
     /// rclone: the remote's name in rclone's configuration.
     pub rclone: String,
+    /// A Windows share's connection opened through rclone, read-only, where Windows won't sign in to it (guests only,
+    /// no signing, another account signed in already): it's then at `remote:<id>` like the other connections.
+    pub via_rclone: bool,
 }
 
 /// A file or folder on a remote, by its own name.
@@ -209,11 +212,36 @@ fn make(connection: &Connection, secret: &str) -> Result<Backend, String> {
             if name.is_empty() {
                 return Err("Which of rclone's remotes? Its name goes in the connection".into());
             }
-            Ok(Backend::Rclone(rclone::Remote { name: name.into(), root }))
+            Ok(Backend::Rclone(rclone::Remote::configured(name.into(), root)))
+        }
+        // Read through rclone's own SMB client, the password obscured by rclone on first use (smb.rs).
+        smb::KIND if connection.via_rclone => {
+            Ok(Backend::Rclone(rclone::Remote::share(smb::Rclone::of(connection)?, secret.into())))
         }
         smb::KIND => Err(r"A Windows share opens at its own path (\\server\share), not as a remote".into()),
         other => Err(format!("Glint doesn't know connections of the kind “{other}”")),
     }
+}
+
+/// Why a Windows share opened through rclone wouldn't list, when it's the account rclone signed in with (its words for
+/// a refused sign-in): the folder view then offers to sign in again, as it does for one opened through Windows.
+pub fn refused(path: &str, message: &str) -> Option<smb::Refusal> {
+    let (id, _) = parts(path)?;
+    let connection = state().connections.iter().find(|c| c.id.eq_ignore_ascii_case(id)).cloned()?;
+    if connection.kind != smb::KIND || !connection.via_rclone {
+        return None;
+    }
+    let said = message.to_lowercase();
+    let account = ["logon", "bad username", "password", "authentication", "access denied"];
+    if !account.iter().any(|word| said.contains(word)) {
+        return None;
+    }
+    let server = smb::address(&connection.endpoint).map(|a| smb::server_of(&a).to_string()).unwrap_or_default();
+    let trouble = match connection.user.trim().is_empty() {
+        true => smb::Trouble::SignIn,
+        false => smb::Trouble::WrongPassword,
+    };
+    Some(smb::Refusal { trouble: Some(trouble), message: format!("{server} didn't take that user name and password") })
 }
 
 /// The connection `id` and its client.
@@ -792,7 +820,7 @@ pub async fn remote_test(connection: Connection, secret: Option<String>) -> Resu
     let typed = secret.clone().filter(|s| !s.is_empty());
     let secret = secret.unwrap_or_else(|| secrets::read(&connection.id).unwrap_or_default());
     // A Windows share signs in through Windows (smb.rs), which waits on the network: off the async threads.
-    if connection.kind == smb::KIND {
+    if connection.kind == smb::KIND && !connection.via_rclone {
         return crate::fsx::blocking(move || smb::test(&connection, &secret)).await;
     }
     let mut made = make(&connection, &secret)?;
@@ -896,6 +924,28 @@ pub(crate) mod secrets {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_share_through_rclone_that_refuses_its_account_is_a_sign_in_like_windows_ones() {
+        let share = Connection {
+            id: "test-refused-share".into(),
+            kind: smb::KIND.into(),
+            endpoint: r"\\127.0.0.1\D$\glint-look".into(),
+            user: "glint-test-nobody".into(),
+            via_rclone: true,
+            ..Default::default()
+        };
+        let cloud = Connection { id: "test-refused-cloud".into(), kind: "rclone".into(), rclone: "drive".into(), ..Default::default() };
+        state().connections.extend([share.clone(), cloud]);
+        // rclone's own words for a refused sign-in (its SMB client, against this PC's admin share).
+        let said = "couldn't connect SMB: response error: The attempted logon is invalid. This is either due to a bad username or authentication information.";
+        let answer = refused(r"remote:test-refused-share\a", said).expect("a refused account");
+        assert_eq!(answer.trouble, Some(smb::Trouble::WrongPassword));
+        assert_eq!(answer.message, "127.0.0.1 didn't take that user name and password");
+        assert_eq!(refused("remote:test-refused-share", "dial tcp 127.0.0.1:445: i/o timeout"), None, "not the account");
+        assert_eq!(refused("remote:test-refused-cloud", said), None, "only a share's connection");
+        state().connections.retain(|c| !c.id.starts_with("test-refused-"));
+    }
 
     #[test]
     fn reads_its_paths() {

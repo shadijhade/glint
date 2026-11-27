@@ -212,7 +212,8 @@
         "iphlpapi.dll": [
             "GetAdaptersAddresses",
             "GetBestInterface",
-            "GetExtendedTcpTable"
+            "GetExtendedTcpTable",
+            "SendARP"
         ],
         "kernel32.dll": [
             "AcquireSRWLockExclusive",
@@ -762,6 +763,7 @@
             "listen",
             "recv",
             "recvfrom",
+            "select",
             "send",
             "sendto",
             "setsockopt",

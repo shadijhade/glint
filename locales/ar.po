@@ -3278,6 +3278,160 @@ msgstr ""
 msgid "Get access"
 msgstr "الحصول على حق الوصول"
 
+#: crates/glint-ui/src/components/file_list/states.rs
+msgid "Open read-only"
+msgstr "فتح للقراءة فقط"
+
+#: crates/glint-ui/src/components/file_list/states.rs
+#: crates/glint-ui/src/dialogs/remote.rs
+msgid "Sign in to {server}"
+msgstr "تسجيل الدخول إلى {server}"
+
+#: crates/glint-ui/src/components/file_list/states.rs
+msgid ""
+"{server} wants a user name and password for “{share}”. Glint keeps them in "
+"Windows Credential Manager and signs in by itself from then on."
+msgstr ""
+"يطلب {server} اسم مستخدم وكلمة مرور لـ «{share}». يحفظهما Glint في إدارة "
+"بيانات الاعتماد في Windows ويسجّل الدخول تلقائيًا بعد ذلك."
+
+#: crates/glint-ui/src/components/file_list/states.rs
+msgid "Sign in…"
+msgstr "تسجيل الدخول…"
+
+#: crates/glint-ui/src/components/file_list/states.rs
+msgid "{server} didn't take the password"
+msgstr "لم يقبل {server} كلمة المرور"
+
+#: crates/glint-ui/src/components/file_list/states.rs
+msgid ""
+"The user name and password Glint keeps for “{share}” didn't work. If they "
+"changed on {server}, type the new ones."
+msgstr ""
+"لم ينجح اسم المستخدم وكلمة المرور اللذان يحفظهما Glint لـ «{share}». إذا "
+"تغيّرا على {server}، فاكتب الجديدين."
+
+#: crates/glint-ui/src/components/file_list/states.rs
+msgid "Sign in again…"
+msgstr "تسجيل الدخول مجددًا…"
+
+#: crates/glint-ui/src/components/file_list/states.rs
+msgid ""
+"{server} knows this account but doesn't let it in here. Another account may "
+"be."
+msgstr ""
+"يعرف {server} هذا الحساب لكنه لا يسمح له بالدخول هنا. قد يُسمح لحساب آخر."
+
+#: crates/glint-ui/src/components/file_list/states.rs
+msgid "Sign in as someone else…"
+msgstr "تسجيل الدخول بحساب آخر…"
+
+#: crates/glint-ui/src/components/file_list/states.rs
+msgid "{server} locked the account"
+msgstr "قفل {server} الحساب"
+
+#: crates/glint-ui/src/components/file_list/states.rs
+msgid ""
+"Too many wrong passwords. It unlocks after a while, or when someone unlocks "
+"it on {server}."
+msgstr ""
+"كلمات مرور خاطئة كثيرة جدًا. يُفتح بعد فترة، أو عندما يفتحه أحدهم على "
+"{server}."
+
+#: crates/glint-ui/src/components/file_list/states.rs
+msgid "The account is turned off on {server}"
+msgstr "الحساب معطّل على {server}"
+
+#: crates/glint-ui/src/components/file_list/states.rs
+msgid ""
+"Someone who looks after {server} can turn it back on, or you can sign in "
+"with another account."
+msgstr "يمكن لمن يدير {server} إعادة تفعيله، أو يمكنك تسجيل الدخول بحساب آخر."
+
+#: crates/glint-ui/src/components/file_list/states.rs
+msgid "The account's password has expired"
+msgstr "انتهت صلاحية كلمة مرور الحساب"
+
+#: crates/glint-ui/src/components/file_list/states.rs
+msgid "Set a new password on {server}, then sign in here with it."
+msgstr "عيّن كلمة مرور جديدة على {server}، ثم سجّل الدخول بها هنا."
+
+#: crates/glint-ui/src/components/file_list/states.rs
+msgid "Windows is signed in to {server} as someone else"
+msgstr "سجّل Windows الدخول إلى {server} بحساب آخر"
+
+#: crates/glint-ui/src/components/file_list/states.rs
+msgid ""
+"Windows lets this PC use one account per server, and File Explorer or a "
+"mapped drive already uses another one there. Glint can open “{share}” "
+"read-only on its own, or sign out there and try again."
+msgstr ""
+"يسمح Windows لهذا الحاسوب بحساب واحد لكل خادم، ومستكشف الملفات أو محرك أقراص "
+"معيَّن يستخدم هناك حسابًا آخر بالفعل. يمكن لـ Glint فتح «{share}» للقراءة "
+"فقط بنفسه، أو سجّل الخروج هناك ثم أعد المحاولة."
+
+#: crates/glint-ui/src/components/file_list/states.rs
+msgid "Windows won't sign in to {server} as a guest"
+msgstr "لن يسجّل Windows الدخول إلى {server} كضيف"
+
+#: crates/glint-ui/src/components/file_list/states.rs
+msgid ""
+"{server} lets in guests only, which Windows 11 24H2 and later refuse to keep "
+"this PC safe. Glint can open “{share}” read-only on its own, without "
+"changing Windows, or you can give {server} an account and sign in with it."
+msgstr ""
+"لا يسمح {server} إلا بدخول الضيوف، وهو ما يرفضه Windows 11 24H2 وما بعده "
+"لحماية هذا الحاسوب. يمكن لـ Glint فتح «{share}» للقراءة فقط بنفسه دون تغيير "
+"Windows، أو يمكنك إنشاء حساب على {server} وتسجيل الدخول به."
+
+#: crates/glint-ui/src/components/file_list/states.rs
+msgid ""
+"{server} lets in guests only, which this edition of Windows refuses to keep "
+"this PC safe. Glint can open “{share}” read-only on its own, without "
+"changing Windows, or you can give {server} an account and sign in with it."
+msgstr ""
+"لا يسمح {server} إلا بدخول الضيوف، وهو ما يرفضه هذا الإصدار من Windows "
+"لحماية هذا الحاسوب. يمكن لـ Glint فتح «{share}» للقراءة فقط بنفسه دون تغيير "
+"Windows، أو يمكنك إنشاء حساب على {server} وتسجيل الدخول به."
+
+#: crates/glint-ui/src/components/file_list/states.rs
+msgid "Sign in with an account…"
+msgstr "تسجيل الدخول بحساب…"
+
+#: crates/glint-ui/src/components/file_list/states.rs
+msgid "Windows won't sign in to {server}"
+msgstr "لن يسجّل Windows الدخول إلى {server}"
+
+#: crates/glint-ui/src/components/file_list/states.rs
+msgid ""
+"{server} doesn't sign what it sends, which Windows 11 24H2 and later "
+"require. Turn on SMB signing in {server}'s settings, or Glint can open "
+"“{share}” read-only on its own, without changing Windows."
+msgstr ""
+"لا يوقّع {server} ما يرسله، وهو ما يتطلبه Windows 11 24H2 وما بعده. شغّل "
+"توقيع SMB في إعدادات {server}، أو يمكن لـ Glint فتح «{share}» للقراءة فقط "
+"بنفسه دون تغيير Windows."
+
+#: crates/glint-ui/src/components/file_list/states.rs
+msgid "Waking {server}…"
+msgstr "جارٍ إيقاظ {server}…"
+
+#: crates/glint-ui/src/components/file_list/states.rs
+msgid "Wake {server}"
+msgstr "إيقاظ {server}"
+
+#: crates/glint-ui/src/components/file_list/states.rs
+msgid "{server} isn't answering"
+msgstr "لا يستجيب {server}"
+
+#: crates/glint-ui/src/components/file_list/states.rs
+msgid ""
+"It may be asleep, switched off, or on another network. “{share}” opens as "
+"soon as {server} answers."
+msgstr ""
+"ربما يكون في وضع السكون أو مطفأً أو على شبكة أخرى. يُفتح «{share}» بمجرد أن "
+"يستجيب {server}."
+
 #: crates/glint-ui/src/components/frequent_folders/mod.rs
 msgid "Frequent folders"
 msgstr "المجلدات المتكررة"
@@ -15325,6 +15479,24 @@ msgid "~/.ssh/id_ed25519"
 msgstr "~/.ssh/id_ed25519"
 
 #: crates/glint-ui/src/dialogs/remote.rs
+msgid ""
+"For a server Windows won't sign in to: one that lets in guests only, doesn't "
+"sign what it sends, or already has another account signed in. Windows' "
+"settings stay as they are."
+msgstr ""
+"لخادم لن يسجّل Windows الدخول إليه: خادم لا يسمح إلا بدخول الضيوف، أو لا "
+"يوقّع ما يرسله، أو سُجّل الدخول إليه بحساب آخر. تبقى إعدادات Windows كما هي."
+
+#: crates/glint-ui/src/dialogs/remote.rs
+msgid ""
+"rclone opens the share on its own. Install it once, then add the connection."
+msgstr "يفتح rclone المجلد المشترك بنفسه. ثبّته مرة واحدة، ثم أضف الاتصال."
+
+#: crates/glint-ui/src/dialogs/remote.rs
+msgid "Read-only, through rclone"
+msgstr "للقراءة فقط، عبر rclone"
+
+#: crates/glint-ui/src/dialogs/remote.rs
 msgid "Edit “{name}”"
 msgstr "تعديل «{name}»"
 
@@ -15435,13 +15607,16 @@ msgstr "حيث يُفتح: تحت المجلد الذي يسجل الدخول إ
 
 #: crates/glint-ui/src/dialogs/remote.rs
 msgid "The share, or a folder in it, as File Explorer's address bar takes it."
-msgstr "المجلد المشترك أو مجلد داخله، كما يقبله شريط العنوان في مستكشف الملفات."
+msgstr ""
+"المجلد المشترك أو مجلد داخله، كما يقبله شريط العنوان في مستكشف الملفات."
 
 #: crates/glint-ui/src/dialogs/remote.rs
 msgid ""
 "Empty to sign in as you, or as Windows already does for that server. A NAS's "
 "own account can be NAS\\name."
-msgstr "اتركه فارغًا لتسجيل الدخول بحسابك، أو كما يفعل Windows مع هذا الخادم. يُكتب حساب جهاز NAS الخاص به بالشكل NAS\\name."
+msgstr ""
+"اتركه فارغًا لتسجيل الدخول بحسابك، أو كما يفعل Windows مع هذا الخادم. يُكتب "
+"حساب جهاز NAS الخاص به بالشكل NAS\\name."
 
 #: crates/glint-ui/src/dialogs/remote.rs
 msgid "Empty for a server that doesn't ask."
@@ -15515,10 +15690,23 @@ msgstr ""
 
 #: crates/glint-ui/src/dialogs/remote.rs
 msgid ""
+"rclone's own SMB client reads it, and Windows' settings stay as they are. "
+"Glint only reads it: nothing there is changed. The password stays in Windows "
+"Credential Manager, never in Glint's settings."
+msgstr ""
+"يقرؤه عميل SMB الخاص بـ rclone، وتبقى إعدادات Windows كما هي. يقرؤه Glint "
+"فقط: لا يتغيّر شيء هناك. تبقى كلمة المرور في إدارة بيانات الاعتماد في "
+"Windows، ولا تُحفظ أبدًا في إعدادات Glint."
+
+#: crates/glint-ui/src/dialogs/remote.rs
+msgid ""
 "Windows' own SMB client opens it, without a drive letter or a place in File "
 "Explorer. The password stays in Windows Credential Manager, never in Glint's "
 "settings."
-msgstr "يفتحه عميل SMB الخاص بـ Windows، دون حرف محرك أقراص أو مكان في مستكشف الملفات. تبقى كلمة المرور في إدارة بيانات الاعتماد في Windows، ولا تُحفظ أبدًا في إعدادات Glint."
+msgstr ""
+"يفتحه عميل SMB الخاص بـ Windows، دون حرف محرك أقراص أو مكان في مستكشف "
+"الملفات. تبقى كلمة المرور في إدارة بيانات الاعتماد في Windows، ولا تُحفظ "
+"أبدًا في إعدادات Glint."
 
 #: crates/glint-ui/src/dialogs/remote.rs
 msgid ""
@@ -15541,6 +15729,10 @@ msgstr "يُفتح كمجلد على هذا الحاسوب: قراءة وكتا�
 #: crates/glint-ui/src/dialogs/remote.rs
 msgid "Its folders open read-only; what you open or copy is downloaded"
 msgstr "تُفتح مجلداته للقراءة فقط؛ ويُنزَّل ما تفتحه أو تنسخه"
+
+#: crates/glint-ui/src/dialogs/remote.rs
+msgid "Open “{share}” read-only"
+msgstr "فتح «{share}» للقراءة فقط"
 
 #: crates/glint-ui/src/dialogs/rules.rs
 msgid "Keep it in sync with a cloud (rclone)"
@@ -18335,6 +18527,10 @@ msgstr ""
 #: crates/glint-ui/src/workspace.rs
 msgid "{name} isn't installed"
 msgstr "{name} غير مثبت"
+
+#: crates/glint-ui/src/workspace.rs
+msgid "Couldn't wake it"
+msgstr "تعذّر إيقاظه"
 
 #: crates/glint-ui/src/workspace.rs
 msgid "Main window unavailable"

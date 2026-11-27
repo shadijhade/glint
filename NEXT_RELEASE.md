@@ -27,6 +27,42 @@ Helius asked, after 0.18.1, for SMB in **Add a connection** without Windows' map
   instead of pushing a tile's icon off its edge.
 - New Win32 calls in `scripts/windows10-imports.json`: `WNetAddConnection2W`, `WNetCancelConnection2W` (mpr.dll).
 
+### Where Windows won't open a share
+
+The user asked for workarounds for the Windows route's limits, the best experience on any Windows version. Glint now
+carries on where Windows' SMB client stops, without changing Windows' settings (glint-core `remote/smb.rs`):
+
+- **Why, said plainly** (`smb::Trouble`, carried to the tab as `FailureKind::Share` and `NoAccess::share`): Windows'
+  answers for a share (logon failure, access denied, locked, disabled, expired, another account, guest blocked
+  `1272`/`0xC05D0002`/`0xC05D0003`, no signing `0xC000A000`, no answer) become a folder page with what fits, instead of
+  a notice. The words for guests and signing follow the Windows version (24H2 and later, or an edition that refuses
+  guests).
+- **Sign in right there:** **Sign in…** opens the connection dialog for the share (the one it has, or a new one named
+  after it, the user name focused); saved, the share opens (`sign_in_to_share`). A refused password is kept with a
+  fingerprint and isn't tried again until it changes (NAS lockouts).
+- **Another account on the same server:** on ERROR_SESSION_CREDENTIAL_CONFLICT Glint signs in through an address the
+  server's name has (`smb::aliases`), and the listing moves the tab there; a connection is for its share by any name
+  of its server (`connection_for`, `same_server`). Checked against `\\localhost\C$` (the ignored test): with this
+  account signed in, another account is tried at the address and gets Windows' own answer for it.
+- **Read-only through rclone:** `RemoteConnection::via_rclone` ("viaRclone") makes a share's connection rclone's
+  on-the-fly SMB remote (`:smb,host=…,user=…:share`, the password obscured by rclone's `core/obscure`), at
+  `remote:<id>`. **Open read-only** on a guest-only, unsigned or other-account share: at once for a guest-only one
+  with rclone installed, else the dialog with **Read-only, through rclone** ticked and rclone's install card.
+- **A sleeping NAS:** after a share opens, its server's IPv4 address and network card (ARP, `SendARP`) are noted in
+  `shares.json`; a noted server that doesn't answer on 445 or 139 within 1.2 s is said asleep at once (`smb::asleep`),
+  **Wake** sends Wake-on-LAN (broadcast from the interface toward it, its /24 and itself, ports 9 and 7), and the tab
+  is read again as soon as it answers (`Explorer::watch_server`, every 4 s for 10 minutes).
+- New Win32 imports: `SendARP` (iphlpapi.dll), and `select` (ws2_32.dll, std's `TcpStream::connect_timeout` for the
+  knock). Texts in Chinese, German and Arabic.
+- Checked in a debug build (scratch profile): a share connection with a wrong account (`\\localhost\D$\glint-look`)
+  showed "localhost didn't take the password", **Sign in again…** opened "Sign in to localhost" with the user name
+  focused, and clearing it opened the share; a noted server that doesn't answer (192.0.2.10) showed its page about 3 s
+  after Enter in the address bar (it hung over a minute before `resolve_path` knocked first), and at start for a
+  restored tab; **Wake** turned into "Waking…"; a connection through rclone reached this PC's share with rclone's own
+  SMB client and its refused account landed on the same sign-in page (`remote::refused`). rclone takes about 21 s to
+  give up against Windows' SMB server (its failed-sign-in delay times rclone's retries). Not tried: a real NAS (guest
+  only, unsigned, asleep), and Wake-on-LAN waking one.
+
 ## 0.18.1: a tag's search shows what it found, and network shares below the Recycle Bin ([#11](https://github.com/shadijhade/glint/issues/11), [#10](https://github.com/shadijhade/glint/issues/10)) (released 2026-11-26)
 
 *Released 2026-11-26 from `174efd4` ([its release](https://github.com/shadijhade/glint/releases/tag/v0.18.1)) by

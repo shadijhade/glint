@@ -61,6 +61,8 @@ struct Folder {
     archive: Option<InArchive>,
     /// Listed from instant search's index: Windows keeps the folder closed to this account.
     from_index: bool,
+    /// A Windows share Windows won't open, and why (glint-core's remote/smb.rs).
+    trouble: Option<glint_core::remote::smb::Trouble>,
 }
 
 #[derive(Default)]
@@ -235,6 +237,7 @@ fn empty_folder() -> Folder {
         denied: false,
         archive: None,
         from_index: false,
+        trouble: None,
     }
 }
 
@@ -289,6 +292,7 @@ impl FakeDisk {
                 denied: false,
                 archive: None,
                 from_index: false,
+                trouble: None,
             },
         );
         self
@@ -301,6 +305,25 @@ impl FakeDisk {
         self.folder(path, entries);
         if let Some(folder) = self.state.borrow_mut().folders.get_mut(&key(path)) {
             folder.from_index = true;
+        }
+        self
+    }
+
+    /// Makes a Windows share Windows won't open, for `trouble` (a sign-in, a guest-only server, one asleep…).
+    pub fn refuse_share(&self, path: &str, trouble: glint_core::remote::smb::Trouble) -> &Self {
+        if !self.state.borrow().folders.contains_key(&key(path)) {
+            self.folder(path, Vec::new());
+        }
+        if let Some(folder) = self.state.borrow_mut().folders.get_mut(&key(path)) {
+            folder.trouble = Some(trouble);
+        }
+        self
+    }
+
+    /// Opens a share that was refused: its trouble is gone.
+    pub fn accept_share(&self, path: &str) -> &Self {
+        if let Some(folder) = self.state.borrow_mut().folders.get_mut(&key(path)) {
+            folder.trouble = None;
         }
         self
     }
@@ -319,6 +342,7 @@ impl FakeDisk {
                         denied: true,
                         archive: None,
                         from_index: false,
+                        trouble: None,
                     },
                 );
             }
@@ -1103,6 +1127,14 @@ impl Source for FakeDisk {
             let mut state = state.borrow_mut();
             state.listed.push(path.clone());
             match state.folders.get(&key(&path)) {
+                Some(Folder {
+                    trouble: Some(trouble), ..
+                }) => Err(ListFailure {
+                    kind: FailureKind::Share(*trouble),
+                    message: trouble.kind().into(),
+                    path: path.clone(),
+                    remote: true,
+                }),
                 Some(folder) if folder.denied => Err(ListFailure {
                     kind: FailureKind::Denied,
                     message: "Access is denied".into(),

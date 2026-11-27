@@ -161,6 +161,8 @@ windows = { version = "0.62", features = [
     # A server's shares, listed at \\server (fsx.rs): NetShareEnum's answer is freed with NetApiBufferFree.
     "Win32_NetworkManagement_NetManagement",
     "Win32_NetworkManagement_WNet",
+    # A NAS's network card, for waking it (remote/smb.rs: SendARP).
+    "Win32_NetworkManagement_IpHelper",
     "Win32_Security_Credentials",
     "Win32_Security_Cryptography",
     "Win32_Security_Cryptography_Catalog",

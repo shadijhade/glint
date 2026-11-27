@@ -132,6 +132,14 @@ pub enum FileListEvent {
     OpenInFileExplorer { path: String },
     /// "Properties" on a folder Windows keeps closed.
     ShowProperties { path: String },
+    /// "Sign in…" on a Windows share that wants a user name and password (or another one): the connection's
+    /// dialog, made for the share or the one it has.
+    SignInToShare { path: String },
+    /// "Open read-only" on a share Windows won't sign in to: the share's connection opened through rclone. `guest`:
+    /// the server lets in guests only, so there's nothing to type.
+    OpenShareReadOnly { path: String, guest: bool },
+    /// "Wake …" on a share whose server doesn't answer: a Wake-on-LAN packet to it.
+    WakeServer { path: String },
     /// "Search subfolders too" under a filter that matched nothing: `runFind(query)`.
     SearchSubfolders { query: String },
     /// The zoom (Ctrl+wheel, a pinch) went in: the folder is shown as the grid, at its smallest tiles, with the

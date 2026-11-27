@@ -600,12 +600,18 @@ impl RemoteKind {
 }
 
 impl RemoteConnection {
-    /// Where the connection's folders start: a Windows share's own path (its address), else `remote:<id>`.
+    /// Where the connection's folders start: a Windows share's own path (its address), else `remote:<id>` (a share
+    /// opened through rclone included).
     pub fn place(&self) -> String {
         match self.kind {
-            RemoteKind::Smb => self.endpoint.clone(),
+            RemoteKind::Smb if !self.through_rclone() => self.endpoint.clone(),
             _ => format!("{}{}", crate::paths::REMOTE, self.id),
         }
+    }
+
+    /// A Windows share opened through rclone, read-only, rather than through Windows.
+    pub fn through_rclone(&self) -> bool {
+        self.kind == RemoteKind::Smb && self.via_rclone == Some(true)
     }
 }
 
@@ -643,6 +649,10 @@ pub struct RemoteConnection {
     /// rclone: the remote's type there ("drive", "onedrive"...).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service: Option<String>,
+    /// A Windows share opened through rclone, read-only, where Windows won't sign in to it (guests only, no signing,
+    /// another account signed in already): its folders are then at `remote:<id>`, like the other connections'.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub via_rclone: Option<bool>,
 }
 
 impl Default for RemoteConnection {
@@ -662,6 +672,7 @@ impl Default for RemoteConnection {
             thumbnails: None,
             rclone: None,
             service: None,
+            via_rclone: None,
         }
     }
 }
@@ -1028,7 +1039,8 @@ impl<'de> Deserialize<'de> for RemoteConnection {
                 "root" => root,
                 "thumbnails" => thumbnails,
                 "rclone" => rclone,
-                "service" => service
+                "service" => service,
+                "viaRclone" => via_rclone
             );
         }
         Ok(out)
@@ -1675,6 +1687,31 @@ mod tests {
         assert!(text.contains(r#""kind":"smb""#), "{text}");
         let back: RemoteConnection = serde_json::from_str(&text).expect("read back");
         assert_eq!(back, share);
+        assert!(
+            !text.contains("viaRclone"),
+            "nothing said of the route Windows takes: {text}"
+        );
+        // Opened through rclone where Windows won't, it's at remote:<id> like the others, and kept so.
+        let around = RemoteConnection {
+            via_rclone: Some(true),
+            ..share.clone()
+        };
+        assert!(around.through_rclone() && !share.through_rclone());
+        assert_eq!(around.place(), "remote:nshare");
+        let text = serde_json::to_string(&around).expect("json");
+        assert!(text.contains(r#""viaRclone":true"#), "{text}");
+        assert_eq!(
+            serde_json::from_str::<RemoteConnection>(&text).expect("read back"),
+            around
+        );
+        assert!(
+            !RemoteConnection {
+                via_rclone: Some(true),
+                ..bucket
+            }
+            .through_rclone(),
+            "only a share goes around Windows"
+        );
     }
 
     #[test]

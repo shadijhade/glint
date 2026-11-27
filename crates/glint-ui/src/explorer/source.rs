@@ -312,10 +312,10 @@ impl Source for CoreSource {
             glint_core::fsx::list_folder(path, shape)
                 .await
                 .map_err(|e| ListFailure {
-                    kind: if e.kind == "denied" {
-                        FailureKind::Denied
-                    } else {
-                        FailureKind::Other
+                    kind: match e.kind {
+                        "denied" => FailureKind::Denied,
+                        other => glint_core::remote::smb::Trouble::from_kind(other)
+                            .map_or(FailureKind::Other, FailureKind::Share),
                     },
                     message: e.message,
                     path: e.path,

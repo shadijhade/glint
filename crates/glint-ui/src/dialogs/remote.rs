@@ -26,6 +26,7 @@
 use crate::components::settings::clouds;
 use crate::kit::prelude::*;
 use crate::{core_bridge, explorer, persistence, t, theme};
+use glint_model::paths::base_name;
 use glint_model::store::{RemoteConnection, RemoteKind};
 use std::future::Future;
 use std::pin::Pin;
@@ -89,6 +90,7 @@ pub(crate) fn to_core(connection: &RemoteConnection) -> glint_core::remote::Conn
         root: connection.root.clone(),
         thumbnails: connection.thumbnails.unwrap_or(false),
         rclone: connection.rclone.clone().unwrap_or_default(),
+        via_rclone: connection.through_rclone(),
     }
 }
 
@@ -328,7 +330,9 @@ fn finish_removal(
                 push_to_core(cx);
                 if let Some(tabs) = explorer::try_explorer(cx) {
                     match remote.kind {
-                        RemoteKind::Smb => tabs.update(cx, |e, cx| e.leave_place(&remote.endpoint, cx)),
+                        RemoteKind::Smb if !remote.through_rclone() => {
+                            tabs.update(cx, |e, cx| e.leave_place(&remote.endpoint, cx))
+                        }
                         _ => tabs.update(cx, |e, cx| e.leave_remote(&id, cx)),
                     }
                 }
@@ -409,6 +413,8 @@ pub struct Form {
     /// A save is under way: Save is ignored (and shown disabled) until it fails, so two quick presses can't keep
     /// the secret twice, say "Saved" twice or close the dialog from under the second.
     saving: bool,
+    /// A share opened through rclone, read-only, where Windows won't sign in to it.
+    via_rclone: bool,
 }
 
 impl EventEmitter<FormEvent> for Form {}
@@ -424,6 +430,7 @@ impl Form {
         let mut texts: [String; 10] = Default::default();
         let mut thumbnails = false;
         let mut kind = RemoteKind::Rclone;
+        let via_rclone = editing.as_ref().is_some_and(RemoteConnection::through_rclone);
         if let Some(r) = &editing {
             kind = r.kind;
             thumbnails = r.thumbnails.unwrap_or(false);
@@ -449,6 +456,7 @@ impl Form {
             serial: 0,
             taken_ids,
             saving: false,
+            via_rclone,
         };
         if let Some(r) = editing {
             let asking = backend.secret_saved(r.id);
@@ -535,6 +543,28 @@ impl Form {
         cx.notify();
     }
 
+    /// A share opened through rclone, read-only.
+    pub fn via_rclone(&self) -> bool {
+        self.via_rclone
+    }
+
+    /// Through rclone (read-only) or Windows was chosen for a share.
+    pub fn set_via_rclone(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.via_rclone = on;
+        self.forget_test();
+        cx.notify();
+    }
+
+    /// A new connection for the share `share` (`\\nas\photos`), named after it; or (editing) through rclone.
+    pub fn preset_share(&mut self, share: Option<&str>, via_rclone: bool) {
+        if let Some(share) = share {
+            self.kind = RemoteKind::Smb;
+            self.texts[Field::Endpoint as usize] = share.to_string();
+            self.texts[Field::Name as usize] = base_name(share).to_string();
+        }
+        self.via_rclone |= via_rclone;
+    }
+
     /// Thumbnails were switched.
     pub fn set_thumbnails(&mut self, on: bool, cx: &mut Context<Self>) {
         self.thumbnails = on;
@@ -593,6 +623,7 @@ impl Form {
             thumbnails: (self.thumbnails || base.thumbnails.is_some()).then_some(self.thumbnails),
             rclone: base.rclone,
             service: base.service,
+            via_rclone: (smb && self.via_rclone).then_some(true),
         }
     }
 
@@ -788,6 +819,8 @@ pub struct RemoteDialog {
     cloud: CloudEmbed,
     cloud_backend: Option<Arc<dyn super::cloud_setup::Backend>>,
     tools: Option<Entity<crate::components::settings::tools::Tools>>,
+    /// Opened from a share's folder (to sign in, or to open it read-only): saved, it opens there, edited or new.
+    open_after: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -802,6 +835,10 @@ impl RemoteDialog {
     ) -> Self {
         let mut this = Self::build(form, window, cx);
         this.cloud_backend = cloud_backend;
+        // rclone's install card (a share through rclone) shows its progress as it goes.
+        if let Some(tools) = &tools {
+            this._subscriptions.push(cx.observe(tools, |_, _, cx| cx.notify()));
+        }
         this.tools = tools;
         this.sync_cloud(window, cx);
         this
@@ -867,6 +904,7 @@ impl RemoteDialog {
             cloud: None,
             cloud_backend: None,
             tools: None,
+            open_after: false,
             _subscriptions: subscriptions,
         }
     }
@@ -912,7 +950,7 @@ impl RemoteDialog {
         persistence::update_app(cx, |app| app.save_remote(made));
         push_to_core(cx);
         window.close_dialog(cx);
-        if new {
+        if new || self.open_after {
             if let Some(tabs) = explorer::try_explorer(cx) {
                 tabs.update(cx, |e, cx| e.navigate(path, explorer::NavOptions::default(), cx));
             }
@@ -1015,6 +1053,48 @@ impl RemoteDialog {
             )
     }
 
+    /// A share's way in: Windows' own SMB client (read and write), or rclone's, read-only, for a server Windows won't
+    /// sign in to; rclone's install card when it's chosen and rclone isn't there.
+    fn rclone_route(&self, on: bool, t: &theme::Tokens, cx: &mut Context<Self>) -> AnyElement {
+        let note = t!(
+            "For a server Windows won't sign in to: one that lets in guests only, doesn't sign what it sends, or already has another account signed in. Windows' settings stay as they are."
+        );
+        let card = self.tools.as_ref().filter(|_| on).and_then(|tools| {
+            crate::components::settings::tools::needed(
+                tools,
+                "rclone",
+                t!("rclone opens the share on its own. Install it once, then add the connection."),
+                IconName::Server,
+                cx,
+            )
+        });
+        col()
+            .gap(space(0.5))
+            .ps(31.)
+            .child(
+                Checkbox::new("remote-via-rclone")
+                    .label(t!("Read-only, through rclone"))
+                    .checked(on)
+                    .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                        let on = *checked;
+                        this.form.update(cx, |form, cx| form.set_via_rclone(on, cx));
+                    })),
+            )
+            .child(
+                div()
+                    .id("remote-via-rclone-note")
+                    .role(Role::Group)
+                    .aria_label(note.clone())
+                    .test_support()
+                    .ps(6.)
+                    .text_size(theme::size::XXS)
+                    .text_color(t.muted_foreground)
+                    .child(note),
+            )
+            .children(card)
+            .into_any_element()
+    }
+
     fn text_box(&self, field: Field, label: SharedString) -> Input {
         Input::new(self.input(field)).small().aria_label(label)
     }
@@ -1031,6 +1111,7 @@ impl Render for RemoteDialog {
         let test = form.test().cloned();
         let host_keys = form.host_keys().cloned();
         let thumbnails = form.thumbnails();
+        let via_rclone = form.via_rclone();
         let title = match &editing {
             Some(r) => t!("Edit “{name}”", name = r.name),
             None => t!("Add a remote connection"),
@@ -1202,7 +1283,8 @@ impl Render for RemoteDialog {
                     None,
                     self.text_box(Field::Secret, t!("Password")),
                     &t,
-                ));
+                ))
+                .child(self.rclone_route(via_rclone, &t, cx));
         } else {
             fields = fields
                 .child(field(
@@ -1236,8 +1318,8 @@ impl Render for RemoteDialog {
         } else {
             t!("Downloads each picture shown (up to 16 MB).")
         };
-        // A share's pictures get thumbnails as a folder's on this PC do: nothing to choose.
-        fields = fields.when(!smb, |fields| {
+        // A share's pictures get thumbnails as a folder's on this PC do: nothing to choose (but through rclone).
+        fields = fields.when(!smb || via_rclone, |fields| {
             fields.child(
                 col()
                     .gap(space(0.5))
@@ -1352,6 +1434,8 @@ impl Render for RemoteDialog {
             t!("Glint only reads it: nothing there is changed. The secret access key stays in Windows Credential Manager, never in Glint's settings.")
         } else if sftp {
             t!("Glint only reads it: nothing there is changed. The password stays in Windows Credential Manager, never in Glint's settings, and reaches ssh (Windows' own) only when it asks.")
+        } else if smb && via_rclone {
+            t!("rclone's own SMB client reads it, and Windows' settings stay as they are. Glint only reads it: nothing there is changed. The password stays in Windows Credential Manager, never in Glint's settings.")
         } else if smb {
             t!("Windows' own SMB client opens it, without a drive letter or a place in File Explorer. The password stays in Windows Credential Manager, never in Glint's settings.")
         } else {
@@ -1440,7 +1524,7 @@ impl Render for RemoteDialog {
                     .pt(space(1.))
                     .pb(space(4.))
                     .child({
-                        let subtitle = if smb {
+                        let subtitle = if smb && !via_rclone {
                             t!("It opens like a folder on this PC: read, write, copy and drag as anywhere else")
                         } else {
                             t!("Its folders open read-only; what you open or copy is downloaded")
@@ -1479,6 +1563,128 @@ pub fn open_edit(window: &mut Window, cx: &mut App, id: String) {
     };
     let backend = backend(cx);
     open_with(window, cx, backend, Some(remote));
+}
+
+/// The saved connection of a share `path` is on (compared in any case), when there's one.
+fn share_connection(cx: &App, path: &str) -> Option<RemoteConnection> {
+    use glint_core::remote::smb::{address, share_of};
+    let app = persistence::app(cx)?;
+    // A share opened through rclone (`remote:<id>`): its connection.
+    if glint_model::paths::is_remote_path(path) {
+        let id = glint_model::paths::remote_id_of(path).to_lowercase();
+        return app
+            .remotes
+            .iter()
+            .find(|r| r.kind == RemoteKind::Smb && r.id.to_lowercase() == id)
+            .cloned();
+    }
+    let share = share_of(path)?;
+    app.remotes
+        .iter()
+        .filter(|r| r.kind == RemoteKind::Smb)
+        .find(|r| {
+            address(&r.endpoint)
+                .and_then(|a| share_of(&a))
+                .is_some_and(|s| s.eq_ignore_ascii_case(&share))
+        })
+        .cloned()
+}
+
+/// A new connection for `share` (`\\nas\photos`), named after it.
+fn new_share_connection(cx: &App, share: &str, via_rclone: bool) -> RemoteConnection {
+    let name = base_name(share).to_string();
+    RemoteConnection {
+        id: clouds::remote_id(&name, &taken_ids(cx)),
+        name,
+        kind: RemoteKind::Smb,
+        endpoint: share.to_string(),
+        via_rclone: via_rclone.then_some(true),
+        ..Default::default()
+    }
+}
+
+/// "Sign in…" on a share that wants a user name and password (or another one): the dialog of the connection it has,
+/// to type them again, or of a new one made for it. Saved, the share opens.
+pub fn sign_in_to_share(window: &mut Window, cx: &mut App, path: String) {
+    let editing = share_connection(cx, &path);
+    let share = editing
+        .is_none()
+        .then(|| glint_core::remote::smb::share_of(&path))
+        .flatten();
+    let address = editing.as_ref().map_or_else(|| path.clone(), |r| r.endpoint.clone());
+    let title = t!(
+        "Sign in to {server}",
+        server = glint_core::remote::smb::server_of(&address)
+    );
+    let backend = backend(cx);
+    let (_, view) = open_share(window, cx, backend, editing, share, false, title);
+    // The user name is what's typed first.
+    let user = view.read(cx).input(Field::User).clone();
+    window.focus(&user.focus_handle(cx), cx);
+}
+
+/// "Open read-only" on a share Windows won't sign in to: its connection opened through rclone, which reaches the
+/// server on its own. At once when rclone is there and nothing needs typing (a guest-only server, or a connection
+/// that has its account); else the connection's dialog, with rclone's install card when it isn't installed.
+pub fn open_share_read_only(window: &mut Window, cx: &mut App, path: String, guest: bool) {
+    let existing = share_connection(cx, &path);
+    let share = glint_core::remote::smb::share_of(&path);
+    if glint_core::proc::locate("rclone").is_some() {
+        let made = match (&existing, &share) {
+            (Some(r), _) => Some(RemoteConnection {
+                via_rclone: Some(true),
+                ..r.clone()
+            }),
+            (None, Some(share)) if guest => Some(new_share_connection(cx, share, true)),
+            _ => None,
+        };
+        if let Some(made) = made {
+            let place = made.place();
+            persistence::update_app(cx, |app| app.save_remote(made));
+            push_to_core(cx);
+            if let Some(tabs) = explorer::try_explorer(cx) {
+                tabs.update(cx, |e, cx| e.navigate(place, explorer::NavOptions::default(), cx));
+            }
+            return;
+        }
+    }
+    let preset = if existing.is_none() { share } else { None };
+    let title = t!(
+        "Open “{share}” read-only",
+        share = base_name(glint_core::remote::smb::share_of(&path).as_deref().unwrap_or(&path))
+    );
+    let backend = backend(cx);
+    open_share(window, cx, backend, existing, preset, true, title);
+}
+
+/// The connection dialog for a share's folder: `editing` the share's connection, or a new one for `share`, through
+/// rclone when `via_rclone`; once saved it opens the share.
+fn open_share(
+    window: &mut Window,
+    cx: &mut App,
+    backend: Arc<dyn Backend>,
+    editing: Option<RemoteConnection>,
+    share: Option<String>,
+    via_rclone: bool,
+    title: SharedString,
+) -> (Entity<Form>, Entity<RemoteDialog>) {
+    let cloud = cx.try_global::<core_bridge::Core>().map(|core| {
+        Arc::new(super::cloud_setup::CoreBackend::new(core.app.clone())) as Arc<dyn super::cloud_setup::Backend>
+    });
+    let tools = cloud_tools(window, cx);
+    let taken = taken_ids(cx);
+    let form = cx.new(|cx| {
+        let mut form = Form::new(backend, editing, taken, cx);
+        form.preset_share(share.as_deref(), via_rclone);
+        form
+    });
+    let view = cx.new(|cx| {
+        let mut dialog = RemoteDialog::new(form.clone(), cloud, tools, window, cx);
+        dialog.open_after = true;
+        dialog
+    });
+    super::show(window, cx, title, px(576.), view.clone());
+    (form, view)
 }
 
 /// [`open_add`] / [`open_edit`] with a backend of your own (tests pass a fake). Returns the form and the view.
@@ -1895,6 +2101,80 @@ mod tests {
         visual.update(|window, cx| assert!(!window.has_active_dialog(cx), "it closes"));
         // Core gets it as "smb", for its sign-in.
         assert_eq!(to_core(&made).kind, "smb");
+    }
+
+    #[gpui_kit::test]
+    fn a_share_windows_refused_is_signed_in_to_or_opened_through_rclone_from_its_folder(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let mut visual = window(cx, Vec::new());
+        let fake = Fake::new();
+        let backend: Arc<dyn Backend> = fake.clone();
+        // "Sign in…" on a share with no connection: a new one, made for it and named after it.
+        let (form, view) = visual.update(|window, cx| {
+            init_with(cx, backend.clone());
+            open_share(
+                window,
+                cx,
+                backend.clone(),
+                None,
+                Some(r"\\nas\photos".into()),
+                false,
+                "Sign in to nas".into(),
+            )
+        });
+        visual.run_until_parked();
+        let made = form.read_with(&visual, |f, _| f.connection());
+        assert_eq!(
+            (made.kind, made.name.as_str(), made.endpoint.as_str()),
+            (RemoteKind::Smb, "photos", r"\\nas\photos")
+        );
+        assert!(!made.through_rclone() && form.read_with(&visual, |f, _| f.ready()));
+        assert_eq!(
+            view.read_with(&visual, |v, cx| v.input(Field::Endpoint).read(cx).value().to_string()),
+            r"\\nas\photos"
+        );
+        assert!(has(&mut visual, "Read-only, through rclone"));
+        assert!(!has(&mut visual, "Downloads each picture shown (up to 16 MB)."));
+        // Read-only, through rclone: at remote:<id>, its pictures downloaded like any remote's.
+        form.update(&mut visual, |f, cx| f.set_via_rclone(true, cx));
+        let around = form.read_with(&visual, |f, _| f.connection());
+        assert!(around.through_rclone());
+        assert_eq!(around.place(), "remote:photos");
+        assert!(to_core(&around).via_rclone);
+        assert!(has(&mut visual, "Downloads each picture shown (up to 16 MB)."));
+        assert!(has(
+            &mut visual,
+            "Its folders open read-only; what you open or copy is downloaded"
+        ));
+        // Saved: kept so, and the dialog closes.
+        click(&mut visual, "remote-save");
+        settle(&mut visual, "the save", |cx| stored(cx).len() == 1);
+        assert!(stored(&mut visual)[0].through_rclone());
+        visual.run_until_parked();
+        visual.update(|window, cx| assert!(!window.has_active_dialog(cx), "it closes"));
+        // A share that has a connection: "Open read-only" edits that one (asking only what's missing).
+        let saved = stored(&mut visual).remove(0);
+        let editing = RemoteConnection {
+            via_rclone: None,
+            ..saved
+        };
+        let (form, _) = visual.update(|window, cx| {
+            open_share(
+                window,
+                cx,
+                backend.clone(),
+                Some(editing),
+                None,
+                true,
+                "Open “photos” read-only".into(),
+            )
+        });
+        visual.run_until_parked();
+        let edited = form.read_with(&visual, |f, _| f.connection());
+        assert!(
+            edited.through_rclone() && edited.id == "photos",
+            "the same connection, through rclone"
+        );
     }
 
     #[gpui_kit::test]

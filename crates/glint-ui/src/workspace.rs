@@ -1224,6 +1224,11 @@ impl Workspace {
                 crate::platform::launch::hand_to_explorer(std::slice::from_ref(path))
             }
             FileListEvent::ShowProperties { path } => Self::show_properties(path.clone(), cx),
+            FileListEvent::SignInToShare { path } => dialogs::remote::sign_in_to_share(window, cx, path.clone()),
+            FileListEvent::OpenShareReadOnly { path, guest } => {
+                dialogs::remote::open_share_read_only(window, cx, path.clone(), *guest)
+            }
+            FileListEvent::WakeServer { path } => Self::wake_server(path.clone(), window, cx),
             FileListEvent::CommitRename { name, .. } => {
                 Self::explorer(cx, |e, cx| e.commit_rename_in(tab, name, cx).detach())
             }
@@ -1244,6 +1249,22 @@ impl Workspace {
             FileListEvent::Limit { inward } => self.bump(pane, *inward, window, cx),
             FileListEvent::FileLego(recipe) => Self::run_file_lego(recipe.clone(), window, cx),
         }
+    }
+
+    /// "Wake …" on a share whose server doesn't answer: a Wake-on-LAN packet to the network card Glint noted for it
+    /// (the folder opens by itself once it answers); a notice when it couldn't be sent.
+    fn wake_server(path: String, window: &mut Window, cx: &mut Context<Self>) {
+        let server = glint_core::remote::smb::server_of(&path).to_string();
+        let waking = cx.background_spawn(async move { glint_core::remote::smb::wake(&server) });
+        window
+            .spawn(cx, async move |cx| {
+                if let Err(reason) = waking.await {
+                    let _ = cx.update(|window, cx| {
+                        window.push_notification(Notification::error(reason).title(t!("Couldn't wake it")), cx)
+                    });
+                }
+            })
+            .detach();
     }
 
     fn on_grid_event(&mut self, pane: usize, event: &FileGridEvent, window: &mut Window, cx: &mut Context<Self>) {
