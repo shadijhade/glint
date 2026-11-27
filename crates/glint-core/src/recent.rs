@@ -49,8 +49,13 @@ pub fn recent_kept() -> bool {
 }
 
 /// Where a shortcut (.lnk) points: a file's or a folder's path; None for one to something else, or one that
-/// can't be read. Asked in an apartment of its own, as the shell wants.
+/// can't be read. Asked in an apartment of its own, as the shell wants; a probe lane's thread has COM already (the
+/// multithreaded apartment, which Windows' shortcut object takes), so a selection of shortcuts starts no thread and
+/// no apartment for each.
 pub fn link_target(shortcut: &std::path::Path) -> Option<String> {
+    if crate::aware::pool::in_mta() {
+        return imp::target(shortcut);
+    }
     let shortcut = shortcut.to_path_buf();
     crate::shell::in_sta(move || Ok(imp::target(&shortcut))).ok().flatten()
 }

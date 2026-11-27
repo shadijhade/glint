@@ -536,7 +536,7 @@ fn search_files(args: &Value) -> Result<Value, String> {
     #[cfg(windows)]
     if shadui_index::query::parse(&query).is_ok_and(|(terms, filters)| crate::find::service_reads(&terms, &filters)) {
         use shadui_index::client::Event;
-        let request = shadui_index::proto::SearchRequest { query: query.clone(), roots: roots.clone(), hidden, exclude: exclude.clone(), max_results: Some(limit), fuzzy: true, rank: true, marks: false };
+        let request = shadui_index::proto::SearchRequest { query: query.clone(), roots: roots.clone(), hidden, exclude: exclude.clone(), max_results: Some(limit), fuzzy: true, rank: true, marks: false, count_only: false };
         let _ = shadui_index::client::search(&request, |event| {
             match event {
                 Event::Plan { skipped, .. } => left = skipped,

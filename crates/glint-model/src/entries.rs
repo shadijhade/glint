@@ -18,9 +18,9 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 use crate::archives::{is_browsed_ext, is_on_request_ext};
-use crate::collate::compare_base_numeric;
+use crate::collate::{compare_base_numeric, sort_key};
 use crate::js::{is_js_space, js_round, js_trim};
-use crate::marks::{shown, Label, Marks, Shown, Wanted};
+use crate::marks::{shown, Label, Marks, Wanted};
 use crate::paths::join_path;
 
 /// Windows FILE_ATTRIBUTE_* bits the explorer cares about, and some of Glint's own (Windows doesn't use them).
@@ -424,8 +424,10 @@ pub struct Reads<'a, 'f> {
     pub marks: Option<MarkReads<'a, 'f>>,
 }
 
-/// What a sort by a mark keeps of a row: what is shown, and the comment's first line.
-type MarkKey = (Shown, Option<String>);
+/// What a sort by a mark keeps of a row: where its label stands among this PC's labels, and the text the sort goes
+/// by (the label's name, the tags in a line, or the comment's first line) as its sort key (`collate::sort_key`);
+/// None for a row that has no such mark.
+type MarkKey = (Option<usize>, Option<Vec<u8>>);
 
 /// [`entry_order`] over any items that stand for entries: `entry` says which, and `name_order` compares two
 /// items by name (natural order, ties by the name as written, as `by_name` does), so that a caller that has made
@@ -448,49 +450,48 @@ where
         facts_of,
         marks,
     } = reads;
-    // What a row is shown as is worked out the first time a comparison asks for it, by the entry's path (an
-    // entry's address won't do: a sort moves its items), and kept for the rest of the sort.
-    let kept: RefCell<HashMap<String, Rc<MarkKey>>> = RefCell::new(HashMap::new());
+    // What a row sorts by is worked out the first time a comparison asks for it and kept for the rest of the sort:
+    // its text is put in order by Windows once, as a sort key, and every comparison after that is of bytes. (Each
+    // comparison asked Windows about two texts, and made the tags' line or copied the comment's again to ask.) It
+    // is kept by where the entry's path is in memory: a sort moves its entries, but never the text of their paths,
+    // and looking a whole path up twice a comparison was most of what was left.
+    let kept: RefCell<HashMap<(usize, usize), Rc<MarkKey>>> = RefCell::new(HashMap::new());
     let key_of = move |e: &FileEntry| -> Option<Rc<MarkKey>> {
         let m = marks?;
-        if let Some(found) = kept.borrow().get(e.path.as_str()) {
+        // (Empty paths share an address: there are none, and they would only share a key.)
+        let at = (e.path.as_ptr() as usize, e.path.len());
+        if let Some(found) = kept.borrow().get(&at) {
             return Some(found.clone());
         }
         let own = (m.of)(e);
-        let first_line = own
-            .and_then(|o| o.comment.as_deref())
-            .and_then(|c| c.lines().next())
-            .filter(|l| !l.is_empty())
-            .map(String::from);
-        let made = Rc::new((shown(m.labels, own.unwrap_or(&Marks::default())), first_line));
-        kept.borrow_mut().insert(e.path.clone(), made.clone());
+        let shown = shown(m.labels, own.unwrap_or(&Marks::default()));
+        let text = match sort.key {
+            SortKey::Label => shown.label,
+            SortKey::Tags => (!shown.tags.is_empty()).then(|| shown.tags.join(", ")),
+            _ => own
+                .and_then(|o| o.comment.as_deref())
+                .and_then(|c| c.lines().next())
+                .filter(|l| !l.is_empty())
+                .map(String::from),
+        };
+        let made = Rc::new((shown.place, text.map(|text| sort_key(&text))));
+        kept.borrow_mut().insert(at, made.clone());
         Some(made)
     };
     let by_mark = move |key: SortKey, a: &FileEntry, b: &FileEntry| -> Ordering {
-        let (Some(kx), Some(ky)) = (key_of(a), key_of(b)) else {
+        let (Some(x), Some(y)) = (key_of(a), key_of(b)) else {
             return Ordering::Equal;
         };
-        let (x, y) = (&kx.0, &ky.0);
-        let first_line = |k: &Rc<MarkKey>| k.1.clone();
-        // Something sorts before nothing.
-        let some_first = |p: Option<&str>, q: Option<&str>| match (p, q) {
-            (Some(p), Some(q)) => compare_base_numeric(p, q),
-            (Some(_), None) => Ordering::Less,
-            (None, Some(_)) => Ordering::Greater,
-            (None, None) => Ordering::Equal,
-        };
-        match key {
-            SortKey::Label => match (&x.label, &y.label, x.place, y.place) {
-                (Some(_), Some(_), Some(i), Some(j)) => i.cmp(&j),
-                (Some(_), Some(_), Some(_), None) => Ordering::Less,
-                (Some(_), Some(_), None, Some(_)) => Ordering::Greater,
-                (p, q, ..) => some_first(p.as_deref(), q.as_deref()),
-            },
-            SortKey::Tags => {
-                let join = |s: &Shown| (!s.tags.is_empty()).then(|| s.tags.join(", "));
-                some_first(join(x).as_deref(), join(y).as_deref())
-            }
-            _ => some_first(first_line(&kx).as_deref(), first_line(&ky).as_deref()),
+        match (key, &x.1, &y.1, x.0, y.0) {
+            // Two labels this PC has: in the labels' own order.
+            (SortKey::Label, Some(_), Some(_), Some(i), Some(j)) => i.cmp(&j),
+            (SortKey::Label, Some(_), Some(_), Some(_), None) => Ordering::Less,
+            (SortKey::Label, Some(_), Some(_), None, Some(_)) => Ordering::Greater,
+            (_, Some(p), Some(q), ..) => p.cmp(q),
+            // Something sorts before nothing.
+            (_, Some(_), None, ..) => Ordering::Less,
+            (_, None, Some(_), ..) => Ordering::Greater,
+            (_, None, None, ..) => Ordering::Equal,
         }
     };
     let group = move |e: &FileEntry| usize::from(!(folders_first && e.dir));

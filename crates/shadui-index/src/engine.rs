@@ -1186,7 +1186,8 @@ impl Engine {
             && names.iter().all(|t| !t.contains(['*', '?', '\\', '/', ':'])))
         .then(|| names.iter().map(|t| query::fold(t)).collect());
         let mut send = |matcher: &NameMatcher, filters: &Filters, by_marks: bool| -> io::Result<(usize, bool)> {
-            let (mut count, mut limited) = if request.rank {
+            // A count needs no order, so it is never ranked.
+            let (mut count, mut limited) = if request.rank && !request.count_only {
                 send_ranked(
                     &targets,
                     matcher,
@@ -1218,7 +1219,12 @@ impl Engine {
                             hidden: request.hidden,
                             excludes: &excludes,
                         };
-                        collect_hits_framed(&tree, slot.letter, &search, max - count, gone)
+                        if request.count_only {
+                            // Counted, and no path put together or sent for any of them.
+                            (Vec::new(), tree.search_until(&search, gone).len())
+                        } else {
+                            collect_hits_framed(&tree, slot.letter, &search, max - count, gone)
+                        }
                     };
                     check()?;
                     let taken = found.min(max - count);
@@ -1246,6 +1252,7 @@ impl Engine {
                         let found = tree.search_marks(&search, words, gone);
                         let taken = &found[..found.len().min(max - count)];
                         let drive = format!("{}:\\", slot.letter);
+                        let taken = if request.count_only { &[][..] } else { taken };
                         let frames: Vec<Vec<u8>> = taken.chunks(BATCH).map(|c| encode_hits_by(&tree, c, &drive, true)).collect();
                         (frames, found.len())
                     };
@@ -2205,6 +2212,7 @@ mod tests {
             fuzzy: false,
             rank: false,
             marks,
+            count_only: false,
         }
     }
 
@@ -2280,6 +2288,59 @@ mod tests {
         one.rank = true;
         let (hits, done) = ask(&engine, &one);
         assert_eq!((hits.len(), done), (1, (1, true, false)));
+    }
+
+    #[test]
+    fn a_count_only_search_says_how_many_and_sends_no_hit() {
+        let engine = marked_engine();
+        for (query, marks) in [("lacp", true), ("lacp", false), ("file:", false), ("tag:netplan", false), ("nothing-here", true)] {
+            let mut request = search(query, marks);
+            let (hits, done) = ask(&engine, &request);
+            request.count_only = true;
+            let (none, counted) = ask(&engine, &request);
+            assert!(none.is_empty(), "{query}: no hit is sent");
+            assert_eq!((counted, counted.0), (done, hits.len() as u64), "{query}: the same count as the hits'");
+            // Ranked or not, a count is the same, and its limit is said the same way.
+            request.rank = true;
+            assert_eq!(ask(&engine, &request), (Vec::new(), done), "{query}");
+        }
+        let mut one = search("lacp", true);
+        (one.max_results, one.count_only) = (Some(1), true);
+        assert_eq!(ask(&engine, &one), (Vec::new(), (1, true, false)));
+    }
+
+    /// A measurement, not a check (`--release -- --ignored --nocapture`): a search of 100,000 hits with its hits
+    /// and as a count, the service's side of it.
+    #[test]
+    #[ignore]
+    fn measure_a_count_of_100_000_with_and_without_its_hits() {
+        let entry = |dir: bool, parent: u64, name: String| RecordState {
+            seq: 1,
+            dir,
+            attrs: if dir { 0x10 } else { 0x20 },
+            modified: 2,
+            names: vec![(parent, name)],
+            ..Default::default()
+        };
+        let mut tree = Tree::default();
+        tree.set_record(ROOT, &RecordState { seq: 5, dir: true, names: vec![(make_ref(ROOT, 5), ".".into())], ..Default::default() });
+        tree.set_record(20, &entry(true, make_ref(ROOT, 5), "photos".into()));
+        for n in 0..100_000u32 {
+            tree.set_record(100 + n, &entry(false, make_ref(20, 1), format!("holiday-{n:06}.jpg")));
+        }
+        let engine = Engine::with_tree('T', tree);
+        let mut request = search("holiday", false);
+        request.max_results = Some(100_000);
+        for count_only in [false, true] {
+            request.count_only = count_only;
+            let mut wire = Vec::new();
+            let started = Instant::now();
+            for _ in 0..10 {
+                wire.clear();
+                engine.search_until(&request, &mut wire, &|| false).unwrap();
+            }
+            eprintln!("count_only={count_only}: {:?} a search, {} bytes to send", started.elapsed() / 10, wire.len());
+        }
     }
 
     #[test]

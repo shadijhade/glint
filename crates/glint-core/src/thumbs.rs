@@ -945,6 +945,10 @@ pub(crate) mod win {
         })
     }
 
+    /// How many pixels Windows' PDF renderer draws for each unit of the size it is asked for (an `f32`'s bits; 1.0
+    /// until a page says otherwise).
+    static PDF_PIXELS_PER_UNIT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x3F80_0000);
+
     /// A PDF's first page, `size` pixels on its long side: drawn by Windows' own PDF renderer (Windows.Data.Pdf,
     /// Edge's) and read back to pixels by its own decoder, on a thread of the multithreaded apartment, where their
     /// async calls are waited for. A PDF that needs a password to open has none.
@@ -953,6 +957,7 @@ pub(crate) mod win {
         use windows::Graphics::Imaging::{BitmapAlphaMode, BitmapDecoder, BitmapEncoder, BitmapPixelFormat};
         use windows::Storage::StorageFile;
         use windows::Storage::Streams::{Buffer, DataReader, InMemoryRandomAccessStream};
+        use std::sync::atomic::Ordering;
         use windows::Win32::System::Com::COINIT_MULTITHREADED;
         let path = HSTRING::from(path);
         std::thread::scope(|scope| {
@@ -965,18 +970,34 @@ pub(crate) mod win {
                     let document = PdfDocument::LoadFromFileAsync(&file)?.join()?;
                     let page = document.GetPage(0)?;
                     let page_size = page.Size()?;
-                    let scale = size as f32 / page_size.Width.max(page_size.Height).max(1.0);
+                    let long = page_size.Width.max(page_size.Height).max(1.0);
                     let options = PdfPageRenderOptions::new()?;
-                    options.SetDestinationWidth(((page_size.Width * scale).round() as u32).max(1))?;
-                    options.SetDestinationHeight(((page_size.Height * scale).round() as u32).max(1))?;
                     options.SetBitmapEncoderId(BitmapEncoder::BmpEncoderId()?)?;
-                    let stream = InMemoryRandomAccessStream::new()?;
-                    page.RenderWithOptionsToStreamAsync(&stream, &options)?.join()?;
-                    stream.Seek(0)?;
-                    let bitmap = BitmapDecoder::CreateAsync(&stream)?
-                        .join()?
-                        .GetSoftwareBitmapConvertedAsync(BitmapPixelFormat::Bgra8, BitmapAlphaMode::Straight)?
-                        .join()?;
+                    // The size is asked for in the display's own units: at 140% Windows draws 134 pixels for 96, twice
+                    // the pixels to draw and to keep. Nothing says which display it goes by, so its scale is learned
+                    // from the first page that comes out another size, and that page alone is drawn again.
+                    let draw = |per_unit: f32| -> windows::core::Result<(windows::Graphics::Imaging::SoftwareBitmap, f32)> {
+                        let scale = size as f32 / long / per_unit;
+                        let units = |side: f32| ((side * scale).round() as u32).max(1);
+                        options.SetDestinationWidth(units(page_size.Width))?;
+                        options.SetDestinationHeight(units(page_size.Height))?;
+                        let stream = InMemoryRandomAccessStream::new()?;
+                        page.RenderWithOptionsToStreamAsync(&stream, &options)?.join()?;
+                        stream.Seek(0)?;
+                        let bitmap = BitmapDecoder::CreateAsync(&stream)?
+                            .join()?
+                            .GetSoftwareBitmapConvertedAsync(BitmapPixelFormat::Bgra8, BitmapAlphaMode::Straight)?
+                            .join()?;
+                        let drawn = bitmap.PixelWidth()?.max(bitmap.PixelHeight()?) as f32;
+                        Ok((bitmap, drawn / units(long) as f32))
+                    };
+                    let known = f32::from_bits(PDF_PIXELS_PER_UNIT.load(Ordering::Relaxed));
+                    let (mut bitmap, per_unit) = draw(known)?;
+                    if (bitmap.PixelWidth()?.max(bitmap.PixelHeight()?) as i64 - i64::from(size)).abs() > 1 {
+                        let per_unit = per_unit.clamp(0.25, 8.0);
+                        PDF_PIXELS_PER_UNIT.store(per_unit.to_bits(), Ordering::Relaxed);
+                        bitmap = draw(per_unit)?.0;
+                    }
                     let (width, height) = (bitmap.PixelWidth()? as u32, bitmap.PixelHeight()? as u32);
                     let buffer = Buffer::Create(width * height * 4)?;
                     bitmap.CopyToBuffer(&buffer)?;
@@ -1585,13 +1606,12 @@ mod tests {
         let missing = win::pdf_page(dir.join("nope.pdf").to_str().unwrap(), 96);
         let _ = std::fs::remove_dir_all(&dir);
         let page = page.unwrap();
-        assert_eq!(
-            (page.width, page.height),
-            (96, 48),
-            "the long side at the size asked, the shape kept"
-        );
-        assert_eq!(page.bgra.len(), 96 * 48 * 4);
-        let pixel = |x: usize, y: usize| &page.bgra[(y * 96 + x) * 4..][..4];
+        // The long side at the size asked, the shape kept, whatever the display's scale (it drew 134 by 67 at 140%
+        // before the scale was learned). Off 100% a side can be a pixel off: the renderer takes whole units.
+        let (width, height) = (page.width as usize, page.height as usize);
+        assert!(width.abs_diff(96) <= 1 && height.abs_diff(48) <= 1, "{width} by {height}");
+        assert_eq!(page.bgra.len(), width * height * 4);
+        let pixel = |x: usize, y: usize| &page.bgra[(y * width + x) * 4..][..4];
         // The page is white, the rectangle on it blue (BGRA, opaque).
         assert_eq!(pixel(2, 2), [255, 255, 255, 255]);
         let middle = pixel(48, 24);

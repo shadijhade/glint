@@ -68,8 +68,9 @@ fn watch(window: &Window, path: &str) -> Result<RecommendedWatcher, String> {
             crate::timeline::record_notify_event(&ev);
             if !pending.swap(true, Ordering::SeqCst) {
                 let (window, path, pending) = (window.clone(), changed.clone(), pending.clone());
-                std::thread::spawn(move || {
-                    std::thread::sleep(Duration::from_millis(200));
+                // A timer on core's runtime, not a thread for each 200 ms of a long run of changes.
+                crate::host::async_runtime::spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
                     pending.store(false, Ordering::SeqCst);
                     window.emit(crate::host::Event::DirChanged(path));
                 });

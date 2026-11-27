@@ -531,14 +531,17 @@ impl FileList {
             // Anything the explorer changes redraws; the kinds of change that make the rows different also say so.
             cx.observe(&explorer, |_, _, cx| cx.notify()),
             cx.subscribe(&explorer, |this, _, event: &ExplorerEvent, cx| {
-                if matches!(
-                    event,
-                    ExplorerEvent::RowsChanged(_)
-                        | ExplorerEvent::ListingChanged { .. }
-                        | ExplorerEvent::TabsChanged
-                        | ExplorerEvent::ViewChanged(_)
-                        | ExplorerEvent::SizesChanged { .. }
-                ) {
+                // Another tab's rows are another list's (with two panes, every folder opened in one had the other
+                // go through its rows again for the biggest size). A tab this list is about to show isn't missed:
+                // showing another tab makes it work everything out anyway.
+                let changed = match event {
+                    ExplorerEvent::RowsChanged(tab)
+                    | ExplorerEvent::ViewChanged(tab)
+                    | ExplorerEvent::ListingChanged { tab, .. } => this.shown.tab == Some(*tab),
+                    ExplorerEvent::TabsChanged | ExplorerEvent::SizesChanged { .. } => true,
+                    _ => false,
+                };
+                if changed {
                     this.dirty = true;
                     this.asked = None;
                 }
@@ -546,8 +549,9 @@ impl FileList {
                 if let ExplorerEvent::SelectionChanged(tab) = event {
                     this.ask_selection_tags(*tab, cx);
                 }
-                // Items were cut to the clipboard, or pasted: they are dimmed, or not.
-                if matches!(event, ExplorerEvent::CutChanged) {
+                // Items were cut to the clipboard, or pasted: they are dimmed, or not. A folder was read ahead: its row
+                // can say what is in it.
+                if matches!(event, ExplorerEvent::CutChanged | ExplorerEvent::PrefetchReady) {
                     cx.notify();
                 }
             }),
@@ -1655,6 +1659,8 @@ impl Render for FileList {
         .size_full();
 
         let list = uniform_list("file-list-lines", lines, cx.processor(Self::render_lines))
+            // Every line is a row high (`cells.rs`): said, so that no row is built and laid out each frame to
+            // measure it.
             .track_scroll(&self.scroll)
             .size_full();
         // How a folder's rows arrive is the pane's stage's to say (`crate::stage`): into a folder, out of one.

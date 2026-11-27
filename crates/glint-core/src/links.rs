@@ -325,6 +325,12 @@ mod tests {
             std::fs::canonicalize(&target).unwrap(),
             std::fs::canonicalize(&source).unwrap()
         );
+        // On a probe lane's thread it is read where it is, with no apartment of its own, and says the same.
+        let on_lane = crate::aware::pool::install(crate::aware::Lane::Now, || {
+            assert!(crate::aware::pool::in_mta());
+            crate::recent::link_target(&link)
+        });
+        assert_eq!(on_lane, Some(target));
         remove_links(&[text(&link)]).unwrap();
         assert!(!link.exists());
         assert_eq!(std::fs::read_to_string(&source).unwrap(), "b");

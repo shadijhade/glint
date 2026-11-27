@@ -431,6 +431,7 @@ pub(crate) fn portal_list_entries(source: &PortalSource) -> Result<Vec<PortalEnt
                 fuzzy: false,
                 rank: true,
                 marks: false,
+                count_only: false,
             };
             let mut hits = Vec::new();
             let search_ok = shadui_index::client::search(&req, |ev| {

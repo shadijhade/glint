@@ -209,10 +209,11 @@ pub async fn folder_sizes(state: State<'_, AppState>, path: String, index_only: 
     if index_only == Some(true) {
         return Err("not indexed".into());
     }
-    let mut child = pdu_sizes(&path)?.spawn().map_err(|e| format!("Couldn't start measuring: {e}"))?;
-    let mut stdout = child.stdout.take().ok_or("Couldn't read the sizes")?;
-    let pid = slot.replace(child);
+    // Started on a blocking thread too: Windows takes its time to start a program, and the runtime has few threads.
     blocking(move || {
+        let mut child = pdu_sizes(&path)?.spawn().map_err(|e| format!("Couldn't start measuring: {e}"))?;
+        let mut stdout = child.stdout.take().ok_or("Couldn't read the sizes")?;
+        let pid = slot.replace(child);
         let mut json = String::new();
         let _ = stdout.read_to_string(&mut json);
         if slot.finish(pid).is_none() {

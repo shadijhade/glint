@@ -130,6 +130,7 @@ fn same_size(path: &str, size: u64) -> Option<Vec<String>> {
         fuzzy: false,
         rank: false,
         marks: false,
+        count_only: false,
     };
     let mut found = Vec::new();
     let mut limited = false;

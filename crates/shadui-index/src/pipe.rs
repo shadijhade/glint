@@ -493,6 +493,7 @@ mod tests {
                     fuzzy: false,
                     rank: false,
                     marks: false,
+                    count_only: false,
                 };
                 let ended =
                     client::search_on_until(client::connect_to(&name, &trust).unwrap(), &request, &cancel, |_| true);
@@ -576,6 +577,7 @@ mod tests {
             fuzzy: false,
             rank: false,
             marks: false,
+            count_only: false,
         };
         let (mut plan, mut hits, mut done) = (None, Vec::new(), None);
         client::search_on(client::connect_to(&name, &trust).unwrap(), &request, |event| {
@@ -609,6 +611,7 @@ mod tests {
                 fuzzy,
                 rank,
                 marks: false,
+                count_only: false,
             };
             let (mut paths, mut done) = (Vec::new(), None);
             client::search_on(client::connect_to(&name, &trust).unwrap(), &request, |event| {

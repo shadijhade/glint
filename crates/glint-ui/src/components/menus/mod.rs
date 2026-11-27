@@ -277,6 +277,13 @@ impl MenuHost {
     /// The rows Suggested would hold for the selection of `pane`, best first, at most `most`. None for no
     /// selection, or one of more than 200 items.
     pub fn suggestions(&self, pane: usize, most: usize, cx: &App) -> Vec<Suggested> {
+        // Asked on every change of the selection: a big one isn't copied out to find that it is too big.
+        let selected = try_explorer(cx)
+            .and_then(|explorer| explorer.read(cx).pane_tab(pane).map(|tab| tab.selection.len()))
+            .unwrap_or(0);
+        if selected > aware::MOST_TO_LOOK_AT {
+            return Vec::new();
+        }
         let chosen = self.chosen(pane, None, cx);
         if chosen.is_empty() || chosen.len() > aware::MOST_TO_LOOK_AT {
             return Vec::new();
@@ -914,13 +921,21 @@ impl MenuHost {
                 {
                     ctx.other_folder = Some(ex.tab_name(&tab.path));
                 }
-                ctx.other_selected = tab
-                    .rows
-                    .chosen(&tab.selection)
-                    .into_iter()
-                    .filter(|e| !e.dir && kinds::on_disk(e))
-                    .cloned()
-                    .collect();
+                // The menu asks only whether exactly one file is chosen there (to compare with): two say "more than
+                // one" as well as all of them do, and a selection of more than a few dozen is never that one file (the
+                // dock's own limit for a pair). A big selection there was gone through, and copied whole, at every
+                // key press here.
+                const MOST_TO_PAIR: usize = 64;
+                if tab.selection.len() <= MOST_TO_PAIR {
+                    ctx.other_selected = tab
+                        .rows
+                        .chosen(&tab.selection)
+                        .into_iter()
+                        .filter(|e| !e.dir && kinds::on_disk(e))
+                        .take(2)
+                        .cloned()
+                        .collect();
+                }
                 if tab.archive().is_none() {
                     ctx.other_listing = tab.shared_entries().map(|entries| (tab.path.clone(), entries));
                 }

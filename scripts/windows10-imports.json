@@ -389,6 +389,7 @@
             "IsProcessorFeaturePresent",
             "IsThreadAFiber",
             "IsValidCodePage",
+            "LCMapStringEx",
             "LCMapStringW",
             "LeaveCriticalSection",
             "LoadLibraryA",

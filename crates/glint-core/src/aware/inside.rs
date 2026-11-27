@@ -110,6 +110,7 @@ fn files_by_search(path: &str) -> Option<u64> {
         fuzzy: false,
         rank: false,
         marks: false,
+        count_only: false,
     };
     let mut covered = false;
     let mut files = None;

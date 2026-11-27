@@ -9,7 +9,7 @@
 
 use super::memory::Memory;
 use super::ops_state::OpsState;
-use super::rows::{build_rows, reads_git, RowFileMarks, RowMarks, RowSpec, Rows};
+use super::rows::{build_rows, build_rows_while, reads_git, RowFileMarks, RowMarks, RowSpec, Rows};
 use super::source::Source;
 use super::tab::Tab;
 use super::types::*;
@@ -949,8 +949,9 @@ impl Explorer {
         if tab.rows_spec.as_ref() == Some(&spec) && tab.rows_source_is(&source) {
             return;
         }
-        tab.rows_seq += 1;
-        let seq = tab.rows_seq;
+        use std::sync::atomic::Ordering::Relaxed;
+        let seq = tab.rows_seq.fetch_add(1, Relaxed) + 1;
+        let newest = tab.rows_seq.clone();
         // Drop the palettes Arc in the cached `rows_spec` (which only needs `rev` and `filter` for PartialEq)
         // so `tab.color_palettes` keeps strong_count == 1 and `Arc::make_mut` mutates in place while warming.
         let mut stored_spec = spec.clone();
@@ -986,11 +987,12 @@ impl Explorer {
         }
         cx.spawn(async move |this, cx| {
             let rows = cx
-                .background_spawn(async move { build_rows(&source, &spec, now) })
+                // A newer build (more typed into the box) ends this one part way.
+                .background_spawn(async move { build_rows_while(&source, &spec, now, &|| newest.load(Relaxed) == seq) })
                 .await;
             this.update(cx, |this, cx| {
                 // A newer rebuild (or a closed tab) makes this result stale.
-                if let Some(tab) = this.tabs.get_mut(&id).filter(|t| t.rows_seq == seq) {
+                if let Some(tab) = this.tabs.get_mut(&id).filter(|t| t.rows_seq.load(Relaxed) == seq) {
                     let old = std::mem::replace(&mut tab.rows, rows);
                     cx.emit(ExplorerEvent::RowsChanged(id));
                     cx.notify();

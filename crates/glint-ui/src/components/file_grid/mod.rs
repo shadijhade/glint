@@ -338,6 +338,10 @@ impl FileGrid {
                     this.stop_pointer();
                     cx.notify();
                 }
+                // A folder read ahead: its tile can say what is in it.
+                if matches!(event, ExplorerEvent::PrefetchReady) {
+                    cx.notify();
+                }
                 // Other rows (or other tiles in them) need their tags asked for.
                 if matches!(
                     event,

@@ -140,6 +140,10 @@ pub struct SearchRequest {
     /// ([`HIT_BY_COMMENT`], [`HIT_BY_TAG`]). A service from before this ignores it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub marks: bool,
+    /// Only how many match is wanted (a saved search's count in the sidebar): no hit is put into words or sent,
+    /// Done says the count, up to `max_results` (`limited` beyond). A service from before this sends the hits too.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub count_only: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -540,6 +544,7 @@ mod tests {
             fuzzy: false,
             rank: false,
             marks: false,
+            count_only: false,
         });
         let mut wire = Vec::new();
         write_request(&mut wire, &request).unwrap();

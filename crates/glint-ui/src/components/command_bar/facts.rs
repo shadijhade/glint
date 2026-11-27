@@ -125,8 +125,7 @@ impl Facts {
             whole_archive: archive
                 .filter(|a| same_path(&tab.path, &a.path) && same_path(&a.path, &a.outer))
                 .map(|a| a.outer.clone()),
-            // Stops at the first folder (they sort first); only a folder of nothing but files is read whole.
-            has_folders: tab.entries().iter().any(|e| e.dir),
+            has_folders: has_folders(tab),
             selected: tab.selection.len(),
             pair: compare_pair(explorer),
             dual: explorer.is_dual(),
@@ -167,6 +166,31 @@ impl Facts {
     pub fn can_view(&self) -> bool {
         self.in_folder || self.find || self.bin
     }
+}
+
+thread_local! {
+    /// The listing last asked whether it holds a folder, and its answer (Weak: `let_go` frees listings).
+    static HAS_FOLDERS: std::cell::RefCell<Option<(std::sync::Weak<[FileEntry]>, bool)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Whether the tab's listing holds a folder, worked out once for a listing: the facts are read at every change of
+/// the explorer (an arrow key), and a folder of nothing but files was gone through whole each time (it stops at the
+/// first folder, and they sort first).
+fn has_folders(tab: &crate::explorer::Tab) -> bool {
+    let Some(entries) = tab.listing.as_ref().map(|listing| &listing.entries) else {
+        return false;
+    };
+    HAS_FOLDERS.with(|kept| {
+        let mut kept = kept.borrow_mut();
+        if let Some((seen, has)) = kept.as_ref() {
+            if seen.strong_count() > 0 && std::ptr::addr_eq(std::sync::Weak::as_ptr(seen), std::sync::Arc::as_ptr(entries)) {
+                return *has;
+            }
+        }
+        let has = entries.iter().any(|e| e.dir);
+        *kept = Some((std::sync::Arc::downgrade(entries), has));
+        has
+    })
 }
 
 /// The selected items of the active tab, in the order the rows show them (`selected` in Explorer.tsx).

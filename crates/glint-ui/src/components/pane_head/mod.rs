@@ -312,8 +312,13 @@ impl PaneHead {
         let facts = row_facts::shared(cx);
         let hub = tags::hub(cx);
         let subscriptions = vec![
-            cx.observe(&explorer, |this: &mut Self, _, cx| {
+            cx.observe(&explorer, |this: &mut Self, explorer, cx| {
                 this.dirty = true;
+                // The second pane's head, once two-pane view was left, works nothing out and asks nothing at every
+                // key press: it catches up when its pane is back (turning the view on tells it).
+                if this.pane >= explorer.read(cx).shown_panes().len() {
+                    return;
+                }
                 this.refresh(cx);
                 this.ask(cx);
                 cx.notify();
@@ -409,9 +414,10 @@ impl PaneHead {
             self.head = head;
             self.dirty = false;
         }
-        let labels = crate::state::try_settings(cx).map(|s| s.labels.clone()).unwrap_or_default();
-        if labels != self.labels_seen {
-            self.labels_seen = labels;
+        // Compared where they are: the head is worked out at every key press, the labels change once in a while.
+        let labels = crate::state::try_settings(cx).map_or(&[][..], |s| &s.labels[..]);
+        if labels != &self.labels_seen[..] {
+            self.labels_seen = labels.to_vec();
             self.labels_stale = true;
         }
         if self.labels_stale && self.head.is_some() {

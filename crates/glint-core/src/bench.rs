@@ -157,7 +157,7 @@ fn index(runs: usize, add: &mut impl FnMut(String, (f64, f64, u64))) {
     }
     let roots = fixed_drives();
     let search = |query: &str, fuzzy: bool| {
-        let request = shadui_index::proto::SearchRequest { query: query.into(), roots: roots.clone(), hidden: false, exclude: Vec::new(), max_results: Some(1000), fuzzy, rank: true, marks: false };
+        let request = shadui_index::proto::SearchRequest { query: query.into(), roots: roots.clone(), hidden: false, exclude: Vec::new(), max_results: Some(1000), fuzzy, rank: true, marks: false, count_only: false };
         let mut count = 0;
         let _ = client::search(&request, |event| {
             if let Event::Hits(hits) = event {

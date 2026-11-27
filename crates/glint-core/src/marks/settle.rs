@@ -156,6 +156,7 @@ fn index_list(drive: &str, names: &[String]) -> Option<Vec<String>> {
         fuzzy: false,
         rank: false,
         marks: false,
+        count_only: false,
     };
     let (mut found, mut answered) = (Vec::new(), false);
     let ran = client::search(&request, |event| {

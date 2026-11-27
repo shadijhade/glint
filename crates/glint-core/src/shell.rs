@@ -91,13 +91,14 @@ where
     T: Send + 'static,
     F: FnOnce() -> Result<T, String> + Send + 'static,
 {
-    let (tx, rx) = std::sync::mpsc::channel();
+    // Awaited, not waited for on a pool thread: a dialog on the UI thread (a drag, Windows' menu) can stay up long.
+    let (tx, rx) = tokio::sync::oneshot::channel();
     window
         .run_on_main_thread(move || {
             let _ = tx.send(f());
         })
         .map_err(|e| e.to_string())?;
-    blocking(move || rx.recv().map_err(|e| e.to_string())?).await
+    rx.await.map_err(|e| e.to_string())?
 }
 
 /// What a clipboard call says when another app had the clipboard open for all of its tries.
@@ -109,13 +110,14 @@ pub(crate) const CLIPBOARD_BUSY: &str = "Another app is using the clipboard. Try
 const CLIPBOARD_PATIENCE: std::time::Duration = std::time::Duration::from_millis(1200);
 
 /// The wait before the next try of a clipboard call, after `waited` so far and a last wait of `last` (none at the
-/// first): 25 ms, doubling to at most 200 ms; None once [`CLIPBOARD_PATIENCE`] is spent.
+/// first): 5 ms (a clipboard manager is usually done by then), doubling to at most 200 ms; None once
+/// [`CLIPBOARD_PATIENCE`] is spent.
 fn clipboard_pause(waited: std::time::Duration, last: Option<std::time::Duration>) -> Option<std::time::Duration> {
     use std::time::Duration;
     if waited >= CLIPBOARD_PATIENCE {
         return None;
     }
-    let pause = last.map_or(Duration::from_millis(25), |last| {
+    let pause = last.map_or(Duration::from_millis(5), |last| {
         (last * 2).min(Duration::from_millis(200))
     });
     Some(pause.min(CLIPBOARD_PATIENCE - waited))
@@ -146,8 +148,8 @@ where
     }
 }
 
-/// A clipboard call on the UI thread (see [`on_main`]), tried again while another app holds the clipboard. Each try
-/// holds the UI thread for a few milliseconds at most; the waits between tries are spent off it.
+/// A clipboard call on the UI thread (see [`on_main`]), tried again while another app holds the clipboard. A try
+/// never waits on the UI thread; the waits between tries are spent off it.
 async fn on_main_clipboard<T, F>(window: &Window, f: F) -> Result<T, String>
 where
     T: Send + 'static,
@@ -261,13 +263,20 @@ pub(crate) fn restore(items: Vec<Back>) -> Result<Performed, String> {
     imp::file_op(0, FileOp::Restore { items })
 }
 
-/// The files on the clipboard (copied or cut), if any; what extracted copies may not be deleted for.
+/// The files on the clipboard (copied or cut), if any; what extracted copies may not be deleted for. Asked off the
+/// UI thread, so while another app holds the clipboard it is tried again a few times with a moment between: a
+/// clipboard that is busy isn't one with nothing on it.
 pub fn clipboard_paths() -> Vec<String> {
-    imp::clipboard_files(0)
-        .ok()
-        .flatten()
-        .map(|files| files.paths)
-        .unwrap_or_default()
+    let mut tries = 0;
+    loop {
+        match imp::clipboard_files(0) {
+            Err(busy) if busy == CLIPBOARD_BUSY && tries < 3 => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            read => return read.ok().flatten().map(|files| files.paths).unwrap_or_default(),
+        }
+    }
 }
 
 /// Puts files on the clipboard the way Explorer does, so they can be pasted there too.
@@ -1243,16 +1252,10 @@ mod imp {
         Ok(Performed { completed, items })
     }
 
-    /// Opens the clipboard, trying a few times in quick succession (this runs on the UI thread); while another app
-    /// still holds it, the caller tries again later, off the UI thread (`on_main_clipboard`).
+    /// Opens the clipboard, once: this runs on the UI thread, which never sleeps. While another app holds it the
+    /// caller tries again a moment later, off the UI thread (`on_main_clipboard`).
     unsafe fn open_clipboard(owner: isize) -> Result<(), String> {
-        for _ in 0..3 {
-            if OpenClipboard(Some(hwnd(owner))).is_ok() {
-                return Ok(());
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        Err(super::CLIPBOARD_BUSY.into())
+        OpenClipboard(Some(hwnd(owner))).map_err(|_| super::CLIPBOARD_BUSY.into())
     }
 
     /// Hands a copy of `bytes` to the clipboard, which owns the memory once SetClipboardData succeeds.
@@ -2454,7 +2457,7 @@ mod tests {
             waited += pause;
             last = Some(pause);
         }
-        assert_eq!(pauses[..4], [ms(25), ms(50), ms(100), ms(200)]);
+        assert_eq!(pauses[..7], [ms(5), ms(10), ms(20), ms(40), ms(80), ms(160), ms(200)]);
         assert!(pauses.iter().all(|&p| p <= ms(200)));
         assert_eq!(waited, CLIPBOARD_PATIENCE, "the waits add up to the patience exactly");
     }
@@ -2483,7 +2486,7 @@ mod tests {
             (answer, tries.get(), waited.get())
         };
         // Held by another app for three tries, then free: the fourth try reads it.
-        assert_eq!(run(3, Ok(7)), (Ok(7), 4, Duration::from_millis(25 + 50 + 100)));
+        assert_eq!(run(3, Ok(7)), (Ok(7), 4, Duration::from_millis(5 + 10 + 20)));
         // Another error is said at once.
         assert_eq!(
             run(0, Err("Out of memory".into())),

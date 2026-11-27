@@ -54,10 +54,14 @@ impl PathSet {
 
     /// Removes a path. Returns whether it was there.
     pub fn remove(&mut self, path: &str) -> bool {
-        if !self.set.remove(path) {
+        let Some(gone) = self.set.take(path) else {
             return false;
+        };
+        // Both hold the same allocation: found by its address, from the end (what is taken off is mostly what was
+        // just put on), with no path compared.
+        if let Some(at) = self.order.iter().rposition(|p| Arc::ptr_eq(p, &gone)) {
+            self.order.remove(at);
         }
-        self.order.retain(|p| &**p != path);
         true
     }
 
@@ -69,7 +73,12 @@ impl PathSet {
 
 impl<'a> FromIterator<&'a str> for PathSet {
     fn from_iter<I: IntoIterator<Item = &'a str>>(paths: I) -> Self {
+        let paths = paths.into_iter();
         let mut set = PathSet::default();
+        // Room for all of them at once: Select all of a big folder grew both a dozen times over.
+        let (least, _) = paths.size_hint();
+        set.order.reserve(least);
+        set.set.reserve(least);
         for path in paths {
             set.insert(path);
         }
@@ -190,7 +199,9 @@ pub struct Tab {
     pub(super) rows_spec: Option<RowSpec>,
     /// The entries `rows` were built from, to tell a new listing from a new sort.
     pub(super) rows_for: Option<Arc<[FileEntry]>>,
-    pub(super) rows_seq: u64,
+    /// Counts the builds of `rows`: the newest wins, and a build on a background thread reads it to stop when it
+    /// is no longer the newest.
+    pub(super) rows_seq: Arc<std::sync::atomic::AtomicU64>,
     pub(super) scroll: Option<ScrollMemo>,
     /// Active OKLab Color-Wheel filter and cached palettes for this tab's images.
     pub color_filter: Option<glint_model::oklab::ColorFilter>,
@@ -249,7 +260,7 @@ impl Tab {
             marked: None,
             rows_spec: None,
             rows_for: None,
-            rows_seq: 0,
+            rows_seq: Arc::default(),
             scroll: None,
             color_filter: None,
             color_palettes: Arc::new(std::collections::HashMap::new()),

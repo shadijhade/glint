@@ -184,6 +184,19 @@ pub fn marquee_hits(
     hits
 }
 
+/// The first and the last line of a list that a marquee touches, its corners `a` and `b` in the list's content
+/// pixels: what [`marquee_hits`] lists for one column, as two numbers, so a pointer moving within the same rows is
+/// told apart without a list made of them. None when it touches none.
+pub fn marquee_lines(a: Point, b: Point, count: usize, row_height: f32) -> Option<(usize, usize)> {
+    if count == 0 || row_height.is_nan() || row_height <= 0.0 {
+        return None;
+    }
+    let first = (a.y.min(b.y) / row_height).floor().max(0.0);
+    let last = (a.y.max(b.y) / row_height).floor().min((count - 1) as f32);
+    // Both are within 0..count after the clamps, so the casts cannot truncate.
+    (first <= last).then_some((first as usize, last as usize))
+}
+
 /// How a grid is laid out: tiles to a row, and each row's height.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GridLayout {
@@ -541,6 +554,19 @@ mod tests {
         // Only in the empty part below them, none.
         assert!(hit(pt(0.0, 300.0), pt(50.0, 400.0), 10).is_empty());
         assert!(hit(pt(0.0, 0.0), pt(0.0, 0.0), 0).is_empty());
+        // The first and last line alone say the same, with no list made.
+        for (a, b, count) in [
+            (pt(10.0, 5.0), pt(300.0, 70.0), 10),
+            (pt(300.0, 70.0), pt(10.0, 5.0), 10),
+            (pt(0.0, 250.0), pt(0.0, 9000.0), 10),
+            (pt(0.0, 300.0), pt(50.0, 400.0), 10),
+            (pt(0.0, -40.0), pt(0.0, 30.0), 10),
+            (pt(0.0, 0.0), pt(0.0, 0.0), 0),
+        ] {
+            let lines: Vec<usize> = marquee_lines(a, b, count, 28.0).into_iter().flat_map(|(first, last)| first..=last).collect();
+            assert_eq!(lines, hit(a, b, count));
+        }
+        assert_eq!(marquee_lines(pt(0.0, 0.0), pt(0.0, 50.0), 10, 0.0), None);
     }
 
     #[test]

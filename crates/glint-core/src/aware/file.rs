@@ -25,6 +25,11 @@ pub fn locked_by(path: &str) -> Option<Vec<String>> {
     Some(names)
 }
 
+/// Whether any app has any of these files open, in one question. `None` when Windows couldn't be asked.
+pub fn any_locked(paths: &[String]) -> Option<bool> {
+    Some(!crate::locks::who_locks_now(paths.to_vec()).ok()?.processes.is_empty())
+}
+
 /// Where the file came from, from its Mark of the Web. `None` when it has no mark.
 pub fn origin(path: &str) -> Option<Origin> {
     let zone = crate::xray::zone_info(path)?;

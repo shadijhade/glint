@@ -107,9 +107,15 @@ type Kept = (u64, GitView);
 /// seen nothing change (its generation).
 static CACHE: LazyLock<Mutex<HashMap<(String, String), Kept>>> = LazyLock::new(Default::default);
 /// How many times each watched repository changed, by its lowercase root. A repository not watched
-/// has none, and its views aren't kept.
-static GENERATIONS: LazyLock<Mutex<HashMap<String, u64>>> = LazyLock::new(Default::default);
+/// has none, and its views aren't kept. Each count is its watcher's own, so a change takes no lock to count.
+static GENERATIONS: LazyLock<Mutex<HashMap<String, Arc<AtomicU64>>>> = LazyLock::new(Default::default);
 static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+/// The watched repository's count of changes now; None for one that isn't watched.
+fn generation_of(root: &str) -> Option<u64> {
+    let generations = GENERATIONS.lock().unwrap_or_else(|e| e.into_inner());
+    generations.get(&key(root)).map(|count| count.load(Ordering::Relaxed))
+}
 
 fn key(path: &str) -> String {
     path.trim_end_matches(['\\', '/']).to_lowercase()
@@ -419,11 +425,7 @@ pub async fn git_view(
     }
     blocking(move || {
         let cached = |root: &str| {
-            let generation = GENERATIONS
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .get(&key(root))
-                .copied()?;
+            let generation = generation_of(root)?;
             let cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
             cache
                 .get(&(key(root), key(&folder)))
@@ -439,13 +441,7 @@ pub async fn git_view(
         if let Some(view) = root.as_deref().filter(|_| !force).and_then(cached) {
             return Ok(Some(view));
         }
-        let generation = root.as_deref().and_then(|r| {
-            GENERATIONS
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .get(&key(r))
-                .copied()
-        });
+        let generation = root.as_deref().and_then(generation_of);
         let found = view_in(&folder, repo, &trusted, force, stop.clone());
         let mut runs = RUNS.lock().unwrap_or_else(|e| e.into_inner());
         if runs.get(&lane).is_some_and(|s| Arc::ptr_eq(s, &stop)) {
@@ -1024,7 +1020,8 @@ pub async fn git_watch(window: Window, state: State<'_, RepoWatcher>, roots: Vec
                 continue;
             }
             let pending = Arc::new(AtomicBool::new(false));
-            let (window, changed, root_key) = (window.clone(), root.clone(), key(&root));
+            let count = Arc::new(AtomicU64::new(NEXT_GENERATION.fetch_add(1, Ordering::Relaxed)));
+            let (window, changed, counted) = (window.clone(), root.clone(), count.clone());
             let watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
                 let Ok(event) = event else { return };
                 if event.paths.iter().all(|p| noise(p)) {
@@ -1032,14 +1029,12 @@ pub async fn git_watch(window: Window, state: State<'_, RepoWatcher>, roots: Vec
                 }
                 // What was worked out before this change is out of date at once; the UI asks again
                 // once things settle.
-                GENERATIONS
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .insert(root_key.clone(), NEXT_GENERATION.fetch_add(1, Ordering::Relaxed));
+                counted.store(NEXT_GENERATION.fetch_add(1, Ordering::Relaxed), Ordering::Relaxed);
                 if !pending.swap(true, Ordering::SeqCst) {
                     let (window, root, pending) = (window.clone(), changed.clone(), pending.clone());
-                    std::thread::spawn(move || {
-                        std::thread::sleep(Duration::from_millis(500));
+                    // A timer on core's runtime, not a thread for each half second of a long run of changes.
+                    crate::host::async_runtime::spawn(async move {
+                        tokio::time::sleep(Duration::from_millis(500)).await;
                         pending.store(false, Ordering::SeqCst);
                         window.emit(crate::host::Event::GitChanged(root));
                     });
@@ -1047,7 +1042,7 @@ pub async fn git_watch(window: Window, state: State<'_, RepoWatcher>, roots: Vec
             });
             let Ok(mut watcher) = watcher else { continue };
             if watcher.watch(&PathBuf::from(&root), RecursiveMode::Recursive).is_ok() {
-                generations.insert(key(&root), NEXT_GENERATION.fetch_add(1, Ordering::Relaxed));
+                generations.insert(key(&root), count);
                 watchers.insert(key(&root), watcher);
             }
         }

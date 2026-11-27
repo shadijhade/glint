@@ -78,7 +78,7 @@ pub async fn index_count(query: String, roots: Vec<String>, max: usize) -> Resul
     {
         blocking(move || {
             use shadui_index::client::{self, Event};
-            let request = shadui_index::proto::SearchRequest { query, roots, hidden: false, exclude: Vec::new(), max_results: Some(max.clamp(1, 100_000)), fuzzy: false, rank: false, marks: false };
+            let request = shadui_index::proto::SearchRequest { query, roots, hidden: false, exclude: Vec::new(), max_results: Some(max.clamp(1, 100_000)), fuzzy: false, rank: false, marks: false, count_only: true };
             let mut answer = None;
             let mut covered = false;
             let _ = client::search(&request, |event| {

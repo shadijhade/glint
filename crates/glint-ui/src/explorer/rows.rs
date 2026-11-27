@@ -466,6 +466,13 @@ fn marks_reader(map: &std::collections::HashMap<String, glint_model::marks::Mark
 /// The same steps as the TypeScript's three memos, in order: sort (skipped for the engine's own order),
 /// hide hidden items, narrow by the filter, then group.
 pub fn build_rows(entries: &Arc<[FileEntry]>, spec: &RowSpec, now: i64) -> Rows {
+    build_rows_while(entries, spec, now, &|| true)
+}
+
+/// [`build_rows`] for as long as `wanted` says so: a big folder's rows are made on a background thread, and the box
+/// has other text before a slow build is done (every key typed starts one). Asked every few thousand entries and
+/// before the sort; once it says no, what comes back is the listing as it is, to be thrown away.
+pub fn build_rows_while(entries: &Arc<[FileEntry]>, spec: &RowSpec, now: i64, wanted: &dyn Fn() -> bool) -> Rows {
     let by_default = spec.presorted && spec.folders_first && spec.sort.key == SortKey::Name && !spec.sort.desc;
     // `matcher` is `None` for text that filters nothing (empty, or asking the models).
     let marks = spec.git.as_ref().map(|git| &*git.marks);
@@ -488,6 +495,9 @@ pub fn build_rows(entries: &Arc<[FileEntry]>, spec: &RowSpec, now: i64) -> Rows 
     if narrowing {
         let mut kept = Vec::new();
         for (i, entry) in entries.iter().enumerate() {
+            if i % 8192 == 0 && !wanted() {
+                return Rows::identity(entries.clone());
+            }
             if !spec.show_hidden && is_hidden(entry) {
                 hidden += 1;
                 continue;
@@ -556,6 +566,9 @@ pub fn build_rows(entries: &Arc<[FileEntry]>, spec: &RowSpec, now: i64) -> Rows 
             order.extend(ranked.into_iter().map(|(i, _)| i));
         }
     } else if !by_default {
+        if !wanted() {
+            return Rows::identity(entries.clone());
+        }
         if let Some(order) = order.as_mut() {
             let size_of = measured.as_ref().map(|f| f as &SizeOf);
             sort_order(entries, order, spec, size_of, mark_reads);
@@ -1343,6 +1356,29 @@ mod tests {
         assert!(reads_marks("", by_name, GroupBy::Label));
         assert!(!reads_marks("x ext:pdf", by_name, GroupBy::None));
         assert!(!reads_marks("", Sort { key: SortKey::Size, desc: false }, GroupBy::Kind));
+    }
+
+    #[test]
+    fn rows_no_longer_wanted_are_not_finished_and_wanted_ones_are_the_same_rows() {
+        let entries = tricky_listing(20_000);
+        let spec = RowSpec {
+            filter: "a".into(),
+            sort: Sort { key: SortKey::Size, desc: true },
+            ..RowSpec::default()
+        };
+        let whole = build_rows(&entries, &spec, 0);
+        assert!(whole.len() < entries.len(), "the filter leaves some out");
+        assert_eq!(names(&build_rows_while(&entries, &spec, 0, &|| true)), names(&whole));
+        // Told no at the first asking, it stops there: the listing as it is, after one question.
+        let asked = std::cell::Cell::new(0);
+        let dropped = build_rows_while(&entries, &spec, 0, &|| {
+            asked.set(asked.get() + 1);
+            false
+        });
+        assert_eq!((dropped.len(), asked.get()), (entries.len(), 1));
+        // Told no only once the entries are gone through, it stops before the sort.
+        let unsorted = build_rows_while(&entries, &spec, 0, &|| asked.replace(asked.get() + 1) < 4);
+        assert_eq!(unsorted.len(), entries.len());
     }
 
     /// Sorts and filters of a 10,000-row folder by names and sizes (M5), then by label with every row marked. By hand:

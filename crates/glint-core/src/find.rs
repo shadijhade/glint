@@ -430,6 +430,7 @@ fn index_request(roots: &[String], query: &str, options: &FindOptions, marks: bo
         fuzzy: options.fuzzy,
         rank: options.rank,
         marks,
+        count_only: false,
     }
 }
 

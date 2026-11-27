@@ -518,6 +518,10 @@ pub enum ExplorerEvent {
     SelectionChanged(TabId),
     /// A tab's sort, group, columns or view mode changed.
     ViewChanged(TabId),
+    /// A folder read ahead has its listing ([`Explorer::peeks`](super::Explorer::peeks)): its row, tile or card
+    /// can say what is in it. Told as an event and not to every observer of the explorer: it comes after every
+    /// arrow key that lands on a folder, and changes nothing the bars, the head or the dock show.
+    PrefetchReady,
     /// The drives were read again.
     DrivesChanged,
     /// The known folders (Home, Desktop…) were found.

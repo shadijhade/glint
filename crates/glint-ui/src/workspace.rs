@@ -340,6 +340,9 @@ impl Workspace {
         subscriptions.push(
             cx.subscribe_in(&explorer, window, |this, _, event, window, cx| match event {
                 ExplorerEvent::PaneFocused => this.focus_files(window, cx),
+                // A folder read ahead: the window draws again (its row, its tile, a tab's or a crumb's card), and
+                // nothing else is worked out again.
+                ExplorerEvent::PrefetchReady => cx.notify(),
                 // What the file operations tell the person, and ask first.
                 ExplorerEvent::Operation(notice) => notices::show(notice, window, cx),
                 ExplorerEvent::Busy(busy) => notices::busy(busy, window, cx),

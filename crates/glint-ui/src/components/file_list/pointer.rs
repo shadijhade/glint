@@ -12,7 +12,7 @@ use crate::explorer::Rows;
 use crate::kit::prelude::*;
 use crate::t;
 use glint_model::entries::{is_archived, is_recycled, FileEntry};
-use glint_model::grid::{marquee_hits, Point as ContentPoint};
+use glint_model::grid::{marquee_lines, Point as ContentPoint};
 use std::cell::Cell;
 use std::collections::HashSet;
 use std::future::Future;
@@ -38,9 +38,9 @@ pub(super) struct Marquee {
     base: Vec<String>,
     /// The pointer has moved far enough for the rectangle to show.
     drawn: bool,
-    /// How many rows the rectangle covered last, and the first and last of them: a move that changes none of
-    /// them changes nothing.
-    last: Option<(usize, Option<usize>, Option<usize>)>,
+    /// The first and last line the rectangle covered last (the inner None: it covered none): a move that changes
+    /// neither changes nothing.
+    last: Option<Option<(usize, usize)>>,
     /// The task scrolling the list while the pointer is held beyond its top or bottom.
     _scroller: Option<Task<()>>,
 }
@@ -372,19 +372,21 @@ impl FileList {
             return;
         };
         let height = f32::from(ROW_HEIGHT.to_pixels(window.rem_size()));
-        let covered = marquee_hits(start, end, layout_rows::line_count(&rows), height, 1, 0., 0.);
+        // Asked as two numbers first: the pointer moves many times within the same rows, and a rectangle over a big
+        // folder would list every row it covers each time.
+        let covered = marquee_lines(start, end, layout_rows::line_count(&rows), height);
+        let Some(marquee) = self.marquee.as_mut() else { return };
+        if marquee.last == Some(covered) {
+            return;
+        }
+        marquee.last = Some(covered);
         // Grouped, the list's lines are headers and rows: what is covered is the rows among them.
         let hits: Vec<usize> = covered
             .into_iter()
+            .flat_map(|(first, last)| first..=last)
             .filter_map(|line| layout_rows::row_of_line(&rows, line))
             .collect();
         let (first, last) = (hits.first().copied(), hits.last().copied());
-        let key = (hits.len(), first, last);
-        let Some(marquee) = self.marquee.as_mut() else { return };
-        if marquee.last == Some(key) {
-            return;
-        }
-        marquee.last = Some(key);
         let path_at = |i: Option<usize>| i.and_then(|i| rows.get(i)).map(|entry| entry.path.as_str());
         let paths = marquee
             .base

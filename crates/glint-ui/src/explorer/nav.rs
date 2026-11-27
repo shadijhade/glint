@@ -1054,9 +1054,9 @@ impl Explorer {
                         return;
                     }
                 }
-                // Its row can say what is in it now.
+                // Its row can say what is in it now: said to who draws rows, tiles and cards, not to everyone.
                 if listed.is_some() {
-                    cx.notify();
+                    cx.emit(ExplorerEvent::PrefetchReady);
                 }
             })
             .ok();

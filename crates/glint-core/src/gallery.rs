@@ -115,6 +115,7 @@ fn from_index(folders: &[String]) -> Option<Vec<Entry>> {
         fuzzy: false,
         rank: false,
         marks: false,
+        count_only: false,
     };
     let mut found = Vec::new();
     let mut whole = true;
@@ -388,6 +389,7 @@ fn camera_files(drives: &[String]) -> Option<Vec<String>> {
         fuzzy: false,
         rank: false,
         marks: false,
+        count_only: false,
     };
     let mut found = Vec::new();
     client::search(&request, |event| {

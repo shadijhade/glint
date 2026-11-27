@@ -166,8 +166,14 @@ impl PeekHost {
     /// A host reading `explorer`.
     pub fn new(explorer: Entity<Explorer>, cx: &mut Context<Self>) -> Self {
         let subscriptions = vec![
-            // What was read ahead arrives: an open card fills in. (Nothing is worked out while no card is open.)
+            // What was read ahead arrives: an open card fills in. (Nothing is worked out while no card is open.) A
+            // folder read ahead is said as an event of its own, a folder opened as a change of the explorer.
             cx.observe(&explorer, |this, _, cx| this.refresh(cx)),
+            cx.subscribe(&explorer, |this, _, event: &crate::explorer::ExplorerEvent, cx| {
+                if matches!(event, crate::explorer::ExplorerEvent::PrefetchReady) {
+                    this.refresh(cx);
+                }
+            }),
             cx.observe_global::<state::UiState>(|this, cx| this.refresh(cx)),
             // Escape closes it, wherever the keyboard is.
             cx.observe_keystrokes(|this, event, _, cx| {

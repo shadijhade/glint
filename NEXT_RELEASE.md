@@ -8,6 +8,108 @@ The plan for 0.12 that was here is in git history (`git show df1245a:NEXT_RELEAS
 before it (`git show 47c33fa:NEXT_RELEASE.md`), and 0.13's own plan, the menu and the dock that know the selection,
 is [docs/gpui/aware/PLAN.md](docs/gpui/aware/PLAN.md) with its task cards beside it.*
 
+## Next: speed, the outside list's third tier (checked against the code 2026-11-27)
+
+Six groups of "medium" fixes, some thirty claims in all. Each was read against the code before anything changed, and
+where a fix could be measured cheaply it was measured first: three of the proposed fixes measured slower or as noise,
+and four premises were wrong. The numbers are from this PC and say "release" where the build was optimized.
+
+**Built:**
+- **Who has a file open (group 2).** The dock and the menu asked Restart Manager about every selected file in a
+  session of its own. Windows looks through every open handle on the PC for each question, however many files it is
+  about, so a selection is now asked about in one: nobody having any of them open, the usual answer, is one question
+  (`aware::probe::locked_by`); only when somebody has is each asked alone, to say whose. 200 files: 1.6 s → 32 ms.
+  The list's own fix, asking each file with `NtQueryInformationFile`, measured *slower* than a session (31 ms a file
+  against 8 to 10) and was dropped; an exclusive open would get in other programs' way.
+- **The clipboard (2).** `open_clipboard` no longer sleeps on the UI thread (it tried three times, 5 ms apart): one
+  try, and the waits between tries, already off the thread, start at 5 ms instead of 25. What reads the clipboard off
+  the UI thread for the extracted copies' sweep keeps its three tries. `on_main` awaits its answer instead of parking
+  a pool thread on it for as long as a drag or Windows' menu stays up.
+- **Shortcuts (2).** A shortcut's target is read on the probe lane's own thread (it has COM, and Windows' shortcut
+  object takes its apartment) instead of a thread and an apartment made for each: a selection of shortcuts was the one
+  place `in_sta` was called in a burst.
+- **Watching (5).** The folder and Git watchers wait their 200 and 500 ms on a timer of core's runtime, not on a
+  thread started for each wait; a repository's count of changes is its watcher's own atomic, so a change takes no
+  lock and copies no path to be counted. Folder sizes start their worker on a blocking thread, not on one of the
+  runtime's four.
+- **PDF thumbnails (5), found on the way.** Windows' PDF renderer takes its size in the display's units, so on a
+  display at 140% a thumbnail asked at 96 px was drawn at 134: twice the pixels to draw and keep (and
+  `draws_a_pdfs_first_page` failed on such a display). The scale is learned from the first page drawn and that page
+  alone is drawn again. The list's own two fixes measured as noise: the thread and COM cost 0.1 ms and the decode
+  0.3 to 0.8 ms of a page that takes 4 to 23 ms to draw.
+- **Counts from instant search (4).** `SearchRequest::count_only` ("countOnly"): the service counts and sends no hit.
+  The sidebar's saved searches ask that way: a count of 100,000 was 3.5 ms and 5.1 MB through the pipe, and is
+  1.4 ms and 120 bytes (release, the service's side; the app no longer reads and unpacks them either). A service from
+  before sends the hits as it did. `shadui-index.exe search … --count` asks for one.
+- **Sorting by Label, Tags or Comment (6).** Every comparison asked Windows about two texts, after making the tags'
+  line or copying the comment again. Each row's text is now put in order by Windows once, as a sort key
+  (`collate::sort_key`, `LCMapStringEx`), and comparisons are of bytes; the keys are kept by where the path is in
+  memory, not by the path. 50,000 marked rows (release): by Tags 591 → 118 ms, by Comment 527 → 100 ms, by Label
+  269 → 100 ms. `LCMapStringEx` is new in `scripts/windows10-imports.json`.
+- **Rows nobody waits for (6).** A big folder's rows are made on a background thread, and every key typed into the
+  box started a build that ran to its end. A build now stops once a newer one was asked for
+  (`build_rows_while`, the tab's `rows_seq`).
+- **The arrow keys (1).** The dock's next step no longer copies a selection out to find it is over 200, and no longer
+  goes through and copies the other pane's whole selection at every key (it asks only whether exactly one file is
+  chosen there): with 30,000 items selected in the other pane, the dock's part of the frames of eight arrow keys
+  went from 414 ms (23 ms in the worst frame) to 17 ms (0.9 ms), in a debug copy. `has_folders` is worked out once for a listing, not by reading a folder of nothing but files whole
+  at every key. A folder read ahead is told as `ExplorerEvent::PrefetchReady` to what draws rows, tiles and cards,
+  not to every observer of the explorer (the dock's facts and next step, both heads, the bars were all worked out
+  again after every arrow key that landed on a folder). A list works its rows out again only for its own tab's
+  events (with two panes, each folder opened in one had the other go through its rows for the biggest size). The
+  head compares the labels where they are instead of copying them, and the second pane's head does nothing once
+  two-pane view was left.
+- **The marquee and the selection (4).** A rectangle dragged over a list is told apart by its first and last line
+  before any list of rows is made (it made two at every move of the pointer); Select all makes room once; taking
+  one item out of a selection compares no paths.
+
+**Left, and why:**
+- **Wrong premise:** `StartInstanceLocation` in place of the batch's constant buffer (Direct3D 11's `SV_InstanceID`
+  doesn't count it, and the shaders index their buffers by it, which is why the constant is there); filtering
+  `EventKind::Access` (notify's Windows backend never sends one, and doesn't ask Windows for last-access changes);
+  sorts by Artist and Album asking Windows millions of times (the rows' sort is never given the media facts, so
+  those sorts compare nothing: `compare_base_numeric` now answers equal texts without asking, for what does);
+  swapping a search's results in place "when nobody else holds them" (the rows on screen always do).
+- **Measured, and not worth it:** asking each file who has it open instead of Restart Manager (slower, above); a
+  worker thread and raw pixels for PDF thumbnails (noise, above); a uniform list told its items' height so that it
+  measures none (built into the vendored GPUI and the file list, then taken out: in the window a frame's layout and
+  prepaint were the same with and without it, 6.9 and 15.5 ms in a debug copy over a folder of 30,000, so it would
+  have been one more change to carry through every GPUI update for nothing seen).
+- **No measured problem, a cost either way:** a single standing thread for `in_sta` (it would put a shortcut's
+  target behind a copy that runs for minutes; the burst is gone); one watcher shared by every folder (a thread or
+  two fewer at rest, for telling folders apart in one handler); a walker of our own in place of the sizing worker
+  (the process is what makes Stop immediate, and it costs tens of milliseconds of a walk of seconds); a pause before
+  a big folder's filter is applied (it would slow what is typed; the builds are off the UI thread and now stop);
+  dropping the second pane's views and making the map, Time Machine and the rest when first shown (they keep their
+  place and state for the window's life, and at rest each costs an observer's call); a redraw of the window skipped
+  in `follow_panes` (no view is cached, so the frame is drawn whoever asks); the settings' change going through
+  every tab (it happens when a setting changes, and each tab that needs nothing is a comparison); the dock's next
+  step built from the whole menu at every key (its whole draw is 0.3 to 0.6 ms in a debug copy, and a wait before
+  it would show the step late); the renderer's state set again for every batch and the atlas asked for its texture
+  each time (drawing and presenting a whole frame's scene takes about half a millisecond as it is).
+- **Bigger, worth their own pass:** a search's results kept in pieces, so that a batch added copies nothing (the
+  rows take one array); `RowFacts::ask_all` making its list off the UI thread (three texts an entry, once per
+  folder sorted by a mark); a path's whole-window multisampled target cleared and resolved for a small path
+  (Direct3D 11 resolves a whole surface, so it needs a target of the path's own size).
+
+### Checks
+
+`cargo test` for glint-core (547, one new: files asked about together each get their answer), glint-model (446, one
+new: sort keys order texts as comparing them does), glint-ui (2,915, one new: rows no longer wanted aren't finished)
+and shadui-index (161, one new: a count sends no hit) pass, and `cargo clippy --workspace --all-targets -- -D
+warnings` is clean (2026-11-27). Looked at in a debug copy on a scratch profile (`GLINT_SELFTEST=fly:` over a folder
+of 30,000 files, arrow keys onto files and folders, a filter, two sorts, two panes with everything selected in the
+other): it ran to its end, and beside the same tour on the code before, frames cost the same where nothing heavy was
+asked (30 ms a frame in a debug build, either way). No release build, no measure in an optimized copy, and the e2e
+wasn't run. Nothing was asked of a live index service with `countOnly` (the installed one is 0.18.1's, which sends
+the hits as before).
+
+Seen on the way and not gone into: in the first minutes after the 30,000 files were made, the copy built from the
+code *before* these changes moved the selection on an arrow key (sent by the tour, not typed) without drawing it,
+four runs of four, until a notice left the screen seconds later; the copy with the changes drew every key in the
+same minutes, six runs of six, and later neither did it again. It looks like a frame asked for and not drawn in the
+window's frame scheduling, and nothing here was meant to change that.
+
 ## Next: Windows shares that Glint signs in to ([#10](https://github.com/shadijhade/glint/issues/10))
 
 Helius asked, after 0.18.1, for SMB in **Add a connection** without Windows' mapped drives. Researched first (pure-Rust
