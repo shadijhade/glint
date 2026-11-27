@@ -282,15 +282,21 @@ impl A11y {
     /// Finalize the tree and produce a [`TreeUpdate`] for the platform adapter.
     pub(crate) fn end_frame(&mut self, frame: debug::FrameDebugInfo) -> TreeUpdate {
         let update = self.nodes.finalize();
-        self.debug.capture(
-            &update,
-            self.nodes.focus,
-            self.nodes.active_descendant,
-            self.window_title.as_ref(),
-            frame,
-        );
+        // Glint: retaining a deep clone of the entire TreeUpdate plus formatting wall-clock time
+        // on every frame is only needed for debug inspection, not release builds.
         #[cfg(debug_assertions)]
-        self.debug.capture_node_info(&self.nodes.node_info);
+        {
+            self.debug.capture(
+                &update,
+                self.nodes.focus,
+                self.nodes.active_descendant,
+                self.window_title.as_ref(),
+                frame,
+            );
+            self.debug.capture_node_info(&self.nodes.node_info);
+        }
+        #[cfg(not(debug_assertions))]
+        let _ = frame;
         update
     }
 

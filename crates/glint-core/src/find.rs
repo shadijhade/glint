@@ -581,6 +581,7 @@ pub async fn find_files(
         let checks = Mutex::new(checks);
         let held = AtomicUsize::new(0);
         let (count, limited, fuzzy) = thread::scope(|scope| {
+            let index_cancel = &run.index;
             for _ in 0..if threaded { 4 } else { 0 } {
                 let channel = on_event.clone();
                 let (checks, held, props, marked, seen) = (&checks, &held, &props, &marked, &seen);
@@ -601,13 +602,16 @@ pub async fn find_files(
                             if marks_too && !path.is_some_and(|path| marked.accepts(path)) {
                                 continue;
                             }
-                            if let Some(path) = path {
-                                seen.lock().unwrap_or_else(|e| e.into_inner()).insert(key_of(path));
+                            if marks_only {
+                                if let Some(path) = path {
+                                    seen.lock().unwrap_or_else(|e| e.into_inner()).insert(key_of(path));
+                                }
                             }
                         }
                         if wanted.is_some_and(|w| held.fetch_add(1, Ordering::SeqCst) >= w) {
                             // The limit: the index and fd stop too.
                             stop.store(true, Ordering::SeqCst);
+                            index_cancel.cancel();
                             slot.kill();
                             continue;
                         }

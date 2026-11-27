@@ -247,17 +247,42 @@ impl Scene {
     }
 
     pub fn finish(&mut self) {
-        self.shadows.sort_by_key(|shadow| shadow.order);
-        self.quads.sort_by_key(|quad| quad.order);
-        self.paths.sort_by_key(|path| path.order);
-        self.underlines.sort_by_key(|underline| underline.order);
-        self.monochrome_sprites
-            .sort_by_key(|sprite| (sprite.order, sprite.tile.texture_id.index));
-        self.subpixel_sprites
-            .sort_by_key(|sprite| (sprite.order, sprite.tile.texture_id.index));
-        self.polychrome_sprites
-            .sort_by_key(|sprite| (sprite.order, sprite.tile.texture_id.index));
-        self.surfaces.sort_by_key(|surface| surface.order);
+        if !self.shadows.is_sorted_by_key(|shadow| shadow.order) {
+            self.shadows.sort_by_key(|shadow| shadow.order);
+        }
+        if !self.quads.is_sorted_by_key(|quad| quad.order) {
+            self.quads.sort_by_key(|quad| quad.order);
+        }
+        if !self.paths.is_sorted_by_key(|path| path.order) {
+            self.paths.sort_by_key(|path| path.order);
+        }
+        if !self.underlines.is_sorted_by_key(|underline| underline.order) {
+            self.underlines.sort_by_key(|underline| underline.order);
+        }
+        if !self
+            .monochrome_sprites
+            .is_sorted_by_key(|sprite| (sprite.order, sprite.tile.texture_id.index))
+        {
+            self.monochrome_sprites
+                .sort_by_key(|sprite| (sprite.order, sprite.tile.texture_id.index));
+        }
+        if !self
+            .subpixel_sprites
+            .is_sorted_by_key(|sprite| (sprite.order, sprite.tile.texture_id.index))
+        {
+            self.subpixel_sprites
+                .sort_by_key(|sprite| (sprite.order, sprite.tile.texture_id.index));
+        }
+        if !self
+            .polychrome_sprites
+            .is_sorted_by_key(|sprite| (sprite.order, sprite.tile.texture_id.index))
+        {
+            self.polychrome_sprites
+                .sort_by_key(|sprite| (sprite.order, sprite.tile.texture_id.index));
+        }
+        if !self.surfaces.is_sorted_by_key(|surface| surface.order) {
+            self.surfaces.sort_by_key(|surface| surface.order);
+        }
     }
 
     #[cfg_attr(

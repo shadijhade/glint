@@ -515,30 +515,34 @@ where
     let duration = move |e: &FileEntry| facts(e).and_then(|f| f.duration).unwrap_or(-1.0);
     move |item_a, item_b| {
         let (a, b) = (entry(item_a), entry(item_b));
-        let by = match sort.key {
-            SortKey::Name => name_order(item_a, item_b),
-            SortKey::Modified => a.modified.cmp(&b.modified),
-            // When a photo or video was taken, else when the file was modified.
-            SortKey::Taken => taken(a).cmp(&taken(b)),
-            SortKey::Size => size(a).cmp(&size(b)),
-            // Folders first, then by extension. (NOTE(port): extensions compare by code point.)
-            SortKey::Type => b.dir.cmp(&a.dir).then_with(|| a.ext().cmp(b.ext())),
-            SortKey::Dimensions => pixels(a).cmp(&pixels(b)),
-            // A NaN duration compared as "equal" in the TypeScript too (NaN is falsy there).
-            SortKey::Duration => duration(a).partial_cmp(&duration(b)).unwrap_or(Ordering::Equal),
-            SortKey::Artist => compare_base_numeric(text(a, true), text(b, true)),
-            SortKey::Album => compare_base_numeric(text(a, false), text(b, false)),
-            // Without `reads.marks` these keep the name's order.
-            SortKey::Label | SortKey::Tags | SortKey::Comment => by_mark(sort.key, a, b),
-        };
-        let by = if sort.desc { by.reverse() } else { by };
-        group(a).cmp(&group(b)).then(by).then_with(|| {
-            if presorted {
-                Ordering::Equal
-            } else {
-                name_order(item_a, item_b)
-            }
-        })
+        group(a)
+            .cmp(&group(b))
+            .then_with(|| {
+                let by = match sort.key {
+                    SortKey::Name => name_order(item_a, item_b),
+                    SortKey::Modified => a.modified.cmp(&b.modified),
+                    // When a photo or video was taken, else when the file was modified.
+                    SortKey::Taken => taken(a).cmp(&taken(b)),
+                    SortKey::Size => size(a).cmp(&size(b)),
+                    // Folders first, then by extension. (NOTE(port): extensions compare by code point.)
+                    SortKey::Type => b.dir.cmp(&a.dir).then_with(|| a.ext().cmp(b.ext())),
+                    SortKey::Dimensions => pixels(a).cmp(&pixels(b)),
+                    // A NaN duration compared as "equal" in the TypeScript too (NaN is falsy there).
+                    SortKey::Duration => duration(a).partial_cmp(&duration(b)).unwrap_or(Ordering::Equal),
+                    SortKey::Artist => compare_base_numeric(text(a, true), text(b, true)),
+                    SortKey::Album => compare_base_numeric(text(a, false), text(b, false)),
+                    // Without `reads.marks` these keep the name's order.
+                    SortKey::Label | SortKey::Tags | SortKey::Comment => by_mark(sort.key, a, b),
+                };
+                if sort.desc { by.reverse() } else { by }
+            })
+            .then_with(|| {
+                if presorted {
+                    Ordering::Equal
+                } else {
+                    name_order(item_a, item_b)
+                }
+            })
     }
 }
 

@@ -41,5 +41,5 @@ fn in_a_shadow_copy(folder: &str) -> bool {
 /// backup plan that covers it, or a shadow copy that has it. (The change journal isn't asked: it is the slowest
 /// source and rarely the only one.)
 pub fn has_history(folder: &str) -> bool {
-    !crate::git::folder_commits(folder, 1).is_empty() || crate::backup::has_plan_for(folder) || in_a_shadow_copy(folder)
+    crate::git::folder_has_commits(folder) || crate::backup::has_plan_for(folder) || in_a_shadow_copy(folder)
 }

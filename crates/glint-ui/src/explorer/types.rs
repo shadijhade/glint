@@ -507,6 +507,9 @@ pub enum ExplorerEvent {
     PaneFocused,
     /// Something about one tab changed (its path, history, load state, view mode, filter…).
     TabChanged(TabId),
+    /// A tab's first painted frame was timed (`Tab::shown_in`). Observed by the status bar so recording the
+    /// timing doesn't trigger a full second window redraw or session save.
+    ShownTimed(TabId),
     /// A tab's folder was listed (or listed again): `same` when it is the same folder re-read in place.
     ListingChanged { tab: TabId, same: bool },
     /// A tab's rows (sorted, filtered, grouped) were rebuilt: a new listing, a new sort, a setting.

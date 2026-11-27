@@ -683,10 +683,37 @@ fn file_diff(path: &str) -> Result<Option<FileDiff>, String> {
         ..Default::default()
     };
 
+    let new_size = std::fs::metadata(file).map_err(|e| e.to_string())?.len();
+    let head_oid = repo
+        .head_tree_id()
+        .ok()
+        .and_then(|id| repo.find_tree(id.detach()).ok())
+        .and_then(|tree| tree.lookup_entry_by_path(&relative).ok().flatten())
+        .map(|entry| entry.object_id());
+    diff.new_file = head_oid.is_none();
+    let old_size = head_oid
+        .and_then(|oid| repo.find_header(oid).ok().map(|h| h.size()))
+        .unwrap_or(0);
+    (diff.old_size, diff.new_size) = (old_size, new_size);
+    diff.too_big = old_size > DIFF_BYTES as u64 || new_size > DIFF_BYTES as u64;
+    if diff.too_big {
+        // Sniff only the first 8 KB of the working file rather than reading multi-GB files or
+        // decompressing oversized HEAD pack blobs into RAM.
+        let mut sniff = [0u8; 8192];
+        if let Ok(mut f) = std::fs::File::open(file) {
+            use std::io::Read;
+            if let Ok(n) = f.read(&mut sniff) {
+                diff.binary = binary(&sniff[..n]);
+            }
+        }
+        diff.elapsed = ms_since(started);
+        return Ok(Some(diff));
+    }
+
     let now = std::fs::read(file).map_err(|e| e.to_string())?;
-    let then = head_blob(&repo, &relative);
-    diff.new_file = then.is_none();
-    let then = then.unwrap_or_default();
+    let then = head_oid
+        .and_then(|oid| repo.find_object(oid).ok().map(|o| o.detach().data))
+        .unwrap_or_default();
     (diff.old_size, diff.new_size) = (then.len() as u64, now.len() as u64);
     diff.binary = binary(&then) || binary(&now);
     diff.too_big = then.len() > DIFF_BYTES || now.len() > DIFF_BYTES;
@@ -704,6 +731,55 @@ fn file_diff(path: &str) -> Result<Option<FileDiff>, String> {
 /// What changed in the file at `path` since the last commit (the Changes view); None outside a repository.
 pub async fn git_diff(path: String) -> Result<Option<FileDiff>, String> {
     blocking(move || file_diff(&path)).await
+}
+
+/// Fast check for whether `folder` appears in HEAD or recent Git commits (used for the folder head's
+/// Time Machine button): checks HEAD in O(depth) first, then caps the walk so untracked/ignored folders
+/// like `target/` or `node_modules/` never scan tens of thousands of historical trees.
+pub fn folder_has_commits(folder: &str) -> bool {
+    const MAX_SCAN: usize = 256;
+    let Ok(repo) = gix::discover(folder) else {
+        return false;
+    };
+    let Some(workdir) = repo.workdir().map(Path::to_path_buf) else {
+        return false;
+    };
+    let Some(relative) = inside(&workdir, Path::new(folder)) else {
+        return false;
+    };
+    let Ok(head) = repo.head_id() else {
+        return false;
+    };
+    if relative.is_empty() {
+        return true;
+    }
+    if repo
+        .find_commit(head.detach())
+        .ok()
+        .and_then(|c| c.tree().ok())
+        .and_then(|t| t.lookup_entry_by_path(relative.as_str()).ok().flatten())
+        .is_some_and(|e| e.mode().is_tree())
+    {
+        return true;
+    }
+    let Ok(walk) = repo.rev_walk([head.detach()]).all() else {
+        return false;
+    };
+    for info in walk.skip(1).take(MAX_SCAN) {
+        let Ok(info) = info else { continue };
+        let Ok(commit) = repo.find_commit(info.id) else {
+            continue;
+        };
+        let has_folder = commit
+            .tree()
+            .ok()
+            .and_then(|tree| tree.lookup_entry_by_path(relative.as_str()).ok().flatten())
+            .is_some_and(|entry| entry.mode().is_tree());
+        if has_folder {
+            return true;
+        }
+    }
+    false
 }
 
 /// Returns up to `max` recent commits (`(oid_hex, time_ms, subject, repo_root)`) for the Git
@@ -728,8 +804,9 @@ pub fn folder_commits(folder: &str, max: usize) -> Vec<(String, i64, String, Str
     let Ok(walk) = repo.rev_walk([head.detach()]).all() else {
         return Vec::new();
     };
+    let scan_limit = max.saturating_mul(64).max(2_048);
     let mut out = Vec::new();
-    for info in walk {
+    for info in walk.take(scan_limit) {
         if out.len() >= max {
             break;
         }

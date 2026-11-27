@@ -202,28 +202,30 @@ pub(super) fn suggest(ctx: &Ask<'_>) -> Vec<Suggestion> {
         if !ctx.show_hidden && is_hidden(entry) {
             continue;
         }
-        let archive = is_archive_file(entry);
-        let item = Suggestion {
-            name: entry.name.clone(),
-            detail: None,
-            path: entry.path.clone(),
-            dir: entry.dir || archive,
-            archive,
-            look: if entry.dir {
-                Look::Folder
-            } else if archive {
-                Look::Archive
-            } else {
-                Look::File
-            },
+        let make = || {
+            let archive = is_archive_file(entry);
+            Suggestion {
+                name: entry.name.clone(),
+                detail: None,
+                path: entry.path.clone(),
+                dir: entry.dir || archive,
+                archive,
+                look: if entry.dir {
+                    Look::Folder
+                } else if archive {
+                    Look::Archive
+                } else {
+                    Look::File
+                },
+            }
         };
         if prefix.is_empty() || entry.lower.starts_with(prefix.as_str()) {
-            starts.push(item);
+            starts.push(make());
         } else if entry.lower.contains(prefix.as_str()) {
-            contains.push(item);
+            contains.push(make());
         } else if typos {
             if let Some(edits) = typo_distance(prefix, &entry.name) {
-                close.push((item, edits));
+                close.push((make(), edits));
             }
         }
         if starts.len() + contains.len() >= COLLECT {

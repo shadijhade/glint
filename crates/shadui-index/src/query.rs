@@ -461,6 +461,7 @@ pub fn split_drive_term(term: &str) -> Option<(char, &str)> {
 pub struct NameMatcher {
     terms: Vec<Term>,
     paths: Vec<PathTerm>,
+    near: bool,
 }
 
 impl NameMatcher {
@@ -499,7 +500,7 @@ impl NameMatcher {
                 terms.push(Term::Contains { ascii: folded.is_ascii(), folded });
             }
         }
-        NameMatcher { terms, paths }
+        NameMatcher { terms, paths, near: false }
     }
 
     /// The same terms with typos allowed: each word of 4 letters or more may be an edit or two from
@@ -523,12 +524,12 @@ impl NameMatcher {
             near = true;
             terms.push(Term::Near(Near::new(word, k)));
         }
-        near.then_some(NameMatcher { terms, paths })
+        near.then_some(NameMatcher { terms, paths, near: true })
     }
 
     /// Whether this looks for close matches rather than the terms as typed.
     pub fn is_near(&self) -> bool {
-        self.terms.iter().any(|t| matches!(t, Term::Near(_)))
+        self.near
     }
 
     /// Whether the query includes any path terms (`\` / `/` or `path:`).
@@ -691,27 +692,50 @@ impl MarksFilter {
         if self.is_empty() {
             return true;
         }
-        let label = fold(label.trim());
-        let tags: Vec<String> = tags.lines().map(|t| fold(t.trim())).filter(|t| !t.is_empty()).collect();
-        let comment = fold(comment);
         let (yes, no) = (&self.yes, &self.no);
-        let label_in = |group: &Vec<String>| !label.is_empty() && group.contains(&label);
-        let tag_in = |group: &Vec<String>| label_in(group) || tags.iter().any(|t| group.contains(t));
+        let raw_label = label.trim();
+        let has_label = !raw_label.is_empty();
+        let has_tag = tags.lines().any(|t| !t.trim().is_empty());
+        let has_comment = !comment.is_empty();
         let has = |h: &Has| match h {
-            Has::Label => !label.is_empty(),
-            Has::Tag => !tags.is_empty(),
-            Has::Comment => !comment.is_empty(),
-            Has::Mark => !label.is_empty() || !tags.is_empty() || !comment.is_empty(),
+            Has::Label => has_label,
+            Has::Tag => has_tag,
+            Has::Comment => has_comment,
+            Has::Mark => has_label || has_tag || has_comment,
         };
-        let word = |w: &String| comment.contains(w.as_str());
-        yes.labels.iter().all(label_in)
-            && yes.tags.iter().all(tag_in)
-            && yes.words.iter().all(word)
-            && yes.has.iter().all(has)
-            && !no.labels.iter().any(label_in)
-            && !no.tags.iter().any(tag_in)
-            && !no.words.iter().any(word)
-            && !no.has.iter().any(has)
+        if !yes.has.iter().all(has) || no.has.iter().any(has) {
+            return false;
+        }
+        let need_label = !yes.labels.is_empty() || !no.labels.is_empty() || !yes.tags.is_empty() || !no.tags.is_empty();
+        let folded_label = if need_label && has_label {
+            fold(raw_label)
+        } else {
+            String::new()
+        };
+        let label_in = |group: &Vec<String>| !folded_label.is_empty() && group.contains(&folded_label);
+        if !yes.labels.iter().all(label_in) || no.labels.iter().any(label_in) {
+            return false;
+        }
+        if !yes.tags.is_empty() || !no.tags.is_empty() {
+            let folded_tags: Vec<String> = tags
+                .lines()
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .map(fold)
+                .collect();
+            let tag_in = |group: &Vec<String>| label_in(group) || folded_tags.iter().any(|t| group.contains(t));
+            if !yes.tags.iter().all(tag_in) || no.tags.iter().any(tag_in) {
+                return false;
+            }
+        }
+        if !yes.words.is_empty() || !no.words.is_empty() {
+            let folded_comment = if has_comment { fold(comment) } else { String::new() };
+            let word = |w: &String| folded_comment.contains(w.as_str());
+            if !yes.words.iter().all(word) || no.words.iter().any(word) {
+                return false;
+            }
+        }
+        true
     }
 
     /// This filter with the names nothing has replaced by the nearest that something has; None when none is.
@@ -850,7 +874,15 @@ const PROPS: &[&str] = &["width", "height", "duration", "taken", "camera", "arti
 
 impl Filters {
     pub fn is_empty(&self) -> bool {
-        self == &Filters::default()
+        self.exts.is_empty()
+            && self.min_size.is_none()
+            && self.max_size.is_none()
+            && self.newer_than.is_none()
+            && self.older_than.is_none()
+            && self.kind.is_none()
+            && self.props.is_empty()
+            && self.tags.is_empty()
+            && self.marks.is_empty()
     }
 
     /// `file:`, or a size or a `Prop`, which only files have.

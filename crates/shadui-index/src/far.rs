@@ -351,6 +351,11 @@ pub fn read_ref(root: &Handle, reference: u64) -> Option<Marked> {
 /// many records it took and did not skip: 0 when none is far, when the drive's root can't be opened, or when every
 /// one it took was held (so the caller rests before asking again). `stop` ends it early.
 pub fn drain(tree: &RwLock<Tree>, letter: char, stop: &(dyn Fn() -> bool + Sync)) -> usize {
+    // Fast path: avoid CreateFileW on the volume root and exclusive write-lock acquisition when no far
+    // records are queued (99.9% of 1 s polls).
+    if tree.read().unwrap_or_else(|e| e.into_inner()).far.is_empty() {
+        return 0;
+    }
     let Some(root) = root_handle(letter) else { return 0 };
     drain_busy(tree, stop, &|reference| read_outcome(&root, reference))
 }

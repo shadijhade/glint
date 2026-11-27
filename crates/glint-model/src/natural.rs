@@ -81,8 +81,9 @@ impl NameKeys {
     /// The keys of `lowers` (lowercase names), in order; `None` for a list whose keys don't fit 4 GB, which is
     /// sorted by comparing names instead.
     pub fn new<'a>(lowers: impl ExactSizeIterator<Item = &'a str>) -> Option<NameKeys> {
-        let mut keys: Vec<u8> = Vec::new();
-        let mut items = Vec::with_capacity(lowers.len());
+        let count = lowers.len();
+        let mut keys: Vec<u8> = Vec::with_capacity(count.saturating_mul(24));
+        let mut items = Vec::with_capacity(count);
         for lower in lowers {
             let start = keys.len();
             natural_key_into(lower, &mut keys);

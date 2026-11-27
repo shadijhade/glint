@@ -3773,7 +3773,8 @@ struct HoverFade {
     hovered: bool,
     /// Progress (0 to 1, before easing) when `hovered` last changed.
     from: f32,
-    since: std::time::Instant,
+    /// When the current fade began; `None` once settled at `hovered` (0 or 1).
+    since: Option<std::time::Instant>,
 }
 
 impl HoverFade {
@@ -3784,17 +3785,36 @@ impl HoverFade {
         hovered: bool,
         (fade_in, fade_out): (Duration, Duration),
     ) -> (f32, bool) {
-        let now = std::time::Instant::now();
-        let fade = slot.get_or_insert(HoverFade {
-            hovered,
-            from: if hovered { 1. } else { 0. },
-            since: now,
-        });
-        let elapsed = now.duration_since(fade.since).as_secs_f32();
-        let mut progress = if fade.hovered {
-            (fade.from + elapsed / fade_in.as_secs_f32().max(0.001)).min(1.)
+        if let Some(fade) = slot.as_ref() {
+            if fade.hovered == hovered && fade.since.is_none() {
+                return (if hovered { 1. } else { 0. }, false);
+            }
         } else {
-            (fade.from - elapsed / fade_out.as_secs_f32().max(0.001)).max(0.)
+            *slot = Some(HoverFade {
+                hovered,
+                from: if hovered { 1. } else { 0. },
+                since: None,
+            });
+            return (if hovered { 1. } else { 0. }, false);
+        }
+        let now = std::time::Instant::now();
+        let fade = slot.as_mut().unwrap();
+        let mut progress = match fade.since {
+            None => {
+                if fade.hovered {
+                    1.
+                } else {
+                    0.
+                }
+            }
+            Some(since) => {
+                let elapsed = now.duration_since(since).as_secs_f32();
+                if fade.hovered {
+                    (fade.from + elapsed / fade_in.as_secs_f32().max(0.001)).min(1.)
+                } else {
+                    (fade.from - elapsed / fade_out.as_secs_f32().max(0.001)).max(0.)
+                }
+            }
         };
         if fade.hovered != hovered {
             // Turned round mid-fade: carry on from what is shown, on the other curve.
@@ -3807,7 +3827,7 @@ impl HoverFade {
             *fade = HoverFade {
                 hovered,
                 from: progress,
-                since: now,
+                since: Some(now),
             };
         }
         let moving = if hovered {
@@ -3815,6 +3835,10 @@ impl HoverFade {
         } else {
             progress > 0.
         };
+        if !moving {
+            fade.from = if hovered { 1. } else { 0. };
+            fade.since = None;
+        }
         (Self::eased(hovered, progress), moving)
     }
 

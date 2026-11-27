@@ -331,6 +331,8 @@ pub(crate) struct Frame {
     pub hovered_folder: Option<String>,
     /// The grid has just given way to the list: each row's picture is on its way from its tile, this far along.
     pub morph: Option<(crate::stage::Morph, f32)>,
+    /// Whether assistive technology (or tests inspecting descriptions) needs per-row `aria_description`.
+    pub a11y_active: bool,
 }
 
 /// What a folder's row says of the folder before it is opened: it was read ahead when the pointer came to rest on
@@ -614,6 +616,7 @@ impl FileList {
                 peeks: Rc::new(Vec::new()),
                 hovered_folder: None,
                 morph: None,
+                a11y_active: cfg!(test),
             }),
             width: Rc::new(Cell::new(0.)),
             resizing: None,
@@ -1427,7 +1430,9 @@ impl FileList {
     /// a half screen either side, not of the whole folder. Asking for what is read costs lookups, so a frame that
     /// draws the same lines as the last asks nothing.
     fn ask_facts(&mut self, frame: &Frame, range: &Range<usize>, cx: &mut Context<Self>) {
-        if frame.rows.is_empty() {
+        // UniformList measures row 0 (`0..1`) before asking for the visible range; skip that measurement pass
+        // when scrolled so `self.asked` doesn't thrash `RowFacts` twice every frame (matching `show_thumbnails`).
+        if frame.rows.is_empty() || (*range == (0..1) && frame.lines > 1) {
             return;
         }
         let want = Want {
@@ -1613,6 +1618,7 @@ impl Render for FileList {
             scale: window.scale_factor(),
             peeks,
             hovered_folder: self.hovered_folder.clone(),
+            a11y_active: window.is_a11y_active() || cfg!(test),
         });
         self.frame = frame.clone();
 

@@ -188,6 +188,13 @@ impl StatusBar {
                 this.dirty = true;
                 cx.notify();
             }),
+            // Recording the nav timing emits `ShownTimed` rather than notifying every Explorer observer.
+            cx.subscribe(&explorer, |this: &mut Self, _, event: &crate::explorer::ExplorerEvent, cx| {
+                if matches!(event, crate::explorer::ExplorerEvent::ShownTimed(_)) {
+                    this.dirty = true;
+                    cx.notify();
+                }
+            }),
             // The map's measuring and its time, for the work line while a tab shows it.
             cx.observe(&usage, |_, _, cx| cx.notify()),
             cx.observe(&model, |this: &mut Self, model, cx| {

@@ -568,16 +568,23 @@ impl Explorer {
             return true;
         };
         let mut ended = false;
+        let mut changed = false;
         let mut slow_without_index = false;
         // The files this batch says were found by a comment or a tag, whose marks are to be read.
         let mut to_read: Vec<(String, u8)> = Vec::new();
         for event in batch {
             match event {
-                Found::Started { engine } => run.engine = engine,
+                Found::Started { engine } => {
+                    if run.engine != engine {
+                        run.engine = engine;
+                        changed = true;
+                    }
+                }
                 Found::Marked(marked) => to_read.append(&mut progress.flagged.note(marked)),
                 Found::Entries(mut entries) => {
                     if std::mem::replace(&mut progress.kept, false) {
                         drop_kept(&mut run);
+                        changed = true;
                     }
                     progress.pending.append(&mut entries);
                 }
@@ -586,9 +593,11 @@ impl Explorer {
                     run.entries = no_entries();
                     run.inside = Inside::default();
                     progress.pending.clear();
+                    changed = true;
                 }
                 Found::Finished { limited, fuzzy, .. } => {
                     ended = true;
+                    changed = true;
                     let elapsed = started.elapsed().as_secs_f64() * 1000.0;
                     add_pending(&mut run, progress);
                     // Nothing came at all: the older results (if they were kept) are not this search's.
@@ -608,7 +617,15 @@ impl Explorer {
             let worth_waiting = shown >= WORTH_WAITING_FROM && progress.pending.len() * 4 < shown;
             if !worth_waiting {
                 add_pending(&mut run, progress);
+                changed = true;
             }
+        }
+        if !changed {
+            if !to_read.is_empty() {
+                let words = super::inside::inside_words(&run.query);
+                self.read_flagged(tab, id, words, to_read, cx);
+            }
+            return false;
         }
         let failed = !run.error.is_empty();
         let words = if failed { String::new() } else { super::inside::inside_words(&run.query) };

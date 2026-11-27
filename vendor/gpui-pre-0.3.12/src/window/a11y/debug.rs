@@ -68,6 +68,7 @@ pub(crate) struct A11yDebug {
 }
 
 impl A11yDebug {
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     pub(crate) fn capture(
         &mut self,
         update: &TreeUpdate,

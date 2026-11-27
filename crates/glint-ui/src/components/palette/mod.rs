@@ -100,13 +100,18 @@ impl Sources {
             zoxide: Arc::new(|| Box::pin(glint_core::zoxide::zoxide_folders())),
             tools: Arc::new(|folder| {
                 Box::pin(async move {
+                    let scripts = glint_core::host::async_runtime::spawn(glint_core::scripts::scripts_list());
+                    let openers = glint_core::host::async_runtime::spawn(glint_core::openers::openers());
+                    let tasks = glint_core::host::async_runtime::spawn(glint_core::projects::project_tasks(folder));
                     Tools {
-                        scripts: glint_core::scripts::scripts_list()
+                        scripts: scripts
                             .await
+                            .ok()
+                            .and_then(Result::ok)
                             .map(|found| found.scripts)
                             .unwrap_or_default(),
-                        openers: glint_core::openers::openers().await.unwrap_or_default(),
-                        tasks: glint_core::projects::project_tasks(folder).await.unwrap_or_default(),
+                        openers: openers.await.ok().and_then(Result::ok).unwrap_or_default(),
+                        tasks: tasks.await.ok().and_then(Result::ok).unwrap_or_default(),
                     }
                 })
             }),

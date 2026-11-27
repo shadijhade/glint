@@ -43,7 +43,7 @@
 use glint_model::store::{Accent, Backdrop, FontSize, Theme as ThemeSetting};
 use gpui_kit::component::{Theme, ThemeMode};
 use gpui_kit::{
-    hsla, px, rgb, App, AppContext as _, Global, Hsla, Pixels, SharedString, WindowAppearance,
+    hsla, px, rgb, App, Global, Hsla, Pixels, SharedString, WindowAppearance,
     WindowBackgroundAppearance,
 };
 
@@ -528,16 +528,8 @@ pub struct WindowsAccent {
     pub dark: [[u8; 3]; 3],
 }
 
-/// Reads Windows' accent color (Settings → Personalization → Colors). Blocking and COM-initialising: call it
-/// from a background thread, as [`init`] does. Ported from appearance.rs's `imp::accent`.
-pub fn read_windows_accent() -> Result<WindowsAccent, String> {
-    use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
-    use windows::UI::ViewManagement::{UIColorType, UISettings};
-    // WinRT on a thread of the pool: in the process's multithreaded apartment. It may already be initialised
-    // in another mode on this thread; either way WinRT works, so the result is ignored.
-    // SAFETY: plain COM initialisation of the calling thread, balanced by the thread ending.
-    let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
-    let settings = UISettings::new().map_err(|e| e.to_string())?;
+fn read_accent_from(settings: &windows::UI::ViewManagement::UISettings) -> Result<WindowsAccent, String> {
+    use windows::UI::ViewManagement::UIColorType;
     let color = |kind: UIColorType| {
         settings
             .GetColorValue(kind)
@@ -559,8 +551,22 @@ pub fn read_windows_accent() -> Result<WindowsAccent, String> {
     })
 }
 
-/// Tells `changed` whenever the user picks another accent color in Windows. Runs a thread that registers
-/// for `UISettings.ColorValuesChanged` and keeps the registration alive for the life of the process.
+/// Reads Windows' accent color (Settings → Personalization → Colors). Blocking and COM-initialising: call it
+/// from a background thread, as [`init`] does. Ported from appearance.rs's `imp::accent`.
+pub fn read_windows_accent() -> Result<WindowsAccent, String> {
+    use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
+    use windows::UI::ViewManagement::UISettings;
+    // WinRT on a thread of the pool: in the process's multithreaded apartment. It may already be initialised
+    // in another mode on this thread; either way WinRT works, so the result is ignored.
+    // SAFETY: plain COM initialisation of the calling thread, balanced by the thread ending.
+    let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+    let settings = UISettings::new().map_err(|e| e.to_string())?;
+    read_accent_from(&settings)
+}
+
+/// Tells `changed` the initial Windows accent color and whenever the user picks another one. Runs one thread
+/// that creates a single `UISettings`, sends the current color, registers `ColorValuesChanged`, and keeps the
+/// registration alive for the life of the process.
 fn watch_windows_accent(changed: async_channel::Sender<WindowsAccent>) {
     std::thread::spawn(move || {
         use windows::Foundation::TypedEventHandler;
@@ -569,9 +575,17 @@ fn watch_windows_accent(changed: async_channel::Sender<WindowsAccent>) {
         // SAFETY: plain COM initialisation of this thread.
         let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
         let Ok(settings) = UISettings::new() else { return };
+        if let Ok(accent) = read_accent_from(&settings) {
+            let _ = changed.try_send(accent);
+        }
         let _ = settings.ColorValuesChanged(&TypedEventHandler::<UISettings, windows::core::IInspectable>::new(
-            move |_, _| {
-                if let Ok(accent) = read_windows_accent() {
+            move |sender, _| {
+                let accent = sender
+                    .as_ref()
+                    .ok_or_else(String::new)
+                    .and_then(read_accent_from)
+                    .or_else(|_| read_windows_accent());
+                if let Ok(accent) = accent {
                     let _ = changed.try_send(accent);
                 }
                 Ok(())
@@ -720,9 +734,9 @@ fn families(cx: &mut App) -> (SharedString, SharedString) {
     if let Some(known) = cx.try_global::<Families>() {
         return (known.sans.clone(), known.mono.clone());
     }
-    let names = cx.text_system().all_font_names();
+    let text = cx.text_system();
     let installed = |wanted: &'static str, fallback: &'static str| -> SharedString {
-        if names.iter().any(|name| name == wanted) {
+        if text.has_font(&gpui_kit::font(wanted)) {
             wanted.into()
         } else {
             fallback.into()
@@ -756,14 +770,10 @@ pub fn init(cx: &mut App) {
         cx.remove_global::<Families>();
     }
     apply(cx);
-    // Windows' accent: read now, and again whenever Windows says it changed.
+    // Windows' accent: read now and again whenever Windows says it changed, from one UISettings activation.
     let (changed, changes) = async_channel::unbounded::<WindowsAccent>();
     watch_windows_accent(changed);
     cx.spawn(async move |cx| {
-        let first = cx.background_spawn(async { read_windows_accent().ok() }).await;
-        if let Some(accent) = first {
-            cx.update(|cx| set_windows_accent(cx, accent));
-        }
         while let Ok(accent) = changes.recv().await {
             cx.update(|cx| set_windows_accent(cx, accent));
         }

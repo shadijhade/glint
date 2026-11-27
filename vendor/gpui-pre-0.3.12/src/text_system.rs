@@ -357,6 +357,24 @@ impl TextSystem {
         self.resolve_font_uncached(font)
     }
 
+    /// Glint: checks whether `font` resolves directly on the platform (without fallback),
+    /// caching the result in `font_ids_by_font` without enumerating every installed font family.
+    pub fn has_font(&self, font: &Font) -> bool {
+        let mut font_ids = self.font_ids_by_font.upgradable_read();
+        if let Some(cached) = font_ids.get(font) {
+            return matches!(cached, CachedFont::Direct(_));
+        }
+        let cached = match self.platform_text_system.font_id(font) {
+            Ok(font_id) => CachedFont::Direct(font_id),
+            Err(error) => CachedFont::Missing(Arc::new(error)),
+        };
+        let found = matches!(cached, CachedFont::Direct(_));
+        font_ids.with_upgraded(|font_ids| {
+            font_ids.insert(font.clone(), cached);
+        });
+        found
+    }
+
     /// Prewarm any system font caches needed to shape text.
     ///
     /// This may be expensive, so callers should generally invoke it on a

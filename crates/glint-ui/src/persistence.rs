@@ -624,6 +624,20 @@ pub fn update_app(cx: &mut App, change: impl FnOnce(&mut AppState)) {
     }
 }
 
+/// Changes the saved state and saves soon only when `change` returns `true` (actually mutated state).
+fn update_app_if(cx: &mut App, change: impl FnOnce(&mut AppState) -> bool) -> bool {
+    if cx.has_global::<Persistence>() {
+        let p = cx.global_mut::<Persistence>();
+        if change(&mut p.app) {
+            if let Some(saver) = &p.saver {
+                saver.changed();
+            }
+            return true;
+        }
+    }
+    false
+}
+
 /// Whether the notice `key` is new for `value`, remembered across runs (`firstNotice`): `"offer-instant-search"`
 /// with `"1"` is shown once ever, `"service-update-notice"` with the app's version once per version. True without a
 /// saved state (a notice can repeat; that beats never showing it).
@@ -631,9 +645,7 @@ pub fn first_notice(cx: &mut App, key: &str, value: &str) -> bool {
     if !cx.has_global::<Persistence>() {
         return true;
     }
-    let mut first = false;
-    update_app(cx, |app| first = app.first_notice(key, value));
-    first
+    update_app_if(cx, |app| app.first_notice(key, value))
 }
 
 /// The tags used lately, most recent first, as kept between runs.
@@ -643,9 +655,12 @@ pub fn recent_tags(cx: &App) -> Vec<String> {
 
 /// Keeps the tags used lately (saved soon).
 pub fn set_recent_tags(cx: &mut App, tags: Vec<String>) {
-    update_app(cx, |app| {
+    update_app_if(cx, |app| {
         if app.recent_tags != tags {
             app.recent_tags = tags;
+            true
+        } else {
+            false
         }
     });
 }

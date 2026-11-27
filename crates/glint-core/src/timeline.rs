@@ -149,33 +149,35 @@ pub fn build_timeline(root: &str, window_ms: i64, cancel: &AtomicBool) -> Result
         let Ok(list) = fsx::read_dir(&dir) else {
             continue;
         };
+        let sep = if dir.ends_with(['\\', '/']) { "" } else { "\\" };
+        let mut folder_key: Option<String> = None;
         for item in list {
             // Skip reparse points/symlinks.
             if (item.attrs & 0x0400) != 0 {
                 continue;
             }
-            let full_path = if dir.ends_with('\\') || dir.ends_with('/') {
-                format!("{dir}{}", item.name)
-            } else {
-                format!(r"{dir}\{}", item.name)
-            };
             if item.dir {
-                let lower = item.name.to_ascii_lowercase();
-                if lower != ".git" && lower != "$recycle.bin" && lower != "system volume information" {
-                    queue.push_back(full_path);
+                if !item.name.eq_ignore_ascii_case(".git")
+                    && !item.name.eq_ignore_ascii_case("$recycle.bin")
+                    && !item.name.eq_ignore_ascii_case("system volume information")
+                {
+                    queue.push_back(format!("{dir}{sep}{}", item.name));
                 }
             } else {
                 files_scanned += 1;
                 if item.modified >= cutoff {
                     total_files_changed += 1;
                     total_bytes_changed = total_bytes_changed.saturating_add(item.size);
-                    let folder_key = dir.to_lowercase();
-                    let entry_ref = by_folder.entry(folder_key).or_insert_with(|| (dir.clone(), 0, 0));
+                    let key = folder_key.get_or_insert_with(|| dir.to_lowercase());
+                    let entry_ref = match by_folder.get_mut(key.as_str()) {
+                        Some(existing) => existing,
+                        None => by_folder.entry(key.clone()).or_insert_with(|| (dir.clone(), 0, 0)),
+                    };
                     entry_ref.1 = entry_ref.1.saturating_add(item.size);
                     entry_ref.2 += 1;
 
                     entries.push(TimelineEntry {
-                        path: full_path,
+                        path: format!("{dir}{sep}{}", item.name),
                         name: item.name,
                         folder: dir.clone(),
                         size: item.size,

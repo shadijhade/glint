@@ -2668,7 +2668,7 @@ impl Workspace {
                 // Where the web app put it: at the end edge, its width kept in the settings: a drag of its handle
                 // saves the new width back to `preview_width`.
                 let rem = f32::from(theme::rem_size(cx));
-                let container = (f32::from(window_width(cx)) - f32::from(self.sidebar_width)).max(0.);
+                let container = (f32::from(window.viewport_size().width) - f32::from(self.sidebar_width)).max(0.);
                 let width = preview::pane_width(state::settings(cx).preview_width, container, rem, false);
                 let shown = resizable_panel().child(files);
                 let side = resizable_panel()
@@ -3094,16 +3094,6 @@ impl Render for Workspace {
             // Above all of it: hop mode's badges, while the mode is on.
             .child(self.hop.clone())
     }
-}
-
-/// The main window's width, for sizing the preview pane before layout (the web app sized it from the window too).
-fn window_width(cx: &App) -> Pixels {
-    crate::startup::main_window(cx)
-        .and_then(|main| {
-            main.update(&mut cx.to_async(), |_, window, _| window.viewport_size().width)
-                .ok()
-        })
-        .unwrap_or(px(1240.))
 }
 
 /// What a dragged preview pane's width is saved as: the handle never leaves it narrower than the pane's least

@@ -496,15 +496,15 @@ impl Explorer {
             cx.emit(ExplorerEvent::MemoryChanged);
             self.refresh_views(cx);
         } else {
+            // `state::update` notifies `UiState` observers (`on_settings_changed` → `refresh_views`).
             crate::state::update(cx, |settings| settings.sort = sort);
-            self.refresh_views(cx);
         }
     }
 
     /// Group by in the list (Settings → Files → Group by).
     pub fn set_group(&mut self, group: GroupBy, cx: &mut Context<Self>) {
+        // `state::update` notifies `UiState` observers (`on_settings_changed` → `refresh_views`).
         crate::state::update(cx, |settings| settings.group_by = group);
-        self.refresh_views(cx);
     }
 
     /// The text in a tab's search box, which narrows what the list shows (the tab's by default).
@@ -677,7 +677,7 @@ impl Explorer {
         let ms = started.elapsed().as_secs_f64() * 1000.0;
         crate::perf::say(|| format!("nav shown at={ms:.2}"));
         self.update_tab(tab, |t| t.shown_in = ms);
-        self.tab_changed(tab, cx);
+        cx.emit(ExplorerEvent::ShownTimed(tab));
     }
 
     // ---- Settings and rows ------------------------------------------------------------------------------

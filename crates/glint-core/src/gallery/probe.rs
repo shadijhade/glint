@@ -5,9 +5,6 @@
 use super::meta::{self, Job};
 use super::{keep, lower, with_records, F_GEO};
 
-/// How many files are read in one step.
-const STEP: usize = 100;
-
 /// How many of `files` (path, size, modified) have a place. Reads only what the cache doesn't know.
 pub fn geo_count(files: &[(String, u64, i64)]) -> usize {
     let mut count = 0;
@@ -26,10 +23,10 @@ pub fn geo_count(files: &[(String, u64, i64)]) -> usize {
             }
         }
     });
-    for step in unread.chunks(STEP) {
+    if !unread.is_empty() {
         let found = std::sync::atomic::AtomicUsize::new(0);
-        meta::scan(step, &|rows| {
-            keep(step, &rows);
+        meta::scan(&unread, &|rows| {
+            keep(&unread, &rows);
             let n = rows.iter().filter(|(_, m)| m.place().is_some()).count();
             found.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
         });

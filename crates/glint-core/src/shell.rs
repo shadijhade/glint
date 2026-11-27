@@ -779,8 +779,7 @@ mod imp {
     use std::os::windows::process::CommandExt;
     use std::path::Path;
     use std::process::Command;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Arc;
+    use std::sync::{Arc, Condvar, Mutex};
     use std::time::Duration;
     use windows::core::{implement, w, ComObject, Interface, Ref, BOOL, GUID, HRESULT, HSTRING, PCWSTR};
     use windows::Win32::Foundation::{
@@ -841,13 +840,24 @@ mod imp {
     }
 
     /// The copy engine shows its progress, "Replace or Skip Files" and confirmation dialogs from a
-    /// thread of its own, unowned, so they can open behind our window. While `busy`, bring each new
+    /// thread of its own, unowned, so they can open behind our window. While `done` is false, bring each new
     /// one to the front like Explorer's (if we're not the foreground app, Windows flashes it instead).
-    fn raise_new_dialogs(busy: Arc<AtomicBool>) -> std::thread::JoinHandle<()> {
+    /// Waits on a Condvar first so quick operations (<100 ms) finish with zero sleep and no EnumWindows call.
+    fn raise_new_dialogs(done: Arc<(Mutex<bool>, Condvar)>) -> std::thread::JoinHandle<()> {
         let ours = visible_windows();
         std::thread::spawn(move || {
+            let (lock, wake) = &*done;
             let mut shown = ours.clone();
-            while busy.load(Ordering::Relaxed) {
+            let mut finished = lock.lock().unwrap_or_else(|e| e.into_inner());
+            while !*finished {
+                let (guard, _) = wake
+                    .wait_timeout(finished, Duration::from_millis(100))
+                    .unwrap_or_else(|e| e.into_inner());
+                finished = guard;
+                if *finished {
+                    break;
+                }
+                drop(finished);
                 let now = visible_windows();
                 for &window in now.difference(&shown) {
                     unsafe {
@@ -856,7 +866,7 @@ mod imp {
                 }
                 // A dialog that closes and opens again (the next conflict) is raised again.
                 shown = now.union(&ours).copied().collect();
-                std::thread::sleep(Duration::from_millis(100));
+                finished = lock.lock().unwrap_or_else(|e| e.into_inner());
             }
         })
     }
@@ -1200,10 +1210,11 @@ mod imp {
                     .map_err(message)?;
             }
         }
-        let busy = Arc::new(AtomicBool::new(true));
-        let raiser = raise_new_dialogs(busy.clone());
+        let done = Arc::new((Mutex::new(false), Condvar::new()));
+        let raiser = raise_new_dialogs(done.clone());
         let performed = fo.PerformOperations();
-        busy.store(false, Ordering::Relaxed);
+        *done.0.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        done.1.notify_one();
         let _ = raiser.join();
         let _ = fo.Unadvise(cookie);
         let completed = match performed {

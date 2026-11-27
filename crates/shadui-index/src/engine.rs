@@ -406,6 +406,9 @@ struct Slot {
     history_loaded: AtomicBool,
     /// The tree's counts, and when they were worked out.
     counted: Mutex<Option<(Instant, crate::tree::TreeStats)>>,
+    /// True while `Engine::save` holds `tree.read()` so `far_round` skips taking `tree.write()`
+    /// and does not cause SRWLock writer-starvation against concurrent queries.
+    saving: AtomicBool,
 }
 
 /// How long the tree's counts are given as they were: counting goes over every record under the tree's lock, and
@@ -423,6 +426,7 @@ impl Slot {
             history: Mutex::default(),
             history_loaded: AtomicBool::new(false),
             counted: Mutex::new(None),
+            saving: AtomicBool::new(false),
         }
     }
 
@@ -503,7 +507,7 @@ impl Engine {
         let slots = self.slots.read().unwrap().clone();
         slots
             .iter()
-            .filter(|s| s.ready.load(Ordering::SeqCst))
+            .filter(|s| s.ready.load(Ordering::SeqCst) && !s.saving.load(Ordering::Acquire))
             .map(|s| crate::far::drain(&s.tree, s.letter, &|| self.stop.is_set()))
             .sum()
     }
@@ -876,6 +880,14 @@ impl Engine {
             self.log
                 .line(&format!("{}: couldn't save the record numbers: {e}", slot.letter));
         }
+        struct ClearSaving<'a>(&'a AtomicBool);
+        impl Drop for ClearSaving<'_> {
+            fn drop(&mut self) {
+                self.0.store(false, Ordering::Release);
+            }
+        }
+        slot.saving.store(true, Ordering::Release);
+        let _saving = ClearSaving(&slot.saving);
         let saved_marks = {
             let tree = slot.tree.read().unwrap();
             save_marks(&path.with_extension("marks"), &tree.marks, &tree.far)
@@ -886,6 +898,7 @@ impl Engine {
         // Written under the tree's read lock; flushed to the disk and renamed after it, so a change waiting for
         // the lock (and every search behind that change) doesn't wait on the disk too.
         let written = snapshot::write(path, &slot.tree.read().unwrap(), &meta);
+        drop(_saving);
         let saved = written.and_then(snapshot::Written::finish);
         match saved {
             Ok(()) => self

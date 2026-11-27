@@ -658,7 +658,9 @@ impl FileList {
             .id(("file-row", i))
             .role(Role::ListBoxOption)
             .aria_label(entry.name.clone())
-            .aria_description(describe_marked(entry, &size_text, &date_text, &media, marked.as_ref()))
+            .when(frame.a11y_active, |line| {
+                line.aria_description(describe_marked(entry, &size_text, &date_text, &media, marked.as_ref()))
+            })
             .aria_selected(selected)
             .aria_position_in_set(i + 1)
             .aria_size_of_set(frame.rows.len())

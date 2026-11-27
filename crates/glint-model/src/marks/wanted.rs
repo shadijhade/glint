@@ -133,32 +133,56 @@ impl Wanted {
         if self.is_empty() {
             return true;
         }
-        let label = marks.label.as_deref().unwrap_or("").trim().to_lowercase();
-        let tags: Vec<String> = marks
-            .tags
-            .iter()
-            .map(|t| t.trim().to_lowercase())
-            .filter(|t| !t.is_empty())
-            .collect();
-        let comment = marks.comment.as_deref().unwrap_or("").to_lowercase();
-        let label_in = |group: &Vec<String>| !label.is_empty() && group.contains(&label);
-        let tag_in = |group: &Vec<String>| label_in(group) || tags.iter().any(|t| group.contains(t));
-        let has = |h: &Has| match h {
-            Has::Label => !label.is_empty(),
-            Has::Tag => !tags.is_empty(),
-            Has::Comment => !comment.is_empty(),
-            Has::Mark => !label.is_empty() || !tags.is_empty() || !comment.is_empty(),
-        };
-        let word = |w: &String| comment.contains(w.as_str());
         let (yes, no) = (&self.yes, &self.no);
-        yes.labels.iter().all(label_in)
-            && yes.tags.iter().all(tag_in)
-            && yes.words.iter().all(word)
-            && yes.has.iter().all(has)
-            && !no.labels.iter().any(label_in)
-            && !no.tags.iter().any(tag_in)
-            && !no.words.iter().any(word)
-            && !no.has.iter().any(has)
+        let raw_label = marks.label.as_deref().unwrap_or("").trim();
+        let raw_comment = marks.comment.as_deref().unwrap_or("");
+        let has_label = !raw_label.is_empty();
+        let has_tag = marks.tags.iter().any(|t| !t.trim().is_empty());
+        let has_comment = !raw_comment.is_empty();
+        let has = |h: &Has| match h {
+            Has::Label => has_label,
+            Has::Tag => has_tag,
+            Has::Comment => has_comment,
+            Has::Mark => has_label || has_tag || has_comment,
+        };
+        if !yes.has.iter().all(has) || no.has.iter().any(has) {
+            return false;
+        }
+        let need_label = !yes.labels.is_empty() || !no.labels.is_empty() || !yes.tags.is_empty() || !no.tags.is_empty();
+        let label = if need_label && has_label {
+            raw_label.to_lowercase()
+        } else {
+            String::new()
+        };
+        let label_in = |group: &Vec<String>| !label.is_empty() && group.contains(&label);
+        if !yes.labels.iter().all(label_in) || no.labels.iter().any(label_in) {
+            return false;
+        }
+        if !yes.tags.is_empty() || !no.tags.is_empty() {
+            let tags: Vec<String> = marks
+                .tags
+                .iter()
+                .map(|t| t.trim())
+                .filter(|t| !t.is_empty())
+                .map(str::to_lowercase)
+                .collect();
+            let tag_in = |group: &Vec<String>| label_in(group) || tags.iter().any(|t| group.contains(t));
+            if !yes.tags.iter().all(tag_in) || no.tags.iter().any(tag_in) {
+                return false;
+            }
+        }
+        if !yes.words.is_empty() || !no.words.is_empty() {
+            let comment = if has_comment {
+                raw_comment.to_lowercase()
+            } else {
+                String::new()
+            };
+            let word = |w: &String| comment.contains(w.as_str());
+            if !yes.words.iter().all(word) || no.words.iter().any(word) {
+                return false;
+            }
+        }
+        true
     }
 }
 

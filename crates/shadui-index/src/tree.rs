@@ -1126,9 +1126,11 @@ impl Tree {
     pub fn search_until(&self, search: &Search, gone: &(dyn Fn() -> bool + Sync)) -> Vec<u32> {
         const CHUNK: usize = 1 << 14;
         let has_paths = search.matcher.has_paths();
+        let has_filters = !search.filters.is_empty();
         // label:, tag:, comment: and has: are asked of each record's own marks. Most records have none, and
         // what the filter says of those is the same for all of them: worked out once.
         let marks = &search.filters.marks;
+        let has_marks = !marks.is_empty();
         let unmarked = marks.accepts("", "", "");
         let found: Vec<Vec<(u32, u32)>> = self
             .links
@@ -1156,7 +1158,7 @@ impl Tree {
                     let Some(edits) = search.matcher.distance(name, folded) else {
                         continue;
                     };
-                    if !search.filters.is_empty() {
+                    if has_filters {
                         let rec = &self.recs[link.rec as usize];
                         if !search.filters.accepts(
                             name,
@@ -1167,7 +1169,7 @@ impl Tree {
                         ) {
                             continue;
                         }
-                        if !marks.is_empty()
+                        if has_marks
                             && !self.marks.get(&link.rec).map_or(unmarked, |m| marks.accepts(&m.label, &m.tags, &m.comment))
                         {
                             continue;
@@ -1252,6 +1254,7 @@ impl Tree {
             return found;
         }
         let marks = &search.filters.marks;
+        let has_filters = !search.filters.is_empty();
         for (seen, (&n, marked)) in self.marks.iter().enumerate() {
             if seen % 1024 == 0 && gone() {
                 break;
@@ -1277,7 +1280,7 @@ impl Tree {
                 if search.matcher.distance(name, folded).is_some() {
                     continue;
                 }
-                if !search.filters.is_empty() {
+                if has_filters {
                     let rec = &self.recs[link.rec as usize];
                     if !search.filters.accepts(name, folded, rec.dir(), rec.size(), (search.now - rec.modified) / 10_000_000)
                         || !marks.accepts(&marked.label, &marked.tags, &marked.comment)

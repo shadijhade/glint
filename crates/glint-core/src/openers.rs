@@ -5,6 +5,16 @@
 use crate::fsx::blocking;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, Instant};
+
+/// How long discovered editors/terminals stay cached before rescanning PATH.
+const CACHE_FOR: Duration = Duration::from_secs(60);
+
+/// The editors and terminals found last, and when.
+type Found = Option<(Instant, Vec<Opener>)>;
+
+static CACHED: LazyLock<Mutex<Found>> = LazyLock::new(|| Mutex::new(None));
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Opener {
@@ -33,20 +43,49 @@ fn expand(path: &str) -> Option<PathBuf> {
     Some(PathBuf::from(std::env::var_os(name)?).join(rest.trim_start_matches('\\')))
 }
 
+/// Where a program is: one of `places`, else `exe` in one of `path_dirs`.
+fn find_in(places: &[&str], exe: &str, path_dirs: &[PathBuf]) -> Option<PathBuf> {
+    places
+        .iter()
+        .filter_map(|p| expand(p))
+        .chain(path_dirs.iter().filter(|_| !exe.is_empty()).map(|dir| dir.join(exe)))
+        .find(|p| p.is_file())
+}
+
 /// Where a program is: one of `places`, else `exe` in a folder on the PATH.
 fn find(places: &[&str], exe: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH").unwrap_or_default();
-    let on_path = std::env::split_paths(&path).filter(|_| !exe.is_empty()).map(|dir| dir.join(exe));
-    places.iter().filter_map(|p| expand(p)).chain(on_path).find(|p| p.is_file())
+    let dirs: Vec<PathBuf> = if exe.is_empty() {
+        Vec::new()
+    } else {
+        std::env::split_paths(&path).collect()
+    };
+    find_in(places, exe, &dirs)
 }
 
-/// The editors and terminals on this PC.
+/// The editors and terminals on this PC (cached briefly so repeated menu / palette opens avoid rescanning PATH).
 pub async fn openers() -> Result<Vec<Opener>, String> {
+    if let Some((at, list)) = CACHED.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        if at.elapsed() < CACHE_FOR {
+            return Ok(list.clone());
+        }
+    }
     blocking(|| {
-        Ok(KNOWN
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let path_dirs: Vec<PathBuf> = std::env::split_paths(&path).collect();
+        let found: Vec<Opener> = KNOWN
             .iter()
-            .filter_map(|&(id, name, terminal, places, exe)| find(places, exe).map(|p| Opener { id, name, terminal, path: p.to_string_lossy().into_owned() }))
-            .collect())
+            .filter_map(|&(id, name, terminal, places, exe)| {
+                find_in(places, exe, &path_dirs).map(|p| Opener {
+                    id,
+                    name,
+                    terminal,
+                    path: p.to_string_lossy().into_owned(),
+                })
+            })
+            .collect();
+        *CACHED.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), found.clone()));
+        Ok(found)
     })
     .await
 }
@@ -72,7 +111,11 @@ pub async fn open_in(id: String, path: String) -> Result<(), String> {
         let &(_, name, _, places, exe) = KNOWN.iter().find(|k| k.0 == id).ok_or("No such program")?;
         let at = find(places, exe).ok_or_else(|| format!("{name} isn't installed anymore"))?;
         let dir = Path::new(&path).is_dir();
-        let wt = KNOWN.iter().find(|k| k.0 == "wt").and_then(|&(_, _, _, places, exe)| find(places, exe));
+        let wt = if id == "yazi" {
+            KNOWN.iter().find(|k| k.0 == "wt").and_then(|&(_, _, _, places, exe)| find(places, exe))
+        } else {
+            None
+        };
         let (program, args) = command_for(&id, &at, &path, dir, wt.as_deref());
         let mut command = Command::new(program);
         command.args(args);
