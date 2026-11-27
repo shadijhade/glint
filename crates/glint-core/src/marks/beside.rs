@@ -3,12 +3,50 @@
 
 use glint_model::marks::lines::BESIDE_MAX_BYTES;
 use glint_model::marks::{read_beside, write_beside, Beside, Line, Marks, BESIDE_NAME};
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::Path;
 use std::sync::Mutex;
 
 /// Writes of one process don't interleave: held from the read to the write.
 static WRITING: Mutex<()> = Mutex::new(());
+
+/// A parsed `.glint-marks` indexed by lowercase name for O(1) per-item lookup in large folders.
+pub struct IndexedBeside {
+    beside: Beside,
+    index: HashMap<String, usize>,
+}
+
+impl IndexedBeside {
+    pub fn from_beside(beside: Beside) -> Self {
+        let mut index = HashMap::with_capacity(beside.lines.len());
+        for (i, line) in beside.lines.iter().enumerate() {
+            index.entry(line.name.to_lowercase()).or_insert(i);
+        }
+        Self { beside, index }
+    }
+
+    /// O(1) case-insensitive lookup, using a stack buffer for ASCII filenames to avoid heap allocations.
+    pub fn line(&self, name: &str) -> Option<&Line> {
+        let idx = if name.is_ascii() && name.len() <= 256 {
+            let mut buf = [0u8; 256];
+            for (dst, &src) in buf.iter_mut().zip(name.as_bytes()) {
+                *dst = src.to_ascii_lowercase();
+            }
+            // SAFETY: ASCII bytes lowercased remain valid UTF-8.
+            let lower = unsafe { std::str::from_utf8_unchecked(&buf[..name.len()]) };
+            self.index.get(lower).copied()
+        } else {
+            self.index.get(&name.to_lowercase()).copied()
+        };
+        idx.and_then(|i| self.beside.lines.get(i))
+    }
+}
+
+/// The folder's `.glint-marks` indexed for O(1) lookups; None when there is none (or it can't be opened).
+pub fn read_indexed(folder: &Path) -> Option<IndexedBeside> {
+    read(folder).map(IndexedBeside::from_beside)
+}
 
 /// The folder's `.glint-marks` as it reads; None when there is none (or it can't be opened).
 pub fn read(folder: &Path) -> Option<Beside> {
@@ -27,7 +65,7 @@ fn same_name(a: &str, b: &str) -> bool {
 }
 
 /// The line for the item named `name` (names alike in `to_lowercase()` are one).
-// ponytail: a scan, so a batch over a folder of 100,000 lines costs a scan an item; a map when that is measured.
+#[allow(dead_code)]
 pub fn line<'a>(beside: &'a Beside, name: &str) -> Option<&'a Line> {
     beside.lines.iter().find(|l| same_name(&l.name, name))
 }
@@ -40,21 +78,64 @@ pub fn change(folder: &Path, changes: &[(String, Marks)], at: i64) -> Result<(),
     let _held = WRITING.lock().unwrap_or_else(|e| e.into_inner());
     let was = read(folder).unwrap_or_default();
     let mut now = was.clone();
-    for (name, marks) in changes {
-        let at_line = now.lines.iter().position(|l| same_name(&l.name, name));
-        match (at_line, marks.is_empty()) {
-            (Some(i), true) => {
-                now.lines.remove(i);
+    if changes.len().saturating_mul(now.lines.len()) > 256 {
+        let mut by_name: HashMap<String, usize> = HashMap::with_capacity(now.lines.len() + changes.len());
+        for (i, line) in now.lines.iter().enumerate() {
+            by_name.entry(line.name.to_lowercase()).or_insert(i);
+        }
+        let mut removed = vec![false; now.lines.len()];
+        for (name, marks) in changes {
+            let key = name.to_lowercase();
+            match (by_name.get(&key).copied(), marks.is_empty()) {
+                (Some(i), true) => {
+                    removed[i] = true;
+                }
+                (Some(i), false) => {
+                    removed[i] = false;
+                    now.lines[i].marks = marks.clone();
+                    now.lines[i].at = at;
+                }
+                (None, true) => {}
+                (None, false) => {
+                    let i = now.lines.len();
+                    now.lines.push(Line { name: name.clone(), marks: marks.clone(), at, ..Line::default() });
+                    removed.push(false);
+                    by_name.insert(key, i);
+                }
             }
-            (Some(i), false) => {
-                now.lines[i].marks = marks.clone();
-                now.lines[i].at = at;
+        }
+        let mut idx = 0usize;
+        now.lines.retain(|_| {
+            let keep = !removed[idx];
+            idx += 1;
+            keep
+        });
+    } else {
+        for (name, marks) in changes {
+            let at_line = now.lines.iter().position(|l| same_name(&l.name, name));
+            match (at_line, marks.is_empty()) {
+                (Some(i), true) => {
+                    now.lines.remove(i);
+                }
+                (Some(i), false) => {
+                    now.lines[i].marks = marks.clone();
+                    now.lines[i].at = at;
+                }
+                (None, true) => {}
+                (None, false) => now.lines.push(Line { name: name.clone(), marks: marks.clone(), at, ..Line::default() }),
             }
-            (None, true) => {}
-            (None, false) => now.lines.push(Line { name: name.clone(), marks: marks.clone(), at, ..Line::default() }),
         }
     }
-    now.lines.retain(|l| std::fs::symlink_metadata(folder.join(&l.name)).is_ok());
+    if now.lines.len() > 32 {
+        if let Ok(entries) = crate::fsx::read_dir(&folder.to_string_lossy()) {
+            let present: HashSet<String> = entries.into_iter().map(|e| e.name.to_lowercase()).collect();
+            now.lines.retain(|l| present.contains(&l.name.to_lowercase()));
+        } else {
+            now.lines.retain(|l| std::fs::symlink_metadata(folder.join(&l.name)).is_ok());
+        }
+    } else {
+        now.lines.retain(|l| std::fs::symlink_metadata(folder.join(&l.name)).is_ok());
+    }
     if now == was {
         return Ok(());
     }

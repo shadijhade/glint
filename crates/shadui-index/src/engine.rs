@@ -4,7 +4,7 @@
 use crate::growth::Growth;
 use crate::history::{self, History, Paths};
 use crate::proto::{
-    self, unix_ms, GrowthSummary, HistoryAnswer, HistoryEvent, HistoryRequest, Hit, Message, SearchRequest, Sizes,
+    self, unix_ms, GrowthSummary, HistoryAnswer, HistoryEvent, HistoryRequest, Message, SearchRequest, Sizes,
     Status, UsageNode, UsageRequest, UsageSummary, VolumeStatus, FRAME_GROWTH, FRAME_HITS, FRAME_USAGE, NEW, NO_PARENT,
     WRITTEN,
 };
@@ -888,17 +888,18 @@ impl Engine {
         }
         slot.saving.store(true, Ordering::Release);
         let _saving = ClearSaving(&slot.saving);
-        let saved_marks = {
+        // Serialize marks and snapshot bytes under the tree's read lock, then flush/rename off-lock so journal
+        // writes and searches queued behind them don't wait on disk I/O.
+        let (marks_bytes, written) = {
             let tree = slot.tree.read().unwrap();
-            save_marks(&path.with_extension("marks"), &tree.marks, &tree.far)
+            let marks = encode_marks(&tree.marks, &tree.far);
+            let written = snapshot::write(path, &tree, &meta);
+            (marks, written)
         };
-        if let Err(e) = saved_marks {
+        drop(_saving);
+        if let Err(e) = write_marks(&path.with_extension("marks"), &marks_bytes) {
             self.log.line(&format!("{}: couldn't save the marks: {e}", slot.letter));
         }
-        // Written under the tree's read lock; flushed to the disk and renamed after it, so a change waiting for
-        // the lock (and every search behind that change) doesn't wait on the disk too.
-        let written = snapshot::write(path, &slot.tree.read().unwrap(), &meta);
-        drop(_saving);
         let saved = written.and_then(snapshot::Written::finish);
         match saved {
             Ok(()) => self
@@ -908,7 +909,11 @@ impl Engine {
                 .log
                 .line(&format!("{}: couldn't save the snapshot: {e}", slot.letter)),
         }
-        if let Err(e) = history::save(&path.with_extension("hist"), &slot.history.lock().unwrap()) {
+        let hist_bytes = {
+            let history = slot.history.lock().unwrap();
+            history::encode(&history)
+        };
+        if let Err(e) = history::write_encoded(&path.with_extension("hist"), &hist_bytes) {
             self.log
                 .line(&format!("{}: couldn't save the history: {e}", slot.letter));
         }
@@ -1203,7 +1208,7 @@ impl Engine {
                     }
                     check()?;
                     // Results are encoded under the lock (ids are only valid until the next change), then sent.
-                    let (frames, found) = {
+                    let (mut frames, found) = {
                         let tree = slot.tree.read().unwrap();
                         let search = Search {
                             matcher,
@@ -1213,14 +1218,14 @@ impl Engine {
                             hidden: request.hidden,
                             excludes: &excludes,
                         };
-                        collect_hits_until(&tree, slot.letter, &search, max - count, gone)
+                        collect_hits_framed(&tree, slot.letter, &search, max - count, gone)
                     };
                     check()?;
                     let taken = found.min(max - count);
                     limited |= taken < found;
                     count += taken;
-                    for frame in frames {
-                        proto::write_frame(out, FRAME_HITS, &frame)?;
+                    for frame in &mut frames {
+                        proto::write_frame_with_head(out, FRAME_HITS, frame)?;
                     }
                 }
                 (count, limited)
@@ -1228,7 +1233,7 @@ impl Engine {
             if let Some(words) = words.as_ref().filter(|_| by_marks) {
                 for (slot, scope) in &targets {
                     check()?;
-                    let (frames, found) = {
+                    let (mut frames, found) = {
                         let tree = slot.tree.read().unwrap();
                         let search = Search {
                             matcher,
@@ -1241,15 +1246,15 @@ impl Engine {
                         let found = tree.search_marks(&search, words, gone);
                         let taken = &found[..found.len().min(max - count)];
                         let drive = format!("{}:\\", slot.letter);
-                        let frames: Vec<Vec<u8>> = taken.chunks(BATCH).map(|c| encode_hits_by(&tree, c, &drive)).collect();
+                        let frames: Vec<Vec<u8>> = taken.chunks(BATCH).map(|c| encode_hits_by(&tree, c, &drive, true)).collect();
                         (frames, found.len())
                     };
                     check()?;
                     let taken = found.min(max - count);
                     limited |= taken < found;
                     count += taken;
-                    for frame in frames {
-                        proto::write_frame(out, FRAME_HITS, &frame)?;
+                    for frame in &mut frames {
+                        proto::write_frame_with_head(out, FRAME_HITS, frame)?;
                     }
                 }
             }
@@ -1329,15 +1334,15 @@ impl Engine {
             let drive = format!("{letter}:\\");
             Ok((
                 ids.par_chunks(BATCH)
-                    .map(|ids| encode_hits(&tree, ids, &drive))
+                    .map(|ids| encode_hits(&tree, ids, &drive, true))
                     .collect(),
                 ids.len(),
             ))
         })();
         match listed {
-            Ok((frames, count)) => {
-                for frame in frames {
-                    proto::write_frame(out, FRAME_HITS, &frame)?;
+            Ok((mut frames, count)) => {
+                for frame in &mut frames {
+                    proto::write_frame_with_head(out, FRAME_HITS, frame)?;
                 }
                 proto::write_message(
                     out,
@@ -1554,14 +1559,12 @@ fn send_ranked(
             hidden,
             excludes,
         };
-        let found = tree.search_until(&search, gone);
+        let found = tree.search_until_edits(&search, gone);
         check()?;
         total += found.len();
-        drives.push(encode_ranked(
-            &tree,
-            &tree.rank(&found, &search, word, max),
-            &format!("{}:\\", slot.letter),
-        ));
+        let ranked = tree.rank_edits_until(&found, word, max, gone);
+        check()?;
+        drives.push(encode_ranked(&tree, &ranked, &format!("{}:\\", slot.letter), gone));
     }
     let mut best: Vec<(Rank, usize, std::ops::Range<usize>)> = drives
         .iter()
@@ -1571,38 +1574,46 @@ fn send_ranked(
     best.sort_unstable_by_key(|&(rank, ..)| (rank.score, rank.len));
     best.truncate(max);
     for chunk in best.chunks(BATCH) {
-        let mut frame = Vec::with_capacity(chunk.len() * 96);
+        let mut frame = Vec::with_capacity(5 + chunk.len() * 96);
+        frame.extend_from_slice(&[0u8; 5]);
         for (_, d, at) in chunk {
             frame.extend_from_slice(&drives[*d].0[at.clone()]);
         }
-        proto::write_frame(out, FRAME_HITS, &frame)?;
+        proto::write_frame_with_head(out, FRAME_HITS, &mut frame)?;
     }
     Ok((best.len(), total > best.len()))
 }
 
 /// The hits of `ranked`, encoded one after another, with where each one is.
-fn encode_ranked(tree: &Tree, ranked: &[Rank], drive: &str) -> (Vec<u8>, Vec<(Rank, std::ops::Range<usize>)>) {
-    let mut dirs = HashMap::new();
+fn encode_ranked(
+    tree: &Tree,
+    ranked: &[Rank],
+    drive: &str,
+    gone: &(dyn Fn() -> bool + Sync),
+) -> (Vec<u8>, Vec<(Rank, std::ops::Range<usize>)>) {
+    let mut dirs: HashMap<u32, String, std::hash::BuildHasherDefault<crate::growth::RecordHasher>> = HashMap::default();
+    let mut path_buf = String::with_capacity(256);
     let mut out = Vec::with_capacity(ranked.len() * 96);
     let mut hits = Vec::with_capacity(ranked.len());
-    for &rank in ranked {
-        let Some(path) = tree.path(rank.id, &mut dirs) else {
+    for (i, &rank) in ranked.iter().enumerate() {
+        if i & 1023 == 0 && gone() {
+            break;
+        }
+        if !tree.write_path_into(rank.id, drive, &mut dirs, &mut path_buf) {
             continue;
-        };
+        }
         let Some(rec) = tree.rec(tree.link(rank.id).rec) else {
             continue;
         };
         let start = out.len();
-        proto::encode_hit(
+        proto::encode_hit_raw(
             &mut out,
-            &Hit {
-                path: format!("{drive}{path}"),
-                dir: rec.dir(),
-                size: rec.size(),
-                modified: unix_ms(rec.modified),
-                attrs: rec.attrs(),
-                by: 0,
-            },
+            &path_buf,
+            rec.dir(),
+            rec.attrs(),
+            rec.size(),
+            unix_ms(rec.modified),
+            0,
         );
         hits.push((rank, start..out.len()));
     }
@@ -1610,7 +1621,18 @@ fn encode_ranked(tree: &Tree, ranked: &[Rank], drive: &str) -> (Vec<u8>, Vec<(Ra
 }
 
 pub(crate) fn collect_hits(tree: &Tree, letter: char, search: &Search, max: usize) -> (Vec<Vec<u8>>, usize) {
-    collect_hits_until(tree, letter, search, max, &|| false)
+    collect_hits_until(tree, letter, search, max, &|| false, false)
+}
+
+/// [`collect_hits`], with a scan that `gone` can end and a reserved 5-byte frame header at the start of each chunk.
+fn collect_hits_framed(
+    tree: &Tree,
+    letter: char,
+    search: &Search,
+    max: usize,
+    gone: &(dyn Fn() -> bool + Sync),
+) -> (Vec<Vec<u8>>, usize) {
+    collect_hits_until(tree, letter, search, max, gone, true)
 }
 
 /// [`collect_hits`], with a scan that `gone` can end (see `Tree::search_until`); nothing is encoded then.
@@ -1620,6 +1642,7 @@ fn collect_hits_until(
     search: &Search,
     max: usize,
     gone: &(dyn Fn() -> bool + Sync),
+    with_head: bool,
 ) -> (Vec<Vec<u8>>, usize) {
     let found = tree.search_until(search, gone);
     if gone() {
@@ -1628,34 +1651,62 @@ fn collect_hits_until(
     let drive = format!("{letter}:\\");
     let frames = found[..found.len().min(max)]
         .par_chunks(BATCH)
-        .map(|ids| encode_hits(tree, ids, &drive))
+        .map(|ids| encode_hits(tree, ids, &drive, with_head))
         .collect();
     (frames, found.len())
 }
 
-fn encode_hits(tree: &Tree, ids: &[u32], drive: &str) -> Vec<u8> {
-    let ids: Vec<(u32, u8)> = ids.iter().map(|&id| (id, 0)).collect();
-    encode_hits_by(tree, &ids, drive)
-}
-
-/// The hits of `ids`, each with how it was found (0: by its name).
-fn encode_hits_by(tree: &Tree, ids: &[(u32, u8)], drive: &str) -> Vec<u8> {
-    let mut dirs = HashMap::new();
-    let mut out = Vec::with_capacity(ids.len() * 96);
-    for &(id, by) in ids {
-        let Some(path) = tree.path(id, &mut dirs) else { continue };
+fn encode_hits(tree: &Tree, ids: &[u32], drive: &str, with_head: bool) -> Vec<u8> {
+    let mut dirs: HashMap<u32, String, std::hash::BuildHasherDefault<crate::growth::RecordHasher>> = HashMap::default();
+    let mut path_buf = String::with_capacity(256);
+    let mut out = Vec::with_capacity(ids.len() * 96 + if with_head { 5 } else { 0 });
+    if with_head {
+        out.extend_from_slice(&[0u8; 5]);
+    }
+    for &id in ids {
+        if !tree.write_path_into(id, drive, &mut dirs, &mut path_buf) {
+            continue;
+        }
         let Some(rec) = tree.rec(tree.link(id).rec) else {
             continue;
         };
-        let hit = Hit {
-            path: format!("{drive}{path}"),
-            dir: rec.dir(),
-            size: rec.size(),
-            modified: unix_ms(rec.modified),
-            attrs: rec.attrs(),
-            by,
+        proto::encode_hit_raw(
+            &mut out,
+            &path_buf,
+            rec.dir(),
+            rec.attrs(),
+            rec.size(),
+            unix_ms(rec.modified),
+            0,
+        );
+    }
+    out
+}
+
+/// The hits of `ids`, each with how it was found (0: by its name).
+fn encode_hits_by(tree: &Tree, ids: &[(u32, u8)], drive: &str, with_head: bool) -> Vec<u8> {
+    let mut dirs: HashMap<u32, String, std::hash::BuildHasherDefault<crate::growth::RecordHasher>> = HashMap::default();
+    let mut path_buf = String::with_capacity(256);
+    let mut out = Vec::with_capacity(ids.len() * 96 + if with_head { 5 } else { 0 });
+    if with_head {
+        out.extend_from_slice(&[0u8; 5]);
+    }
+    for &(id, by) in ids {
+        if !tree.write_path_into(id, drive, &mut dirs, &mut path_buf) {
+            continue;
+        }
+        let Some(rec) = tree.rec(tree.link(id).rec) else {
+            continue;
         };
-        proto::encode_hit(&mut out, &hit);
+        proto::encode_hit_raw(
+            &mut out,
+            &path_buf,
+            rec.dir(),
+            rec.attrs(),
+            rec.size(),
+            unix_ms(rec.modified),
+            by,
+        );
     }
     out
 }
@@ -1665,7 +1716,7 @@ const MARKS_FIELD_MAX: usize = 64 << 10;
 
 /// Marks beside a snapshot (little-endian): "GLINTMRK", version 1, a count, then each record's number, label,
 /// tags and comment (each a length and its bytes), then the far records: a count and their numbers.
-fn save_marks(path: &Path, marks: &HashMap<u32, Marked>, far: &HashSet<u32>) -> io::Result<()> {
+fn encode_marks(marks: &HashMap<u32, Marked>, far: &HashSet<u32>) -> Vec<u8> {
     let mut out = Vec::with_capacity(32 + marks.len() * 28 + far.len() * 4);
     out.extend_from_slice(b"GLINTMRK");
     out.extend_from_slice(&1u32.to_le_bytes());
@@ -1683,12 +1734,21 @@ fn save_marks(path: &Path, marks: &HashMap<u32, Marked>, far: &HashSet<u32>) -> 
     for n in far {
         out.extend_from_slice(&n.to_le_bytes());
     }
+    out
+}
+
+fn write_marks(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let tmp = path.with_extension("marks.tmp");
-    fs::write(&tmp, out)?;
+    fs::write(&tmp, bytes)?;
     fs::rename(tmp, path)?;
     // From now on the old tags file is stale.
     let _ = fs::remove_file(path.with_extension("tags"));
     Ok(())
+}
+
+#[cfg(test)]
+fn save_marks(path: &Path, marks: &HashMap<u32, Marked>, far: &HashSet<u32>) -> io::Result<()> {
+    write_marks(path, &encode_marks(marks, far))
 }
 
 /// What `save_marks` wrote; no marks at all for a file that is missing or damaged in any way.

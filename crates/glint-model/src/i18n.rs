@@ -152,10 +152,17 @@ pub fn count_form(language: Language, n: usize) -> Option<&'static str> {
 /// A count in one of `language`'s other forms ([`count_form`]): the catalog's entry for `other` (the English
 /// "{n} files") with `form` as its context, if it has one.
 pub fn translate_form(language: Language, form: &str, other: &str) -> Option<&'static str> {
-    lookup(
-        catalog(language),
-        &format!("{form}{}{other}", crate::po::FORM_SEPARATOR),
-    )
+    let mut sep_buf = [0u8; 4];
+    let sep = crate::po::FORM_SEPARATOR.encode_utf8(&mut sep_buf);
+    let table = catalog(language);
+    table
+        .binary_search_by(|(english, _)| {
+            english
+                .bytes()
+                .cmp(form.bytes().chain(sep.bytes()).chain(other.bytes()))
+        })
+        .ok()
+        .map(|at| table[at].1)
 }
 
 /// `text` in `language` before any `{name}` parts are filled in: the catalog's translation, else the English.
@@ -252,9 +259,42 @@ pub fn translated_count(language: Language) -> usize {
 /// Numbers are passed as their text (the TS used `String(value)`).
 pub fn t<'a>(language: Language, text: &'a str, vars: &[(&str, &str)]) -> Cow<'a, str> {
     let out = translate(language, text);
-    if vars.is_empty() {
+    if vars.is_empty() || !out.contains('{') {
         return Cow::Borrowed(out);
     }
+    // Fast single-pass scan when no replacement value introduces `{...}` placeholders (the common case):
+    // one allocation instead of `2 * vars.len() + 1`.
+    if !vars.iter().any(|(_, v)| v.contains('{')) {
+        let extra: usize = vars.iter().map(|(_, v)| v.len()).sum();
+        let mut filled = String::with_capacity(out.len() + extra);
+        let bytes = out.as_bytes();
+        let mut i = 0;
+        let mut last = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'{' {
+                if let Some(rel_end) = out[i + 1..].find(['}', '{']) {
+                    let end = i + 1 + rel_end;
+                    if bytes[end] == b'}' {
+                        let key = &out[i + 1..end];
+                        if let Some((_, value)) = vars.iter().find(|(name, _)| *name == key) {
+                            filled.push_str(&out[last..i]);
+                            filled.push_str(value);
+                            i = end + 1;
+                            last = i;
+                            continue;
+                        }
+                    } else {
+                        i = end;
+                        continue;
+                    }
+                }
+            }
+            i += 1;
+        }
+        filled.push_str(&out[last..]);
+        return Cow::Owned(filled);
+    }
+    // Rare chained case: a replacement value itself contains `{other}` to be filled by a later pair.
     let mut filled = out.to_string();
     for (name, value) in vars {
         filled = filled.replace(&format!("{{{name}}}"), value);

@@ -141,13 +141,16 @@ pub fn colors_fit(head: &Head) -> bool {
 }
 
 /// The listing the head last looked into for places, so the same one isn't asked about twice.
+/// Holds a `Weak` so closed listings are still freed off the UI thread by `let_go`.
 pub struct Looked {
     pub path: String,
-    pub entries: Arc<[FileEntry]>,
+    pub entries: std::sync::Weak<[FileEntry]>,
 }
 
 impl Looked {
     pub fn is(&self, path: &str, entries: &Arc<[FileEntry]>) -> bool {
-        self.path == path && Arc::ptr_eq(&self.entries, entries)
+        self.path == path
+            && self.entries.strong_count() > 0
+            && std::ptr::addr_eq(std::sync::Weak::as_ptr(&self.entries), Arc::as_ptr(entries))
     }
 }

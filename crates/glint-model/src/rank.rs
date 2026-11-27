@@ -7,8 +7,6 @@
 //! `fuzzy_indices` returns are UTF-8 byte offsets into the text, ready for GPUI text runs.
 
 use crate::js::is_js_space;
-use regex::Regex;
-use std::sync::LazyLock;
 
 /// How often and how recently a folder was opened.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
@@ -73,9 +71,13 @@ struct Folded {
 }
 
 impl Folded {
-    fn new(text: &str) -> Folded {
+    fn new(text: &str, with_bytes: bool) -> Folded {
         let orig: Vec<char> = text.chars().collect();
-        let bytes: Vec<usize> = text.char_indices().map(|(b, _)| b).collect();
+        let bytes: Vec<usize> = if with_bytes {
+            text.char_indices().map(|(b, _)| b).collect()
+        } else {
+            Vec::new()
+        };
         // Lowercasing the whole text gets context rules right (a final sigma). When that keeps one
         // character per character, positions line up. Otherwise (a capital whose lowercase is two
         // characters, such as a dotted I) lowercase each character and remember where it came from.
@@ -160,6 +162,48 @@ fn run_from(folded: &Folded, q: &[char], start: usize) -> Option<Run> {
     })
 }
 
+/// Like `run_from` but without allocating matched positions (used by `fuzzy_score`).
+fn run_score(folded: &Folded, q: &[char], start: usize) -> Option<(f64, usize)> {
+    let mut score = 0.0_f64;
+    let mut at = start;
+    let mut streak = 0_u32;
+    for &c in q {
+        let found = folded.index_of(c, at)?;
+        streak = if found == at { streak + 1 } else { 0 };
+        let boundary = if folded.is_boundary(found) { 3.0 } else { 0.0 };
+        score += 1.0 + boundary + 2.0 * f64::from(streak) - 0.05 * (found - at) as f64;
+        at = found + 1;
+    }
+    Some((score, at))
+}
+
+#[inline]
+fn is_ascii_boundary(orig: &[u8], i: usize) -> bool {
+    if i == 0 {
+        return true;
+    }
+    let c = orig[i];
+    let prev = orig[i - 1];
+    matches!(
+        prev,
+        b'\\' | b'/' | b'.' | b'_' | b'-' | b'(' | b')' | b'[' | b']' | b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c
+    ) || (c.is_ascii_uppercase() && !prev.is_ascii_uppercase())
+}
+
+fn run_score_ascii(orig: &[u8], q: &[u8], start: usize) -> Option<(f64, usize)> {
+    let mut score = 0.0_f64;
+    let mut at = start;
+    let mut streak = 0_u32;
+    for &qc in q {
+        let found = orig.get(at..)?.iter().position(|b| b.to_ascii_lowercase() == qc)? + at;
+        streak = if found == at { streak + 1 } else { 0 };
+        let boundary = if is_ascii_boundary(orig, found) { 3.0 } else { 0.0 };
+        score += 1.0 + boundary + 2.0 * f64::from(streak) - 0.05 * (found - at) as f64;
+        at = found + 1;
+    }
+    Some((score, at))
+}
+
 /// Scores `text` for `query` typed as an in-order subsequence ("dl" finds "Downloads"), or `None` when
 /// it doesn't match. Letters at word starts and runs of consecutive letters score higher, so the best
 /// match comes first. Typed with a typo ("stetings"), it's a close match (`typo_distance`), below them all.
@@ -168,20 +212,65 @@ fn run_from(folded: &Folded, q: &[char], start: usize) -> Option<Run> {
 // NOTE(port): the TS counted gaps in UTF-16 units and advanced one unit past an astral letter, so
 // two consecutive emoji never counted as a run. Here gaps are in characters, so they do.
 pub fn fuzzy_score(query: &str, text: &str, tight: bool) -> Option<f64> {
+    // Zero-allocation ASCII fast path (covers almost all filenames and commands).
+    if query.is_ascii() && text.is_ascii() {
+        let mut q_stack = [0u8; 64];
+        let mut q_heap = Vec::new();
+        let mut q_len = 0usize;
+        for &b in query.as_bytes() {
+            if matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c) {
+                continue;
+            }
+            let lb = b.to_ascii_lowercase();
+            if q_heap.is_empty() && q_len < q_stack.len() {
+                q_stack[q_len] = lb;
+                q_len += 1;
+            } else {
+                if q_heap.is_empty() {
+                    q_heap.extend_from_slice(&q_stack[..q_len]);
+                }
+                q_heap.push(lb);
+            }
+        }
+        let q: &[u8] = if q_heap.is_empty() { &q_stack[..q_len] } else { &q_heap };
+        let Some(&head) = q.first() else { return Some(0.0) };
+        let orig = text.as_bytes();
+        let mut best: Option<f64> = None;
+        if !tight {
+            best = run_score_ascii(orig, q, 0).map(|(score, _)| score);
+        } else {
+            let limit = 3 * q.len() + 2;
+            let mut pos = 0;
+            while let Some(rel) = orig.get(pos..).and_then(|s| s.iter().position(|b| b.to_ascii_lowercase() == head)) {
+                let start = pos + rel;
+                let Some((score, end)) = run_score_ascii(orig, q, start) else { break };
+                if end - start <= limit && best.is_none_or(|b| score > b) {
+                    best = Some(score);
+                }
+                pos = start + 1;
+            }
+        }
+        let Some(best) = best else {
+            let edits = typo_distance(query, text)?;
+            return Some(-1.0 - edits as f64);
+        };
+        return Some(best - 0.01 * orig.len() as f64);
+    }
+
     let q = clean_query(query);
     let Some(&head) = q.first() else { return Some(0.0) };
-    let folded = Folded::new(text);
+    let folded = Folded::new(text, false);
     let mut best: Option<f64> = None;
     if !tight {
-        best = run_from(&folded, &q, 0).map(|r| r.score);
+        best = run_score(&folded, &q, 0).map(|(score, _)| score);
     } else {
         // From each place the first letter is, the best match that stays close together.
         let limit = 3 * q.iter().map(|c| c.len_utf16()).sum::<usize>() + 2;
         let mut next = folded.index_of(head, 0);
         while let Some(start) = next {
-            let Some(run) = run_from(&folded, &q, start) else { break };
-            if run.end - start <= limit && best.is_none_or(|b| run.score > b) {
-                best = Some(run.score);
+            let Some((score, end)) = run_score(&folded, &q, start) else { break };
+            if end - start <= limit && best.is_none_or(|b| score > b) {
+                best = Some(score);
             }
             next = folded.index_of(head, start + 1);
         }
@@ -200,7 +289,7 @@ pub fn fuzzy_score(query: &str, text: &str, tight: bool) -> Option<f64> {
 pub fn fuzzy_indices(query: &str, text: &str, tight: bool) -> Option<Vec<usize>> {
     let q = clean_query(query);
     let head = *q.first()?;
-    let folded = Folded::new(text);
+    let folded = Folded::new(text, true);
     let limit = 3 * q.iter().map(|c| c.len_utf16()).sum::<usize>() + 2;
     let mut best: Option<Run> = None;
     let mut next = folded.index_of(head, 0);
@@ -242,11 +331,6 @@ enum Kind {
     Other,
 }
 
-// Compiled once, on the first non-ASCII character. The patterns are constants, so they always compile.
-static UPPER_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\p{Lu}$").expect("constant pattern"));
-static LETTER_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\p{L}$").expect("constant pattern"));
-static DIGIT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\p{N}$").expect("constant pattern"));
-
 fn char_kind(c: char) -> Kind {
     if c.is_ascii() {
         return match c {
@@ -256,13 +340,11 @@ fn char_kind(c: char) -> Kind {
             _ => Kind::Other,
         };
     }
-    let mut buf = [0_u8; 4];
-    let s: &str = c.encode_utf8(&mut buf);
-    if UPPER_RE.is_match(s) {
+    if c.is_uppercase() {
         Kind::Upper
-    } else if LETTER_RE.is_match(s) {
+    } else if c.is_alphabetic() {
         Kind::Letter
-    } else if DIGIT_RE.is_match(s) {
+    } else if c.is_numeric() {
         Kind::Digit
     } else {
         Kind::Other
@@ -294,12 +376,39 @@ fn word_starts(chars: &[char]) -> Vec<usize> {
 /// a prefix of `text`.
 fn prefix_distance(word: &[char], text: &[char]) -> usize {
     let m = word.len();
+    // Reuse 3 scratch rows (stack-backed for words up to 63 chars) instead of allocating a `Vec` per char.
+    if m < 64 {
+        let mut before = [0usize; 64];
+        let mut last = [0usize; 64];
+        let mut column = [0usize; 64];
+        for (i, slot) in last[..=m].iter_mut().enumerate() {
+            *slot = i;
+        }
+        let mut best = last[m];
+        for j in 1..=text.len() {
+            column[0] = j;
+            for i in 1..=m {
+                let same = word[i - 1] == text[j - 1];
+                let mut d = (last[i] + 1)
+                    .min(column[i - 1] + 1)
+                    .min(last[i - 1] + usize::from(!same));
+                if i > 1 && j > 1 && word[i - 1] == text[j - 2] && word[i - 2] == text[j - 1] {
+                    d = d.min(before[i - 2] + 1);
+                }
+                column[i] = d;
+            }
+            best = best.min(column[m]);
+            std::mem::swap(&mut before, &mut last);
+            std::mem::swap(&mut last, &mut column);
+        }
+        return best;
+    }
     let mut before: Vec<usize> = vec![0; m + 1];
     let mut last: Vec<usize> = (0..=m).collect();
+    let mut column: Vec<usize> = vec![0; m + 1];
     let mut best = last[m];
     for j in 1..=text.len() {
-        let mut column: Vec<usize> = Vec::with_capacity(m + 1);
-        column.push(j);
+        column[0] = j;
         for i in 1..=m {
             let same = word[i - 1] == text[j - 1];
             let mut d = (last[i] + 1)
@@ -308,10 +417,11 @@ fn prefix_distance(word: &[char], text: &[char]) -> usize {
             if i > 1 && j > 1 && word[i - 1] == text[j - 2] && word[i - 2] == text[j - 1] {
                 d = d.min(before[i - 2] + 1);
             }
-            column.push(d);
+            column[i] = d;
         }
         best = best.min(column[m]);
-        before = std::mem::replace(&mut last, column);
+        std::mem::swap(&mut before, &mut last);
+        std::mem::swap(&mut last, &mut column);
     }
     best
 }

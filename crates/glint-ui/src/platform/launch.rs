@@ -567,27 +567,63 @@ const COPYDATA_ID: usize = 0x474C_4E54_0001;
 /// The largest request accepted: far more folders than anyone passes on a command line.
 const MAX_MESSAGE: usize = 1 << 20;
 
+enum ListenerState {
+    Starting,
+    Ready(isize),
+    Failed,
+}
+
+struct ListenerSync {
+    state: ListenerState,
+    stop: bool,
+}
+
 /// The first copy's claim on its name: the mutex and the thread that owns the listener window.
 struct Endpoint {
     mutex: isize,
-    window: isize,
+    sync: std::sync::Arc<(Mutex<ListenerSync>, std::sync::Condvar)>,
     thread: Option<std::thread::JoinHandle<()>>,
     incoming: async_channel::Receiver<Request>,
+}
+
+#[cfg(test)]
+impl Endpoint {
+    fn wait_ready(&self) {
+        let (lock, cv) = &*self.sync;
+        let mut guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+        while matches!(guard.state, ListenerState::Starting) {
+            guard = cv.wait(guard).unwrap_or_else(|e| e.into_inner());
+        }
+    }
 }
 
 impl Drop for Endpoint {
     fn drop(&mut self) {
         use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND};
         use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE};
-        // SAFETY: `window` is the listener window made by `claim`; posting to a window is allowed from any thread.
-        let _ = unsafe {
-            PostMessageW(
-                Some(HWND(self.window as *mut _)),
-                WM_CLOSE,
-                Default::default(),
-                Default::default(),
-            )
+        let window = {
+            let (lock, cv) = &*self.sync;
+            let mut guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+            guard.stop = true;
+            while matches!(guard.state, ListenerState::Starting) {
+                guard = cv.wait(guard).unwrap_or_else(|e| e.into_inner());
+            }
+            match guard.state {
+                ListenerState::Ready(hwnd) => Some(hwnd),
+                ListenerState::Starting | ListenerState::Failed => None,
+            }
         };
+        if let Some(window) = window {
+            // SAFETY: `window` is the listener window made by `claim`; posting to a window is allowed from any thread.
+            let _ = unsafe {
+                PostMessageW(
+                    Some(HWND(window as *mut _)),
+                    WM_CLOSE,
+                    Default::default(),
+                    Default::default(),
+                )
+            };
+        }
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
@@ -614,25 +650,30 @@ fn claim(name: &str) -> Option<Claim> {
         return Some(Claim::Later);
     }
     let (incoming_in, incoming) = async_channel::unbounded();
-    let (ready_in, ready) = std::sync::mpsc::channel();
+    let sync = std::sync::Arc::new((
+        Mutex::new(ListenerSync {
+            state: ListenerState::Starting,
+            stop: false,
+        }),
+        std::sync::Condvar::new(),
+    ));
+    let sync_for_thread = sync.clone();
     let title = window_title(name);
-    let thread = std::thread::Builder::new()
+    // Ownership is already claimed by `CreateMutexW`; don't block the main thread waiting for the listener
+    // HWND to finish creating (later launches retry `FindWindowW` for `FORWARD_PATIENCE`).
+    match std::thread::Builder::new()
         .name("glint-launch".into())
-        .spawn(move || listen(&title, incoming_in, ready_in))
-        .ok();
-    let window = thread.as_ref().and_then(|_| ready.recv().ok()).flatten();
-    match (thread, window) {
-        (Some(thread), Some(window)) => Some(Claim::First(Endpoint {
+        .spawn(move || listen(&title, incoming_in, sync_for_thread))
+    {
+        Ok(thread) => Some(Claim::First(Endpoint {
             mutex: mutex.0 as isize,
-            window,
+            sync,
             thread: Some(thread),
             incoming,
         })),
-        (thread, _) => {
-            // No listener: don't hold the name, or later launches would wait for a window that never comes.
+        Err(_) => {
             // SAFETY: the handle is ours, not stored anywhere, and not used again.
             let _ = unsafe { CloseHandle(mutex) };
-            drop(thread);
             None
         }
     }
@@ -641,14 +682,18 @@ fn claim(name: &str) -> Option<Claim> {
 /// Where each listener window's requests go, by window handle.
 static SINKS: Mutex<Vec<(isize, async_channel::Sender<Request>)>> = Mutex::new(Vec::new());
 
-/// The listener thread: makes the window, tells `claim` its handle (or `None`), then runs its message loop
+/// The listener thread: makes the window, publishes its handle via `sync`, then runs its message loop
 /// until the window is closed.
-fn listen(title: &str, sink: async_channel::Sender<Request>, ready: std::sync::mpsc::Sender<Option<isize>>) {
+fn listen(
+    title: &str,
+    sink: async_channel::Sender<Request>,
+    sync: std::sync::Arc<(Mutex<ListenerSync>, std::sync::Condvar)>,
+) {
     use windows::core::HSTRING;
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DispatchMessageW, GetMessageW, RegisterClassW, TranslateMessage, HWND_MESSAGE, MSG,
-        WINDOW_EX_STYLE, WINDOW_STYLE, WNDCLASSW,
+        CreateWindowExW, DestroyWindow, DispatchMessageW, GetMessageW, RegisterClassW, TranslateMessage, HWND_MESSAGE,
+        MSG, WINDOW_EX_STYLE, WINDOW_STYLE, WNDCLASSW,
     };
 
     // SAFETY: class registration and window creation on this thread, with static class data and a
@@ -679,12 +724,26 @@ fn listen(title: &str, sink: async_channel::Sender<Request>, ready: std::sync::m
         )
     };
     let Ok(window) = window else {
-        let _ = ready.send(None);
+        let (lock, cv) = &*sync;
+        let mut guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+        guard.state = ListenerState::Failed;
+        cv.notify_all();
         return;
     };
     let raw = window.0 as isize;
     lock(&SINKS).push((raw, sink));
-    let _ = ready.send(Some(raw));
+    let stopped_early = {
+        let (lock, cv) = &*sync;
+        let mut guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+        guard.state = ListenerState::Ready(raw);
+        cv.notify_all();
+        guard.stop
+    };
+    if stopped_early {
+        let _ = unsafe { DestroyWindow(window) };
+        lock(&SINKS).retain(|(handle, _)| *handle != raw);
+        return;
+    }
 
     let mut message = MSG::default();
     // SAFETY: the standard message loop on the thread that owns the window; ends on WM_QUIT (0) or an error (-1).
@@ -1172,6 +1231,7 @@ mod tests {
         let Some(Claim::First(first)) = claim(&name) else {
             panic!("the first claim should win")
         };
+        first.wait_ready();
         let window = find_listener(&name).expect("the listener window exists once claim returns");
         assert!(!send_copydata(window, COPYDATA_ID, b"not json"));
         assert!(!send_copydata(window, COPYDATA_ID + 1, b"{}"));

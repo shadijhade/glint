@@ -31,7 +31,7 @@ pub use import::{
 pub use xy_find::{xyplorer_found, Found};
 
 use crate::fsx::blocking;
-use glint_model::marks::{default_labels, settled, tidy, Beside, Label, Line, Why, COMMENT_CAP, TAGS_CAP};
+use glint_model::marks::{default_labels, settled, tidy, Label, Line, Why, COMMENT_CAP, TAGS_CAP};
 use ledger::Ledger;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -95,16 +95,18 @@ fn real<R>(f: impl FnOnce(&World) -> R) -> R {
     f(&World { streams: &caps::has_streams, ledger: ledger::shared(), empty: Some(ledger::shared_empty()), now })
 }
 
-/// The sidecars read in one batch, by folder in lower case: each is looked for once.
-type Sidecars = Mutex<HashMap<String, Arc<Option<Beside>>>>;
+/// The sidecars read in one batch, by folder in lower case: each is looked for once, and `OnceLock` coalesces
+/// concurrent Rayon threads so a folder's `.glint-marks` is only opened and parsed once.
+type Sidecars = Mutex<HashMap<String, Arc<std::sync::OnceLock<Option<beside::IndexedBeside>>>>>;
 
-fn sidecar(cache: &Sidecars, folder: &Path) -> Arc<Option<Beside>> {
+fn sidecar(cache: &Sidecars, folder: &Path) -> Arc<std::sync::OnceLock<Option<beside::IndexedBeside>>> {
     let key = folder.to_string_lossy().to_lowercase();
-    if let Some(known) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
-        return known.clone();
-    }
-    let read = Arc::new(beside::read(folder));
-    cache.lock().unwrap_or_else(|e| e.into_inner()).entry(key).or_insert(read).clone()
+    let cell = {
+        let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
+        guard.entry(key).or_insert_with(|| Arc::new(std::sync::OnceLock::new())).clone()
+    };
+    cell.get_or_init(|| beside::read_indexed(folder));
+    cell
 }
 
 /// The folder an item is in and its name; None for a drive's root, a relative name or anything with no name.
@@ -122,7 +124,7 @@ fn find(path: &str, w: &World, sidecars: &Sidecars) -> (Marks, Option<Home>) {
     }
     if let Some((folder, name)) = split(path) {
         let side = sidecar(sidecars, &folder);
-        if let Some(line) = (*side).as_ref().and_then(|b| beside::line(b, &name)).filter(|l| !l.marks.is_empty()) {
+        if let Some(line) = side.get().and_then(Option::as_ref).and_then(|b| b.line(&name)).filter(|l| !l.marks.is_empty()) {
             return (tidy(&line.marks), Some(Home::Beside));
         }
     }
@@ -225,7 +227,7 @@ fn work_with(items: Vec<(String, Change)>, w: &World, labels: &[Label]) -> Vec<O
                 Ok(()) => {
                     // The stream has it now: no line beside it or on this PC may say otherwise.
                     let side = sidecar(&sidecars, &folder);
-                    if (*side).as_ref().and_then(|b| beside::line(b, &name)).is_some() {
+                    if side.get().and_then(Option::as_ref).and_then(|b| b.line(&name)).is_some() {
                         let g = group_of(&folder, &mut groups);
                         groups[g].changes.push((name, Marks::default()));
                     }

@@ -62,8 +62,17 @@ pub fn spectrum(entries: &[FileEntry]) -> Vec<Category> {
 /// [`spectrum`], with the folder sizes measured for the folder: a folder weighs what was measured for it, or nothing
 /// (`sizes?.sizes.get(e.name) ?? 0`).
 pub fn spectrum_sized(entries: &[FileEntry], sizes: Option<&SizeRun>) -> Vec<Category> {
+    spectrum_sized_filtered(entries, sizes, false)
+}
+
+/// [`spectrum_sized`], optionally skipping hidden entries inline without cloning the listing.
+pub fn spectrum_sized_filtered(entries: &[FileEntry], sizes: Option<&SizeRun>, skip_hidden: bool) -> Vec<Category> {
     let mut out: Vec<Category> = Vec::new();
-    for entry in entries.iter().take(SAMPLE) {
+    for entry in entries
+        .iter()
+        .filter(|e| !skip_hidden || !glint_model::entries::is_hidden(e))
+        .take(SAMPLE)
+    {
         let group = if entry.dir { FOLDERS } else { *type_group(entry) };
         let bytes = if entry.dir {
             sizes.and_then(|run| run.size_of(&entry.name)).unwrap_or(0)
@@ -319,40 +328,48 @@ impl SelectedCount {
 }
 
 /// How many listings' make-ups are kept: the status bar's and both panes' heads'.
-const SPECTRA_KEPT: usize = 3;
+const SPECTRA_KEPT: usize = 6;
 
-type SizedBy = Option<(Arc<HashMap<String, u64>>, u64)>;
-/// Make-ups kept: each with the listing and the folder sizes it is of.
-type Spectra = Vec<(Arc<[FileEntry]>, SizedBy, Vec<Category>)>;
+type SizedBy = Option<(std::sync::Weak<HashMap<String, u64>>, u64)>;
+/// Make-ups kept: keyed by `Weak` so old listings are freed off the UI thread by `let_go` rather than pinned here.
+type Spectra = Vec<(std::sync::Weak<[FileEntry]>, bool, SizedBy, Vec<Category>)>;
 
 thread_local! {
-    /// The make-ups worked out last, newest first, each with the listing and the folder sizes it is of (held, so
-    /// their addresses aren't reused).
+    /// The make-ups worked out last, newest first.
     static SPECTRA: RefCell<Spectra> = const { RefCell::new(Vec::new()) };
 }
 
 /// [`spectrum_sized`] of a listing, worked out once for it and its folder sizes: the bar and each pane's head ask
 /// on every change of the explorer (an arrow key), and the listing is nearly always the one asked about before.
 pub fn spectrum_of(entries: &Arc<[FileEntry]>, sizes: Option<&SizeRun>) -> Vec<Category> {
-    let sized: SizedBy = sizes.map(|run| (run.sizes.clone(), run.version));
-    let same_sizes = |kept: &SizedBy| match (kept, &sized) {
-        (Some((a, v)), Some((b, w))) => Arc::ptr_eq(a, b) && v == w,
+    spectrum_of_shown(entries, sizes, false)
+}
+
+/// [`spectrum_of`], optionally skipping hidden entries inline without cloning the listing.
+pub fn spectrum_of_shown(entries: &Arc<[FileEntry]>, sizes: Option<&SizeRun>, skip_hidden: bool) -> Vec<Category> {
+    let entries_ptr = Arc::as_ptr(entries);
+    let sized_ptr = sizes.map(|run| (Arc::as_ptr(&run.sizes), run.version));
+    let same_sizes = |kept: &SizedBy| match (kept, sized_ptr) {
+        (Some((a, v)), Some((b, w))) => a.strong_count() > 0 && std::sync::Weak::as_ptr(a) == b && *v == w,
         (None, None) => true,
         _ => false,
     };
     SPECTRA.with(|kept| {
         let mut kept = kept.borrow_mut();
-        if let Some(at) = kept
-            .iter()
-            .position(|(listing, by, _)| Arc::ptr_eq(listing, entries) && same_sizes(by))
-        {
+        kept.retain(|(listing, _, _, _)| listing.strong_count() > 0);
+        if let Some(at) = kept.iter().position(|(listing, hidden, by, _)| {
+            *hidden == skip_hidden
+                && std::ptr::addr_eq(std::sync::Weak::as_ptr(listing), entries_ptr)
+                && same_sizes(by)
+        }) {
             let hit = kept.remove(at);
-            let spectrum = hit.2.clone();
+            let spectrum = hit.3.clone();
             kept.insert(0, hit);
             return spectrum;
         }
-        let spectrum = spectrum_sized(entries, sizes);
-        kept.insert(0, (entries.clone(), sized.clone(), spectrum.clone()));
+        let spectrum = spectrum_sized_filtered(entries, sizes, skip_hidden);
+        let weak_sizes = sizes.map(|run| (Arc::downgrade(&run.sizes), run.version));
+        kept.insert(0, (Arc::downgrade(entries), skip_hidden, weak_sizes, spectrum.clone()));
         kept.truncate(SPECTRA_KEPT);
         spectrum
     })

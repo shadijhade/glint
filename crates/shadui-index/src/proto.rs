@@ -367,19 +367,24 @@ pub fn unix_ms(filetime: i64) -> i64 {
 
 /// Appends one hit: flags, attributes, size, modified, then the path as length-prefixed UTF-8.
 pub fn encode_hit(out: &mut Vec<u8>, hit: &Hit) {
+    encode_hit_raw(out, &hit.path, hit.dir, hit.attrs, hit.size, hit.modified, hit.by);
+}
+
+/// Appends one hit directly from borrowed fields without allocating a `Hit { path: String }`.
+pub fn encode_hit_raw(out: &mut Vec<u8>, path: &str, dir: bool, attrs: u32, size: u64, modified: i64, by: u8) {
     // A path too long for its 16-bit length (deep \\?\ folders) is left out: cut mid-character, it
     // would make the app drop the whole batch.
-    let Ok(len) = u16::try_from(hit.path.len()) else { return };
-    out.push(hit.dir as u8 | hit.by & (HIT_BY_COMMENT | HIT_BY_TAG));
-    out.extend_from_slice(&hit.attrs.to_le_bytes());
-    out.extend_from_slice(&hit.size.to_le_bytes());
-    out.extend_from_slice(&hit.modified.to_le_bytes());
+    let Ok(len) = u16::try_from(path.len()) else { return };
+    out.push(dir as u8 | by & (HIT_BY_COMMENT | HIT_BY_TAG));
+    out.extend_from_slice(&attrs.to_le_bytes());
+    out.extend_from_slice(&size.to_le_bytes());
+    out.extend_from_slice(&modified.to_le_bytes());
     out.extend_from_slice(&len.to_le_bytes());
-    out.extend_from_slice(hit.path.as_bytes());
+    out.extend_from_slice(path.as_bytes());
 }
 
 pub fn decode_hits(mut bytes: &[u8]) -> Result<Vec<Hit>, String> {
-    let mut hits = Vec::new();
+    let mut hits = Vec::with_capacity(bytes.len() / 64);
     let bad = || "truncated search results".to_string();
     while !bytes.is_empty() {
         if bytes.len() < 23 {
@@ -463,6 +468,15 @@ pub fn write_frame<W: Write + ?Sized>(w: &mut W, kind: u8, payload: &[u8]) -> io
     frame.push(kind);
     frame.extend_from_slice(payload);
     w.write_all(&frame)
+}
+
+/// Writes a frame whose first 5 bytes were reserved for the length and kind header, avoiding a full-payload copy.
+pub fn write_frame_with_head<W: Write + ?Sized>(w: &mut W, kind: u8, buf: &mut [u8]) -> io::Result<()> {
+    debug_assert!(buf.len() >= 5);
+    let payload_len = (buf.len() - 5) as u32;
+    buf[0..4].copy_from_slice(&(payload_len + 1).to_le_bytes());
+    buf[4] = kind;
+    w.write_all(buf)
 }
 
 pub fn write_message<W: Write + ?Sized>(w: &mut W, message: &Message) -> io::Result<()> {

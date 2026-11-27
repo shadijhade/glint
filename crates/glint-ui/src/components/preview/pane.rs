@@ -159,7 +159,13 @@ pub fn resolve(rows: &Rows, selection: &Selection) -> Shown {
                     many.deck.push(entry.clone());
                 }
                 many.writable &= !(is_archived(entry) || is_recycled(entry) || is_remote(entry) || is_closed(entry));
-                many.paths.push(entry.path.clone());
+                // Paths are only kept for the Marks block (capped at MARKS_FOR) and two-file compare;
+                // large selections (e.g. Ctrl+A on 100k files) read paths from Explorer on click instead.
+                if many.count <= MARKS_FOR {
+                    many.paths.push(entry.path.clone());
+                } else if !many.paths.is_empty() {
+                    many.paths = Vec::new();
+                }
             }
             // The selection named things the rows no longer have (a filter hides them): what is left decides.
             match many.count {
@@ -374,7 +380,8 @@ impl PreviewPane {
                 }
                 // The Marks block of all of them (not for items in an archive, the Recycle Bin, a remote), up to
                 // `MARKS_FOR`: the block reads the marks of every item it is about.
-                let want = (many.writable && many.paths.len() <= MARKS_FOR).then(|| many.paths.clone());
+                let want = (many.writable && many.count <= MARKS_FOR && !many.paths.is_empty())
+                    .then(|| many.paths.clone());
                 if self.marks.as_ref().map(|(paths, _)| paths) != want.as_ref() {
                     self.marks = want.map(|paths| {
                         let block = cx.new(|cx| MarksBlock::new(paths.clone(), "preview-many", window, cx));
@@ -470,7 +477,7 @@ impl Render for PreviewPane {
         let t = theme::tokens(cx).clone();
         let body = match (&self.shown, &self.view) {
             (Shown::One(_), Some(view)) => view.clone().into_any_element(),
-            (Shown::Many(many), _) => self.many(many.clone(), &t, window, cx),
+            (Shown::Many(many), _) => self.many(many, &t, window, cx),
             _ => self.folder(&t, cx),
         };
         // A picture on its way is drawn unseen, under the old preview, so its place is measured and the picture is
@@ -497,7 +504,7 @@ impl Render for PreviewPane {
 // ---- Several items ----------------------------------------------------------------------------------------
 
 impl PreviewPane {
-    fn many(&self, many: Many, t: &theme::Tokens, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+    fn many(&self, many: &Many, t: &theme::Tokens, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let scale = window.scale_factor();
         let thumbs = self.thumbs.read(cx);
         let looks: Vec<_> = many
@@ -559,12 +566,13 @@ impl PreviewPane {
             }
         });
         let title = t!("{n} items selected", n = format_count(many.count));
-        let paths = many.paths.clone();
         // Two files, on disk, can be compared; any items on disk can be renamed and zipped.
         let pair = (many.count == 2 && many.files == 2 && many.paths.len() == 2)
             .then(|| (many.paths[0].clone(), many.paths[1].clone()));
+        let explorer = self.explorer.clone();
         let buttons = many.writable.then(|| {
-            let zip_paths = paths.clone();
+            let rename_explorer = explorer.clone();
+            let zip_explorer = explorer;
             row()
                 .flex_wrap()
                 .justify_center()
@@ -586,7 +594,16 @@ impl PreviewPane {
                         .icon(IconName::PenLine)
                         .label(t!("Rename"))
                         .accessibility_label(t!("Rename"))
-                        .on_click(move |_, window, cx| batch_rename::open(window, cx, paths.clone())),
+                        .on_click(move |_, window, cx| {
+                            let paths = rename_explorer
+                                .read(cx)
+                                .active_tab()
+                                .map(crate::components::status_bar::summary::selected_paths)
+                                .unwrap_or_default();
+                            if !paths.is_empty() {
+                                batch_rename::open(window, cx, paths);
+                            }
+                        }),
                 )
                 .child(
                     Button::new("preview-zip")
@@ -595,7 +612,16 @@ impl PreviewPane {
                         .icon(IconName::FileArchive)
                         .label(t!("Zip"))
                         .accessibility_label(t!("Zip"))
-                        .on_click(move |_, window, cx| zip(window, cx, zip_paths.clone())),
+                        .on_click(move |_, window, cx| {
+                            let paths = zip_explorer
+                                .read(cx)
+                                .active_tab()
+                                .map(crate::components::status_bar::summary::selected_paths)
+                                .unwrap_or_default();
+                            if !paths.is_empty() {
+                                zip(window, cx, paths);
+                            }
+                        }),
                 )
         });
         centered(cx)

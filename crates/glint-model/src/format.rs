@@ -177,15 +177,22 @@ fn cached_date(ms: i64, now: i64, locale: Option<&str>, language: Language) -> A
         // The label has no seconds, so every moment of a minute reads the same: a folder of files written a few
         // milliseconds apart (a camera's burst, a build's output) makes one label a minute, not one a file. Midnight,
         // where "Today" turns into "Yesterday", is always on a minute.
-        let minute = ms.div_euclid(MINUTE);
-        if let Some(hit) = cache.short.get(&(minute, language)) {
+        let key = (ms.div_euclid(MINUTE), language);
+        if let Some(hit) = cache.short_cur.get(&key) {
             return hit.clone();
         }
-        let formatted: Arc<str> = format_date_with_today(ms, today, locale, language).into();
-        if cache.short.len() >= MAX_CACHE_SIZE {
-            cache.short.clear();
+        if let Some(hit) = cache.short_prev.remove(&key) {
+            if cache.short_cur.len() >= MAX_CACHE_SIZE / 2 {
+                cache.short_prev = std::mem::take(&mut cache.short_cur);
+            }
+            cache.short_cur.insert(key, hit.clone());
+            return hit;
         }
-        cache.short.insert((minute, language), formatted.clone());
+        let formatted: Arc<str> = format_date_with_today_cached(cache, ms, today, locale, language).into();
+        if cache.short_cur.len() >= MAX_CACHE_SIZE / 2 {
+            cache.short_prev = std::mem::take(&mut cache.short_cur);
+        }
+        cache.short_cur.insert(key, formatted.clone());
         formatted
     })
 }
@@ -200,26 +207,42 @@ fn format_full_date_in(ms: i64, locale: Option<&str>) -> String {
         return String::new();
     }
     with_cache(|cache| {
-        if let Some(hit) = cache.full.get(&ms) {
+        if let Some(hit) = cache.full_cur.get(&ms) {
             return hit.to_string();
         }
-        let formatted = format_full(ms, locale);
-        if cache.full.len() >= MAX_CACHE_SIZE {
-            cache.full.clear();
+        if let Some(hit) = cache.full_prev.remove(&ms) {
+            let out = hit.to_string();
+            if cache.full_cur.len() >= MAX_CACHE_SIZE / 2 {
+                cache.full_prev = std::mem::take(&mut cache.full_cur);
+            }
+            cache.full_cur.insert(ms, hit);
+            return out;
         }
-        cache.full.insert(ms, formatted.as_str().into());
+        let formatted = format_full(ms, locale);
+        if cache.full_cur.len() >= MAX_CACHE_SIZE / 2 {
+            cache.full_prev = std::mem::take(&mut cache.full_cur);
+        }
+        cache.full_cur.insert(ms, formatted.as_str().into());
         formatted
     })
 }
 
 /// The day's start and the labels built for it, as the TypeScript kept them in module variables.
+/// Uses 2-generation rotation (`*_cur` / `*_prev`) so overflow evicts the older half smoothly instead of
+/// dropping all 4,096 cached entries at once, and caches user-locale day + minute-of-day parts separately.
 #[derive(Default)]
 struct DateCache {
     today_start: i64,
     today_end: i64,
     /// Short labels by minute (Unix milliseconds / 60,000) and language.
-    short: HashMap<(i64, Language), Arc<str>>,
-    full: HashMap<i64, Arc<str>>,
+    short_cur: HashMap<(i64, Language), Arc<str>>,
+    short_prev: HashMap<(i64, Language), Arc<str>>,
+    full_cur: HashMap<i64, Arc<str>>,
+    full_prev: HashMap<i64, Arc<str>>,
+    /// User-locale formatted times by minute-of-day (0..1440): at most 1,440 entries.
+    times: HashMap<u16, String>,
+    /// User-locale formatted short dates by `(year, month, day)`.
+    days: HashMap<(i32, u32, u32), String>,
 }
 
 thread_local! {
@@ -241,8 +264,45 @@ fn today_start_cached(cache: &mut DateCache, now: i64) -> i64 {
     let start = local_midnight(now);
     cache.today_start = start;
     cache.today_end = start + DAY;
-    cache.short.clear();
+    cache.short_cur.clear();
+    cache.short_prev.clear();
     start
+}
+
+fn format_date_with_today_cached(
+    cache: &mut DateCache,
+    ms: i64,
+    today: i64,
+    locale: Option<&str>,
+    language: Language,
+) -> String {
+    if locale.is_some() {
+        return format_date_with_today(ms, today, locale, language);
+    }
+    let Some(date) = local_datetime(ms) else {
+        return String::new();
+    };
+    let minute_of_day = (date.hour() * 60 + date.minute()) as u16;
+    let time = cache
+        .times
+        .entry(minute_of_day)
+        .or_insert_with(|| format_time(&date, None, TIME_NOSECONDS))
+        .clone();
+    if ms >= today && ms < today + DAY {
+        format!("{} {time}", translate(language, crate::english!("Today")))
+    } else if ms >= today - DAY && ms < today {
+        format!("{} {time}", translate(language, crate::english!("Yesterday")))
+    } else {
+        let day_key = (date.year(), date.month(), date.day());
+        if cache.days.len() >= MAX_CACHE_SIZE {
+            cache.days.clear();
+        }
+        let day = cache
+            .days
+            .entry(day_key)
+            .or_insert_with(|| format_short_date(&date, None));
+        format!("{day} {time}")
+    }
 }
 
 fn format_date_with_today(ms: i64, today: i64, locale: Option<&str>, language: Language) -> String {
@@ -379,20 +439,42 @@ fn grouping_code(spec: &str) -> u32 {
     }
 }
 
-/// How a locale groups the digits of whole numbers: the separator between groups, and the sizes of the groups
-/// as `grouping_code` gives them.
+/// How a locale groups the digits of whole numbers: the separator between groups, and the pre-parsed group sizes
+/// (nearest the end first).
 struct DigitGroups {
     separator: String,
+    #[cfg(test)]
     grouping: u32,
+    sizes: [usize; 10],
+    count: usize,
 }
 
 impl DigitGroups {
+    fn from_code(separator: String, grouping: u32) -> DigitGroups {
+        let mut sizes = [0usize; 10];
+        let mut count = 0;
+        let mut rest = grouping;
+        while rest > 0 && count < sizes.len() {
+            sizes[count] = (rest % 10) as usize;
+            rest /= 10;
+            count += 1;
+        }
+        // The code's first digit is the group nearest the end.
+        sizes[..count].reverse();
+        DigitGroups {
+            separator,
+            #[cfg(test)]
+            grouping,
+            sizes,
+            count,
+        }
+    }
+
     fn read(locale: Option<&str>) -> DigitGroups {
         let name = LocaleName::new(locale);
-        DigitGroups {
-            separator: locale_string(&name, LOCALE_STHOUSAND).unwrap_or_else(|| ",".to_owned()),
-            grouping: grouping_code(&locale_string(&name, LOCALE_SGROUPING).unwrap_or_default()),
-        }
+        let grouping = grouping_code(&locale_string(&name, LOCALE_SGROUPING).unwrap_or_default());
+        let separator = locale_string(&name, LOCALE_STHOUSAND).unwrap_or_else(|| ",".to_owned());
+        DigitGroups::from_code(separator, grouping)
     }
 
     /// The user's own, read once a run: a change to Windows' region settings shows from Glint's next start.
@@ -405,22 +487,12 @@ impl DigitGroups {
     /// them: the first size is the group nearest the end, each size after it the next group left, and the last
     /// size repeats. A number no longer than the first group (any under 1,000, in every locale) is copied as is.
     fn push(&self, out: &mut String, digits: &str) {
-        let mut sizes = [0usize; 10];
-        let mut count = 0;
-        let mut rest = self.grouping;
-        while rest > 0 && count < sizes.len() {
-            sizes[count] = (rest % 10) as usize;
-            rest /= 10;
-            count += 1;
-        }
-        // The code's first digit is the group nearest the end.
-        sizes[..count].reverse();
         // Where separators go, counted from the start, the last one first.
         let mut cuts = [0usize; 40];
         let mut cut_count = 0;
         let mut left = digits.len();
-        while count > 0 && cut_count < cuts.len() {
-            let size = sizes[cut_count.min(count - 1)];
+        while self.count > 0 && cut_count < cuts.len() {
+            let size = self.sizes[cut_count.min(self.count - 1)];
             if size == 0 || left <= size {
                 break;
             }
@@ -804,11 +876,7 @@ mod tests {
     fn groups_follow_their_sizes_from_the_right() {
         let grouped = |grouping, digits: &str| {
             let mut out = String::new();
-            DigitGroups {
-                separator: ",".into(),
-                grouping,
-            }
-            .push(&mut out, digits);
+            DigitGroups::from_code(",".into(), grouping).push(&mut out, digits);
             out
         };
         assert_eq!(grouped(3, "1234567"), "1,234,567");

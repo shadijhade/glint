@@ -388,35 +388,177 @@ pub fn group_order_marked<E: std::borrow::Borrow<FileEntry>>(
     git: Option<&GitMarks>,
     marks: Option<MarkReads>,
 ) -> GroupedOrder {
+    // Fast path: ungrouped (or label grouping without marks) keeps all rows in one bucket with no sort.
+    if by == GroupBy::None || (by == GroupBy::Label && marks.is_none()) {
+        if rows.is_empty() {
+            return GroupedOrder {
+                order: Vec::new(),
+                headers: Vec::new(),
+                lines: Vec::new(),
+                line_of: Vec::new(),
+            };
+        }
+        let mut total_size = 0u64;
+        let mut order = Vec::with_capacity(rows.len());
+        let mut lines = Vec::with_capacity(rows.len() + 1);
+        let mut line_of = Vec::with_capacity(rows.len());
+        lines.push(-1);
+        for (i, entry) in rows.iter().enumerate() {
+            let entry = entry.borrow();
+            total_size += if entry.dir {
+                size_of.and_then(|f| f(entry)).unwrap_or(0)
+            } else {
+                entry.size
+            };
+            line_of.push(line_number(lines.len()));
+            lines.push(line_number(i));
+            order.push(i);
+        }
+        return GroupedOrder {
+            order,
+            headers: vec![GroupHeader {
+                label: String::new(),
+                count: rows.len(),
+                size: total_size,
+                first: 0,
+            }],
+            lines,
+            line_of,
+        };
+    }
+
     let bounds = if by == GroupBy::Date {
         DateBounds::new(now)
     } else {
         None
     };
-    let mut keyed: Vec<(usize, Group)> = rows
-        .iter()
-        .enumerate()
-        .map(|(i, entry)| (i, group_in(entry.borrow(), by, bounds.as_ref(), size_of, git, marks)))
-        .collect();
-    keyed.sort_by(|(i, a), (j, b)| {
-        a.rank
-            .cmp(&b.rank)
-            .then_with(|| js_label_order(&a.label, &b.label))
-            .then_with(|| i.cmp(j))
-    });
-    let mut order: Vec<usize> = Vec::with_capacity(rows.len());
-    let mut headers: Vec<GroupHeader> = Vec::new();
-    let mut lines: Vec<i32> = Vec::with_capacity(rows.len());
-    let mut line_of: Vec<i32> = vec![0; rows.len()];
-    let mut current: Option<&str> = None;
-    for (i, group) in &keyed {
-        let Some(entry) = rows.get(*i).map(|entry| entry.borrow()) else {
-            continue;
+
+    struct Bucket {
+        group: Group,
+        indices: Vec<usize>,
+        size: u64,
+    }
+
+    // Single-pass O(N) bucketing preserves intra-group order without sorting all N rows; only the K
+    // unique group headers are sorted afterwards (O(K log K)).
+    let mut buckets: Vec<Bucket> = Vec::new();
+    let mut by_key: HashMap<(i64, Cow<'static, str>), usize> = HashMap::new();
+    // Cache `type_label` by extension so 100k `.jpg` rows format their label once.
+    let mut type_labels: HashMap<&str, Cow<'static, str>> = HashMap::new();
+    // Cache prior-year labels so older-year dates don't reallocate `year.to_string()` per row.
+    let mut year_labels: HashMap<i32, Cow<'static, str>> = HashMap::new();
+
+    for (i, raw) in rows.iter().enumerate() {
+        let entry = raw.borrow();
+        let mut computed_dir_size: Option<Option<u64>> = None;
+        let grp = match by {
+            GroupBy::Type if !entry.dir => {
+                let ext = entry.ext();
+                let label = if let Some(cached) = type_labels.get(ext) {
+                    cached.clone()
+                } else {
+                    let made: Cow<'static, str> = Cow::Owned(type_label(entry));
+                    type_labels.insert(ext, made.clone());
+                    made
+                };
+                Group { rank: 0, label }
+            }
+            GroupBy::Size if entry.dir => {
+                let measured = size_of.and_then(|f| f(entry));
+                computed_dir_size = Some(measured);
+                match measured {
+                    Some(sz) => size_group(sz),
+                    None => group(-1, crate::english!("Folders")),
+                }
+            }
+            GroupBy::Label => {
+                let m = marks.expect("checked above");
+                let none = Marks::default();
+                let (label, place) = crate::marks::shown_label(m.labels, (m.of)(entry).unwrap_or(&none));
+                match (label, place) {
+                    (Some(name), Some(at)) => Group {
+                        rank: i64::try_from(at).unwrap_or(i64::MAX - 2),
+                        label: Cow::Owned(name.to_owned()),
+                    },
+                    (Some(name), None) => Group {
+                        rank: i64::try_from(m.labels.len()).unwrap_or(i64::MAX - 2),
+                        label: Cow::Owned(name.to_owned()),
+                    },
+                    _ => Group {
+                        rank: i64::try_from(m.labels.len()).map_or(i64::MAX, |n| n + 1),
+                        label: Cow::Borrowed("No label"),
+                    },
+                }
+            }
+            GroupBy::Date => {
+                if entry.modified == 0 {
+                    group(99, crate::english!("Unknown"))
+                } else if let Some(b) = bounds.as_ref() {
+                    if entry.modified >= b.year_start {
+                        b.group(entry.modified)
+                    } else if let Some(year) = Local.timestamp_millis_opt(entry.modified).earliest().map(|d| d.year()) {
+                        let label = year_labels
+                            .entry(year)
+                            .or_insert_with(|| Cow::Owned(year.to_string()))
+                            .clone();
+                        Group {
+                            rank: 8 + i64::from(b.year) - i64::from(year),
+                            label,
+                        }
+                    } else {
+                        group(99, crate::english!("Unknown"))
+                    }
+                } else {
+                    group(99, crate::english!("Unknown"))
+                }
+            }
+            _ => group_in(entry, by, bounds.as_ref(), size_of, git, marks),
         };
-        if current != Some(group.label.as_ref()) {
-            current = Some(group.label.as_ref());
+        let entry_size = if entry.dir {
+            match computed_dir_size {
+                Some(measured) => measured.unwrap_or(0),
+                None => size_of.and_then(|f| f(entry)).unwrap_or(0),
+            }
+        } else {
+            entry.size
+        };
+        let bucket_idx = match by_key.get(&(grp.rank, grp.label.clone())) {
+            Some(&idx) => idx,
+            None => {
+                let idx = buckets.len();
+                by_key.insert((grp.rank, grp.label.clone()), idx);
+                buckets.push(Bucket {
+                    group: grp,
+                    indices: Vec::new(),
+                    size: 0,
+                });
+                idx
+            }
+        };
+        let bucket = &mut buckets[bucket_idx];
+        bucket.indices.push(i);
+        bucket.size += entry_size;
+    }
+
+    buckets.sort_by(|a, b| {
+        a.group
+            .rank
+            .cmp(&b.group.rank)
+            .then_with(|| js_label_order(&a.group.label, &b.group.label))
+    });
+
+    let mut order: Vec<usize> = Vec::with_capacity(rows.len());
+    let mut headers: Vec<GroupHeader> = Vec::with_capacity(buckets.len());
+    let mut lines: Vec<i32> = Vec::with_capacity(rows.len() + buckets.len());
+    let mut line_of: Vec<i32> = vec![0; rows.len()];
+    let mut current: Option<String> = None;
+
+    for bucket in buckets {
+        if current.as_deref() != Some(bucket.group.label.as_ref()) {
+            let said = bucket.group.said();
+            current = Some(bucket.group.label.into_owned());
             headers.push(GroupHeader {
-                label: group.said(),
+                label: said,
                 count: 0,
                 size: 0,
                 first: order.len(),
@@ -424,19 +566,17 @@ pub fn group_order_marked<E: std::borrow::Borrow<FileEntry>>(
             lines.push(-line_number(headers.len()));
         }
         if let Some(header) = headers.last_mut() {
-            header.count += 1;
-            // A folder not measured yet counts as 0.
-            header.size += if entry.dir {
-                size_of.and_then(|f| f(entry)).unwrap_or(0)
-            } else {
-                entry.size
-            };
+            header.count += bucket.indices.len();
+            header.size += bucket.size;
         }
-        if let Some(slot) = line_of.get_mut(order.len()) {
-            *slot = line_number(lines.len());
+        for i in bucket.indices {
+            let pos = order.len();
+            if let Some(slot) = line_of.get_mut(pos) {
+                *slot = line_number(lines.len());
+            }
+            lines.push(line_number(pos));
+            order.push(i);
         }
-        lines.push(line_number(order.len()));
-        order.push(*i);
     }
     GroupedOrder {
         order,

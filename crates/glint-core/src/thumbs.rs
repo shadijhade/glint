@@ -446,6 +446,9 @@ type Reply = Sender<Arc<Thumb>>;
 struct Shared {
     queue: Mutex<Queue<Reply>>,
     work: Condvar,
+    /// Dedicated condvar for thumbnail maker threads so Lookup -> Make transitions don't wake lookup threads.
+    makers: Condvar,
+    idle_lookups: std::sync::atomic::AtomicUsize,
     started: Once,
 }
 
@@ -460,6 +463,8 @@ impl Default for Thumbs {
         Thumbs(Arc::new(Shared {
             queue: Mutex::new(queue),
             work: Condvar::new(),
+            makers: Condvar::new(),
+            idle_lookups: std::sync::atomic::AtomicUsize::new(0),
             started: Once::new(),
         }))
     }
@@ -518,7 +523,13 @@ fn work(shared: &Shared, makes: bool) {
                 if let Some(task) = queue.next(makes) {
                     break task;
                 }
-                queue = shared.work.wait(queue).unwrap_or_else(|e| e.into_inner());
+                if makes {
+                    queue = shared.makers.wait(queue).unwrap_or_else(|e| e.into_inner());
+                } else {
+                    shared.idle_lookups.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    queue = shared.work.wait(queue).unwrap_or_else(|e| e.into_inner());
+                    shared.idle_lookups.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                }
             }
         };
         // A bug here mustn't take the thread down with its job left running (its tiles would wait for good).
@@ -537,8 +548,8 @@ fn work(shared: &Shared, makes: bool) {
                     crate::color_index::offer(&task.path, task.key.modified, pixels);
                 }
             }
-            // On to a thread that makes thumbnails.
-            None => shared.work.notify_all(),
+            // On to a single thread that makes thumbnails (never waking lookup-only threads).
+            None => shared.makers.notify_one(),
         }
     }
 }
@@ -642,7 +653,7 @@ async fn request(
         path
     };
     let shared = &state.0;
-    let mut answer = {
+    let (mut answer, wake_lookup) = {
         let mut queue = shared.lock();
         if let Some(thumb) = queue.memory.get(&key) {
             return Ok(thumb.answer(ThumbFrom::Memory));
@@ -659,11 +670,15 @@ async fn request(
                 reply,
             },
         );
-        answer
+        (answer, shared.idle_lookups.load(std::sync::atomic::Ordering::Relaxed) > 0)
     };
     #[cfg(windows)]
     start(shared);
-    shared.work.notify_one();
+    if wake_lookup {
+        shared.work.notify_one();
+    } else {
+        shared.makers.notify_one();
+    }
     match answer.recv().await {
         Some(thumb) => Ok(thumb.answer(thumb.source)),
         None => Err("cancelled".into()),
@@ -733,15 +748,14 @@ pub fn straighten_alpha(bgra: &mut [u8]) {
 #[cfg(windows)]
 pub(crate) mod win {
     use super::{from_smaller_size, straighten_alpha, Outcome, Pixels};
-    use std::collections::HashMap;
     use std::path::Path;
-    use std::sync::{Mutex, OnceLock};
+    use std::sync::OnceLock;
     use std::time::Instant;
     use windows::core::{HRESULT, HSTRING, PWSTR};
     use windows::Win32::Foundation::{E_FAIL, SIZE};
     use windows::Win32::Graphics::Gdi::{
         CreateCompatibleDC, DeleteDC, DeleteObject, GetDIBits, GetObjectW, BITMAP, BITMAPINFO, BITMAPINFOHEADER,
-        BI_RGB, DIB_RGB_COLORS, HBITMAP, HGDIOBJ,
+        BI_RGB, DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ,
     };
     use windows::Win32::System::Com::{
         CoCreateInstance, CoInitializeEx, IBindCtx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
@@ -895,26 +909,20 @@ pub(crate) mod win {
     /// associations, and by the app the person chose to open it with, which could bring a handler of
     /// its own.
     pub fn photo_provider(path: &str) -> bool {
-        static KNOWN: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
-        let Some(ext) = Path::new(path)
-            .extension()
-            .map(|e| format!(".{}", e.to_string_lossy().to_lowercase()))
-        else {
+        static KNOWN: [OnceLock<bool>; BUILT_IN.len()] = [const { OnceLock::new() }; BUILT_IN.len()];
+        let Some(ext) = Path::new(path).extension().and_then(|e| e.to_str()) else {
             return false;
         };
-        if !BUILT_IN.contains(&ext.as_str()) {
+        let Some(idx) = BUILT_IN.iter().position(|e| e[1..].eq_ignore_ascii_case(ext)) else {
             return false;
-        }
-        let known = KNOWN.get_or_init(Default::default);
-        if let Some(&photo) = known.lock().unwrap_or_else(|e| e.into_inner()).get(&ext) {
-            return photo;
-        }
-        let photo = handler(&ext).is_some_and(|h| h.eq_ignore_ascii_case(PHOTO_PROVIDER))
-            && user_choice(&ext)
-                .and_then(|prog_id| handler(&prog_id))
-                .is_none_or(|h| h.eq_ignore_ascii_case(PHOTO_PROVIDER));
-        known.lock().unwrap_or_else(|e| e.into_inner()).insert(ext, photo);
-        photo
+        };
+        *KNOWN[idx].get_or_init(|| {
+            let dot_ext = BUILT_IN[idx];
+            handler(dot_ext).is_some_and(|h| h.eq_ignore_ascii_case(PHOTO_PROVIDER))
+                && user_choice(dot_ext)
+                    .and_then(|prog_id| handler(&prog_id))
+                    .is_none_or(|h| h.eq_ignore_ascii_case(PHOTO_PROVIDER))
+        })
     }
 
     /// What Glint makes thumbnails of itself, where Windows has no handler for them: a PDF's first page.
@@ -924,23 +932,17 @@ pub(crate) mod win {
     /// handler, for its extension or for the app chosen to open it (Acrobat's, say, wins). Asked once
     /// per extension.
     pub fn own_thumbnail(path: &str) -> bool {
-        static KNOWN: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
-        let Some(ext) = Path::new(path)
-            .extension()
-            .map(|e| format!(".{}", e.to_string_lossy().to_lowercase()))
-        else {
+        static KNOWN: [OnceLock<bool>; OWN.len()] = [const { OnceLock::new() }; OWN.len()];
+        let Some(ext) = Path::new(path).extension().and_then(|e| e.to_str()) else {
             return false;
         };
-        if !OWN.contains(&ext.as_str()) {
+        let Some(idx) = OWN.iter().position(|e| e[1..].eq_ignore_ascii_case(ext)) else {
             return false;
-        }
-        let known = KNOWN.get_or_init(Default::default);
-        if let Some(&own) = known.lock().unwrap_or_else(|e| e.into_inner()).get(&ext) {
-            return own;
-        }
-        let own = handler(&ext).is_none() && user_choice(&ext).and_then(|prog_id| handler(&prog_id)).is_none();
-        known.lock().unwrap_or_else(|e| e.into_inner()).insert(ext, own);
-        own
+        };
+        *KNOWN[idx].get_or_init(|| {
+            let dot_ext = OWN[idx];
+            handler(dot_ext).is_none() && user_choice(dot_ext).and_then(|prog_id| handler(&prog_id)).is_none()
+        })
     }
 
     /// A PDF's first page, `size` pixels on its long side: drawn by Windows' own PDF renderer (Windows.Data.Pdf,
@@ -1061,18 +1063,32 @@ pub(crate) mod win {
             },
             ..Default::default()
         };
+        struct MemDc(HDC);
+        impl Drop for MemDc {
+            fn drop(&mut self) {
+                if !self.0.is_invalid() {
+                    unsafe {
+                        let _ = DeleteDC(self.0);
+                    }
+                }
+            }
+        }
+        thread_local! {
+            static DC: std::cell::OnceCell<MemDc> = const { std::cell::OnceCell::new() };
+        }
         let mut bgra = vec![0u8; width as usize * height as usize * 4];
-        let dc = CreateCompatibleDC(None);
-        let lines = GetDIBits(
-            dc,
-            bitmap,
-            0,
-            height as u32,
-            Some(bgra.as_mut_ptr() as *mut _),
-            &mut header,
-            DIB_RGB_COLORS,
-        );
-        let _ = DeleteDC(dc);
+        let lines = DC.with(|cell| {
+            let dc = cell.get_or_init(|| MemDc(CreateCompatibleDC(None))).0;
+            GetDIBits(
+                dc,
+                bitmap,
+                0,
+                height as u32,
+                Some(bgra.as_mut_ptr() as *mut _),
+                &mut header,
+                DIB_RGB_COLORS,
+            )
+        });
         if lines != height {
             return None;
         }

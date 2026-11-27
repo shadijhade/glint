@@ -178,12 +178,8 @@ fn walk_capped(folders: &[String], limit: usize) -> Vec<Entry> {
 /// Gallery as a listing: each photo and video at its own path, its date when it was taken where it says
 /// (else when it was modified), newest first. Files not dated yet are read in the background.
 pub fn listing(started: Instant) -> Result<fsx::Listing, String> {
-    let folders: Vec<String> = state()
-        .folders
-        .iter()
-        .filter(|f| Path::new(f).is_dir())
-        .cloned()
-        .collect();
+    let mut folders = state().folders.clone();
+    folders.retain(|f| Path::new(f).is_dir());
     let mut entries = files(&folders);
     let mut unread = Vec::new();
     with_records(|records| {
@@ -240,12 +236,8 @@ fn date(unread: Vec<Job>) {
 /// The files the map looks into for `folder` (or all Gallery folders for `shell:Gallery`).
 fn geo_entries(folder: &str) -> Vec<Entry> {
     if is_place(folder) {
-        let folders: Vec<String> = state()
-            .folders
-            .iter()
-            .filter(|f| Path::new(f).is_dir())
-            .cloned()
-            .collect();
+        let mut folders = state().folders.clone();
+        folders.retain(|f| Path::new(f).is_dir());
         files(&folders).into_iter().take(GEO_CAP).collect()
     } else if Path::new(folder).is_dir() {
         walk_capped(&[folder.to_string()], GEO_CAP)

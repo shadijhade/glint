@@ -276,6 +276,9 @@ impl Explorer {
             self.quick_look = false;
         }
         self.forget(id, closed.as_ref(), cx);
+        if let Some(closed) = closed {
+            super::model::let_go_any(closed, cx);
+        }
         if shown {
             self.show_tab(active, cx);
         }
@@ -305,7 +308,11 @@ impl Explorer {
         self.quick_look = false;
         self.editing_address = false;
         for (id, tab) in closed {
+            super::model::let_go(tab.as_ref().and_then(|t| t.shared_entries()), cx);
             self.forget(id, tab.as_ref(), cx);
+            if let Some(tab) = tab {
+                super::model::let_go_any(tab, cx);
+            }
         }
         self.sync_watches();
         let path = self.current_path().to_string();

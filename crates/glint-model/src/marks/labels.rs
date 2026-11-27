@@ -37,25 +37,69 @@ pub fn default_labels() -> Vec<Label> {
 
 /// The label a file's `name` means, with its place in `labels`: by its name or one it `was`, in any case.
 pub fn label_of<'a>(labels: &'a [Label], name: &str) -> Option<(usize, &'a Label)> {
-    let want = fold(name);
+    let want = name.trim();
     if want.is_empty() {
         return None;
     }
+    // Precompute lowercase only if `want` is non-ASCII; ASCII labels compare with zero allocations.
+    let want_lower = (!want.is_ascii()).then(|| want.to_lowercase());
     labels
         .iter()
         .enumerate()
-        .find(|(_, l)| fold(&l.name) == want)
-        .or_else(|| labels.iter().enumerate().find(|(_, l)| l.was.iter().any(|w| fold(w) == want)))
+        .find(|(_, l)| same_label_with(&l.name, want, want_lower.as_deref()))
+        .or_else(|| {
+            labels
+                .iter()
+                .enumerate()
+                .find(|(_, l)| l.was.iter().any(|w| same_label_with(w, want, want_lower.as_deref())))
+        })
 }
 
-/// A name as compared: trimmed, lower case, and Grey is Gray (XYplorer's seventh label is called Grey).
-fn fold(name: &str) -> String {
-    let n = name.trim().to_lowercase();
-    if n == "grey" {
-        "gray".to_string()
+/// Whether two label names match (trimmed, case-insensitive, and Grey == Gray for XYplorer compatibility).
+fn same_label_with(candidate: &str, want_trimmed: &str, want_lower: Option<&str>) -> bool {
+    let c = candidate.trim();
+    if c.is_ascii() && want_lower.is_none() {
+        c.eq_ignore_ascii_case(want_trimmed)
+            || (c.eq_ignore_ascii_case("grey") && want_trimmed.eq_ignore_ascii_case("gray"))
+            || (c.eq_ignore_ascii_case("gray") && want_trimmed.eq_ignore_ascii_case("grey"))
     } else {
-        n
+        let cl = c.to_lowercase();
+        let wl_owned;
+        let wl = match want_lower {
+            Some(s) => s,
+            None => {
+                wl_owned = want_trimmed.to_lowercase();
+                &wl_owned
+            }
+        };
+        fn norm(s: &str) -> &str {
+            if s == "grey" { "gray" } else { s }
+        }
+        norm(&cl) == norm(wl)
     }
+}
+
+fn same_label(a: &str, b: &str) -> bool {
+    let b = b.trim();
+    let b_lower = (!b.is_ascii()).then(|| b.to_lowercase());
+    same_label_with(a, b, b_lower.as_deref())
+}
+
+/// Just the label name and its place in `labels` for `marks`, borrowing without cloning `marks.tags`.
+pub(crate) fn shown_label<'a>(labels: &'a [Label], marks: &'a Marks) -> (Option<&'a str>, Option<usize>) {
+    if let Some(l) = &marks.label {
+        let found = label_of(labels, l);
+        return (
+            Some(found.map_or(l.as_str(), |(_, x)| x.name.as_str())),
+            found.map(|(i, _)| i),
+        );
+    }
+    for tag in &marks.tags {
+        if let Some((i, label)) = label_of(labels, tag) {
+            return (Some(label.name.as_str()), Some(i));
+        }
+    }
+    (None, None)
 }
 
 /// What a row draws for an item's marks (5.5, 5.6).
@@ -104,7 +148,7 @@ pub fn settled(labels: &[Label], marks: &Marks) -> Marks {
         }
         Some(l) => {
             if let Some((_, label)) = label_of(labels, &l) {
-                if fold(&label.name) != fold(&l) {
+                if !same_label(&label.name, &l) {
                     m.label = Some(label.name.clone());
                 }
             }

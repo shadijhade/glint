@@ -127,25 +127,39 @@ fn job<T: Send + 'static>(
     });
 }
 
-/// The pictures' sizes: all their headers read together through the I/O ring, the size told from each, and the
-/// slower way for any that the ring or the header didn't give.
+/// The pictures' sizes: headers read in bounded chunks through the I/O ring (keeping peak memory small and
+/// checking `stop` between chunks), the size told from each, and the slower way for any that the ring or header
+/// didn't give.
 fn picture_sizes(paths: Vec<String>, stop: &AtomicBool, out: &Channel<Answer>) {
-    let asks: Vec<ioring::Ask> = paths.iter().map(|path| ioring::Ask { path, slices: vec![(0, HEADER)] }).collect();
-    let got = ioring::read_many(&asks);
-    drop(asks);
-    for (n, path) in paths.iter().enumerate() {
+    let mut ring_ok = true;
+    for chunk in paths.chunks(64) {
         if stop.load(Ordering::Relaxed) {
             return;
         }
-        let bytes = got
-            .as_ref()
-            .and_then(|all| all.get(n))
-            .and_then(|one| one.as_ref())
-            .and_then(|one| one.slices.first());
-        let size = bytes.and_then(|bytes| imagesize::blob_size(bytes).ok()).or_else(|| imagesize::size(path).ok());
-        if let Some(size) = size {
-            if let (Ok(width), Ok(height)) = (u32::try_from(size.width), u32::try_from(size.height)) {
-                send(out, path, Part::Media(Media { width, height, seconds: 0.0 }));
+        let got = if ring_ok {
+            let asks: Vec<ioring::Ask> = chunk.iter().map(|path| ioring::Ask { path, slices: vec![(0, HEADER)] }).collect();
+            let res = ioring::read_many_opts(&asks, false);
+            if res.is_none() {
+                ring_ok = false;
+            }
+            res
+        } else {
+            None
+        };
+        for (n, path) in chunk.iter().enumerate() {
+            if stop.load(Ordering::Relaxed) {
+                return;
+            }
+            let bytes = got
+                .as_ref()
+                .and_then(|all| all.get(n))
+                .and_then(|one| one.as_ref())
+                .and_then(|one| one.slices.first());
+            let size = bytes.and_then(|bytes| imagesize::blob_size(bytes).ok()).or_else(|| imagesize::size(path).ok());
+            if let Some(size) = size {
+                if let (Ok(width), Ok(height)) = (u32::try_from(size.width), u32::try_from(size.height)) {
+                    send(out, path, Part::Media(Media { width, height, seconds: 0.0 }));
+                }
             }
         }
     }

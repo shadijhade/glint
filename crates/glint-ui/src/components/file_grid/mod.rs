@@ -495,6 +495,7 @@ impl FileGrid {
         self.thumbs.update(cx, |thumbs, cx| thumbs.release(id, cx));
         self.scroll_ahead.release(&self.thumbs, cx);
         self.shown.set(0);
+        self.drawn = None;
         self.stop_pointer();
         self.dragging = None;
         self.drop_over = None;

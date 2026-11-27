@@ -735,13 +735,38 @@ mod imp {
         ) != Some(0)
     }
 
+    thread_local! {
+        /// Cached Windows taskbar theme (invalidated on `WM_SETTINGCHANGE` `ImmersiveColorSet`).
+        static TASKBAR_LIGHT: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+        /// Cached `ITaskbarList3` COM object for the UI thread, initialized once with `HrInit`.
+        static TASKBAR_LIST: std::cell::OnceCell<Option<ITaskbarList3>> = const { std::cell::OnceCell::new() };
+    }
+
+    fn taskbar_list() -> Option<ITaskbarList3> {
+        TASKBAR_LIST.with(|cell| {
+            cell.get_or_init(|| unsafe {
+                let bar: ITaskbarList3 = CoCreateInstance(&TaskbarList, None, CLSCTX_INPROC_SERVER).ok()?;
+                bar.HrInit().ok()?;
+                Some(bar)
+            })
+            .clone()
+        })
+    }
+
     /// Windows' own parts (the taskbar, its previews) are light: Settings, Personalization, Colors.
     fn taskbar_is_light() -> bool {
-        reg_dword(
-            r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
-            "SystemUsesLightTheme",
-        )
-        .is_some_and(|v| v != 0)
+        TASKBAR_LIGHT.with(|cell| {
+            if let Some(cached) = cell.get() {
+                return cached;
+            }
+            let light = reg_dword(
+                r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+                "SystemUsesLightTheme",
+            )
+            .is_some_and(|v| v != 0);
+            cell.set(Some(light));
+            light
+        })
     }
 
     // ---- The exe the list's entries start ----
@@ -863,12 +888,11 @@ mod imp {
     // ---- Taskbar progress ----
 
     pub fn taskbar_progress(hwnd: HWND, state: ProgressState, completed: Option<u64>, total: Option<u64>) {
+        let Some(bar) = taskbar_list() else {
+            return;
+        };
         // SAFETY: COM calls on the UI thread (OLE is initialized by GPUI) with a window handle.
         unsafe {
-            let Ok(bar) = CoCreateInstance::<_, ITaskbarList3>(&TaskbarList, None, CLSCTX_INPROC_SERVER) else {
-                return;
-            };
-            let _ = bar.HrInit();
             let flag = match state {
                 ProgressState::Indeterminate => TBPF_INDETERMINATE,
                 ProgressState::Normal => TBPF_NORMAL,
@@ -938,14 +962,11 @@ mod imp {
 
     /// Puts the buttons on the taskbar button, or brings them up to date there.
     fn show_thumbs(hwnd: HWND) {
+        let Some(bar) = taskbar_list() else {
+            return;
+        };
         // SAFETY: COM calls on the UI thread with a window handle; icons are owned by `THUMBS` until replaced.
         unsafe {
-            let Ok(bar) = CoCreateInstance::<_, ITaskbarList3>(&TaskbarList, None, CLSCTX_INPROC_SERVER) else {
-                return;
-            };
-            if bar.HrInit().is_err() {
-                return;
-            }
             // Built under the borrow, handed to the taskbar after it ends: Windows can send this window messages
             // during the calls, and `thumb_messages` borrows THUMBS again for them.
             let (buttons, added) = THUMBS.with_borrow_mut(|t| {
@@ -1019,9 +1040,12 @@ mod imp {
         } else if msg == WM_SETTINGCHANGE && lparam.0 != 0 {
             // SAFETY: for WM_SETTINGCHANGE, a non-zero LPARAM is a NUL-terminated string from the sender.
             let area = unsafe { PCWSTR(lparam.0 as *const u16).to_string() };
-            if area.is_ok_and(|s| s == "ImmersiveColorSet") && THUMBS.with_borrow(|t| t.added) {
-                // Light or dark: drawn again in the taskbar's colors.
-                show_thumbs(hwnd);
+            if area.is_ok_and(|s| s == "ImmersiveColorSet") {
+                TASKBAR_LIGHT.with(|cell| cell.set(None));
+                if THUMBS.with_borrow(|t| t.added) {
+                    // Light or dark: drawn again in the taskbar's colors.
+                    show_thumbs(hwnd);
+                }
             }
         } else if msg == WM_NCDESTROY {
             // SAFETY: removing this module's own subclass while it runs, as the documentation advises.

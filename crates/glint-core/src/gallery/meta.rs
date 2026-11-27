@@ -262,7 +262,7 @@ pub fn load(dir: &Path) -> (Records, bool) {
 // ---- Saving: soon after the last change, not on every one --------------------------------------------
 
 /// How long after a change the cache is written (more changes in that time go into the same write).
-const DEBOUNCE: Duration = Duration::from_millis(1500);
+const DEBOUNCE: Duration = Duration::from_secs(8);
 
 static SAVE_WANTED: AtomicBool = AtomicBool::new(false);
 static SAVER_RUNNING: AtomicBool = AtomicBool::new(false);
@@ -280,11 +280,11 @@ pub fn schedule_save(dir: Option<PathBuf>, snapshot: impl Fn() -> Option<Records
     let Some(dir) = dir else {
         return;
     };
-    *SNAPSHOT.lock().unwrap_or_else(|e| e.into_inner()) = Some(Box::new(snapshot));
     SAVE_WANTED.store(true, Ordering::SeqCst);
     if SAVER_RUNNING.swap(true, Ordering::SeqCst) {
         return;
     }
+    *SNAPSHOT.lock().unwrap_or_else(|e| e.into_inner()) = Some(Box::new(snapshot));
     std::thread::spawn(move || loop {
         std::thread::sleep(DEBOUNCE);
         SAVE_WANTED.store(false, Ordering::SeqCst);

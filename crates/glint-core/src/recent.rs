@@ -66,12 +66,8 @@ pub fn listing(started: Instant) -> Result<fsx::Listing, String> {
 pub async fn recent_forget(paths: Vec<String>) -> Result<(), String> {
     fsx::blocking(move || {
         crate::shell::in_sta(move || {
-            let wanted: Vec<String> = paths.iter().map(|p| p.to_lowercase()).collect();
-            for (shortcut, _) in shortcuts() {
-                if imp::target(&shortcut).is_some_and(|t| wanted.contains(&t.to_lowercase())) {
-                    let _ = std::fs::remove_file(&shortcut);
-                }
-            }
+            let wanted: std::collections::HashSet<String> = paths.iter().map(|p| p.to_lowercase()).collect();
+            imp::forget(&shortcuts(), &wanted);
             Ok(())
         })
     })
@@ -87,18 +83,38 @@ mod imp {
     use windows::Win32::System::Com::{CoCreateInstance, IPersistFile, CLSCTX_INPROC_SERVER, STGM_READ};
     use windows::Win32::UI::Shell::{IShellLinkW, ShellLink, SLGP_RAWPATH};
 
+    unsafe fn target_with(link: &IShellLinkW, persist: &IPersistFile, shortcut: &Path) -> Option<String> {
+        persist.Load(&HSTRING::from(shortcut), STGM_READ).ok()?;
+        let mut path = [0u16; 1024];
+        link.GetPath(&mut path, std::ptr::null_mut(), SLGP_RAWPATH.0 as u32).ok()?;
+        let len = path.iter().position(|&c| c == 0).unwrap_or(0);
+        let text = String::from_utf16_lossy(&path[..len]);
+        let expanded = super::expand(&text);
+        (expanded.len() > 3 && (expanded.as_bytes().get(1) == Some(&b':') || expanded.starts_with(r"\\"))).then_some(expanded)
+    }
+
     /// Where a shortcut points: a file or folder's path (None for one to something else, such as a
     /// control panel or a web page).
     pub fn target(shortcut: &Path) -> Option<String> {
         unsafe {
             let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).ok()?;
-            link.cast::<IPersistFile>().ok()?.Load(&HSTRING::from(shortcut), STGM_READ).ok()?;
-            let mut path = [0u16; 1024];
-            link.GetPath(&mut path, std::ptr::null_mut(), SLGP_RAWPATH.0 as u32).ok()?;
-            let len = path.iter().position(|&c| c == 0).unwrap_or(0);
-            let text = String::from_utf16_lossy(&path[..len]);
-            let expanded = super::expand(&text);
-            (expanded.len() > 3 && (expanded.as_bytes().get(1) == Some(&b':') || expanded.starts_with(r"\\"))).then_some(expanded)
+            let persist: IPersistFile = link.cast().ok()?;
+            target_with(&link, &persist, shortcut)
+        }
+    }
+
+    pub fn forget(shortcuts: &[(PathBuf, i64)], wanted: &HashSet<String>) {
+        if wanted.is_empty() {
+            return;
+        }
+        unsafe {
+            let Ok(link) = CoCreateInstance::<_, IShellLinkW>(&ShellLink, None, CLSCTX_INPROC_SERVER) else { return };
+            let Ok(persist) = link.cast::<IPersistFile>() else { return };
+            for (shortcut, _) in shortcuts {
+                if target_with(&link, &persist, shortcut).is_some_and(|t| wanted.contains(&t.to_lowercase())) {
+                    let _ = std::fs::remove_file(shortcut);
+                }
+            }
         }
     }
 
@@ -106,16 +122,34 @@ mod imp {
     pub fn items(shortcuts: &[(PathBuf, i64)]) -> Vec<Entry> {
         let mut seen = HashSet::new();
         let mut items = Vec::new();
+        let mut drive_ok = [None::<bool>; 26];
+        let (link, persist) = unsafe {
+            let Ok(link) = CoCreateInstance::<_, IShellLinkW>(&ShellLink, None, CLSCTX_INPROC_SERVER) else {
+                return items;
+            };
+            let Ok(persist) = link.cast::<IPersistFile>() else {
+                return items;
+            };
+            (link, persist)
+        };
         for (shortcut, opened) in shortcuts {
             if items.len() >= MOST {
                 break;
             }
-            let Some(path) = target(shortcut) else { continue };
+            let Some(path) = (unsafe { target_with(&link, &persist, shortcut) }) else { continue };
             if !seen.insert(path.to_lowercase()) {
                 continue;
             }
             // A share or a drive that isn't there now isn't waited for: its items are left out.
-            if !super::reachable(&path) {
+            // Cache per drive letter so we probe each drive at most once across the shortcut list.
+            let is_reachable = match path.as_bytes() {
+                [letter, b':', b'\\' | b'/', ..] if letter.is_ascii_alphabetic() => {
+                    let idx = (letter.to_ascii_uppercase() - b'A') as usize;
+                    *drive_ok[idx].get_or_insert_with(|| super::reachable(&path))
+                }
+                _ => super::reachable(&path),
+            };
+            if !is_reachable {
                 continue;
             }
             let Some(found) = crate::fsx::stat(&path) else { continue };
@@ -129,11 +163,14 @@ mod imp {
 #[cfg(not(windows))]
 mod imp {
     use super::Entry;
+    use std::collections::HashSet;
     use std::path::{Path, PathBuf};
 
     pub fn target(_shortcut: &Path) -> Option<String> {
         None
     }
+
+    pub fn forget(_shortcuts: &[(PathBuf, i64)], _wanted: &HashSet<String>) {}
 
     pub fn items(_shortcuts: &[(PathBuf, i64)]) -> Vec<Entry> {
         Vec::new()

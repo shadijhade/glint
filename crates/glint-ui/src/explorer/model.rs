@@ -587,7 +587,10 @@ impl Explorer {
                 if !wanted(this, &stop) {
                     return false;
                 }
-                this.update_tab(id, |t| t.color_palettes = Arc::new(cached));
+                this.update_tab(id, |t| {
+                    t.color_palettes = Arc::new(cached);
+                    t.color_palettes_rev = t.color_palettes_rev.wrapping_add(1).max(1);
+                });
                 this.rebuild_rows(id, cx);
                 this.tab_changed(id, cx);
                 true
@@ -612,7 +615,10 @@ impl Explorer {
                     if !wanted(this, &stop) {
                         return false;
                     }
-                    this.update_tab(id, |t| Arc::make_mut(&mut t.color_palettes).extend(merged));
+                    this.update_tab(id, |t| {
+                        Arc::make_mut(&mut t.color_palettes).extend(merged);
+                        t.color_palettes_rev = t.color_palettes_rev.wrapping_add(1).max(1);
+                    });
                     this.rebuild_rows(id, cx);
                     this.tab_changed(id, cx);
                     true
@@ -853,6 +859,7 @@ impl Explorer {
             color: tab.color_filter.map(|filter| super::rows::RowColor {
                 filter,
                 palettes: tab.color_palettes.clone(),
+                rev: tab.color_palettes_rev,
             }),
             // Only while something reads them (`explorer::marked` hands them in).
             marked: tab
@@ -944,7 +951,13 @@ impl Explorer {
         }
         tab.rows_seq += 1;
         let seq = tab.rows_seq;
-        tab.rows_spec = Some(spec.clone());
+        // Drop the palettes Arc in the cached `rows_spec` (which only needs `rev` and `filter` for PartialEq)
+        // so `tab.color_palettes` keeps strong_count == 1 and `Arc::make_mut` mutates in place while warming.
+        let mut stored_spec = spec.clone();
+        if let Some(color) = &mut stored_spec.color {
+            color.palettes = Arc::new(std::collections::HashMap::new());
+        }
+        tab.rows_spec = Some(stored_spec);
         let now = now_ms();
         let heavy = source.len() > ROWS_IN_BACKGROUND && !is_plain(&spec);
         if !heavy {
@@ -1049,6 +1062,14 @@ pub(crate) fn let_go(entries: Option<Arc<[FileEntry]>>, cx: &App) {
     cx.background_spawn(async move {
         wait.await;
         drop(entries);
+    })
+    .detach();
+}
+
+/// Drops an arbitrary large owned value on a background thread so freeing big vectors/maps never stalls a UI frame.
+pub(crate) fn let_go_any<T: Send + 'static>(value: T, cx: &App) {
+    cx.background_spawn(async move {
+        drop(value);
     })
     .detach();
 }

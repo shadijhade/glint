@@ -92,14 +92,13 @@ pub(crate) fn start(cx: &mut App, request: launch::Request) {
     explorer::explorer(cx).update(cx, |e, cx| e.refresh_on_demand(cx).detach());
     // The saved remote connections, handed to core so their folders open (`initRemotes`).
     crate::dialogs::remote::push_to_core(cx);
-    if services.tray {
-        start_tray(cx, request.tray);
-    }
-    if services.jump_list {
-        keep_jump_list(cx);
+    // Starting in the tray needs the tray icon immediately; normal starts defer tray & Jump List
+    // setup until after the first folder is revealed so COM / Shell_NotifyIcon don't delay first paint.
+    if services.tray && request.tray {
+        start_tray(cx, true);
     }
 
-    glint_core::startup::mark("services, tray");
+    glint_core::startup::mark("services");
     let (window, main_workspace) = match workspace::open_main_window(cx) {
         Ok(opened) => opened,
         Err(error) => {
@@ -185,10 +184,17 @@ pub(crate) fn start(cx: &mut App, request: launch::Request) {
     }
     // The main Glint ending ends this window (Quit; a main window hidden in the tray is still running).
     secondary::follow_main_process(cx, |cx| cx.quit());
+    let started_in_tray = request.tray;
     cx.spawn(async move |cx| {
         first.await;
         reveal();
         cx.update(|cx| {
+            if services.tray && !started_in_tray {
+                start_tray(cx, false);
+            }
+            if services.jump_list {
+                keep_jump_list(cx);
+            }
             if services.later_launches {
                 hear_later_launches(cx);
             }
@@ -1161,20 +1167,53 @@ fn keep_thumb_buttons(cx: &mut App) {
 }
 
 /// The Jump List shown last: pinned folders, then the most-used ones.
-struct JumpListShown(String);
+struct JumpListShown {
+    key: String,
+    pinned: Vec<String>,
+    visits_len: usize,
+    visits_last: i64,
+}
 
 impl Global for JumpListShown {}
 
+/// Debounce task so rapid folder visits coalesce into a single Jump List COM sync.
+struct JumpListPending(#[allow(dead_code)] Option<Task<()>>);
+
+impl Global for JumpListPending {}
+
 /// The taskbar button's Jump List follows the pinned folders and the most-used ones (`updateJumpList`).
 fn keep_jump_list(cx: &mut App) {
-    update_jump_list(cx);
-    cx.observe_global::<persistence::Persistence>(update_jump_list).detach();
+    update_jump_list_now(cx);
+    cx.observe_global::<persistence::Persistence>(schedule_jump_list)
+        .detach();
 }
 
-fn update_jump_list(cx: &mut App) {
+fn schedule_jump_list(cx: &mut App) {
     let Some(saved) = persistence::app(cx) else {
         return;
     };
+    let visits_len = saved.visits.len();
+    let visits_last = saved.visits.iter().map(|(_, v)| v.last).max().unwrap_or(0);
+    if cx.try_global::<JumpListShown>().is_some_and(|shown| {
+        shown.visits_len == visits_len && shown.visits_last == visits_last && shown.pinned == saved.pinned
+    }) {
+        return;
+    }
+    let task = cx.spawn(async move |cx| {
+        cx.background_executor()
+            .timer(std::time::Duration::from_secs(5))
+            .await;
+        cx.update(update_jump_list_now);
+    });
+    cx.set_global(JumpListPending(Some(task)));
+}
+
+fn update_jump_list_now(cx: &mut App) {
+    let Some(saved) = persistence::app(cx) else {
+        return;
+    };
+    let visits_len = saved.visits.len();
+    let visits_last = saved.visits.iter().map(|(_, v)| v.last).max().unwrap_or(0);
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
@@ -1189,10 +1228,16 @@ fn update_jump_list(cx: &mut App) {
     ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     let frequent: Vec<String> = ranked.into_iter().take(8).map(|(path, _)| path.to_string()).collect();
     let key = format!("{}\n{}", pinned.join("|"), frequent.join("|"));
-    if cx.try_global::<JumpListShown>().is_some_and(|shown| shown.0 == key) {
+    let unchanged = cx.try_global::<JumpListShown>().is_some_and(|shown| shown.key == key);
+    cx.set_global(JumpListShown {
+        key,
+        pinned: pinned.clone(),
+        visits_len,
+        visits_last,
+    });
+    if unchanged {
         return;
     }
-    cx.set_global(JumpListShown(key));
     window_state::sync_jump_list_in_background(pinned, frequent);
 }
 

@@ -134,15 +134,18 @@ pub async fn media_details_many(paths: Vec<String>) -> Result<Vec<Option<MediaDe
         let mut known: HashMap<usize, Option<MediaDetails>> = HashMap::new();
         let jpegs: Vec<usize> = (0..paths.len()).filter(|&i| jpeg(&paths[i])).collect();
         if jpegs.len() >= 16 {
-            let asks: Vec<crate::ioring::Ask> = jpegs
-                .iter()
-                .map(|&i| crate::ioring::Ask {
-                    path: &paths[i],
-                    slices: vec![(0, HEADER_BYTES)],
-                })
-                .collect();
-            if let Some(got) = crate::ioring::read_many(&asks) {
-                for (&i, got) in jpegs.iter().zip(got) {
+            for chunk in jpegs.chunks(64) {
+                let asks: Vec<crate::ioring::Ask> = chunk
+                    .iter()
+                    .map(|&i| crate::ioring::Ask {
+                        path: &paths[i],
+                        slices: vec![(0, HEADER_BYTES)],
+                    })
+                    .collect();
+                let Some(got) = crate::ioring::read_many_opts(&asks, false) else {
+                    break;
+                };
+                for (&i, got) in chunk.iter().zip(got) {
                     let Some(bytes) = got.and_then(|g| g.slices.into_iter().next()) else {
                         continue;
                     };

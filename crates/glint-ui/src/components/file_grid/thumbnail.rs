@@ -69,9 +69,6 @@ const NONE_COST: usize = 64;
 /// An SVG the grid draws itself, up to this size (`MAX_SVG`): Windows has no thumbnail handler for SVG as it comes.
 const MAX_SVG: u64 = 4 << 20;
 
-/// The width an SVG is first drawn at, only to learn its shape (see [`draw_vector`]).
-const PROBE_WIDTH: i32 = 64;
-
 // ---- The source ---------------------------------------------------------------------------------------
 
 /// A boxed future, as the explorer's `Fut`.
@@ -391,19 +388,17 @@ fn draw_vector(path: &str, step: u32, renderer: SvgRenderer) -> Option<Arc<Rende
     }
     let svg = renderer.parse_svg(&bytes).ok()?;
     let at = |width: i32| SvgSize::Size(size(DevicePixels(width), DevicePixels(width)));
-    // The drawing's shape is not known to the caller, and a very tall one drawn at the square's full width would
-    // be huge: a small drawing first gives the shape.
-    let probe = renderer.render_parsed(&svg, at(PROBE_WIDTH)).ok()?;
-    let (probe_w, probe_h) = pixels_of(&probe);
-    if probe_w == 0 {
+    // Read intrinsic dimensions directly from the parsed SVG tree without rasterizing a throwaway probe pixmap.
+    let natural = svg.size();
+    if !(natural.width.is_finite() && natural.width > 0.0 && natural.height.is_finite() && natural.height > 0.0) {
         return None;
     }
     let step = i32::try_from(step).ok()?;
     // Wider than tall (or square): the square's width. Taller: the width at which its height is the square's.
-    let width = if probe_h <= probe_w {
+    let width = if natural.height <= natural.width {
         step
     } else {
-        let tall = f64::from(probe_h) / f64::from(probe_w);
+        let tall = f64::from(natural.height) / f64::from(natural.width);
         // Rounded; at least one pixel, at most the square.
         ((f64::from(step) / tall).round() as i32).clamp(1, step)
     };

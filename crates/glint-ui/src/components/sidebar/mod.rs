@@ -295,7 +295,7 @@ struct Seen {
     path: String,
     known: Arc<[crate::explorer::KnownFolder]>,
     drives: Arc<[crate::explorer::Drive]>,
-    listing: Option<Arc<[FileEntry]>>,
+    listing: Option<std::sync::Weak<[FileEntry]>>,
     folder_tree: bool,
     tree_follows: bool,
     show_hidden: bool,
@@ -347,7 +347,7 @@ pub struct Sidebar {
     // What the last refresh saw, to do each thing once per change (the TypeScript's effect dependencies).
     last_hidden: bool,
     last_reveal: Option<(bool, bool, String)>,
-    last_listing: Option<Arc<[FileEntry]>>,
+    last_listing: Option<std::sync::Weak<[FileEntry]>>,
     last_saved: Vec<SavedSearch>,
     last_drives: Option<Arc<[crate::explorer::Drive]>>,
     /// The live portals mounted, as last read, and the menu of one while it is open.
@@ -560,9 +560,12 @@ impl Sidebar {
                 let new = self
                     .last_listing
                     .as_ref()
-                    .is_none_or(|seen| !Arc::ptr_eq(seen, entries));
+                    .is_none_or(|seen| {
+                        seen.strong_count() == 0
+                            || !std::ptr::addr_eq(std::sync::Weak::as_ptr(seen), Arc::as_ptr(entries))
+                    });
                 if new {
-                    self.last_listing = Some(entries.clone());
+                    self.last_listing = Some(Arc::downgrade(entries));
                     self.tree.saw(listed, entries, show_hidden);
                 }
             }
@@ -624,7 +627,7 @@ impl Sidebar {
         self.seen = Some(Seen {
             known,
             drives,
-            listing: listing.map(|(_, entries)| entries),
+            listing: listing.as_ref().map(|(_, entries)| Arc::downgrade(entries)),
             path,
             folder_tree,
             tree_follows,
@@ -663,7 +666,9 @@ impl Sidebar {
             None => seen.pinned.is_empty() && seen.saved.is_empty() && seen.remotes.is_empty(),
         };
         let same_listing = match (&seen.listing, tree_listing(e)) {
-            (Some(seen), Some(now)) => Arc::ptr_eq(seen, &now.entries),
+            (Some(seen), Some(now)) => {
+                seen.strong_count() > 0 && std::ptr::addr_eq(std::sync::Weak::as_ptr(seen), Arc::as_ptr(&now.entries))
+            }
             (None, None) => true,
             _ => false,
         };

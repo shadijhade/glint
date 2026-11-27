@@ -333,6 +333,8 @@ pub(crate) struct Frame {
     pub morph: Option<(crate::stage::Morph, f32)>,
     /// Whether assistive technology (or tests inspecting descriptions) needs per-row `aria_description`.
     pub a11y_active: bool,
+    /// Theme tokens snapshotted once in `FileList::render` so `render_lines` does not re-clone them.
+    pub tokens: Tokens,
 }
 
 /// What a folder's row says of the folder before it is opened: it was read ahead when the pointer came to rest on
@@ -617,6 +619,7 @@ impl FileList {
                 hovered_folder: None,
                 morph: None,
                 a11y_active: cfg!(test),
+                tokens: theme::tokens(cx).clone(),
             }),
             width: Rc::new(Cell::new(0.)),
             resizing: None,
@@ -1422,8 +1425,7 @@ impl FileList {
         let frame = self.frame.clone();
         self.show_thumbnails(&frame, &range, window, cx);
         self.ask_facts(&frame, &range, cx);
-        let t = theme::tokens(cx).clone();
-        range.map(|line| self.line_element(&frame, &t, line, cx)).collect()
+        range.map(|line| self.line_element(&frame, &frame.tokens, line, cx)).collect()
     }
 
     /// Asks for the tags (and, while a column of them is shown, the media facts) of the lines about to be drawn and
@@ -1619,6 +1621,7 @@ impl Render for FileList {
             peeks,
             hovered_folder: self.hovered_folder.clone(),
             a11y_active: window.is_a11y_active() || cfg!(test),
+            tokens: t.clone(),
         });
         self.frame = frame.clone();
 

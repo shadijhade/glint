@@ -195,6 +195,8 @@ pub struct Tab {
     /// Active OKLab Color-Wheel filter and cached palettes for this tab's images.
     pub color_filter: Option<glint_model::oklab::ColorFilter>,
     pub color_palettes: Arc<std::collections::HashMap<String, glint_model::oklab::Palette3>>,
+    /// Bumped whenever `color_palettes` changes so `RowSpec` compares by version without holding a second strong `Arc`.
+    pub color_palettes_rev: u64,
     /// Set to stop the palettes' warming under way for this tab (a newer one replaces it).
     pub(super) color_warm: Option<Arc<std::sync::atomic::AtomicBool>>,
     /// The newest navigation's number: a result that comes back with an older one is stale and dropped.
@@ -251,6 +253,7 @@ impl Tab {
             scroll: None,
             color_filter: None,
             color_palettes: Arc::new(std::collections::HashMap::new()),
+            color_palettes_rev: 1,
             color_warm: None,
             nav_seq: 0,
             nav_started: None,

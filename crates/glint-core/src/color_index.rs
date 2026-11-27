@@ -12,7 +12,8 @@ use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard, OnceLock};
 
 const MAGIC: &[u8; 5] = b"GLOK1";
-const SAVE_BATCH_THRESHOLD: usize = 24;
+const SAVE_BATCH_THRESHOLD: usize = 128;
+const SAVE_DEBOUNCE: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[derive(Clone, Debug)]
 struct Record {
@@ -29,6 +30,7 @@ struct Cache {
 
 static CACHE: LazyLock<Mutex<Cache>> = LazyLock::new(Default::default);
 static SAVING: AtomicBool = AtomicBool::new(false);
+static SAVE_WANTED: AtomicBool = AtomicBool::new(false);
 
 fn lock_cache() -> MutexGuard<'static, Cache> {
     let mut guard = CACHE.lock().unwrap_or_else(|e| e.into_inner());
@@ -80,11 +82,11 @@ fn encode_binary(entries: &HashMap<String, Record>) -> Vec<u8> {
 }
 
 fn decode_binary(data: &[u8]) -> HashMap<String, Record> {
-    let mut map = HashMap::new();
     if data.len() < 9 || &data[..5] != MAGIC {
-        return map;
+        return HashMap::new();
     }
     let count = u32::from_le_bytes([data[5], data[6], data[7], data[8]]) as usize;
+    let mut map = HashMap::with_capacity(count.min((data.len() - 9) / 58));
     let mut at = 9usize;
     let read_f32 = |buf: &[u8], off: &mut usize| -> Option<f32> {
         let slice: [u8; 4] = buf.get(*off..*off + 4)?.try_into().ok()?;
@@ -154,10 +156,16 @@ fn decode_binary(data: &[u8]) -> HashMap<String, Record> {
 }
 
 fn schedule_save() {
-    if cfg!(test) || SAVING.swap(true, Ordering::SeqCst) {
+    if cfg!(test) {
         return;
     }
-    std::thread::spawn(|| {
+    SAVE_WANTED.store(true, Ordering::SeqCst);
+    if SAVING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    std::thread::spawn(|| loop {
+        std::thread::sleep(SAVE_DEBOUNCE);
+        SAVE_WANTED.store(false, Ordering::SeqCst);
         let bytes = {
             let mut cache = lock_cache();
             cache.dirty_adds = 0;
@@ -167,9 +175,15 @@ fn schedule_save() {
             if let Some(parent) = file.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
-            let _ = std::fs::write(file, bytes);
+            let _ = crate::replace_contents(&file, &bytes);
         }
-        SAVING.store(false, Ordering::SeqCst);
+        if !SAVE_WANTED.load(Ordering::SeqCst) {
+            SAVING.store(false, Ordering::SeqCst);
+            if SAVE_WANTED.load(Ordering::SeqCst) && !SAVING.swap(true, Ordering::SeqCst) {
+                continue;
+            }
+            break;
+        }
     });
 }
 

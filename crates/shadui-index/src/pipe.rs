@@ -89,8 +89,8 @@ fn instance(name: &str, sd: &SecurityDescriptor, first: bool) -> io::Result<Hand
             mode,
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
             PIPE_UNLIMITED_INSTANCES,
-            1 << 16,
-            1 << 16,
+            1 << 19,
+            1 << 19,
             0,
             Some(&attributes),
         )

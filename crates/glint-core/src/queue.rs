@@ -422,6 +422,11 @@ fn run(job: &Job) {
     // What each item made there: a folder that wasn't there is Undo's to take back whole; a file, or
     // what went into a folder that was there already, is taken back file by file (never what was there).
     let fresh: Vec<bool> = sources.iter().map(|s| !item_root(&dest, s).exists()).collect();
+    // Skip per-file `to.exists()` checks for items going into a newly created destination root when all roots are distinct.
+    let distinct_roots = {
+        let mut seen = std::collections::HashSet::with_capacity(sources.len());
+        sources.iter().all(|s| seen.insert(item_root(&dest, s).to_string_lossy().to_lowercase()))
+    };
     let created: Vec<Vec<(PathBuf, PathBuf)>> = vec![Vec::new(); sources.len()];
     // The originals copied (and checked) whole, with their copies: a move's to delete.
     let copied_from: Vec<Vec<(PathBuf, PathBuf)>> = vec![Vec::new(); sources.len()];
@@ -438,7 +443,7 @@ fn run(job: &Job) {
             return finish(job, "cancelled");
         }
         let mut to = step.to.clone();
-        if to.exists() {
+        if !(distinct_roots && fresh[step.item]) && to.exists() {
             match ask(job, &to) {
                 None => return finish(job, "cancelled"),
                 Some(Answer::Skip) => {
@@ -822,12 +827,19 @@ static FORCE_WORKERS: std::sync::atomic::AtomicUsize = std::sync::atomic::Atomic
 #[cfg(windows)]
 fn copy_plain(from: &Path, to: &Path) -> Result<(), String> {
     use windows::core::PCWSTR;
+    use windows::Win32::Foundation::ERROR_PATH_NOT_FOUND;
     use windows::Win32::Storage::FileSystem::{CopyFileExW, COPY_FILE_COPY_SYMLINK};
-    if let Some(parent) = to.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
     let (a, b) = (crate::fsx::wide(from), crate::fsx::wide(to));
-    unsafe { CopyFileExW(PCWSTR(a.as_ptr()), PCWSTR(b.as_ptr()), None, None, None, COPY_FILE_COPY_SYMLINK) }.map_err(|e| crate::fsx::file_error(crate::fsx::io_error(e)))
+    let mut res = unsafe { CopyFileExW(PCWSTR(a.as_ptr()), PCWSTR(b.as_ptr()), None, None, None, COPY_FILE_COPY_SYMLINK) };
+    if let Err(ref e) = res {
+        if e.code() == ERROR_PATH_NOT_FOUND.to_hresult() {
+            if let Some(parent) = to.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            res = unsafe { CopyFileExW(PCWSTR(a.as_ptr()), PCWSTR(b.as_ptr()), None, None, None, COPY_FILE_COPY_SYMLINK) };
+        }
+    }
+    res.map_err(|e| crate::fsx::file_error(crate::fsx::io_error(e)))
 }
 
 #[cfg(not(windows))]
@@ -877,13 +889,19 @@ unsafe extern "system" fn progress(
 #[cfg(windows)]
 fn copy_file(from: &Path, to: &Path, job: &Job, done: &AtomicU64, base: u64) -> Result<(), String> {
     use windows::core::PCWSTR;
+    use windows::Win32::Foundation::ERROR_PATH_NOT_FOUND;
     use windows::Win32::Storage::FileSystem::{CopyFileExW, COPY_FILE_COPY_SYMLINK};
-    if let Some(parent) = to.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
     let (a, b) = (crate::fsx::wide(from), crate::fsx::wide(to));
     let context = Progress { job, done, base };
-    let result = unsafe { CopyFileExW(PCWSTR(a.as_ptr()), PCWSTR(b.as_ptr()), Some(progress), Some(&context as *const _ as *const _), None, COPY_FILE_COPY_SYMLINK) };
+    let mut result = unsafe { CopyFileExW(PCWSTR(a.as_ptr()), PCWSTR(b.as_ptr()), Some(progress), Some(&context as *const _ as *const _), None, COPY_FILE_COPY_SYMLINK) };
+    if let Err(ref e) = result {
+        if !job.stop() && e.code() == ERROR_PATH_NOT_FOUND.to_hresult() {
+            if let Some(parent) = to.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            result = unsafe { CopyFileExW(PCWSTR(a.as_ptr()), PCWSTR(b.as_ptr()), Some(progress), Some(&context as *const _ as *const _), None, COPY_FILE_COPY_SYMLINK) };
+        }
+    }
     match result {
         Ok(()) => Ok(()),
         Err(_) if job.stop() => Err("cancelled".into()),
@@ -910,8 +928,36 @@ fn same(original: &Path, copy: &Path, job: &Job) -> Result<bool, String> {
 }
 
 fn hash(path: &Path, from_disk: bool, job: &Job) -> Result<blake3::Hash, String> {
+    use std::cell::RefCell;
     use std::io::Read;
     const CHUNK: usize = 1 << 20;
+
+    struct AlignedBuf {
+        ptr: *mut u8,
+        layout: std::alloc::Layout,
+    }
+    impl AlignedBuf {
+        fn new() -> Result<Self, String> {
+            let layout = std::alloc::Layout::from_size_align(CHUNK, 4096).map_err(|e| e.to_string())?;
+            let ptr = unsafe { std::alloc::alloc(layout) };
+            if ptr.is_null() {
+                return Err("Out of memory".into());
+            }
+            Ok(Self { ptr, layout })
+        }
+        fn as_mut_slice(&mut self) -> &mut [u8] {
+            unsafe { std::slice::from_raw_parts_mut(self.ptr, CHUNK) }
+        }
+    }
+    impl Drop for AlignedBuf {
+        fn drop(&mut self) {
+            unsafe { std::alloc::dealloc(self.ptr, self.layout) };
+        }
+    }
+    thread_local! {
+        static BUF: RefCell<Option<AlignedBuf>> = const { RefCell::new(None) };
+    }
+
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
     // FILE_FLAG_NO_BUFFERING reads whole sectors into a buffer aligned to them: a page-aligned one, in
@@ -924,28 +970,26 @@ fn hash(path: &Path, from_disk: bool, job: &Job) -> Result<blake3::Hash, String>
     #[cfg(not(windows))]
     let _ = from_disk;
     let mut file = options.open(path).map_err(|e| e.to_string())?;
-    let layout = std::alloc::Layout::from_size_align(CHUNK, 4096).map_err(|e| e.to_string())?;
-    // SAFETY: a fresh allocation of `layout`, freed below, used only as a byte buffer.
-    let raw = unsafe { std::alloc::alloc(layout) };
-    if raw.is_null() {
-        return Err("Out of memory".into());
-    }
-    let buffer = unsafe { std::slice::from_raw_parts_mut(raw, CHUNK) };
-    let mut hasher = blake3::Hasher::new();
-    let result = loop {
-        if job.stop() {
-            break Err("cancelled".to_string());
+    BUF.with(|slot| {
+        let mut guard = slot.borrow_mut();
+        if guard.is_none() {
+            *guard = Some(AlignedBuf::new()?);
         }
-        match file.read(buffer) {
-            Ok(0) => break Ok(hasher.finalize()),
-            Ok(n) => {
-                hasher.update(&buffer[..n]);
+        let buffer = guard.as_mut().unwrap().as_mut_slice();
+        let mut hasher = blake3::Hasher::new();
+        loop {
+            if job.stop() {
+                return Err("cancelled".to_string());
             }
-            Err(e) => break Err(e.to_string()),
+            match file.read(buffer) {
+                Ok(0) => return Ok(hasher.finalize()),
+                Ok(n) => {
+                    hasher.update(&buffer[..n]);
+                }
+                Err(e) => return Err(e.to_string()),
+            }
         }
-    };
-    unsafe { std::alloc::dealloc(raw, layout) };
-    result
+    })
 }
 
 #[cfg(test)]

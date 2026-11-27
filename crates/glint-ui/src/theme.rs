@@ -1010,8 +1010,25 @@ fn tone_color(spec: &str, t: &Tokens) -> Option<Hsla> {
 
 /// A kind of file's icon colors in the theme in use, from the Tailwind classes the TypeScript gave it:
 /// `text-…` is the stroke, `fill-…` the fill, and a `dark:` class wins in the dark theme.
+/// Cached per `(tone ptr/len, dark, muted_foreground)` so rows never re-parse Tailwind class strings per frame.
 pub fn kind_tone(kind: &glint_model::file_types::Kind, cx: &App) -> KindTone {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    type CacheKey = (usize, usize, bool, [u32; 4]);
+    thread_local! {
+        static CACHE: RefCell<HashMap<CacheKey, KindTone>> = RefCell::new(HashMap::with_capacity(64));
+    }
     let t = tokens(cx);
+    let mf = t.muted_foreground;
+    let key: CacheKey = (
+        kind.tone.as_ptr() as usize,
+        kind.tone.len(),
+        t.dark,
+        [mf.h.to_bits(), mf.s.to_bits(), mf.l.to_bits(), mf.a.to_bits()],
+    );
+    if let Some(hit) = CACHE.with(|c| c.borrow().get(&key).copied()) {
+        return hit;
+    }
     let mut tone = KindTone {
         color: t.muted_foreground,
         fill: None,
@@ -1038,6 +1055,13 @@ pub fn kind_tone(kind: &glint_model::file_types::Kind, cx: &App) -> KindTone {
             }
         }
     }
+    CACHE.with(|c| {
+        let mut map = c.borrow_mut();
+        if map.len() >= 256 {
+            map.clear();
+        }
+        map.insert(key, tone);
+    });
     tone
 }
 

@@ -58,6 +58,13 @@ impl Drop for DirectWriteComponents {
     }
 }
 
+thread_local! {
+    /// Glint: single-entry handoff cache between `raster_bounds` and the immediately following
+    /// `rasterize_monochrome` call on the same thread so `CreateGlyphRunAnalysis` is only called once per glyph.
+    static LAST_GLYPH_ANALYSIS: std::cell::RefCell<Option<(usize, RenderGlyphParams, IDWriteGlyphRunAnalysis)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 struct DirectWriteState {
     system_font_collection: IDWriteFontCollection1,
     custom_font_collection: IDWriteFontCollection1,
@@ -65,6 +72,9 @@ struct DirectWriteState {
     font_to_font_id: HashMap<Font, FontId>,
     font_info_cache: HashMap<usize, FontId>,
     layout_line_scratch: Vec<u16>,
+    /// Glint: cached `IDWriteTextFormat1` by `(font_id, font_size_bits)` so `layout_line` avoids
+    /// `CreateTextFormat` + `SetFontFallback` COM allocations on every shaped line miss.
+    text_format_cache: HashMap<(FontId, u32), IDWriteTextFormat1>,
 }
 
 impl DirectWriteTextSystem {
@@ -116,6 +126,7 @@ impl DirectWriteTextSystem {
                 font_to_font_id: HashMap::default(),
                 font_info_cache: HashMap::default(),
                 layout_line_scratch: Vec::new(),
+                text_format_cache: HashMap::default(),
             }),
         })
     }
@@ -498,23 +509,35 @@ impl DirectWriteState {
             let mut utf16_offset = 0u32;
             let text_layout = {
                 let first_run = &font_runs[0];
+                let format_key = (first_run.font_id, font_size.as_f32().to_bits());
+                let format: IDWriteTextFormat1 =
+                    if let Some(cached) = self.text_format_cache.get(&format_key) {
+                        cached.clone()
+                    } else {
+                        let font_info = &self.fonts[first_run.font_id.0];
+                        let collection = &font_info.font_collection;
+                        let format: IDWriteTextFormat1 = components
+                            .factory
+                            .CreateTextFormat(
+                                &font_info.font_family_h,
+                                collection,
+                                font_info.font_face.GetWeight(),
+                                font_info.font_face.GetStyle(),
+                                DWRITE_FONT_STRETCH_NORMAL,
+                                font_size.as_f32(),
+                                &components.locale,
+                            )?
+                            .cast()?;
+                        if let Some(ref fallbacks) = font_info.fallbacks {
+                            format.SetFontFallback(fallbacks)?;
+                        }
+                        if self.text_format_cache.len() >= 256 {
+                            self.text_format_cache.clear();
+                        }
+                        self.text_format_cache.insert(format_key, format.clone());
+                        format
+                    };
                 let font_info = &self.fonts[first_run.font_id.0];
-                let collection = &font_info.font_collection;
-                let format: IDWriteTextFormat1 = components
-                    .factory
-                    .CreateTextFormat(
-                        &font_info.font_family_h,
-                        collection,
-                        font_info.font_face.GetWeight(),
-                        font_info.font_face.GetStyle(),
-                        DWRITE_FONT_STRETCH_NORMAL,
-                        font_size.as_f32(),
-                        &components.locale,
-                    )?
-                    .cast()?;
-                if let Some(ref fallbacks) = font_info.fallbacks {
-                    format.SetFontFallback(fallbacks)?;
-                }
 
                 let layout = components.factory.CreateTextLayout(
                     text_wide,
@@ -524,7 +547,11 @@ impl DirectWriteState {
                 )?;
                 let current_text = &text[utf8_offset..(utf8_offset + first_run.len)];
                 utf8_offset += first_run.len;
-                let current_text_utf16_length = current_text.encode_utf16().count() as u32;
+                let current_text_utf16_length = if font_runs.len() == 1 && first_run.len == text.len() {
+                    text_wide.len() as u32
+                } else {
+                    current_text.encode_utf16().count() as u32
+                };
                 let text_range = DWRITE_TEXT_RANGE {
                     startPosition: utf16_offset,
                     length: current_text_utf16_length,
@@ -781,7 +808,17 @@ impl DirectWriteState {
             Vec::new()
         };
         let analyses: SmallVec<[IDWriteGlyphRunAnalysis; 1]> = if color_layers.is_empty() {
-            smallvec::smallvec![self.glyph_analysis(components, params)?]
+            let analysis = self.glyph_analysis(components, params)?;
+            // Glint: hand off the just-created analysis to the immediately following `rasterize_monochrome` call
+            // for the same glyph so `CreateGlyphRunAnalysis` is not invoked twice per rasterized glyph.
+            LAST_GLYPH_ANALYSIS.with(|slot| {
+                *slot.borrow_mut() = Some((
+                    self as *const DirectWriteState as usize,
+                    params.clone(),
+                    analysis.clone(),
+                ));
+            });
+            smallvec::smallvec![analysis]
         } else {
             color_layers
                 .into_iter()
@@ -854,7 +891,23 @@ impl DirectWriteState {
         params: &RenderGlyphParams,
         glyph_bounds: Bounds<DevicePixels>,
     ) -> Result<Vec<u8>> {
-        let glyph_analysis = self.glyph_analysis(components, params)?;
+        let cached = LAST_GLYPH_ANALYSIS.with(|slot| {
+            let mut guard = slot.borrow_mut();
+            if guard
+                .as_ref()
+                .is_some_and(|(ptr, cached_params, _)| {
+                    *ptr == self as *const DirectWriteState as usize && cached_params == params
+                })
+            {
+                guard.take().map(|(_, _, analysis)| analysis)
+            } else {
+                None
+            }
+        });
+        let glyph_analysis = match cached {
+            Some(analysis) => analysis,
+            None => self.glyph_analysis(components, params)?,
+        };
         if !params.subpixel_rendering {
             let mut bitmap_data =
                 vec![0u8; glyph_bounds.size.width.0 as usize * glyph_bounds.size.height.0 as usize];

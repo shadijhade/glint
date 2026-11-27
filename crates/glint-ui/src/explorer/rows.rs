@@ -99,11 +99,15 @@ impl PartialEq for RowInside {
 pub struct RowColor {
     pub filter: glint_model::oklab::ColorFilter,
     pub palettes: Arc<std::collections::HashMap<String, glint_model::oklab::Palette3>>,
+    /// Monotonic revision bumped when a tab's palette map changes (0 falls back to `Arc::ptr_eq`).
+    pub rev: u64,
 }
 
 impl PartialEq for RowColor {
     fn eq(&self, other: &Self) -> bool {
-        self.filter == other.filter && Arc::ptr_eq(&self.palettes, &other.palettes)
+        self.filter == other.filter
+            && self.rev == other.rev
+            && (self.rev != 0 || Arc::ptr_eq(&self.palettes, &other.palettes))
     }
 }
 
@@ -1584,6 +1588,7 @@ mod tests {
                     ..ColorFilter::new(srgb_to_oklab(245, 25, 25))
                 },
                 palettes: Arc::new(palettes),
+                rev: 0,
             }),
             ..RowSpec::default()
         };
@@ -1641,6 +1646,7 @@ mod tests {
             color: Some(RowColor {
                 filter,
                 palettes: palettes.clone(),
+                rev: 0,
             }),
             ..RowSpec::default()
         };
@@ -1731,6 +1737,7 @@ mod tests {
                         ..ColorFilter::new(orange).with_added(purple)
                     },
                     palettes: palettes.clone(),
+                    rev: 0,
                 }),
                 ..RowSpec::default()
             };

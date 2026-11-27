@@ -94,25 +94,26 @@ where
     F: FnOnce(Listing) -> T + Send + 'static,
 {
     let asked = path.clone();
-    let shaped = |listing: Listing, shape: F| async move {
-        crate::host::async_runtime::spawn_blocking(move || shape(listing)).await.map_err(|e| ListError::other(&asked, e.to_string()))
-    };
-    // Read already, as Glint started (startup.rs), and the folder is as it was then.
-    if let Some(warm) = crate::startup::take(path.trim()) {
-        return shaped(warm, shape).await;
-    }
     if crate::remote::is_remote(path.trim()) {
         // A share opened through rclone that refuses its account says so as one opened through Windows would.
         let listing = crate::remote::listing(path.trim(), Instant::now()).await.map_err(|e| match crate::remote::refused(path.trim(), &e) {
             Some(refusal) => share_error(path.trim(), refusal),
             None => ListError::other(path.trim(), e),
         })?;
-        return shaped(listing, shape).await;
+        return crate::host::async_runtime::spawn_blocking(move || shape(listing))
+            .await
+            .map_err(|e| ListError::other(&asked, e.to_string()));
     }
-    let asked = path.clone();
-    crate::host::async_runtime::spawn_blocking(move || read_listing(path).map(shape))
-        .await
-        .map_err(|e| ListError::other(&asked, e.to_string()))?
+    crate::host::async_runtime::spawn_blocking(move || {
+        // Read already, as Glint started (startup.rs), and the folder is as it was then.
+        // Checked inside spawn_blocking because startup::take runs a stat (`folder_stamp`) on disk.
+        if let Some(warm) = crate::startup::take(path.trim()) {
+            return Ok(shape(warm));
+        }
+        read_listing(path).map(shape)
+    })
+    .await
+    .map_err(|e| ListError::other(&asked, e.to_string()))?
 }
 
 /// The blocking part of `list_folder`: everything but a remote's folder.
@@ -230,12 +231,19 @@ impl DirCounts {
 pub async fn count_dir(path: String) -> Result<Option<DirCounts>, String> {
     blocking(move || {
         let Ok(dir) = normalize(path.trim()) else { return Ok(None) };
-        let Ok(entries) = read_dir(&dir) else { return Ok(None) };
-        let mut counts = DirCounts::default();
-        for entry in &entries {
-            counts.add(entry.dir, entry.size);
+        #[cfg(windows)]
+        {
+            Ok(win::count_dir_raw(&dir).ok())
         }
-        Ok(Some(counts))
+        #[cfg(not(windows))]
+        {
+            let Ok(entries) = read_dir(&dir) else { return Ok(None) };
+            let mut counts = DirCounts::default();
+            for entry in &entries {
+                counts.add(entry.dir, entry.size);
+            }
+            Ok(Some(counts))
+        }
     })
     .await
 }
@@ -255,8 +263,14 @@ pub async fn list_subfolders(path: String, hidden: bool) -> Result<Vec<Subfolder
         let path = normalize(&path)?;
         // On a share reached by another name of its server, its folders are read there (the names are the same).
         let path = crate::remote::smb::ensure(&path).map_err(|r| r.message)?.unwrap_or(path);
-        let mut entries = read_dir(&path).map_err(|e| describe(&e))?;
-        entries.retain(|e| e.dir && (hidden || e.attrs & 0x6 == 0));
+        #[cfg(windows)]
+        let mut entries = win::read_subdirs(&path, hidden).map_err(|e| describe(&e))?;
+        #[cfg(not(windows))]
+        let mut entries = {
+            let mut entries = read_dir(&path).map_err(|e| describe(&e))?;
+            entries.retain(|e| e.dir && (hidden || e.attrs & 0x6 == 0));
+            entries
+        };
         sort_entries(&mut entries);
         let until = Instant::now() + std::time::Duration::from_millis(200);
         Ok(entries
@@ -801,6 +815,90 @@ mod win {
         }
         drop(exposed);
         mark_pending(&mut entries);
+        result.map(|_| entries)
+    }
+
+    /// Counts folders, files, and total bytes in `dir` without allocating filenames or cloud-state queries.
+    pub fn count_dir_raw(dir: &str) -> io::Result<super::DirCounts> {
+        let pattern = wide(&Path::new(dir).join("*"));
+        let mut data = WIN32_FIND_DATAW::default();
+        let found = unsafe {
+            FindFirstFileExW(
+                PCWSTR(pattern.as_ptr()),
+                FindExInfoBasic,
+                &mut data as *mut _ as *mut _,
+                FindExSearchNameMatch,
+                None,
+                FIND_FIRST_EX_LARGE_FETCH,
+            )
+        };
+        let handle = match found {
+            Ok(handle) => handle,
+            Err(e) if e.code() == ERROR_FILE_NOT_FOUND.to_hresult() && Path::new(dir).is_dir() => {
+                return Ok(super::DirCounts::default());
+            }
+            Err(e) => return Err(io_error(e)),
+        };
+        let mut counts = super::DirCounts::default();
+        let result = loop {
+            let c0 = data.cFileName[0];
+            let dot = (c0 == b'.' as u16 && data.cFileName[1] == 0)
+                || (c0 == b'.' as u16 && data.cFileName[1] == b'.' as u16 && data.cFileName[2] == 0);
+            if !dot {
+                let is_dir = data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0;
+                let size = if is_dir { 0 } else { ((data.nFileSizeHigh as u64) << 32) | data.nFileSizeLow as u64 };
+                counts.add(is_dir, size);
+            }
+            if let Err(e) = unsafe { FindNextFileW(handle, &mut data) } {
+                break if e.code() == ERROR_NO_MORE_FILES.to_hresult() { Ok(()) } else { Err(io_error(e)) };
+            }
+        };
+        unsafe {
+            let _ = FindClose(handle);
+        }
+        result.map(|_| counts)
+    }
+
+    /// Lists only subdirectories of `dir`, skipping UTF-16 filename allocation for all files and hidden entries.
+    pub fn read_subdirs(dir: &str, hidden: bool) -> io::Result<Vec<Entry>> {
+        use windows::Win32::Storage::FileSystem::FindExSearchLimitToDirectories;
+        let pattern = wide(&Path::new(dir).join("*"));
+        let mut data = WIN32_FIND_DATAW::default();
+        let found = unsafe {
+            FindFirstFileExW(
+                PCWSTR(pattern.as_ptr()),
+                FindExInfoBasic,
+                &mut data as *mut _ as *mut _,
+                FindExSearchLimitToDirectories,
+                None,
+                FIND_FIRST_EX_LARGE_FETCH,
+            )
+        };
+        let handle = match found {
+            Ok(handle) => handle,
+            Err(e) if e.code() == ERROR_FILE_NOT_FOUND.to_hresult() && Path::new(dir).is_dir() => return Ok(Vec::new()),
+            Err(e) => return Err(io_error(e)),
+        };
+        let mut entries = Vec::new();
+        let result = loop {
+            let attrs = data.dwFileAttributes;
+            if attrs & FILE_ATTRIBUTE_DIRECTORY.0 != 0 && (hidden || attrs & 0x6 == 0) {
+                let c0 = data.cFileName[0];
+                let dot = (c0 == b'.' as u16 && data.cFileName[1] == 0)
+                    || (c0 == b'.' as u16 && data.cFileName[1] == b'.' as u16 && data.cFileName[2] == 0);
+                if !dot {
+                    let len = data.cFileName.iter().position(|&c| c == 0).unwrap_or(data.cFileName.len());
+                    let name = name_of(&data.cFileName[..len]);
+                    entries.push(entry(name, attrs, 0, 0, data.ftLastWriteTime));
+                }
+            }
+            if let Err(e) = unsafe { FindNextFileW(handle, &mut data) } {
+                break if e.code() == ERROR_NO_MORE_FILES.to_hresult() { Ok(()) } else { Err(io_error(e)) };
+            }
+        };
+        unsafe {
+            let _ = FindClose(handle);
+        }
         result.map(|_| entries)
     }
 

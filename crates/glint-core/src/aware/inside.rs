@@ -57,21 +57,27 @@ pub fn inside(path: &str, lane: Lane, stop: &AtomicBool, on: &mut dyn FnMut(Insi
 /// Whether `name`, a folder right inside `folder`, is one a build leaves behind. Some names are only junk with
 /// the project file that makes them so beside them: a `target` with no `Cargo.toml` may be anyone's.
 fn is_junk(folder: &Path, name: &str) -> bool {
-    let lower = name.to_lowercase();
-    if !JUNK.contains(&lower.as_str()) {
+    if !JUNK.iter().any(|j| name.eq_ignore_ascii_case(j)) {
         return false;
     }
-    match lower.as_str() {
-        "target" => folder.join("Cargo.toml").is_file(),
-        "node_modules" => folder.join("package.json").is_file(),
-        "obj" => std::fs::read_dir(folder).is_ok_and(|read| {
+    if name.eq_ignore_ascii_case("target") {
+        folder.join("Cargo.toml").is_file()
+    } else if name.eq_ignore_ascii_case("node_modules") {
+        folder.join("package.json").is_file()
+    } else if name.eq_ignore_ascii_case("obj") {
+        std::fs::read_dir(folder).is_ok_and(|read| {
             read.flatten().any(|entry| {
-                let name = entry.file_name().to_string_lossy().to_lowercase();
-                name.ends_with(".csproj") || name.ends_with(".vcxproj")
+                let n = entry.file_name();
+                let s = n.to_string_lossy();
+                let b = s.as_bytes();
+                (b.len() >= 7 && b[b.len() - 7..].eq_ignore_ascii_case(b".csproj"))
+                    || (b.len() >= 8 && b[b.len() - 8..].eq_ignore_ascii_case(b".vcxproj"))
             })
-        }),
-        ".venv" | "venv" => folder.join(name).join("pyvenv.cfg").is_file(),
-        _ => true,
+        })
+    } else if name.eq_ignore_ascii_case(".venv") || name.eq_ignore_ascii_case("venv") {
+        folder.join(name).join("pyvenv.cfg").is_file()
+    } else {
+        true
     }
 }
 
@@ -178,12 +184,14 @@ impl<'a> Walk<'a> {
     }
 }
 
-/// Sets a flag when dropped, so the caller never waits for a walk that panicked.
-struct SetOnDrop<'a>(&'a AtomicBool);
+/// Signals the waiter condvar when dropped, so the caller wakes immediately (even if a walk panics).
+struct NotifyOnDrop<'a>(&'a (std::sync::Mutex<bool>, std::sync::Condvar));
 
-impl Drop for SetOnDrop<'_> {
+impl Drop for NotifyOnDrop<'_> {
     fn drop(&mut self) {
-        self.0.store(true, Ordering::Release);
+        let mut done = self.0.0.lock().unwrap_or_else(|e| e.into_inner());
+        *done = true;
+        self.0.1.notify_one();
     }
 }
 
@@ -212,24 +220,37 @@ fn visit<'s, 'a: 's>(scope: &rayon::Scope<'s>, dir: std::path::PathBuf, walk: &'
         return;
     }
     let Ok(read) = std::fs::read_dir(&dir) else { return };
+    let (mut files, mut folders, mut bytes, mut junk) = (0u64, 0u64, 0u64, 0u64);
     for entry in read.flatten() {
         let Ok(meta) = entry.metadata() else { continue };
         if is_link(&meta) {
             continue;
         }
         if meta.is_dir() {
-            walk.folders.fetch_add(1, Ordering::Relaxed);
+            folders += 1;
             let child_in_junk = in_junk || (top && is_junk(&dir, &entry.file_name().to_string_lossy()));
             let child = entry.path();
             scope.spawn(move |scope| visit(scope, child, walk, child_in_junk, false));
         } else {
             let size = meta.len();
-            walk.files.fetch_add(1, Ordering::Relaxed);
-            walk.bytes.fetch_add(size, Ordering::Relaxed);
+            files += 1;
+            bytes += size;
             if in_junk {
-                walk.junk.fetch_add(size, Ordering::Relaxed);
+                junk += size;
             }
         }
+    }
+    if folders != 0 {
+        walk.folders.fetch_add(folders, Ordering::Relaxed);
+    }
+    if files != 0 {
+        walk.files.fetch_add(files, Ordering::Relaxed);
+    }
+    if bytes != 0 {
+        walk.bytes.fetch_add(bytes, Ordering::Relaxed);
+    }
+    if junk != 0 {
+        walk.junk.fetch_add(junk, Ordering::Relaxed);
     }
 }
 
@@ -240,21 +261,29 @@ fn walk(path: &str, lane: Lane, stop: &AtomicBool, on: &mut dyn FnMut(Inside)) {
         return;
     }
     let counts = Walk::new(stop);
-    let finished = AtomicBool::new(false);
+    let done = (std::sync::Mutex::new(false), std::sync::Condvar::new());
     std::thread::scope(|threads| {
         threads.spawn(|| {
-            let _finished = SetOnDrop(&finished);
+            let _notify = NotifyOnDrop(&done);
             pool::install(lane, || rayon::scope(|scope| visit(scope, root.to_path_buf(), &counts, false, true)));
         });
         let mut last = Instant::now();
-        while !finished.load(Ordering::Acquire) {
-            std::thread::sleep(Duration::from_millis(10));
-            if last.elapsed() >= REPORT_EVERY && !finished.load(Ordering::Acquire) {
-                if stop.load(Ordering::Relaxed) {
-                    break;
-                }
+        let mut guard = done.0.lock().unwrap_or_else(|e| e.into_inner());
+        while !*guard {
+            let wait = REPORT_EVERY.saturating_sub(last.elapsed()).min(Duration::from_millis(50));
+            let (next, _) = done.1.wait_timeout(guard, wait).unwrap_or_else(|e| e.into_inner());
+            guard = next;
+            if *guard {
+                break;
+            }
+            if stop.load(Ordering::Relaxed) {
+                break;
+            }
+            if last.elapsed() >= REPORT_EVERY {
+                drop(guard);
                 on(counts.report(false));
                 last = Instant::now();
+                guard = done.0.lock().unwrap_or_else(|e| e.into_inner());
             }
         }
     });

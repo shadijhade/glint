@@ -3885,21 +3885,54 @@ fn refine_by(
     if amount <= 0. && !hovered {
         return;
     }
-    let rest = style.clone();
-    let mut full = style.clone();
-    full.refine(hover);
-    if hovered {
-        *style = full.clone();
-    }
+    let (rest_bg, rest_border, rest_text_color, rest_opacity, rest_zoom, full_bg, full_border, full_text_color, full_opacity, full_zoom) =
+        if hovered {
+            let rest_bg = style.background.clone();
+            let rest_border = style.border_color;
+            let rest_text_color = style.text.color;
+            let rest_opacity = style.opacity;
+            let rest_zoom = style.paint_zoom;
+            style.refine(hover);
+            (
+                rest_bg,
+                rest_border,
+                rest_text_color,
+                rest_opacity,
+                rest_zoom,
+                style.background.clone(),
+                style.border_color,
+                style.text.color,
+                style.opacity,
+                style.paint_zoom,
+            )
+        } else {
+            let full_bg = hover.background.clone().or_else(|| style.background.clone());
+            let full_border = hover.border_color.or(style.border_color);
+            let full_text_color = hover.text.color.or(style.text.color);
+            let full_opacity = hover.opacity.or(style.opacity);
+            let full_zoom = hover.paint_zoom.or(style.paint_zoom);
+            (
+                style.background.clone(),
+                style.border_color,
+                style.text.color,
+                style.opacity,
+                style.paint_zoom,
+                full_bg,
+                full_border,
+                full_text_color,
+                full_opacity,
+                full_zoom,
+            )
+        };
     let solid = |fill: &Option<Fill>| match fill {
         Some(Fill::Color(background)) if background.tag == crate::BackgroundTag::Solid => {
             Some(background.solid)
         }
         _ => None,
     };
-    if rest.background != full.background {
-        let (from_solid, to_solid) = (solid(&rest.background), solid(&full.background));
-        let blended = match (&rest.background, &full.background) {
+    if rest_bg != full_bg {
+        let (from_solid, to_solid) = (solid(&rest_bg), solid(&full_bg));
+        let blended = match (&rest_bg, &full_bg) {
             (None, _) => to_solid.map(|to| mix_colors(Hsla { a: 0., ..to }, to, amount)),
             (_, None) => from_solid.map(|from| mix_colors(from, Hsla { a: 0., ..from }, amount)),
             _ => from_solid
@@ -3910,9 +3943,9 @@ fn refine_by(
             style.background = Some(Fill::Color(color.into()));
         }
     }
-    if rest.border_color != full.border_color {
+    if rest_border != full_border {
         let none = Hsla::transparent_black();
-        let (from, to) = (rest.border_color, full.border_color);
+        let (from, to) = (rest_border, full_border);
         let from_color = from.unwrap_or(Hsla {
             a: 0.,
             ..to.unwrap_or(none)
@@ -3923,20 +3956,20 @@ fn refine_by(
         });
         style.border_color = Some(mix_colors(from_color, to_color, amount));
     }
-    if rest.text.color != full.text.color {
+    if rest_text_color != full_text_color {
         let inherited = window.text_style().color;
-        let from = rest.text.color.unwrap_or(inherited);
-        let to = full.text.color.unwrap_or(inherited);
+        let from = rest_text_color.unwrap_or(inherited);
+        let to = full_text_color.unwrap_or(inherited);
         style.text.color = Some(mix_colors(from, to, amount));
     }
-    if rest.opacity != full.opacity {
-        let (from, to) = (rest.opacity.unwrap_or(1.), full.opacity.unwrap_or(1.));
+    if rest_opacity != full_opacity {
+        let (from, to) = (rest_opacity.unwrap_or(1.), full_opacity.unwrap_or(1.));
         style.opacity = Some(from + (to - from) * amount);
     }
-    if rest.paint_zoom != full.paint_zoom {
+    if rest_zoom != full_zoom {
         let (from, to) = (
-            rest.paint_zoom.unwrap_or_default(),
-            full.paint_zoom.unwrap_or_default(),
+            rest_zoom.unwrap_or_default(),
+            full_zoom.unwrap_or_default(),
         );
         style.paint_zoom = Some(from.mix(&to, amount));
     }

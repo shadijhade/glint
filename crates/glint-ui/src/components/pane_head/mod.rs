@@ -13,7 +13,7 @@
 //! (the search bar is their head). It emits nothing: it reads the explorer and sets the tab's filter itself.
 
 use crate::components::row_facts::{self, RowFacts};
-use crate::components::status_bar::summary::{chip_active, chip_title, items, spectrum_of, Category, FOLDERS, SAMPLE};
+use crate::components::status_bar::summary::{chip_active, chip_title, items, spectrum_of_shown, Category, FOLDERS, SAMPLE};
 use crate::components::tab_strip::{glyph_of, name_of, Glyph};
 use crate::dialogs::tags::{self, TagsChanged};
 use crate::explorer::{self, Explorer, Tab, TabId};
@@ -188,11 +188,7 @@ impl Head {
             .as_ref()
             .map(|listing| {
                 let sizes = explorer.size_run(&tab.path);
-                if tab.rows.hidden > 0 {
-                    spectrum_of(&shown_entries(&listing.entries), sizes)
-                } else {
-                    spectrum_of(&listing.entries, sizes)
-                }
+                spectrum_of_shown(&listing.entries, sizes, tab.rows.hidden > 0)
             })
             .unwrap_or_default();
         Some(Head {
@@ -215,35 +211,8 @@ impl Head {
     }
 }
 
-/// A listing's entries, shared.
-type Entries = Arc<[glint_model::entries::FileEntry]>;
-
-thread_local! {
-    /// Listings whose hidden items were left out, and what is left, newest first: the same listing gives the same
-    /// list (so the breakdown's own cache, keyed by it, keeps working) and a folder's refresh costs nothing.
-    static SHOWN: std::cell::RefCell<Vec<(Entries, Entries)>> = const { std::cell::RefCell::new(Vec::new()) };
-}
-
-/// `entries` without the hidden ones, kept for the listing (one per pane or two).
-fn shown_entries(entries: &Entries) -> Entries {
-    SHOWN.with(|kept| {
-        let mut kept = kept.borrow_mut();
-        if let Some(at) = kept.iter().position(|(from, _)| Arc::ptr_eq(from, entries)) {
-            let hit = kept.remove(at);
-            let shown = hit.1.clone();
-            kept.insert(0, hit);
-            return shown;
-        }
-        let shown: Entries = entries
-            .iter()
-            .filter(|entry| !glint_model::entries::is_hidden(entry))
-            .cloned()
-            .collect();
-        kept.insert(0, (entries.clone(), shown.clone()));
-        kept.truncate(4);
-        shown
-    })
-}
+/// Weak pointer to a listing's entries (keeps `let_go` able to free big listings off the UI thread).
+type WeakEntries = std::sync::Weak<[glint_model::entries::FileEntry]>;
 
 /// A picture to look into for a place: its path, size and last-write time.
 pub type Picture = (String, u64, i64);
@@ -333,7 +302,7 @@ pub struct PaneHead {
     /// The settings' labels the chips were counted with.
     labels_seen: Vec<Label>,
     /// The listing the chips were counted for.
-    counted: Option<Entries>,
+    counted: Option<WeakEntries>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -426,12 +395,14 @@ impl PaneHead {
                 }
                 let entries = self.explorer.read(cx).tab(head.tab).and_then(|tab| tab.shared_entries());
                 let same = match (&entries, &self.counted) {
-                    (Some(now), Some(then)) => Arc::ptr_eq(now, then),
+                    (Some(now), Some(then)) => {
+                        then.strong_count() > 0 && std::ptr::addr_eq(std::sync::Weak::as_ptr(then), Arc::as_ptr(now))
+                    }
                     (None, None) => true,
                     _ => false,
                 };
                 if !same {
-                    self.counted = entries;
+                    self.counted = entries.as_ref().map(Arc::downgrade);
                     self.labels_stale = true;
                 }
             }
@@ -638,7 +609,7 @@ impl PaneHead {
         } else if !self.looked.as_ref().is_some_and(|looked| looked.is(&path, &entries)) {
             self.looked = Some(Looked {
                 path: path.clone(),
-                entries: entries.clone(),
+                entries: Arc::downgrade(&entries),
             });
             let places = self.probes.places.clone();
             let key = path.clone();

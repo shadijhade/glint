@@ -41,15 +41,64 @@ struct Key {
     mark: Option<IconName>,
 }
 
+struct MadeCache {
+    entries: HashMap<Key, (u64, Option<Arc<RenderImage>>)>,
+    tick: u64,
+}
+
+impl MadeCache {
+    fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            tick: 0,
+        }
+    }
+
+    fn get(&mut self, key: &Key) -> Option<Option<Arc<RenderImage>>> {
+        let entry = self.entries.get_mut(key)?;
+        self.tick += 1;
+        entry.0 = self.tick;
+        Some(entry.1.clone())
+    }
+
+    fn insert(&mut self, key: Key, image: Option<Arc<RenderImage>>, evicted: &mut Vec<Arc<RenderImage>>) {
+        if self.entries.len() >= MOST_KEPT && !self.entries.contains_key(&key) {
+            // Evict the oldest 1/8th of entries so LRU stays warm and GPU atlas tiles are returned via `take_evicted`.
+            let drop_count = (MOST_KEPT / 8).max(1);
+            let mut order: Vec<(u64, Key)> = self.entries.iter().map(|(&k, &(t, _))| (t, k)).collect();
+            if drop_count < order.len() {
+                order.select_nth_unstable_by_key(drop_count, |&(t, _)| t);
+                order.truncate(drop_count);
+            }
+            for (_, old_key) in order {
+                if let Some((_, Some(img))) = self.entries.remove(&old_key) {
+                    evicted.push(img);
+                }
+            }
+        }
+        self.tick += 1;
+        if let Some((_, Some(old))) = self.entries.insert(key, (self.tick, image)) {
+            evicted.push(old);
+        }
+    }
+}
+
 thread_local! {
     /// Device pixels in a logical one, as the window last said.
     static SCALE: Cell<f32> = const { Cell::new(1.) };
     /// The pictures made so far (None: one that couldn't be drawn, so it isn't tried every frame).
-    static MADE: RefCell<HashMap<Key, Option<Arc<RenderImage>>>> = RefCell::new(HashMap::new());
+    static MADE: RefCell<MadeCache> = RefCell::new(MadeCache::new());
+    /// Evicted pictures waiting for a window frame to drop them from the GPU texture atlas.
+    static EVICTED: RefCell<Vec<Arc<RenderImage>>> = const { RefCell::new(Vec::new()) };
     /// The icon set's glyphs as the inside of their SVGs.
     static GLYPHS: RefCell<HashMap<IconName, Option<Arc<str>>>> = RefCell::new(HashMap::new());
     /// The window's light, by color, theme and direction.
     static LIGHTS: RefCell<HashMap<(u16, bool, bool), Arc<RenderImage>>> = RefCell::new(HashMap::new());
+}
+
+/// Returns evicted `RenderImage`s so the window can release their GPU atlas tiles via `window.drop_image`.
+pub fn take_evicted() -> Vec<Arc<RenderImage>> {
+    EVICTED.with(|evicted| std::mem::take(&mut *evicted.borrow_mut()))
 }
 
 /// More pictures than any session draws; past it the store starts over rather than grow without end.
@@ -192,7 +241,7 @@ fn chip_svg(px: u16, color: Hsla, mark: Option<&str>) -> String {
 
 /// The picture for `key`, made on first use.
 fn picture(key: Key, color: Hsla, cx: &App) -> Option<Arc<RenderImage>> {
-    if let Some(kept) = MADE.with(|made| made.borrow().get(&key).cloned()) {
+    if let Some(kept) = MADE.with(|made| made.borrow_mut().get(&key)) {
         return kept;
     }
     let inside = key.mark.and_then(|mark| glyph(mark, cx));
@@ -207,12 +256,9 @@ fn picture(key: Key, color: Hsla, cx: &App) -> Option<Arc<RenderImage>> {
         .parse_svg(svg.as_bytes())
         .and_then(|parsed| renderer.render_parsed(&parsed, SvgSize::ExactSize(size(side, side))))
         .ok();
-    MADE.with(|made| {
-        let mut made = made.borrow_mut();
-        if made.len() >= MOST_KEPT {
-            made.clear();
-        }
-        made.insert(key, drawn.clone());
+    EVICTED.with(|evicted| {
+        let mut evicted = evicted.borrow_mut();
+        MADE.with(|made| made.borrow_mut().insert(key, drawn.clone(), &mut evicted));
     });
     drawn
 }

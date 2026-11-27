@@ -138,7 +138,7 @@ fn carry_in(pairs: &[(String, String)], moved: bool, folders: bool, w: &World) {
         }
         if let Some((folder, name)) = split(source) {
             let side = sidecar(&sidecars, &folder);
-            if (*side).as_ref().and_then(|b| beside::line(b, &name)).is_some() {
+            if side.get().and_then(Option::as_ref).and_then(|b| b.line(&name)).is_some() {
                 lines.entry(folder.to_string_lossy().to_lowercase()).or_insert_with(|| (folder, Vec::new())).1.push((name, Marks::default()));
             }
         }

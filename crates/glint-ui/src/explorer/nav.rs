@@ -196,7 +196,49 @@ pub(super) fn failure_notice(message: &str, target: &str, tab: TabId, select: &O
 /// Only entries as long as something asked for are lowercased: a big folder read again (a change on disk)
 /// with a few items selected doesn't lowercase every path in it.
 pub(super) fn match_selection(entries: &[glint_model::entries::FileEntry], wanted: &[String]) -> Vec<String> {
+    if wanted.is_empty() || entries.is_empty() {
+        return Vec::new();
+    }
     let asked: Vec<&str> = wanted.iter().map(|p| p.trim_end_matches(['\\', '/'])).collect();
+    // Fast path for small selections: avoid building a huge HashMap (up to 100k lowercased Strings in
+    // uniform-length folders like `IMG_000001.JPG`).
+    if asked.len() <= 32 {
+        let mut found: Vec<Option<&str>> = vec![None; asked.len()];
+        if asked.iter().all(|p| p.is_ascii()) {
+            let mut min_len = usize::MAX;
+            let mut max_len = 0usize;
+            for p in &asked {
+                min_len = min_len.min(p.len());
+                max_len = max_len.max(p.len());
+            }
+            for e in entries {
+                let len = e.path.len();
+                if len < min_len || len > max_len || !e.path.is_ascii() {
+                    continue;
+                }
+                for (slot, &p) in found.iter_mut().zip(&asked) {
+                    if p.len() == len && e.path.eq_ignore_ascii_case(p) {
+                        *slot = Some(e.path.as_str());
+                    }
+                }
+            }
+        } else {
+            let lowered: Vec<(usize, String)> = asked.iter().map(|p| (utf16_len(p), p.to_lowercase())).collect();
+            for e in entries {
+                let len = utf16_len(&e.path);
+                if !lowered.iter().any(|(l, _)| *l == len) {
+                    continue;
+                }
+                let el = e.path.to_lowercase();
+                for (slot, (l, p)) in found.iter_mut().zip(&lowered) {
+                    if *l == len && el == *p {
+                        *slot = Some(e.path.as_str());
+                    }
+                }
+            }
+        }
+        return found.into_iter().flatten().map(str::to_string).collect();
+    }
     let lengths: HashSet<usize> = asked.iter().map(|p| utf16_len(p)).collect();
     let by_lower: HashMap<String, &str> = entries
         .iter()
@@ -548,6 +590,7 @@ impl Explorer {
                 tab.renaming = None;
                 tab.color_filter = None;
                 tab.color_palettes = std::sync::Arc::new(std::collections::HashMap::new());
+                tab.color_palettes_rev = tab.color_palettes_rev.wrapping_add(1).max(1);
             }
             match (restore, left) {
                 (Some(visit), left) => {

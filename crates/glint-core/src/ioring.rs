@@ -27,8 +27,14 @@ pub struct Got {
 const BATCH: usize = 128;
 
 /// Reads every file's slices through an I/O ring; None where Windows has none.
-#[cfg(windows)]
 pub fn read_many(asks: &[Ask]) -> Option<Vec<Option<Got>>> {
+    read_many_opts(asks, true)
+}
+
+/// Reads every file's slices through a thread-reused I/O ring; skips `GetFileInformationByHandle` when `!want_id`.
+#[cfg(windows)]
+pub fn read_many_opts(asks: &[Ask], want_id: bool) -> Option<Vec<Option<Got>>> {
+    use std::cell::RefCell;
     use windows::Win32::Foundation::{CloseHandle, GENERIC_READ, HANDLE, S_OK};
     use windows::Win32::Storage::FileSystem::{
         CreateFileW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_FLAG_OVERLAPPED, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, HIORING, IORING_BUFFER_REF,
@@ -37,14 +43,39 @@ pub fn read_many(asks: &[Ask]) -> Option<Vec<Option<Got>>> {
     };
     use windows::core::PCWSTR;
 
-    let api = ring_api()?;
-    let slices: usize = asks.iter().map(|a| a.slices.len()).sum::<usize>().max(1);
-    let queue = (BATCH * 2).min(slices).next_power_of_two() as u32;
-    let flags = IORING_CREATE_FLAGS { Required: IORING_CREATE_REQUIRED_FLAGS_NONE, Advisory: IORING_CREATE_ADVISORY_FLAGS_NONE };
-    let mut ring = HIORING::default();
-    if unsafe { (api.create)(IORING_VERSION_3, flags, queue, queue * 2, &mut ring) }.is_err() {
-        return None;
+    struct CachedRing {
+        ring: HIORING,
+        queue: u32,
+        close: ring_fns::Close,
     }
+    impl Drop for CachedRing {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = (self.close)(self.ring);
+            }
+        }
+    }
+    thread_local! {
+        static RING: RefCell<Option<CachedRing>> = const { RefCell::new(None) };
+    }
+
+    let api = ring_api()?;
+    let cached = RING.with(|slot| slot.borrow_mut().take()).or_else(|| {
+        let queue = (BATCH * 2).next_power_of_two() as u32;
+        let flags = IORING_CREATE_FLAGS {
+            Required: IORING_CREATE_REQUIRED_FLAGS_NONE,
+            Advisory: IORING_CREATE_ADVISORY_FLAGS_NONE,
+        };
+        let mut ring = HIORING::default();
+        if unsafe { (api.create)(IORING_VERSION_3, flags, queue, queue * 2, &mut ring) }.is_err() {
+            return None;
+        }
+        Some(CachedRing { ring, queue, close: api.close })
+    })?;
+
+    let ring = cached.ring;
+    let queue = cached.queue;
+    let mut ring_healthy = true;
     let mut out: Vec<Option<Got>> = Vec::with_capacity(asks.len());
     for batch in asks.chunks(BATCH) {
         // Open them all, then queue every slice of every one.
@@ -81,13 +112,20 @@ pub fn read_many(asks: &[Ask]) -> Option<Vec<Option<Got>>> {
             let _ = unsafe { (api.submit)(ring, queued, u32::MAX, std::ptr::null_mut()) };
             drain(api, ring, &mut buffers, &mut failed, &mut queued);
         }
+        if queued > 0 {
+            ring_healthy = false;
+        }
         for (f, handle) in handles.into_iter().enumerate() {
             let got = handle.filter(|_| !failed[f]).map(|handle| {
-                let mut info = BY_HANDLE_FILE_INFORMATION::default();
-                let id = unsafe { GetFileInformationByHandle(handle, &mut info) }
-                    .ok()
-                    .map(|_| (info.dwVolumeSerialNumber, (info.nFileIndexHigh as u64) << 32 | info.nFileIndexLow as u64))
-                    .filter(|&(_, index)| index != 0);
+                let id = if want_id {
+                    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+                    unsafe { GetFileInformationByHandle(handle, &mut info) }
+                        .ok()
+                        .map(|_| (info.dwVolumeSerialNumber, (info.nFileIndexHigh as u64) << 32 | info.nFileIndexLow as u64))
+                        .filter(|&(_, index)| index != 0)
+                } else {
+                    None
+                };
                 Got { id, slices: std::mem::take(&mut buffers[f]) }
             });
             if let Some(handle) = handle {
@@ -98,8 +136,8 @@ pub fn read_many(asks: &[Ask]) -> Option<Vec<Option<Got>>> {
             out.push(got);
         }
     }
-    unsafe {
-        let _ = (api.close)(ring);
+    if ring_healthy {
+        RING.with(|slot| *slot.borrow_mut() = Some(cached));
     }
     return Some(out);
 
@@ -164,7 +202,7 @@ fn ring_api() -> Option<&'static RingApi> {
 }
 
 #[cfg(not(windows))]
-pub fn read_many(_asks: &[Ask]) -> Option<Vec<Option<Got>>> {
+pub fn read_many_opts(_asks: &[Ask], _want_id: bool) -> Option<Vec<Option<Got>>> {
     None
 }
 

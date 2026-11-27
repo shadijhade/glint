@@ -110,7 +110,11 @@ fn fill(file: &mut std::fs::File, buf: &mut [u8]) -> std::io::Result<usize> {
 /// when it can't be read or `stop` was set.
 pub fn text(path: &str, stop: &AtomicBool) -> Option<Text> {
     let mut file = std::fs::File::open(path).ok()?;
-    let mut buf = vec![0u8; PIECE];
+    let cap = file
+        .metadata()
+        .map(|m| m.len().min(PIECE as u64).max(1) as usize)
+        .unwrap_or(PIECE);
+    let mut buf = vec![0u8; cap];
     let mut lines = 0u64;
     let mut last = None;
     let mut first = true;

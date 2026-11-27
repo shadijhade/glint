@@ -26,6 +26,29 @@ pub fn twins(path: &str, size: u64, stop: &AtomicBool) -> Option<Vec<String>> {
     if candidates.is_empty() {
         return Some(Vec::new());
     }
+    // For files larger than 16 KB, compare the first and last 4 KB before reading whole files for BLAKE3:
+    // eliminates non-duplicate same-sized candidates in two small seeks.
+    let candidates = if size > 16 * 1024 {
+        let Sampled::Sample(mine_edges) = sample_edges(Path::new(path), size, stop) else {
+            return None;
+        };
+        let checked: Vec<Sampled> = candidates.par_iter().map(|c| sample_edges(Path::new(c), size, stop)).collect();
+        if checked.iter().any(|s| matches!(s, Sampled::Stopped)) {
+            return None;
+        }
+        let filtered: Vec<String> = candidates
+            .into_iter()
+            .zip(checked)
+            .filter(|(_, s)| matches!(s, Sampled::Sample(edges) if *edges == mine_edges))
+            .map(|(c, _)| c)
+            .collect();
+        if filtered.is_empty() {
+            return Some(Vec::new());
+        }
+        filtered
+    } else {
+        candidates
+    };
     let Hashed::Hash(mine) = hash_file(Path::new(path), size, stop) else {
         return None;
     };
@@ -135,6 +158,38 @@ fn same_size(_path: &str, _size: u64) -> Option<Vec<String>> {
     None
 }
 
+enum Sampled {
+    /// The first and last 4 KB, boxed: candidates' samples are collected into a Vec.
+    Sample(Box<[u8; 8192]>),
+    Unreadable,
+    Stopped,
+}
+
+fn sample_edges(path: &Path, size: u64, stop: &AtomicBool) -> Sampled {
+    use std::io::{Seek, SeekFrom};
+    if stop.load(Ordering::Relaxed) {
+        return Sampled::Stopped;
+    }
+    let Ok(mut file) = std::fs::File::open(path) else { return Sampled::Unreadable };
+    if file.metadata().map_or(true, |meta| meta.len() != size) {
+        return Sampled::Unreadable;
+    }
+    let mut edges = Box::new([0u8; 8192]);
+    if file.read_exact(&mut edges[..4096]).is_err() {
+        return Sampled::Unreadable;
+    }
+    if stop.load(Ordering::Relaxed) {
+        return Sampled::Stopped;
+    }
+    if file.seek(SeekFrom::Start(size - 4096)).is_err() {
+        return Sampled::Unreadable;
+    }
+    if file.read_exact(&mut edges[4096..]).is_err() {
+        return Sampled::Unreadable;
+    }
+    Sampled::Sample(edges)
+}
+
 /// How reading a file for its hash ended.
 enum Hashed {
     Hash(blake3::Hash),
@@ -144,31 +199,41 @@ enum Hashed {
     Stopped,
 }
 
-/// BLAKE3 of the file, read in 1 MB pieces with `stop` looked at between them.
+/// BLAKE3 of the file, read in 1 MB pieces with a reused thread-local buffer and `stop` checked between pieces.
 fn hash_file(path: &Path, size: u64, stop: &AtomicBool) -> Hashed {
+    use std::cell::RefCell;
+    const BUF_LEN: usize = 1024 * 1024;
+    thread_local! {
+        static BUF: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    }
     let Ok(mut file) = std::fs::File::open(path) else { return Hashed::Unreadable };
     if file.metadata().map_or(true, |meta| meta.len() != size) {
         return Hashed::Unreadable;
     }
-    let mut hasher = blake3::Hasher::new();
-    let mut buffer = vec![0u8; 1024 * 1024];
-    let mut total: u64 = 0;
-    loop {
-        if stop.load(Ordering::Relaxed) {
-            return Hashed::Stopped;
+    BUF.with(|slot| {
+        let mut buffer = slot.borrow_mut();
+        if buffer.len() < BUF_LEN {
+            buffer.resize(BUF_LEN, 0);
         }
-        let Ok(read) = file.read(&mut buffer) else { return Hashed::Unreadable };
-        if read == 0 {
-            break;
+        let mut hasher = blake3::Hasher::new();
+        let mut total: u64 = 0;
+        loop {
+            if stop.load(Ordering::Relaxed) {
+                return Hashed::Stopped;
+            }
+            let Ok(read) = file.read(&mut buffer) else { return Hashed::Unreadable };
+            if read == 0 {
+                break;
+            }
+            let Some(piece) = buffer.get(..read) else { return Hashed::Unreadable };
+            hasher.update(piece);
+            total = total.saturating_add(read as u64);
         }
-        let Some(piece) = buffer.get(..read) else { return Hashed::Unreadable };
-        hasher.update(piece);
-        total = total.saturating_add(read as u64);
-    }
-    if total != size {
-        return Hashed::Unreadable;
-    }
-    Hashed::Hash(hasher.finalize())
+        if total != size {
+            return Hashed::Unreadable;
+        }
+        Hashed::Hash(hasher.finalize())
+    })
 }
 
 /// Whether two files have the same `size` bytes: None when stopped, `Some(false)` when either can't be read.

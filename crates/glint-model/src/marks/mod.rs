@@ -15,6 +15,7 @@ pub mod wanted;
 pub mod xyplorer;
 
 pub use labels::{default_labels, label_of, settled, shown, Label, Shown};
+pub(crate) use labels::shown_label;
 pub use lines::{
     clip_marks, clip_text, read_beside, read_export, read_ledger, write_beside, write_export, write_ledger, Beside,
     Export, Line, Why,

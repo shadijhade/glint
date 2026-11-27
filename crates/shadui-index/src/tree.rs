@@ -208,6 +208,10 @@ pub struct Tree {
     kids: Kids,
     /// Arena bytes no live link uses any more.
     garbage: usize,
+    /// Live named file and folder counts (`rec.used() && rec.first_link != NONE`), kept current on mutations
+    /// so `Tree::stats()` is O(1) instead of scanning all MFT records every few seconds.
+    files: u64,
+    folders: u64,
     /// Folders' sizes at daily marks, noted as they change.
     pub growth: Growth,
     /// What the marked records are marked with: only they take room.
@@ -331,7 +335,32 @@ impl Tree {
         }
         tree.garbage = tree.names.len().saturating_sub(live);
         tree.kids = Kids::from_pairs(folders);
+        for rec in tree.recs.iter().filter(|r| r.used() && r.first_link != NONE) {
+            if rec.dir() {
+                tree.folders += 1;
+            } else {
+                tree.files += 1;
+            }
+        }
         tree
+    }
+
+    #[inline]
+    fn adjust_count(&mut self, before: Rec, after: Rec) {
+        if before.used() && before.first_link != NONE {
+            if before.dir() {
+                self.folders -= 1;
+            } else {
+                self.files -= 1;
+            }
+        }
+        if after.used() && after.first_link != NONE {
+            if after.dir() {
+                self.folders += 1;
+            } else {
+                self.files += 1;
+            }
+        }
     }
 
     pub fn rec(&self, n: u32) -> Option<&Rec> {
@@ -468,6 +497,7 @@ impl Tree {
         let r = self.recs[rec as usize];
         self.set_next_name(id, r.first_link);
         self.recs[rec as usize].first_link = id;
+        self.adjust_count(r, self.recs[rec as usize]);
         if r.dir() && parent != NONE {
             self.kids.add(parent, id);
         }
@@ -483,6 +513,7 @@ impl Tree {
         self.next_names.remove(&id);
         if r.first_link == id {
             self.recs[link.rec as usize].first_link = after;
+            self.adjust_count(r, self.recs[link.rec as usize]);
         } else {
             let mut at = r.first_link;
             while at != NONE {
@@ -580,11 +611,14 @@ impl Tree {
             self.store_marks(n, marked);
             self.far.remove(&n);
         }
+        let before_flags = self.recs[n as usize];
         let rec = &mut self.recs[n as usize];
         rec.set_seq(state.seq);
         rec.modified = state.modified;
         rec.set_attrs(state.attrs | if state.dir { FILE_ATTRIBUTE_DIRECTORY } else { 0 });
         rec.set_flags(REC_USED | if state.dir { REC_DIR } else { 0 });
+        let after_flags = *rec;
+        self.adjust_count(before_flags, after_flags);
         if n == ROOT {
             return;
         }
@@ -625,7 +659,9 @@ impl Tree {
         for id in links {
             self.remove_link(id);
         }
+        let before = self.recs[n as usize];
         self.recs[n as usize] = Rec::default();
+        self.adjust_count(before, Rec::default());
         self.marks.remove(&n);
         self.far.remove(&n);
     }
@@ -777,7 +813,7 @@ impl Tree {
     }
 
     /// Path of folder `dir` below the root ("" for the root), if it hangs off the root.
-    pub fn dir_path<'c>(&self, dir: u32, cache: &'c mut HashMap<u32, String>) -> Option<&'c str> {
+    pub fn dir_path<'c, S: std::hash::BuildHasher>(&self, dir: u32, cache: &'c mut HashMap<u32, String, S>) -> Option<&'c str> {
         if !cache.contains_key(&dir) {
             let mut chain = Vec::new();
             let mut at = dir;
@@ -808,7 +844,7 @@ impl Tree {
     }
 
     /// Path of a name below the root, e.g. `Users\me\notes.txt`.
-    pub fn path(&self, id: u32, cache: &mut HashMap<u32, String>) -> Option<String> {
+    pub fn path<S: std::hash::BuildHasher>(&self, id: u32, cache: &mut HashMap<u32, String, S>) -> Option<String> {
         let link = self.links[id as usize];
         let dir = self.dir_path(link.parent, cache)?;
         let mut path = String::with_capacity(dir.len() + 1 + link.len as usize);
@@ -818,6 +854,29 @@ impl Tree {
         }
         path.push_str(self.name(id));
         Some(path)
+    }
+
+    /// Writes `drive` + the path of `id` into `buf` (reusing its allocation). Returns `false` if unreachable.
+    pub fn write_path_into<S: std::hash::BuildHasher>(
+        &self,
+        id: u32,
+        drive: &str,
+        cache: &mut HashMap<u32, String, S>,
+        buf: &mut String,
+    ) -> bool {
+        let link = self.links[id as usize];
+        let Some(dir) = self.dir_path(link.parent, cache) else {
+            return false;
+        };
+        buf.clear();
+        buf.reserve(drive.len() + dir.len() + 1 + link.len as usize);
+        buf.push_str(drive);
+        buf.push_str(dir);
+        if !dir.is_empty() {
+            buf.push('\\');
+        }
+        buf.push_str(self.name(id));
+        true
     }
 
     /// Resolves a 64-bit NTFS/ReFS File Reference Number back to its current relative path below the volume root.
@@ -1124,6 +1183,11 @@ impl Tree {
     /// a newer key press): each chunk of names asks first, so a scan of millions of names ends within a chunk's
     /// time. What's found then is incomplete and goes unused.
     pub fn search_until(&self, search: &Search, gone: &(dyn Fn() -> bool + Sync)) -> Vec<u32> {
+        self.search_until_edits(search, gone).into_iter().map(|(id, _)| id).collect()
+    }
+
+    /// Like [`Tree::search_until`], returning `(link_id, edits)` so ranked search does not re-run fuzzy distance.
+    pub fn search_until_edits(&self, search: &Search, gone: &(dyn Fn() -> bool + Sync)) -> Vec<(u32, u32)> {
         const CHUNK: usize = 1 << 14;
         let has_paths = search.matcher.has_paths();
         let has_filters = !search.filters.is_empty();
@@ -1132,6 +1196,110 @@ impl Tree {
         let marks = &search.filters.marks;
         let has_marks = !marks.is_empty();
         let unmarked = marks.accepts("", "", "");
+
+        // Fast path: when a marks filter rejects unmarked records, only records in `self.marks` can match.
+        if has_marks && !unmarked {
+            let mut found = Vec::new();
+            let mut chain = Vec::with_capacity(if has_paths { MAX_DEPTH } else { 0 });
+            let mut path_buf = Vec::with_capacity(if has_paths { 256 } else { 0 });
+            let mut last_parent = NONE;
+            let mut last_dir_len = 0;
+            let (mut reach_parent, mut reach_known) = (NONE, false);
+            let mut reached: HashMap<u32, bool, BuildHasherDefault<RecordHasher>> = HashMap::default();
+            for (seen, (&n, marked)) in self.marks.iter().enumerate() {
+                if seen & 1023 == 0 && gone() {
+                    return Vec::new();
+                }
+                if n < FIRST_USER_RECORD || !self.in_use(n) || !marks.accepts(&marked.label, &marked.tags, &marked.comment) {
+                    continue;
+                }
+                let rec = &self.recs[n as usize];
+                for id in self.links_of(n) {
+                    let Some(link) = self.links.get(id as usize).filter(|l| l.flags & LINK_USED != 0) else {
+                        continue;
+                    };
+                    let name = &self.names[link.name as usize..link.name as usize + link.len as usize];
+                    let folded = Tree::folded_in(&self.names, link);
+                    let Some(edits) = search.matcher.distance(name, folded) else {
+                        continue;
+                    };
+                    if has_filters
+                        && !search.filters.accepts(
+                            name,
+                            folded,
+                            rec.dir(),
+                            rec.size(),
+                            (search.now - rec.modified) / 10_000_000,
+                        )
+                    {
+                        continue;
+                    }
+                    if !search.hidden && is_hidden(rec.attrs(), name) {
+                        continue;
+                    }
+                    if search.excludes.name(name, folded) {
+                        continue;
+                    }
+                    if link.parent != reach_parent {
+                        reach_known = match reached.get(&link.parent) {
+                            Some(&known) => known,
+                            None => {
+                                let known = self.reachable(link.parent, search);
+                                if reached.len() >= REACHED_KEPT {
+                                    reached.clear();
+                                }
+                                reached.insert(link.parent, known);
+                                known
+                            }
+                        };
+                        reach_parent = link.parent;
+                    }
+                    if !reach_known {
+                        continue;
+                    }
+                    if has_paths {
+                        if link.parent != last_parent {
+                            path_buf.clear();
+                            chain.clear();
+                            let mut at = link.parent;
+                            while at != ROOT {
+                                let Some(up_rec) = self.recs.get(at as usize) else { break };
+                                if !up_rec.used() || up_rec.first_link == NONE || chain.len() >= MAX_DEPTH {
+                                    break;
+                                }
+                                chain.push(up_rec.first_link);
+                                at = self.links[up_rec.first_link as usize].parent;
+                            }
+                            for &up_id in chain.iter().rev() {
+                                let up = &self.links[up_id as usize];
+                                let up_name = &self.names[up.name as usize..up.name as usize + up.len as usize];
+                                path_buf.extend_from_slice(Tree::folded_in(&self.names, up).unwrap_or(up_name));
+                                path_buf.push(b'\\');
+                            }
+                            last_parent = link.parent;
+                            last_dir_len = path_buf.len();
+                        } else {
+                            path_buf.truncate(last_dir_len);
+                        }
+                        path_buf.extend_from_slice(folded.unwrap_or(name));
+                        if !search.matcher.matches_path(&path_buf) {
+                            continue;
+                        }
+                    }
+                    if search.excludes.has_paths() && self.excluded_path(id, search) {
+                        continue;
+                    }
+                    found.push((id, edits));
+                }
+            }
+            if search.matcher.is_near() {
+                found.sort_unstable_by_key(|&(id, edits)| (edits, id));
+            } else {
+                found.sort_unstable_by_key(|&(id, _)| id);
+            }
+            return found;
+        }
+
         let found: Vec<Vec<(u32, u32)>> = self
             .links
             .par_chunks(CHUNK)
@@ -1148,7 +1316,7 @@ impl Tree {
                 // Whether each folder matches were found in is reachable (`reachable`: a walk up to the scope,
                 // checking every folder on the way against hidden and the exclusions): siblings ask once.
                 let (mut reach_parent, mut reach_known) = (NONE, false);
-                let mut reached: HashMap<u32, bool> = HashMap::new();
+                let mut reached: HashMap<u32, bool, BuildHasherDefault<RecordHasher>> = HashMap::default();
                 for (i, link) in links.iter().enumerate() {
                     if link.flags & LINK_USED == 0 || link.rec < FIRST_USER_RECORD {
                         continue;
@@ -1231,7 +1399,7 @@ impl Tree {
                     if search.excludes.has_paths() && self.excluded_path(id, search) {
                         continue;
                     }
-                    found.push((edits, id));
+                    found.push((id, edits));
                 }
                 found
             })
@@ -1239,9 +1407,9 @@ impl Tree {
         let mut found = found.concat();
         if search.matcher.is_near() {
             // Stable: index order among names as close.
-            found.sort_by_key(|&(edits, _)| edits);
+            found.sort_by_key(|&(_, edits)| edits);
         }
-        found.into_iter().map(|(_, id)| id).collect()
+        found
     }
 
     /// The names of marked records whose **marks** hold every one of `words` (folded, plain: no wildcard, no path),
@@ -1307,68 +1475,141 @@ impl Tree {
     /// one with a word that does, then any other, then close matches by their typos; each a little
     /// behind when it's in Windows' own folders or a cache, and when it's hidden; then the shorter path.
     pub fn rank(&self, found: &[u32], search: &Search, word: &[u8], max: usize) -> Vec<Rank> {
-        let mut ranked: Vec<Rank> = found.par_iter().map(|&id| self.rank_of(id, search, word)).collect();
+        self.rank_impl(found.len(), |i| (found[i], None), Some(search), word, max, &|| false)
+    }
+
+    /// Like [`Tree::rank`], reusing precomputed fuzzy edit distances from [`Tree::search_until_edits`]
+    /// and aborting early when `gone()` becomes true.
+    pub fn rank_edits_until(
+        &self,
+        found: &[(u32, u32)],
+        word: &[u8],
+        max: usize,
+        gone: &(dyn Fn() -> bool + Sync),
+    ) -> Vec<Rank> {
+        self.rank_impl(found.len(), |i| (found[i].0, Some(found[i].1)), None, word, max, gone)
+    }
+
+    fn rank_impl<F>(
+        &self,
+        len: usize,
+        item: F,
+        search: Option<&Search>,
+        word: &[u8],
+        max: usize,
+        gone: &(dyn Fn() -> bool + Sync),
+    ) -> Vec<Rank>
+    where
+        F: Fn(usize) -> (u32, Option<u32>) + Sync,
+    {
+        if max == 0 || len == 0 {
+            return Vec::new();
+        }
+        const CHUNK: usize = 1 << 12;
+        let is = |part: &[u8]| part.eq_ignore_ascii_case(word);
+        let chunks: Vec<Vec<Rank>> = (0..len.div_ceil(CHUNK))
+            .into_par_iter()
+            .map(|c| {
+                if gone() {
+                    return Vec::new();
+                }
+                let start = c * CHUNK;
+                let end = (start + CHUNK).min(len);
+                let mut parent_cache: HashMap<u32, (u32, bool), BuildHasherDefault<RecordHasher>> = HashMap::default();
+                let mut folders: Vec<&[u8]> = Vec::with_capacity(16);
+                let (mut last_parent, mut last_info) = (NONE, (0u32, false));
+                let mut out = Vec::with_capacity(end - start);
+                for i in start..end {
+                    let (id, known_edits) = item(i);
+                    let link = &self.links[id as usize];
+                    let name = &self.names[link.name as usize..link.name as usize + link.len as usize];
+                    // Only names that fold differently have a folded copy: an ASCII name is compared ignoring case.
+                    let folded = Tree::folded_in(&self.names, link);
+                    let lower = folded.unwrap_or(name);
+                    let class = if word.is_empty()
+                        || is(lower)
+                        || lower
+                            .iter()
+                            .rposition(|&b| b == b'.')
+                            .is_some_and(|dot| is(&lower[..dot]))
+                    {
+                        0
+                    } else if lower.get(..word.len()).is_some_and(is) {
+                        1
+                    } else if lower
+                        .windows(word.len() + 1)
+                        .any(|w| matches!(w[0], b' ' | b'.' | b'_' | b'-') && is(&w[1..]))
+                    {
+                        2
+                    } else if lower.windows(word.len()).any(is) {
+                        3
+                    } else {
+                        // A close match, not containing what was typed: behind every name that does.
+                        4 + known_edits.unwrap_or_else(|| {
+                            search.and_then(|s| s.matcher.distance(name, folded)).unwrap_or(3)
+                        })
+                    };
+                    // Cache (dir_path_len, in_system_folder) per parent folder: siblings share the exact same ancestor walk.
+                    let (dir_len, is_system) = if link.parent == last_parent {
+                        last_info
+                    } else {
+                        let info = match parent_cache.get(&link.parent) {
+                            Some(&info) => info,
+                            None => {
+                                folders.clear();
+                                let mut dlen = 0u32;
+                                let mut dir = link.parent;
+                                for _ in 0..MAX_DEPTH {
+                                    let Some(rec) = self
+                                        .recs
+                                        .get(dir as usize)
+                                        .filter(|r| dir != ROOT && r.first_link != NONE)
+                                    else {
+                                        break;
+                                    };
+                                    let up = &self.links[rec.first_link as usize];
+                                    let up_name = &self.names[up.name as usize..up.name as usize + up.len as usize];
+                                    folders.push(Tree::folded_in(&self.names, up).unwrap_or(up_name));
+                                    dlen += up.len as u32 + 1;
+                                    dir = up.parent;
+                                }
+                                folders.reverse();
+                                let info = (dlen, in_system_folder(&folders));
+                                if parent_cache.len() >= REACHED_KEPT {
+                                    parent_cache.clear();
+                                }
+                                parent_cache.insert(link.parent, info);
+                                info
+                            }
+                        };
+                        last_parent = link.parent;
+                        last_info = info;
+                        info
+                    };
+                    let hidden = is_hidden(self.recs[link.rec as usize].attrs(), name);
+                    out.push(Rank {
+                        score: class * 4 + if is_system { 2 } else { 0 } + u32::from(hidden),
+                        len: link.len as u32 + 3 + dir_len,
+                        id,
+                    });
+                }
+                if out.len() > max {
+                    out.select_nth_unstable(max);
+                    out.truncate(max);
+                }
+                out
+            })
+            .collect();
+        if gone() {
+            return Vec::new();
+        }
+        let mut ranked = chunks.concat();
         if ranked.len() > max {
             ranked.select_nth_unstable(max);
             ranked.truncate(max);
         }
         ranked.sort_unstable();
         ranked
-    }
-
-    fn rank_of(&self, id: u32, search: &Search, word: &[u8]) -> Rank {
-        let link = &self.links[id as usize];
-        let name = &self.names[link.name as usize..link.name as usize + link.len as usize];
-        // Only names that fold differently have a folded copy: an ASCII name is compared ignoring case.
-        let folded = Tree::folded_in(&self.names, link);
-        let lower = folded.unwrap_or(name);
-        let is = |part: &[u8]| part.eq_ignore_ascii_case(word);
-        let class = if word.is_empty()
-            || is(lower)
-            || lower
-                .iter()
-                .rposition(|&b| b == b'.')
-                .is_some_and(|dot| is(&lower[..dot]))
-        {
-            0
-        } else if lower.get(..word.len()).is_some_and(is) {
-            1
-        } else if lower
-            .windows(word.len() + 1)
-            .any(|w| matches!(w[0], b' ' | b'.' | b'_' | b'-') && is(&w[1..]))
-        {
-            2
-        } else if lower.windows(word.len()).any(is) {
-            3
-        } else {
-            // A close match, not containing what was typed: behind every name that does.
-            4 + search.matcher.distance(name, folded).unwrap_or(3)
-        };
-        // Its folders from the drive down, for where it is and how long its path is ("C:\" first).
-        let mut folders = Vec::with_capacity(12);
-        let mut len = link.len as u32 + 3;
-        let mut dir = link.parent;
-        for _ in 0..MAX_DEPTH {
-            let Some(rec) = self
-                .recs
-                .get(dir as usize)
-                .filter(|r| dir != ROOT && r.first_link != NONE)
-            else {
-                break;
-            };
-            let up = &self.links[rec.first_link as usize];
-            let up_name = &self.names[up.name as usize..up.name as usize + up.len as usize];
-            folders.push(Tree::folded_in(&self.names, up).unwrap_or(up_name));
-            len += up.len as u32 + 1;
-            dir = up.parent;
-        }
-        folders.reverse();
-        let hidden = is_hidden(self.recs[link.rec as usize].attrs(), name);
-        Rank {
-            score: class * 4 + if in_system_folder(&folders) { 2 } else { 0 } + u32::from(hidden),
-            len,
-            id,
-        }
     }
 
     /// Whether folder `dir` is the scope or below it, with nothing hidden (unless wanted) or excluded
@@ -1483,24 +1724,18 @@ impl Tree {
     }
 
     pub fn stats(&self) -> TreeStats {
-        let mut stats = TreeStats::default();
-        // Records with no name (NTFS's reserved ones) aren't files anyone sees.
-        for rec in self.recs.iter().filter(|r| r.used() && r.first_link != NONE) {
-            if rec.dir() {
-                stats.folders += 1;
-            } else {
-                stats.files += 1;
-            }
+        TreeStats {
+            files: self.files,
+            folders: self.folders,
+            names: (self.links.len() - self.free.len()) as u64,
+            memory: (self.recs.capacity() * size_of::<Rec>()
+                + self.links.capacity() * size_of::<Link>()
+                + self.names.capacity()
+                + self.free.capacity() * 4
+                + self.next_names.capacity() * 10
+                + self.kids.memory()) as u64
+                + self.growth.memory(),
         }
-        stats.names = (self.links.len() - self.free.len()) as u64;
-        stats.memory = (self.recs.capacity() * size_of::<Rec>()
-            + self.links.capacity() * size_of::<Link>()
-            + self.names.capacity()
-            + self.free.capacity() * 4
-            + self.next_names.capacity() * 10
-            + self.kids.memory()) as u64
-            + self.growth.memory();
-        stats
     }
 }
 
@@ -1725,6 +1960,10 @@ impl Builder {
             });
             if rec.first_link != NONE {
                 tree.next_names.insert(id, rec.first_link);
+            } else if rec.dir() {
+                tree.folders += 1;
+            } else {
+                tree.files += 1;
             }
             tree.recs[n as usize].first_link = id;
             if rec.dir() && parent != NONE {

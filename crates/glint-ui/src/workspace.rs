@@ -160,8 +160,8 @@ enum Shown {
 }
 
 /// The main window's content.
-/// A pane's README as last looked for, with the listing it was looked for in.
-type ReadmeFound = Option<(std::sync::Arc<[FileEntry]>, Option<FileEntry>)>;
+/// A pane's README as last looked for, with the listing it was looked for in (Weak so `let_go` frees it off-thread).
+type ReadmeFound = Option<(std::sync::Weak<[FileEntry]>, Option<FileEntry>)>;
 
 pub struct Workspace {
     focus: FocusHandle,
@@ -605,10 +605,15 @@ impl Workspace {
                     .map(|listing| listing.entries.clone())
             };
             let wanted: Option<FileEntry> = listing.and_then(|entries| match &self.readmes_found[pane] {
-                Some((seen, found)) if std::sync::Arc::ptr_eq(seen, &entries) => found.clone(),
+                Some((seen, found))
+                    if seen.strong_count() > 0
+                        && std::ptr::addr_eq(std::sync::Weak::as_ptr(seen), std::sync::Arc::as_ptr(&entries)) =>
+                {
+                    found.clone()
+                }
                 _ => {
                     let found = git::readme_of(&entries).cloned();
-                    self.readmes_found[pane] = Some((entries, found.clone()));
+                    self.readmes_found[pane] = Some((std::sync::Arc::downgrade(&entries), found.clone()));
                     found
                 }
             });
@@ -2868,6 +2873,9 @@ impl Render for Workspace {
         // stayed until the next preview was drawn.
         crate::components::preview::picture::release_retired(window);
         crate::components::preview::player::release_retired(window);
+        for image in crate::art::take_evicted() {
+            window.drop_image(image).ok();
+        }
         let t = theme::tokens(cx).clone();
         // The window is chrome all over (over Mica, the material with a veil); the sheet lies on it.
         let fill = theme::window_fill(cx);

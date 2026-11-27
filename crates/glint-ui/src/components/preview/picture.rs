@@ -59,6 +59,50 @@ pub fn release_retired(window: &mut Window) {
     }
 }
 
+/// Cached 256×256 BGRA checkerboard tile so transparent image backdrops paint in a handful of textured quads
+/// instead of thousands of per-cell `paint_quad` calls.
+fn checker_tile(checks: Hsla) -> Arc<RenderImage> {
+    const TILE: u32 = 256;
+    const CELL_PX: u32 = CHECK as u32;
+    let c = gpui_kit::Rgba::from(checks);
+    // Straight-alpha BGRA matching GPUI's RenderImage pixel format.
+    let on = [
+        (c.b.clamp(0., 1.) * 255.).round() as u8,
+        (c.g.clamp(0., 1.) * 255.).round() as u8,
+        (c.r.clamp(0., 1.) * 255.).round() as u8,
+        (c.a.clamp(0., 1.) * 255.).round() as u8,
+    ];
+    thread_local! {
+        static TILE_CACHE: RefCell<Option<([u8; 4], Arc<RenderImage>)>> = const { RefCell::new(None) };
+    }
+    TILE_CACHE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if let Some((key, img)) = slot.as_ref() {
+            if *key == on {
+                return img.clone();
+            }
+        }
+        let mut buf = vec![0u8; (TILE * TILE * 4) as usize];
+        for y in 0..TILE {
+            let row = y / CELL_PX;
+            let row_off = (y * TILE * 4) as usize;
+            for x in 0..TILE {
+                if (row + x / CELL_PX).is_multiple_of(2) {
+                    let off = row_off + (x * 4) as usize;
+                    buf[off..off + 4].copy_from_slice(&on);
+                }
+            }
+        }
+        let image = Arc::new(RenderImage::new(vec![image::Frame::new(
+            image::RgbaImage::from_raw(TILE, TILE, buf).expect("256x256 checker buffer"),
+        )]));
+        if let Some((_, old)) = slot.replace((on, image.clone())) {
+            RETIRED.with(|retired| retired.borrow_mut().push(old));
+        }
+        image
+    })
+}
+
 /// What shows through a transparent picture (`ImageBackdrop`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Backdrop {
@@ -676,21 +720,28 @@ impl Render for PictureView {
                 Backdrop::Dark => window.paint_quad(fill(bounds, gpui_kit::rgb(DARK_BACKDROP))),
                 Backdrop::Light => window.paint_quad(fill(bounds, gpui_kit::rgb(LIGHT_BACKDROP))),
                 Backdrop::Checks => {
-                    let cell = px(CHECK);
-                    let cols = (f32::from(bounds.size.width) / CHECK).ceil() as i32;
-                    let rows = (f32::from(bounds.size.height) / CHECK).ceil() as i32;
+                    let tile_img = checker_tile(checks);
+                    let tile_px = px(256.);
+                    let cols = (f32::from(bounds.size.width) / 256.).ceil() as i32;
+                    let rows = (f32::from(bounds.size.height) / 256.).ceil() as i32;
                     for row in 0..rows {
                         for col in 0..cols {
-                            if (row + col) % 2 == 0 {
-                                let origin =
-                                    point(bounds.origin.x + cell * col as f32, bounds.origin.y + cell * row as f32);
-                                let square = Bounds {
-                                    origin,
-                                    size: size(cell, cell),
-                                }
-                                .intersect(&bounds);
-                                window.paint_quad(fill(square, checks));
-                            }
+                            let tile_bounds = Bounds {
+                                origin: point(
+                                    bounds.origin.x + tile_px * col as f32,
+                                    bounds.origin.y + tile_px * row as f32,
+                                ),
+                                size: size(tile_px, tile_px),
+                            };
+                            let clipped = tile_bounds.intersect(&bounds);
+                            let _ = window.paint_image(
+                                clipped,
+                                tile_bounds,
+                                gpui_kit::Corners::default(),
+                                tile_img.clone(),
+                                0,
+                                false,
+                            );
                         }
                     }
                 }

@@ -89,11 +89,18 @@ pub struct Paths<'a> {
     letter: char,
     /// The folders the records name: the folder each is in and its name, by file reference.
     dirs: HashMap<u64, (u64, String)>,
+    /// Memoized resolved folder paths, invalidated whenever a directory changes.
+    resolved: std::cell::RefCell<HashMap<u64, Option<String>>>,
 }
 
 impl<'a> Paths<'a> {
     pub fn new(tree: &'a Tree, letter: char) -> Self {
-        Paths { tree, letter, dirs: HashMap::new() }
+        Paths {
+            tree,
+            letter,
+            dirs: HashMap::new(),
+            resolved: std::cell::RefCell::new(HashMap::new()),
+        }
     }
 
     /// How the folders `records` name stood before them: each one's first record says (a rename's
@@ -102,6 +109,7 @@ impl<'a> Paths<'a> {
         for r in records.iter().filter(|r| r.attrs & FILE_ATTRIBUTE_DIRECTORY != 0) {
             self.dirs.entry(r.file).or_insert_with(|| (r.parent, r.name.clone()));
         }
+        self.resolved.get_mut().clear();
     }
 
     /// A folder's record moves it on to where it is after it; a rename's first half leaves it as
@@ -110,12 +118,35 @@ impl<'a> Paths<'a> {
         let first_half = r.reason & REASON_RENAME_OLD_NAME != 0 && r.reason & REASON_RENAME_NEW_NAME == 0;
         if r.attrs & FILE_ATTRIBUTE_DIRECTORY != 0 && !first_half {
             self.dirs.insert(r.file, (r.parent, r.name.clone()));
+            self.resolved.get_mut().clear();
         }
+    }
+
+    /// Resolves `folder` using the memoization cache, passing its path slice to `f` without cloning it.
+    fn with_folder<R>(&self, folder: u64, f: impl FnOnce(&str) -> R) -> Option<R> {
+        {
+            let cache = self.resolved.borrow();
+            if let Some(entry) = cache.get(&folder) {
+                return entry.as_deref().map(f);
+            }
+        }
+        let computed = self.resolve_folder(folder);
+        let result = computed.as_deref().map(f);
+        let mut cache = self.resolved.borrow_mut();
+        if cache.len() >= 4096 {
+            cache.clear();
+        }
+        cache.insert(folder, computed);
+        result
     }
 
     /// The path of folder `folder` (a file reference) as it stands, e.g. `C:\Users\me`; None when
     /// neither the journal nor the index knows it.
     pub fn folder(&self, folder: u64) -> Option<String> {
+        self.with_folder(folder, str::to_string)
+    }
+
+    fn resolve_folder(&self, folder: u64) -> Option<String> {
         let mut names: Vec<&str> = Vec::new();
         let mut at = folder;
         loop {
@@ -190,8 +221,12 @@ fn set_aside(path: &str) -> bool {
 /// The Recycle Bin's own files right in a user's bin: the `$I…` record beside each item, and its
 /// desktop.ini.
 fn bin_record(path: &str) -> bool {
-    let name = name_of(path).to_lowercase();
-    path.split('\\').count() == 4 && (name.starts_with("$i") || name == "desktop.ini")
+    if path.bytes().filter(|&b| b == b'\\').count() != 3 {
+        return false;
+    }
+    let name = name_of(path);
+    (name.len() >= 2 && name.as_bytes()[..2].eq_ignore_ascii_case(b"$i"))
+        || name.eq_ignore_ascii_case("desktop.ini")
 }
 
 /// Top folders programs keep for themselves.
@@ -207,27 +242,36 @@ const NOISE: &[&str] = &[
 /// AppData, NTFS's own, caches, temporary and tool folders. (Only the folders count: a folder of
 /// one's own named Temp is still told.)
 fn noise(path: &str) -> bool {
-    let lower = path.to_lowercase();
-    let parts: Vec<&str> = lower.split('\\').collect();
-    let folders = &parts[..parts.len().saturating_sub(1)];
-    if folders.get(1).is_some_and(|top| ROOT_NOISE.contains(top)) {
-        return true;
+    let Some((dir_part, _)) = path.rsplit_once('\\') else {
+        return false;
+    };
+    let mut in_users = false;
+    for (i, part) in dir_part.split('\\').enumerate().skip(1) {
+        if i == 1 {
+            if ROOT_NOISE.iter().any(|n| part.eq_ignore_ascii_case(n)) {
+                return true;
+            }
+            in_users = part.eq_ignore_ascii_case("users");
+        } else if i == 3 && in_users && part.eq_ignore_ascii_case("appdata") {
+            return true;
+        }
+        if NOISE.iter().any(|n| part.eq_ignore_ascii_case(n)) {
+            return true;
+        }
     }
-    if folders.len() > 3 && folders[1] == "users" && folders[3] == "appdata" {
-        return true;
-    }
-    folders.iter().skip(1).any(|f| NOISE.contains(f))
+    false
 }
 
 /// Names programs give scratch files: Office's `~$…` and `~WRL….tmp`, `.tmp`, a download still
 /// coming in, an editor's swap file.
 fn scratch_name(name: &str) -> bool {
-    let lower = name.to_lowercase();
-    lower.starts_with('~')
-        || lower.starts_with(".~")
-        || lower.starts_with(".#")
-        || lower.ends_with('~')
-        || [".tmp", ".temp", ".crdownload", ".part", ".partial", ".download", ".swp", ".swx"].iter().any(|ext| lower.ends_with(ext))
+    const EXTS: &[&str] = &[".tmp", ".temp", ".crdownload", ".part", ".partial", ".download", ".swp", ".swx"];
+    let b = name.as_bytes();
+    name.starts_with('~')
+        || name.starts_with(".~")
+        || name.starts_with(".#")
+        || name.ends_with('~')
+        || EXTS.iter().any(|ext| b.len() >= ext.len() && b[b.len() - ext.len()..].eq_ignore_ascii_case(ext.as_bytes()))
 }
 
 #[derive(Default)]
@@ -261,7 +305,7 @@ impl History {
         let time = unix_ms(r.time);
         self.forget(time);
         let dir = r.attrs & FILE_ATTRIBUTE_DIRECTORY != 0;
-        let path = || paths.folder(r.parent).map(|folder| join(&folder, &r.name));
+        let path = || paths.with_folder(r.parent, |folder| join(folder, &r.name));
         if r.reason & REASON_FILE_CREATE != 0 && !self.made.contains_key(&r.file) {
             self.made.insert(r.file, time);
             self.made_order.push_back((time, r.file));
@@ -324,16 +368,28 @@ impl History {
 
     /// Something new took the place of what was deleted just before: that was a save, not a delete.
     fn saved_over(&mut self, path: &str, now: i64) {
-        let lower = path.to_lowercase();
+        if self.events.back().is_none_or(|e| now - e.time > SAVE_MS) {
+            return;
+        }
+        let ascii = path.is_ascii();
+        let mut lower_buf: Option<String> = None;
         for at in (0..self.events.len()).rev() {
             let e = &self.events[at];
             if now - e.time > SAVE_MS {
                 return;
             }
-            if e.kind == Kind::Deleted && !e.burst && e.path.to_lowercase() == lower {
-                let gone = self.events.remove(at).unwrap();
-                self.bytes -= gone.bytes();
-                return;
+            if e.kind == Kind::Deleted && !e.burst {
+                let same = if ascii && e.path.is_ascii() {
+                    e.path.eq_ignore_ascii_case(path)
+                } else {
+                    let lower = lower_buf.get_or_insert_with(|| path.to_lowercase());
+                    e.path.to_lowercase() == *lower
+                };
+                if same {
+                    let gone = self.events.remove(at).unwrap();
+                    self.bytes -= gone.bytes();
+                    return;
+                }
             }
         }
     }
@@ -342,7 +398,12 @@ impl History {
         if from == to {
             return;
         }
-        let same_folder = parent_of(&from).to_lowercase() == parent_of(&to).to_lowercase();
+        let (pf, pt) = (parent_of(&from), parent_of(&to));
+        let same_folder = if pf.is_ascii() && pt.is_ascii() {
+            pf.eq_ignore_ascii_case(pt)
+        } else {
+            pf.to_lowercase() == pt.to_lowercase()
+        };
         let kind = match (in_bin(&from), in_bin(&to)) {
             (false, true) => Kind::Recycled,
             (true, false) => Kind::Restored,
@@ -470,11 +531,8 @@ impl History {
 const MAGIC: &[u8; 8] = b"SHUIHIS\0";
 const FORMAT: u32 = 1;
 
-/// Writes the history to `path` atomically (a temporary file, then a rename). Layout
-/// (little-endian): magic, format, the journal id and next USN, the count, then each event (time,
-/// kind, folder, burst, items, file reference, then its path, where it went and where it was, each
-/// a u32 length, u32::MAX for none, and UTF-8), and a checksum of everything before it.
-pub fn save(path: &Path, history: &History) -> io::Result<()> {
+/// Serializes `history` into bytes ready to be written to disk without holding the history lock.
+pub fn encode(history: &History) -> Vec<u8> {
     let mut out = Vec::with_capacity(40 + history.bytes);
     out.extend_from_slice(MAGIC);
     out.extend_from_slice(&FORMAT.to_le_bytes());
@@ -500,12 +558,25 @@ pub fn save(path: &Path, history: &History) -> io::Result<()> {
     let mut sum = Checksum::default();
     sum.update(&out);
     out.extend_from_slice(&sum.finish().to_le_bytes());
+    out
+}
+
+/// Writes already-encoded history bytes atomically (temporary file + fsync + rename).
+pub fn write_encoded(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let temp = path.with_extension("hist.tmp");
     let mut file = fs::File::create(&temp)?;
-    file.write_all(&out)?;
+    file.write_all(bytes)?;
     file.sync_all()?;
     drop(file);
     fs::rename(&temp, path)
+}
+
+/// Writes the history to `path` atomically (a temporary file, then a rename). Layout
+/// (little-endian): magic, format, the journal id and next USN, the count, then each event (time,
+/// kind, folder, burst, items, file reference, then its path, where it went and where it was, each
+/// a u32 length, u32::MAX for none, and UTF-8), and a checksum of everything before it.
+pub fn save(path: &Path, history: &History) -> io::Result<()> {
+    write_encoded(path, &encode(history))
 }
 
 pub fn load(path: &Path) -> Result<History, String> {
