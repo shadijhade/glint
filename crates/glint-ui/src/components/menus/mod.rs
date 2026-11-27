@@ -941,17 +941,23 @@ impl MenuHost {
         ctx.data.undo = try_explorer(cx).and_then(|e| e.read(cx).next_undo().map(|(_, label)| label.to_string()));
         if let Some(app) = persistence::app(cx) {
             ctx.pinned = app.pinned.clone();
-            // The top of a remote connection can be edited and removed.
+            // The top of a remote connection can be edited and removed, and so can a Windows share's (its own path).
+            let connection = |r: &glint_model::store::RemoteConnection| Connection {
+                id: r.id.clone(),
+                name: r.name.clone(),
+            };
             if is_remote_path(folder) && is_root(folder) {
                 let id = remote_id_of(folder).to_lowercase();
+                ctx.remote = app.remotes.iter().find(|r| r.id.to_lowercase() == id).map(connection);
+            } else {
                 ctx.remote = app
                     .remotes
                     .iter()
-                    .find(|r| r.id.to_lowercase() == id)
-                    .map(|r| Connection {
-                        id: r.id.clone(),
-                        name: r.name.clone(),
-                    });
+                    .find(|r| {
+                        r.kind == glint_model::store::RemoteKind::Smb
+                            && glint_model::paths::same_path(&r.endpoint, folder)
+                    })
+                    .map(connection);
             }
         }
         ctx

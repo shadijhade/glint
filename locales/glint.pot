@@ -7313,6 +7313,7 @@ msgid "FTP"
 msgstr ""
 
 #: crates/glint-ui/src/components/settings/clouds.rs
+#: crates/glint-ui/src/dialogs/remote.rs
 msgid "Windows share (SMB)"
 msgstr ""
 
@@ -14109,6 +14110,10 @@ msgid "A server you reach with SSH"
 msgstr ""
 
 #: crates/glint-ui/src/dialogs/remote.rs
+msgid "A NAS or another PC: read and write, through Windows"
+msgstr ""
+
+#: crates/glint-ui/src/dialogs/remote.rs
 msgid "Couldn't keep the secret in Credential Manager"
 msgstr ""
 
@@ -14248,6 +14253,16 @@ msgid ""
 msgstr ""
 
 #: crates/glint-ui/src/dialogs/remote.rs
+msgid "The share, or a folder in it, as File Explorer's address bar takes it."
+msgstr ""
+
+#: crates/glint-ui/src/dialogs/remote.rs
+msgid ""
+"Empty to sign in as you, or as Windows already does for that server. A NAS's "
+"own account can be NAS\\name."
+msgstr ""
+
+#: crates/glint-ui/src/dialogs/remote.rs
 msgid "Empty for a server that doesn't ask."
 msgstr ""
 
@@ -14308,12 +14323,25 @@ msgstr ""
 
 #: crates/glint-ui/src/dialogs/remote.rs
 msgid ""
+"Windows' own SMB client opens it, without a drive letter or a place in File "
+"Explorer. The password stays in Windows Credential Manager, never in Glint's "
+"settings."
+msgstr ""
+
+#: crates/glint-ui/src/dialogs/remote.rs
+msgid ""
 "Glint only reads it: nothing there is changed. The password stays in Windows "
 "Credential Manager, never in Glint's settings."
 msgstr ""
 
 #: crates/glint-ui/src/dialogs/remote.rs
 msgid "Test"
+msgstr ""
+
+#: crates/glint-ui/src/dialogs/remote.rs
+msgid ""
+"It opens like a folder on this PC: read, write, copy and drag as anywhere "
+"else"
 msgstr ""
 
 #: crates/glint-ui/src/dialogs/remote.rs

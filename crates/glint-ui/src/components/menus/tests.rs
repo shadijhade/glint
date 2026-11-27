@@ -925,6 +925,51 @@ fn a_place_or_tile_opens_pastes_into_and_pins_but_has_no_new_or_select_all() {
 }
 
 #[test]
+fn a_windows_shares_connection_is_edited_and_removed_from_its_tops_menu_and_needs_no_pin() {
+    let _guard = english();
+    let share = "\\\\192.168.1.6\\share";
+    let connected = FolderCtx {
+        remote: Some(Connection {
+            id: "nshare".into(),
+            name: "nShare".into(),
+        }),
+        ..FolderCtx::default()
+    };
+    // The place in the rail: a folder's menu, read and write, with the connection's two rows.
+    let menu = folder_menu(share, false, &connected);
+    let all = labels(&menu);
+    assert_eq!(
+        all[0], "[Paste into folder|Copy path]",
+        "no pin: it is in the sidebar already"
+    );
+    in_order(
+        &all,
+        &[
+            "Open",
+            "Open in new tab",
+            "Edit the connection…",
+            "Remove the connection…",
+            "Open in Terminal",
+        ],
+    );
+    assert_eq!(
+        find(&menu, "Edit the connection…").map(|e| e.run.clone()),
+        Some(Run::Ask(MenuEvent::EditConnection { id: "nshare".into() }))
+    );
+    assert_eq!(
+        find(&menu, "Remove the connection…").map(|e| e.run.clone()),
+        Some(Run::Ask(MenuEvent::RemoveConnection { id: "nshare".into() }))
+    );
+    assert!(
+        find(&menu, "Read-only: on a remote connection").is_none(),
+        "it isn't read-only"
+    );
+    // Any other folder on the share, or one without a connection: neither row.
+    let plain = folder_menu(share, false, &FolderCtx::default());
+    assert!(find(&plain, "Edit the connection…").is_none() && find(&plain, "Pin to sidebar").is_some());
+}
+
+#[test]
 fn a_pinned_places_menu_renames_it_in_the_sidebar_and_no_other_menu_does() {
     let _guard = english();
     let share = "\\\\192.168.1.6\\share";

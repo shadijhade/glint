@@ -7327,6 +7327,7 @@ msgid "FTP"
 msgstr "FTP"
 
 #: crates/glint-ui/src/components/settings/clouds.rs
+#: crates/glint-ui/src/dialogs/remote.rs
 msgid "Windows share (SMB)"
 msgstr "Windows 共享（SMB）"
 
@@ -14165,6 +14166,10 @@ msgid "A server you reach with SSH"
 msgstr "通过 SSH 访问的服务器"
 
 #: crates/glint-ui/src/dialogs/remote.rs
+msgid "A NAS or another PC: read and write, through Windows"
+msgstr "NAS 或另一台电脑：通过 Windows 读写"
+
+#: crates/glint-ui/src/dialogs/remote.rs
 msgid "Couldn't keep the secret in Credential Manager"
 msgstr "无法将密钥保留在凭据管理器"
 
@@ -14306,6 +14311,16 @@ msgid ""
 msgstr "打开位置：其登录文件夹下方，或开始时从 / 开始。"
 
 #: crates/glint-ui/src/dialogs/remote.rs
+msgid "The share, or a folder in it, as File Explorer's address bar takes it."
+msgstr "共享，或其中的文件夹，写法与文件资源管理器地址栏相同。"
+
+#: crates/glint-ui/src/dialogs/remote.rs
+msgid ""
+"Empty to sign in as you, or as Windows already does for that server. A NAS's "
+"own account can be NAS\\name."
+msgstr "留空则以你的身份登录，或使用 Windows 已为该服务器保存的登录信息。NAS 自己的账户可写作 NAS\\name。"
+
+#: crates/glint-ui/src/dialogs/remote.rs
 msgid "Empty for a server that doesn't ask."
 msgstr "对不询问的服务器留空。"
 
@@ -14370,6 +14385,13 @@ msgstr ""
 
 #: crates/glint-ui/src/dialogs/remote.rs
 msgid ""
+"Windows' own SMB client opens it, without a drive letter or a place in File "
+"Explorer. The password stays in Windows Credential Manager, never in Glint's "
+"settings."
+msgstr "由 Windows 自带的 SMB 客户端打开，不占盘符，也不出现在文件资源管理器中。密码保留在 Windows 凭据管理器中，绝不会在 Glint 的设置中。"
+
+#: crates/glint-ui/src/dialogs/remote.rs
+msgid ""
 "Glint only reads it: nothing there is changed. The password stays in Windows "
 "Credential Manager, never in Glint's settings."
 msgstr "Glint 仅读取它：其中的内容不会更改。密码保留在 Windows 凭据管理器中，绝不会在 Glint 的设置中。"
@@ -14377,6 +14399,12 @@ msgstr "Glint 仅读取它：其中的内容不会更改。密码保留在 Windo
 #: crates/glint-ui/src/dialogs/remote.rs
 msgid "Test"
 msgstr "测试"
+
+#: crates/glint-ui/src/dialogs/remote.rs
+msgid ""
+"It opens like a folder on this PC: read, write, copy and drag as anywhere "
+"else"
+msgstr "像这台电脑上的文件夹一样打开：可读写、复制和拖放，与别处无异"
 
 #: crates/glint-ui/src/dialogs/remote.rs
 msgid "Its folders open read-only; what you open or copy is downloaded"

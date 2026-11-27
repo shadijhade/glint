@@ -819,6 +819,26 @@ impl Explorer {
         }
     }
 
+    /// Sends the tabs showing `folder` or a folder in it to This PC: a Windows share's connection was removed.
+    pub fn leave_place(&mut self, folder: &str, cx: &mut Context<Self>) {
+        let top = folder.trim_end_matches('\\').to_lowercase();
+        if top.is_empty() {
+            return;
+        }
+        let leaving: Vec<TabId> = self
+            .tabs
+            .values()
+            .filter(|t| {
+                let path = t.path.to_lowercase();
+                path == top || path.strip_prefix(&top).is_some_and(|rest| rest.starts_with('\\'))
+            })
+            .map(|t| t.id)
+            .collect();
+        for tab in leaving {
+            self.navigate(THIS_PC, NavOptions::in_tab(tab), cx);
+        }
+    }
+
     /// F5: runs the search again when one is shown, otherwise re-reads the folder (`refresh`).
     pub fn refresh(&mut self, cx: &mut Context<Self>) -> Refresh {
         let id = self.active_tab_id();

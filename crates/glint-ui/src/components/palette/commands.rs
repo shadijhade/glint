@@ -446,8 +446,9 @@ pub fn folders(inputs: &Inputs) -> Vec<Command> {
         );
     }
     for remote in &inputs.remotes {
+        // A Windows share at its own path; any other connection at `remote:<id>`.
         add(
-            &format!("{}{}", glint_model::paths::REMOTE, remote.id),
+            &remote.place(),
             remote.name.clone().into(),
             remote_icon(remote),
             0.5,

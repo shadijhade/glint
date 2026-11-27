@@ -581,16 +581,30 @@ pub enum RemoteKind {
     Webdav,
     Sftp,
     Rclone,
+    /// A Windows share (`\\nas\photos`), signed in to through Windows' own SMB client: its folders are at its own
+    /// path, read and write, not at `remote:<id>`.
+    Smb,
 }
 
 impl RemoteKind {
-    /// The word it's saved as ("s3", "webdav", "sftp", "rclone"), which glint-core's connections take.
+    /// The word it's saved as ("s3", "webdav", "sftp", "rclone", "smb"), which glint-core's connections take.
     pub fn as_str(self) -> &'static str {
         match self {
             RemoteKind::S3 => "s3",
             RemoteKind::Webdav => "webdav",
             RemoteKind::Sftp => "sftp",
             RemoteKind::Rclone => "rclone",
+            RemoteKind::Smb => "smb",
+        }
+    }
+}
+
+impl RemoteConnection {
+    /// Where the connection's folders start: a Windows share's own path (its address), else `remote:<id>`.
+    pub fn place(&self) -> String {
+        match self.kind {
+            RemoteKind::Smb => self.endpoint.clone(),
+            _ => format!("{}{}", crate::paths::REMOTE, self.id),
         }
     }
 }
@@ -1368,7 +1382,13 @@ mod tests {
     /// glint-core takes a choice by the word it's saved as: the two must never drift apart.
     #[test]
     fn choices_are_handed_to_core_as_the_words_they_are_saved_as() {
-        for kind in [RemoteKind::S3, RemoteKind::Webdav, RemoteKind::Sftp, RemoteKind::Rclone] {
+        for kind in [
+            RemoteKind::S3,
+            RemoteKind::Webdav,
+            RemoteKind::Sftp,
+            RemoteKind::Rclone,
+            RemoteKind::Smb,
+        ] {
             assert_eq!(serde_json::to_value(kind).unwrap(), kind.as_str());
         }
         for action in [
@@ -1633,6 +1653,28 @@ mod tests {
         assert!(!s.options.documents);
         s.set_option(SearchOptionKey::Regex, true);
         assert!(s.options.regex);
+    }
+
+    #[test]
+    fn a_windows_shares_connection_opens_at_its_own_path_and_the_others_at_remote_id() {
+        let share = RemoteConnection {
+            id: "nshare".into(),
+            name: "nShare".into(),
+            kind: RemoteKind::Smb,
+            endpoint: "\\\\192.168.1.6\\share".into(),
+            ..Default::default()
+        };
+        assert_eq!(share.place(), "\\\\192.168.1.6\\share");
+        let bucket = RemoteConnection {
+            id: "photos".into(),
+            ..Default::default()
+        };
+        assert_eq!(bucket.place(), "remote:photos");
+        // Kept as "smb", and read back as one.
+        let text = serde_json::to_string(&share).expect("json");
+        assert!(text.contains(r#""kind":"smb""#), "{text}");
+        let back: RemoteConnection = serde_json::from_str(&text).expect("read back");
+        assert_eq!(back, share);
     }
 
     #[test]

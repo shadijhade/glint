@@ -172,6 +172,19 @@ where
 pub async fn file_op(window: Window, op: FileOp) -> Result<Performed, String> {
     let owner = owner(&window);
     blocking(move || {
+        // A Windows share Glint has a connection for is signed in to first (remote/smb.rs).
+        let touched: Vec<&str> = match &op {
+            FileOp::Copy { sources, dest } | FileOp::Move { sources, dest } => {
+                sources.iter().map(String::as_str).chain([dest.as_str()]).collect()
+            }
+            FileOp::Delete { paths, .. } | FileOp::Purge { paths } => paths.iter().map(String::as_str).collect(),
+            FileOp::Rename { path, .. } => vec![path.as_str()],
+            FileOp::MoveBack { items } | FileOp::Restore { items } | FileOp::CopyInto { items } => items
+                .iter()
+                .flat_map(|b| [b.path.as_str(), b.folder.as_str()])
+                .collect(),
+        };
+        crate::remote::smb::ensure_all(touched)?;
         let touches_archive = match &op {
             FileOp::Copy { sources, dest } | FileOp::Move { sources, dest } => {
                 archive::is_read_only(dest) || sources.iter().any(|s| archive::is_inside(s))

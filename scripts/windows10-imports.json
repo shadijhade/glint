@@ -496,6 +496,8 @@
             "lstrlenW"
         ],
         "mpr.dll": [
+            "WNetAddConnection2W",
+            "WNetCancelConnection2W",
             "WNetGetConnectionW"
         ],
         "netapi32.dll": [

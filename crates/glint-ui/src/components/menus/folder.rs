@@ -266,10 +266,19 @@ pub fn folder_menu(folder: &str, current: bool, c: &FolderCtx) -> Vec<Node> {
         strip.push(undo());
     }
     strip.push(copy_path());
-    strip.push(pin());
+    // A Windows share's connection is in the sidebar already: its top has no pin.
+    if c.remote.is_none() {
+        strip.push(pin());
+    }
     if current {
         strip.push(refresh());
     }
+    // A Windows share's connection (at its own path, read and write): edited and removed from its top's menu.
+    let connection = |label: SharedString, icon: IconName, event: fn(String) -> MenuEvent| {
+        c.remote
+            .as_ref()
+            .and_then(|r| Entry::ask(label, icon, event(r.id.clone())).node())
+    };
 
     let new_menu = when(current, || Node::Menu {
         label: t!("New"),
@@ -292,6 +301,12 @@ pub fn folder_menu(folder: &str, current: bool, c: &FolderCtx) -> Vec<Node> {
         when(!current, || Node::Item(open_entry(&owned))),
         when(!current, || Node::Item(open_in_new_tab_entry(&owned))),
         name_pin(),
+        connection(t!("Edit the connection…"), IconName::PlugZap, |id| {
+            MenuEvent::EditConnection { id }
+        }),
+        connection(t!("Remove the connection…"), IconName::Trash, |id| {
+            MenuEvent::RemoveConnection { id }
+        }),
         when(current, || {
             Node::Item(
                 Entry::command(t!("New folder"), IconName::FolderPlus, Command::NewFolder).disabled_because(

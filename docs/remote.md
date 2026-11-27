@@ -2,6 +2,8 @@
 
 Glint opens Google Drive, OneDrive, Dropbox and 60 more clouds ([through rclone](#clouds-through-rclone)), an S3-compatible bucket, a WebDAV server or an SFTP server as a folder of its own: under **Remote** in the sidebar, in a tab like any other, at a path of the form `remote:<id>\folder\file`. It's read-only there: Glint looks, previews, opens and copies out, and never changes anything on the remote. A folder of yours can be kept in sync with a cloud by a [folder rule](#keeping-a-folder-in-sync).
 
+A **Windows share** (a NAS or another PC, over SMB) is the exception: it opens at its own path, read and write, through Windows itself ([below](#a-windows-share-smb)).
+
 ## Adding one
 
 **Add a connection** (under **Remote** in the sidebar, or in `Ctrl+K`) starts at **A cloud** ([below](#clouds-through-rclone)); for the other kinds it asks for what Glint needs to reach it. **Test** tries it as it's typed and says what's at its top, or why it didn't connect; **Add and open** keeps it and opens it.
@@ -15,6 +17,7 @@ Glint opens Google Drive, OneDrive, Dropbox and 60 more clouds ([through rclone]
 | A public bucket | as above | none: leave the access key ID empty |
 | WebDAV (Nextcloud, ownCloud, a NAS, dufs) | the WebDAV URL, such as `https://cloud.example.com/remote.php/dav/files/you/` | the password (an app password, where the service has them) |
 | SFTP (a NAS, a server you reach with SSH) | the server's name or address (a `Host` from `~/.ssh/config` will do), and its port | a password or a key's passphrase, or nothing: ssh then signs in with your SSH agent or your keys |
+| Windows share (SMB: a NAS, another PC) | the share, or a folder in it: `\\192.168.1.6\share` (`smb://192.168.1.6/share` will do), with a user name | its password, or nothing: Windows then signs in as you |
 
 **Folder in it** opens the connection at a folder below its top, such as `photos/2024` (for SFTP, below the folder it signs in to, or from `/` when it starts with one). Each connection gets an id made from its first name (`photos-backup`), which stays when it's renamed, so tabs and pinned folders keep working.
 
@@ -52,6 +55,14 @@ SFTP goes through Windows' own OpenSSH client (`sftp.exe`, which Windows 10 and 
 Host keys are checked against `~/.ssh/known_hosts` and Glint's own list (`known_hosts` in its data folder); ssh isn't allowed to change either. A server neither knows isn't connected to: **Test** in its connection shows its key's fingerprint, and **Trust it and test again** adds it to Glint's list. Whoever runs the server can tell you whether the fingerprint is its (`ssh-keygen -lf` on the server's key). A key that changes after that is refused.
 
 Windows' OpenSSH can't share one connection between runs, so each listing, preview or download signs in again (well under a second on a network nearby); copying a folder out downloads all its files in one run. A text preview stops downloading once there's enough of the file to show.
+
+## A Windows share (SMB)
+
+**Windows share (SMB)** in **Add a connection** takes a share's address, a name for it, a user name and a password. Glint signs in to the share with Windows' own SMB client, the one File Explorer uses, and then the share is a folder like any on this PC: at its own path (`\\192.168.1.6\share`), read and write, with copying, moving, renaming, deleting, previews, thumbnails, search and every app's Open. It sits in the sidebar with the drives, below the Recycle Bin, by its name, and its tooltip shows its path; its right-click menu has **Edit the connection…** and **Remove the connection…**.
+
+The sign-in has no drive letter and no place in File Explorer, and Windows doesn't restore it at the next logon: Glint signs in again the first time it lists, opens or changes something there in a session. The user name is in Glint's settings; the password is in Credential Manager like the other secrets (`Glint/remote/<id>`). With neither, Windows signs in as you, or with what it already keeps for that server. A NAS's own account can be written `NAS\name`. Removing the connection signs out of it, and so does changing its user name or password, so the next use signs in as it says now.
+
+Windows reaches a server with one account at a time in a session: a share that File Explorer already opened as someone else stays opened as that account. Windows 11 24H2 signs every SMB connection and refuses guest-only shares by default: give such a share an account on the NAS.
 
 ## Clouds through rclone
 

@@ -7593,6 +7593,7 @@ msgid "FTP"
 msgstr "FTP"
 
 #: crates/glint-ui/src/components/settings/clouds.rs
+#: crates/glint-ui/src/dialogs/remote.rs
 msgid "Windows share (SMB)"
 msgstr "مجلد Windows مشترك (SMB)"
 
@@ -15284,6 +15285,10 @@ msgid "A server you reach with SSH"
 msgstr "خادم تصل إليه عبر SSH"
 
 #: crates/glint-ui/src/dialogs/remote.rs
+msgid "A NAS or another PC: read and write, through Windows"
+msgstr "جهاز NAS أو حاسوب آخر: قراءة وكتابة، عبر Windows"
+
+#: crates/glint-ui/src/dialogs/remote.rs
 msgid "Couldn't keep the secret in Credential Manager"
 msgstr "تعذر حفظ البيانات السرية في إدارة بيانات الاعتماد"
 
@@ -15429,6 +15434,16 @@ msgid ""
 msgstr "حيث يُفتح: تحت المجلد الذي يسجل الدخول إليه، أو من / إذا بدأ بها."
 
 #: crates/glint-ui/src/dialogs/remote.rs
+msgid "The share, or a folder in it, as File Explorer's address bar takes it."
+msgstr "المجلد المشترك أو مجلد داخله، كما يقبله شريط العنوان في مستكشف الملفات."
+
+#: crates/glint-ui/src/dialogs/remote.rs
+msgid ""
+"Empty to sign in as you, or as Windows already does for that server. A NAS's "
+"own account can be NAS\\name."
+msgstr "اتركه فارغًا لتسجيل الدخول بحسابك، أو كما يفعل Windows مع هذا الخادم. يُكتب حساب جهاز NAS الخاص به بالشكل NAS\\name."
+
+#: crates/glint-ui/src/dialogs/remote.rs
 msgid "Empty for a server that doesn't ask."
 msgstr "اتركه فارغًا لخادم لا يطلبها."
 
@@ -15500,6 +15515,13 @@ msgstr ""
 
 #: crates/glint-ui/src/dialogs/remote.rs
 msgid ""
+"Windows' own SMB client opens it, without a drive letter or a place in File "
+"Explorer. The password stays in Windows Credential Manager, never in Glint's "
+"settings."
+msgstr "يفتحه عميل SMB الخاص بـ Windows، دون حرف محرك أقراص أو مكان في مستكشف الملفات. تبقى كلمة المرور في إدارة بيانات الاعتماد في Windows، ولا تُحفظ أبدًا في إعدادات Glint."
+
+#: crates/glint-ui/src/dialogs/remote.rs
+msgid ""
 "Glint only reads it: nothing there is changed. The password stays in Windows "
 "Credential Manager, never in Glint's settings."
 msgstr ""
@@ -15509,6 +15531,12 @@ msgstr ""
 #: crates/glint-ui/src/dialogs/remote.rs
 msgid "Test"
 msgstr "اختبار"
+
+#: crates/glint-ui/src/dialogs/remote.rs
+msgid ""
+"It opens like a folder on this PC: read, write, copy and drag as anywhere "
+"else"
+msgstr "يُفتح كمجلد على هذا الحاسوب: قراءة وكتابة ونسخ وسحب كما في أي مكان آخر"
 
 #: crates/glint-ui/src/dialogs/remote.rs
 msgid "Its folders open read-only; what you open or copy is downloaded"

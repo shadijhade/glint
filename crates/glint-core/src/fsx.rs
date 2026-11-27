@@ -127,6 +127,13 @@ fn read_listing(path: String) -> Result<Listing, ListError> {
     if let Some(listing) = crate::archive::list(&path, started) {
         return listing.map_err(|e| ListError::other(&path, e));
     }
+    // A Windows share Glint has a connection for: signed in to first, once a session (remote/smb.rs).
+    crate::remote::smb::ensure(&path).map_err(|message| ListError {
+        kind: "other",
+        message,
+        path: path.clone(),
+        remote: true,
+    })?;
     if let Some(server) = server_of(&path) {
         let mut entries = shares(server).map_err(|e| ListError { kind: "other", message: format!("Glint couldn't list the shares on {server}: {e}"), path: path.clone(), remote: true })?;
         sort_entries(&mut entries);
@@ -214,6 +221,7 @@ pub struct Subfolder {
 pub async fn list_subfolders(path: String, hidden: bool) -> Result<Vec<Subfolder>, String> {
     blocking(move || {
         let path = normalize(&path)?;
+        crate::remote::smb::ensure(&path)?;
         let mut entries = read_dir(&path).map_err(|e| describe(&e))?;
         entries.retain(|e| e.dir && (hidden || e.attrs & 0x6 == 0));
         sort_entries(&mut entries);
@@ -373,7 +381,7 @@ pub(crate) fn file_error(e: io::Error) -> String {
     }
 }
 
-fn describe(e: &io::Error) -> String {
+pub(crate) fn describe(e: &io::Error) -> String {
     match e.kind() {
         io::ErrorKind::NotFound => "This folder doesn't exist (anymore).".into(),
         io::ErrorKind::PermissionDenied => "You don't have permission to open this folder.".into(),

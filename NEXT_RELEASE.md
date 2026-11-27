@@ -8,6 +8,25 @@ The plan for 0.12 that was here is in git history (`git show df1245a:NEXT_RELEAS
 before it (`git show 47c33fa:NEXT_RELEASE.md`), and 0.13's own plan, the menu and the dock that know the selection,
 is [docs/gpui/aware/PLAN.md](docs/gpui/aware/PLAN.md) with its task cards beside it.*
 
+## Next: Windows shares that Glint signs in to ([#10](https://github.com/shadijhade/glint/issues/10))
+
+Helius asked, after 0.18.1, for SMB in **Add a connection** without Windows' mapped drives. Researched first (pure-Rust
+`smb2` and `smb-rs`, libsmb2, writing our own); the user chose Windows' own SMB client, signed in without a drive letter:
+
+- **Windows share (SMB)** is a fifth kind in Add a connection (`RemoteKind::Smb`, saved as "smb"): an address
+  (`\\server\share`, `smb://…` or `server/share`, kept as Glint's path), a name, a user name and a password (in
+  Credential Manager as `<app>/remote/<id>`, like the others). It opens at its own path, read and write, below the
+  Recycle Bin (`RemoteConnection::place`), out of the Remote section; its menu has Edit and Remove the connection.
+- glint-core `remote/smb.rs`: `WNetAddConnection2W` deviceless and temporary (no drive letter, nothing in File
+  Explorer), once a session, before listing, the folder tree, file operations and the copy queue touch the share
+  (`smb::ensure`); signed out when the connection goes or its user name or password changes; Test signs in with what's
+  typed. ERROR_SESSION_CREDENTIAL_CONFLICT (another account already) counts as signed in.
+- Checked in a debug build on `\\localhost\D$\glint-look` as this account: Test, Add and open, `net use` showing the
+  deviceless connection, the menu, signing in again after a restart (a folder not read ahead at start), and Remove
+  signing out. Not tried: a NAS with its own account and password. The kind picker's long hints now end in "…"
+  instead of pushing a tile's icon off its edge.
+- New Win32 calls in `scripts/windows10-imports.json`: `WNetAddConnection2W`, `WNetCancelConnection2W` (mpr.dll).
+
 ## 0.18.1: a tag's search shows what it found, and network shares below the Recycle Bin ([#11](https://github.com/shadijhade/glint/issues/11), [#10](https://github.com/shadijhade/glint/issues/10)) (released 2026-11-26)
 
 *Released 2026-11-26 from `174efd4` ([its release](https://github.com/shadijhade/glint/releases/tag/v0.18.1)) by

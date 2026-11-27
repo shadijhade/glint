@@ -440,6 +440,7 @@ pub fn remote_where(r: &RemoteConnection) -> String {
             format!("S3 bucket “{}” at {at}{folder}", r.bucket)
         }
         RemoteKind::Webdav => format!("WebDAV at {}{folder}", r.endpoint),
+        RemoteKind::Smb => r.endpoint.clone(),
     }
 }
 
@@ -611,9 +612,33 @@ pub fn build_rows(i: &Inputs) -> Vec<Row> {
             gutter: i.folder_tree,
             tile: false,
         }));
-        // The shares and folders on other computers that were pinned (`\\nas\photos`): below the Recycle Bin, as a
-        // network drive is drawn, by the name they were given or the share's, with the path in the tooltip.
-        for p in shares {
+        // Windows shares with a connection (a user name and password Glint signs in with): below the Recycle Bin, as a
+        // network drive is drawn, by their name, the path in the tooltip; their menu edits and removes them.
+        let connected: Vec<&RemoteConnection> = i.remotes.iter().filter(|r| r.kind == RemoteKind::Smb).collect();
+        for r in &connected {
+            rows.push(Row::Place(Place {
+                glyph: Glyph::Drive(DriveKind::Network),
+                label: Label::Plain(r.name.clone().into()),
+                path: r.endpoint.clone(),
+                active: here(&r.endpoint),
+                detail: r.endpoint.clone().into(),
+                tree: tree_of(&r.endpoint),
+                capacity: None,
+                eject: None,
+                remote: Some(r.id.clone()),
+                gutter: i.folder_tree,
+                tile: false,
+            }));
+            if tree_of(&r.endpoint).is_some() {
+                push_kids(&mut rows, i, &r.endpoint, 0);
+            }
+        }
+        // The shares and folders on other computers that were pinned (`\\nas\photos`): there too, by the name they
+        // were given or the share's, with the path in the tooltip. One a connection opens already is there once.
+        for p in shares
+            .into_iter()
+            .filter(|p| !connected.iter().any(|r| same_path(&r.endpoint, p)))
+        {
             rows.push(Row::Place(Place {
                 glyph: Glyph::Drive(DriveKind::Network),
                 label: Label::Plain(pinned_name(p, i.pin_names).into()),
@@ -672,12 +697,14 @@ pub fn build_rows(i: &Inputs) -> Vec<Row> {
         }
     }
 
-    // Remote connections: a title only once there is one. The way to add one is always the last row.
+    // Remote connections: a title only once there is one (a Windows share is with the drives). The way to add one is
+    // always the last row.
     let remote_folded = is_folded("Remote");
-    if !i.remotes.is_empty() {
+    let remotes: Vec<&RemoteConnection> = i.remotes.iter().filter(|r| r.kind != RemoteKind::Smb).collect();
+    if !remotes.is_empty() {
         rows.push(heading(glint_model::english!("Remote"), Some(remote_folded)));
     }
-    for r in i.remotes.iter().filter(|_| !remote_folded) {
+    for r in remotes.into_iter().filter(|_| !remote_folded) {
         let path = remote_path(r);
         let space = i.spaces.get(&r.id).copied();
         let where_ = remote_where(r);
@@ -1060,6 +1087,46 @@ mod tests {
         world.folded = vec!["This PC".to_string()];
         let text = describe(&world.rows("", true));
         assert!(!text.contains(&"nShare".to_string()) && !text.contains(&"Recycle Bin".to_string()));
+    }
+
+    #[test]
+    fn a_windows_shares_connection_sits_below_the_recycle_bin_by_its_name_and_not_under_remote() {
+        let share = "\\\\192.168.1.6\\share";
+        let mut world = World::new();
+        let mut nas = remote("nshare", "nShare", RemoteKind::Smb);
+        nas.endpoint = share.into();
+        world.remotes.push(nas);
+        // Pinned as well: listed once, as the connection.
+        world.pinned = vec![share.to_string(), "\\\\nas\\photos".to_string()];
+        let rows = world.rows(share, true);
+        let text = describe(&rows);
+        let at = |name: &str| {
+            text.iter()
+                .position(|t| t == name)
+                .unwrap_or_else(|| panic!("{name} in {text:?}"))
+        };
+        assert_eq!(
+            text[at("Recycle Bin")..at("# Searches")],
+            ["Recycle Bin", "nShare", "photos (\\\\nas)"]
+        );
+        // The Remote section keeps the other connections.
+        assert_eq!(text[at("# Remote")..at("+ add")], ["# Remote", "My NAS"]);
+        let Some(Row::Place(place)) = rows.iter().find(|r| r.key() == format!("p:{share}")) else {
+            panic!("no row for the share");
+        };
+        assert_eq!(place.glyph, Glyph::Drive(DriveKind::Network));
+        assert_eq!(
+            place.remote.as_deref(),
+            Some("nshare"),
+            "its menu edits and removes the connection"
+        );
+        assert_eq!(place.detail.as_ref(), share);
+        assert!(place.active && place.tree.is_some());
+        // Only shares: no Remote title, the way to add one still last.
+        world.remotes.retain(|r| r.kind == RemoteKind::Smb);
+        let text = describe(&world.rows("", true));
+        assert!(!text.contains(&"# Remote".to_string()) && text.contains(&"nShare".to_string()));
+        assert_eq!(text.last().map(String::as_str), Some("+ add"));
     }
 
     #[test]

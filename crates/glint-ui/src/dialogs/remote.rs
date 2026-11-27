@@ -324,9 +324,13 @@ fn finish_removal(
             let _ = cx.update(|window, cx| {
                 let id = remote.id.clone();
                 persistence::update_app(cx, |app| app.remove_remote(&id));
+                // Core signs out of a Windows share whose connection went (remote/smb.rs).
                 push_to_core(cx);
                 if let Some(tabs) = explorer::try_explorer(cx) {
-                    tabs.update(cx, |e, cx| e.leave_remote(&id, cx));
+                    match remote.kind {
+                        RemoteKind::Smb => tabs.update(cx, |e, cx| e.leave_place(&remote.endpoint, cx)),
+                        _ => tabs.update(cx, |e, cx| e.leave_remote(&id, cx)),
+                    }
                 }
                 then(window, cx);
             });
@@ -544,7 +548,7 @@ impl Form {
         self.saving
     }
 
-    /// Name and the one thing the kind needs are filled in (`ready`).
+    /// Name and the one thing the kind needs are filled in (`ready`): a share, an address that names one.
     pub fn ready(&self) -> bool {
         let has = |field: Field| !self.text(field).trim().is_empty();
         has(Field::Name)
@@ -553,6 +557,7 @@ impl Form {
                 RemoteKind::S3 => has(Field::Bucket),
                 RemoteKind::Sftp => has(Field::Host),
                 RemoteKind::Webdav => has(Field::Endpoint),
+                RemoteKind::Smb => glint_core::remote::smb::address(self.text(Field::Endpoint)).is_some(),
             }
     }
 
@@ -560,8 +565,16 @@ impl Form {
     pub fn connection(&self) -> RemoteConnection {
         let trimmed = |field: Field| self.text(field).trim().to_string();
         let sftp = self.kind == RemoteKind::Sftp;
+        let smb = self.kind == RemoteKind::Smb;
         let name = trimmed(Field::Name);
         let base = self.editing.clone().unwrap_or_default();
+        // A share's address as Glint's path for it (`smb://nas/photos` is `\\nas\photos`); it has no folder of its own.
+        let endpoint = match smb {
+            true => {
+                glint_core::remote::smb::address(self.text(Field::Endpoint)).unwrap_or_else(|| trimmed(Field::Endpoint))
+            }
+            false => trimmed(Field::Endpoint),
+        };
         RemoteConnection {
             id: match &self.editing {
                 Some(r) => r.id.clone(),
@@ -569,11 +582,11 @@ impl Form {
             },
             name,
             kind: self.kind,
-            endpoint: trimmed(Field::Endpoint),
+            endpoint,
             region: trimmed(Field::Region),
             bucket: trimmed(Field::Bucket),
             user: trimmed(Field::User),
-            root: trimmed(Field::Root),
+            root: if smb { String::new() } else { trimmed(Field::Root) },
             host: sftp.then(|| trimmed(Field::Host)),
             port: sftp.then(|| self.port()),
             key: sftp.then(|| trimmed(Field::Key)),
@@ -693,7 +706,7 @@ impl Form {
 // ---- The dialog -------------------------------------------------------------------------------------------------
 
 /// The kinds of connection, as the form lists them (`KINDS`): the kind, its label, its hint and its icon.
-fn kinds() -> [(RemoteKind, SharedString, SharedString, IconName); 4] {
+fn kinds() -> [(RemoteKind, SharedString, SharedString, IconName); 5] {
     [
         (
             RemoteKind::Rclone,
@@ -718,6 +731,12 @@ fn kinds() -> [(RemoteKind, SharedString, SharedString, IconName); 4] {
             t!("SFTP"),
             t!("A server you reach with SSH"),
             IconName::SquareTerminal,
+        ),
+        (
+            RemoteKind::Smb,
+            t!("Windows share (SMB)"),
+            t!("A NAS or another PC: read and write, through Windows"),
+            IconName::HardDrive,
         ),
     ]
 }
@@ -852,9 +871,9 @@ impl RemoteDialog {
         }
     }
 
-    /// The boxes' hints follow the kind (the name's example) and whether a secret is kept.
+    /// The boxes' hints follow the kind (the name's and the address's examples) and whether a secret is kept.
     fn sync_placeholders(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        for field in [Field::Name, Field::Secret] {
+        for field in [Field::Name, Field::Endpoint, Field::Secret] {
             let placeholder = Self::placeholder(field, self.form.read(cx));
             self.boxes[field as usize].update(cx, |input, cx| input.set_placeholder(placeholder, window, cx));
         }
@@ -866,6 +885,8 @@ impl RemoteDialog {
             Field::Name if s3 => t!("Photos backup"),
             Field::Name => t!("My NAS"),
             Field::Secret if form.kept() => t!("Kept in Credential Manager: type to change it"),
+            // A share's address is a path, the same in every language.
+            Field::Endpoint if form.kind() == RemoteKind::Smb => r"\\192.168.1.6\share".into(),
             Field::Endpoint => t!("https://cloud.example.com/remote.php/dav/files/you/"),
             Field::Region => t!("us-east-1"),
             Field::Host => t!("nas.local"),
@@ -885,9 +906,9 @@ impl RemoteDialog {
         self.cloud.as_ref()
     }
 
-    /// Stores a saved connection, tells core, closes the dialog, and opens a new one's folder.
+    /// Stores a saved connection, tells core, closes the dialog, and opens a new one's folder (a share's own path).
     fn store(&mut self, window: &mut Window, cx: &mut Context<Self>, made: RemoteConnection, new: bool) {
-        let path = glint_model::paths::REMOTE.to_string() + &made.id;
+        let path = made.place();
         persistence::update_app(cx, |app| app.save_remote(made));
         push_to_core(cx);
         window.close_dialog(cx);
@@ -961,7 +982,11 @@ impl RemoteDialog {
                             .accessibility_label(format!("{label}: {hint}"))
                             .on_click(cx.listener(move |this, _, window, cx| this.kind_chosen(kind, window, cx)))
                             .child(
+                                // As wide as the button and no wider, so a long hint ends in "…" rather than
+                                // pushing the icon and the name out of both edges.
                                 align_row(2.)
+                                    .w_full()
+                                    .min_w_0()
                                     .items_start()
                                     .child(
                                         icon(kind_icon)
@@ -972,6 +997,7 @@ impl RemoteDialog {
                                     )
                                     .child(
                                         col()
+                                            .flex_1()
                                             .min_w_0()
                                             .align_start()
                                             .text_start()
@@ -1050,6 +1076,7 @@ impl Render for RemoteDialog {
         let s3 = kind == RemoteKind::S3;
         let sftp = kind == RemoteKind::Sftp;
         let rclone = kind == RemoteKind::Rclone;
+        let smb = kind == RemoteKind::Smb;
 
         let mut fields = col().gap(space(3.));
         if editing.is_none() {
@@ -1154,6 +1181,28 @@ impl Render for RemoteDialog {
                     self.text_box(Field::Root, t!("Folder on it")),
                     &t,
                 ));
+        } else if smb {
+            fields = fields
+                .child(field(
+                    t!("Address"),
+                    Some(t!("The share, or a folder in it, as File Explorer's address bar takes it.")),
+                    self.text_box(Field::Endpoint, t!("Address")),
+                    &t,
+                ))
+                .child(field(
+                    t!("User name"),
+                    Some(t!(
+                        "Empty to sign in as you, or as Windows already does for that server. A NAS's own account can be NAS\\name."
+                    )),
+                    self.text_box(Field::User, t!("User name")),
+                    &t,
+                ))
+                .child(field(
+                    t!("Password"),
+                    None,
+                    self.text_box(Field::Secret, t!("Password")),
+                    &t,
+                ));
         } else {
             fields = fields
                 .child(field(
@@ -1187,31 +1236,34 @@ impl Render for RemoteDialog {
         } else {
             t!("Downloads each picture shown (up to 16 MB).")
         };
-        fields = fields.child(
-            col()
-                .gap(space(0.5))
-                .ps(31.)
-                .child(
-                    Checkbox::new("remote-thumbnails")
-                        .label(t!("Thumbnails of pictures in the grid"))
-                        .checked(thumbnails)
-                        .on_click(cx.listener(|this, checked: &bool, _, cx| {
-                            let on = *checked;
-                            this.form.update(cx, |form, cx| form.set_thumbnails(on, cx));
-                        })),
-                )
-                .child(
-                    div()
-                        .id("remote-thumbnails-note")
-                        .role(Role::Group)
-                        .aria_label(thumbnail_note.clone())
-                        .test_support()
-                        .ps(6.)
-                        .text_size(theme::size::XXS)
-                        .text_color(t.muted_foreground)
-                        .child(thumbnail_note),
-                ),
-        );
+        // A share's pictures get thumbnails as a folder's on this PC do: nothing to choose.
+        fields = fields.when(!smb, |fields| {
+            fields.child(
+                col()
+                    .gap(space(0.5))
+                    .ps(31.)
+                    .child(
+                        Checkbox::new("remote-thumbnails")
+                            .label(t!("Thumbnails of pictures in the grid"))
+                            .checked(thumbnails)
+                            .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                                let on = *checked;
+                                this.form.update(cx, |form, cx| form.set_thumbnails(on, cx));
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id("remote-thumbnails-note")
+                            .role(Role::Group)
+                            .aria_label(thumbnail_note.clone())
+                            .test_support()
+                            .ps(6.)
+                            .text_size(theme::size::XXS)
+                            .text_color(t.muted_foreground)
+                            .child(thumbnail_note),
+                    ),
+            )
+        });
 
         if let Some(keys) = host_keys {
             fields = fields.child(
@@ -1300,6 +1352,8 @@ impl Render for RemoteDialog {
             t!("Glint only reads it: nothing there is changed. The secret access key stays in Windows Credential Manager, never in Glint's settings.")
         } else if sftp {
             t!("Glint only reads it: nothing there is changed. The password stays in Windows Credential Manager, never in Glint's settings, and reaches ssh (Windows' own) only when it asks.")
+        } else if smb {
+            t!("Windows' own SMB client opens it, without a drive letter or a place in File Explorer. The password stays in Windows Credential Manager, never in Glint's settings.")
         } else {
             t!("Glint only reads it: nothing there is changed. The password stays in Windows Credential Manager, never in Glint's settings.")
         };
@@ -1385,21 +1439,26 @@ impl Render for RemoteDialog {
                     .px(space(4.))
                     .pt(space(1.))
                     .pb(space(4.))
-                    .child(
+                    .child({
+                        let subtitle = if smb {
+                            t!("It opens like a folder on this PC: read, write, copy and drag as anywhere else")
+                        } else {
+                            t!("Its folders open read-only; what you open or copy is downloaded")
+                        };
                         col()
                             .gap(space(3.))
                             .child(
                                 div()
                                     .id("remote-subtitle")
                                     .role(Role::Group)
-                                    .aria_label(t!("Its folders open read-only; what you open or copy is downloaded"))
+                                    .aria_label(subtitle.clone())
                                     .test_support()
                                     .text_size(theme::size::XS)
                                     .text_color(t.muted_foreground)
-                                    .child(t!("Its folders open read-only; what you open or copy is downloaded")),
+                                    .child(subtitle),
                             )
-                            .child(fields),
-                    ),
+                            .child(fields)
+                    }),
             )
             .child(footer)
     }
@@ -1770,6 +1829,72 @@ mod tests {
         assert_eq!(fake.calls()[1], "secret-set backups-2 s3cret");
         visual.run_until_parked();
         visual.update(|window, cx| assert!(!window.has_active_dialog(cx), "it closes"));
+    }
+
+    #[gpui_kit::test]
+    fn a_windows_share_takes_its_address_as_a_path_and_keeps_its_password_like_any_connection(cx: &mut TestAppContext) {
+        // Issue #10: a NAS's share in Add connection, signed in to by Glint, read and write, no drive letter.
+        let _guard = testing::lock();
+        let mut visual = window(cx, Vec::new());
+        let fake = Fake::new();
+        let (form, view) = open(&mut visual, &fake, None);
+        // The fifth kind.
+        visual.update(|window, cx| {
+            window.render_frame(cx);
+            window.click(("remote-kind", 4_usize), cx);
+        });
+        assert_eq!(form.read_with(&visual, |f, _| f.kind()), RemoteKind::Smb);
+        assert!(has(
+            &mut visual,
+            "It opens like a folder on this PC: read, write, copy and drag as anywhere else"
+        ));
+        assert!(
+            !has(&mut visual, "Downloads each picture shown (up to 16 MB)."),
+            "its pictures get a folder's thumbnails"
+        );
+        let (name, address, user, secret) = view.read_with(&visual, |v, _| {
+            (
+                v.input(Field::Name).clone(),
+                v.input(Field::Endpoint).clone(),
+                v.input(Field::User).clone(),
+                v.input(Field::Secret).clone(),
+            )
+        });
+        type_into(&mut visual, &name, "nShare");
+        type_into(&mut visual, &address, "nas");
+        assert!(!form.read_with(&visual, |f, _| f.ready()), "a server alone is no share");
+        type_into(&mut visual, &address, "smb://192.168.1.6/share/");
+        type_into(&mut visual, &user, r"NAS\helius");
+        type_into(&mut visual, &secret, "pa55");
+        assert!(form.read_with(&visual, |f, _| f.ready()));
+        // Test: the share as Glint's path, with the password typed.
+        click(&mut visual, "remote-test-button");
+        settle(&mut visual, "the test", |cx| {
+            form.read_with(cx, |f, _| matches!(f.test(), Some(Test::Ok(_))))
+        });
+        assert_eq!(fake.calls(), ["test nshare Smb  secret=pa55"]);
+        let tested = form.read_with(&visual, |f, _| f.connection());
+        assert_eq!(tested.endpoint, r"\\192.168.1.6\share");
+        // Add and open: the password is kept first; the connection opens at the share's own path.
+        click(&mut visual, "remote-save");
+        settle(&mut visual, "the save", |cx| stored(cx).len() == 1);
+        let made = stored(&mut visual).remove(0);
+        assert_eq!(
+            (
+                made.kind,
+                made.name.as_str(),
+                made.endpoint.as_str(),
+                made.user.as_str()
+            ),
+            (RemoteKind::Smb, "nShare", r"\\192.168.1.6\share", r"NAS\helius")
+        );
+        assert!(made.root.is_empty() && made.thumbnails.is_none());
+        assert_eq!(made.place(), r"\\192.168.1.6\share");
+        assert_eq!(fake.calls()[1], "secret-set nshare pa55");
+        visual.run_until_parked();
+        visual.update(|window, cx| assert!(!window.has_active_dialog(cx), "it closes"));
+        // Core gets it as "smb", for its sign-in.
+        assert_eq!(to_core(&made).kind, "smb");
     }
 
     #[gpui_kit::test]

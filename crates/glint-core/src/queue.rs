@@ -191,6 +191,8 @@ fn add(app: AppHandle, kind: String, sources: Vec<String>, dest: String, verify:
     if kind != "copy" && kind != "move" {
         return Err(format!("The queue doesn't know “{kind}”"));
     }
+    // A Windows share Glint has a connection for is signed in to first (remote/smb.rs).
+    crate::remote::smb::ensure_all(sources.iter().map(String::as_str).chain([dest.as_str()]))?;
     if !Path::new(&dest).is_dir() {
         return Err(format!("“{dest}” isn't a folder"));
     }

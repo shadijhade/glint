@@ -16,6 +16,7 @@ mod rclone;
 mod s3;
 mod sftp;
 pub use sftp::UNKNOWN_HOST_START;
+pub mod smb;
 mod time;
 
 use crate::archive::{extract, Skipped, StageProgress, Staged};
@@ -210,6 +211,7 @@ fn make(connection: &Connection, secret: &str) -> Result<Backend, String> {
             }
             Ok(Backend::Rclone(rclone::Remote { name: name.into(), root }))
         }
+        smb::KIND => Err(r"A Windows share opens at its own path (\\server\share), not as a remote".into()),
         other => Err(format!("Glint doesn't know connections of the kind “{other}”")),
     }
 }
@@ -733,22 +735,37 @@ pub fn is_configured(id: &str) -> bool {
 /// The connections the app has (it sends them at start and whenever they change): one that changed is
 /// made again, one that went is forgotten.
 pub fn remote_configure(connections: Vec<Connection>) {
-    let mut state = state();
-    let kept: Vec<String> = connections.iter().filter(|c| state.connections.contains(c)).map(|c| c.id.clone()).collect();
-    state.made.retain(|id, _| kept.contains(id));
-    state.connections = connections;
+    let gone = {
+        let mut state = state();
+        let kept: Vec<String> = connections.iter().filter(|c| state.connections.contains(c)).map(|c| c.id.clone()).collect();
+        state.made.retain(|id, _| kept.contains(id));
+        let gone = smb::changed(&state.connections, &connections);
+        state.connections = connections;
+        gone
+    };
+    // A share whose connection went or now names another share or user is signed out of (outside the lock: Windows
+    // may take a moment), so its next use signs in as it says now.
+    smb::forget(&gone);
+}
+
+/// The connections of the kind "smb" with this id, for a change of its password.
+fn smb_with_id(id: &str) -> Vec<Connection> {
+    state().connections.iter().filter(|c| c.kind == smb::KIND && c.id.eq_ignore_ascii_case(id)).cloned().collect()
 }
 
 /// Keeps a connection's secret (an S3 secret access key, a WebDAV password) in Credential Manager.
 pub fn remote_secret_set(id: String, secret: String) -> Result<(), String> {
     secrets::write(&id, &secret)?;
     state().made.remove(&id);
+    // A share signs in again with the new password.
+    smb::forget(&smb_with_id(&id));
     Ok(())
 }
 
 pub fn remote_secret_delete(id: String) {
     let _ = secrets::delete(&id);
     state().made.remove(&id);
+    smb::forget(&smb_with_id(&id));
 }
 
 /// Whether a connection has a secret kept.
@@ -774,6 +791,10 @@ pub async fn download_raw(id: &str, raw: &str, dest: &Path, size: u64, tick: &mu
 pub async fn remote_test(connection: Connection, secret: Option<String>) -> Result<String, String> {
     let typed = secret.clone().filter(|s| !s.is_empty());
     let secret = secret.unwrap_or_else(|| secrets::read(&connection.id).unwrap_or_default());
+    // A Windows share signs in through Windows (smb.rs), which waits on the network: off the async threads.
+    if connection.kind == smb::KIND {
+        return crate::fsx::blocking(move || smb::test(&connection, &secret)).await;
+    }
     let mut made = make(&connection, &secret)?;
     // ssh takes an SFTP password only from Credential Manager (as Glint answers SSH_ASKPASS): one typed
     // and not kept yet is kept for the test, and forgotten after it.

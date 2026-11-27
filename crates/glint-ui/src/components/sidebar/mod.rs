@@ -1691,7 +1691,7 @@ impl Sidebar {
                 }
                 RemoteKind::S3 => IconName::Database,
                 RemoteKind::Sftp => IconName::SquareTerminal,
-                RemoteKind::Webdav => IconName::Server,
+                RemoteKind::Webdav | RemoteKind::Smb => IconName::Server,
             },
         }
     }

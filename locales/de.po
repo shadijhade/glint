@@ -7547,6 +7547,7 @@ msgid "FTP"
 msgstr "FTP"
 
 #: crates/glint-ui/src/components/settings/clouds.rs
+#: crates/glint-ui/src/dialogs/remote.rs
 msgid "Windows share (SMB)"
 msgstr "Windows-Freigabe (SMB)"
 
@@ -14737,6 +14738,10 @@ msgid "A server you reach with SSH"
 msgstr "Ein Server, den Sie über SSH erreichen"
 
 #: crates/glint-ui/src/dialogs/remote.rs
+msgid "A NAS or another PC: read and write, through Windows"
+msgstr "Ein NAS oder ein anderer PC: lesen und schreiben, über Windows"
+
+#: crates/glint-ui/src/dialogs/remote.rs
 msgid "Couldn't keep the secret in Credential Manager"
 msgstr ""
 "Das Geheimnis konnte nicht in der Anmeldeinformationsverwaltung gespeichert "
@@ -14886,6 +14891,16 @@ msgstr ""
 "ab /, wenn es mit einem beginnt."
 
 #: crates/glint-ui/src/dialogs/remote.rs
+msgid "The share, or a folder in it, as File Explorer's address bar takes it."
+msgstr "Die Freigabe oder ein Ordner darin, so wie die Adressleiste des Datei-Explorers sie annimmt."
+
+#: crates/glint-ui/src/dialogs/remote.rs
+msgid ""
+"Empty to sign in as you, or as Windows already does for that server. A NAS's "
+"own account can be NAS\\name."
+msgstr "Leer, um sich als Sie anzumelden oder so, wie Windows es für diesen Server schon tut. Ein eigenes Konto des NAS kann NAS\\name lauten."
+
+#: crates/glint-ui/src/dialogs/remote.rs
 msgid "Empty for a server that doesn't ask."
 msgstr "Leer für einen Server, der nicht fragt."
 
@@ -14960,6 +14975,13 @@ msgstr ""
 
 #: crates/glint-ui/src/dialogs/remote.rs
 msgid ""
+"Windows' own SMB client opens it, without a drive letter or a place in File "
+"Explorer. The password stays in Windows Credential Manager, never in Glint's "
+"settings."
+msgstr "Der SMB-Client von Windows öffnet sie, ohne Laufwerksbuchstaben und ohne Eintrag im Datei-Explorer. Das Kennwort bleibt in der Windows-Anmeldeinformationsverwaltung, nie in den Einstellungen von Glint."
+
+#: crates/glint-ui/src/dialogs/remote.rs
+msgid ""
 "Glint only reads it: nothing there is changed. The password stays in Windows "
 "Credential Manager, never in Glint's settings."
 msgstr ""
@@ -14969,6 +14991,12 @@ msgstr ""
 #: crates/glint-ui/src/dialogs/remote.rs
 msgid "Test"
 msgstr "Testen"
+
+#: crates/glint-ui/src/dialogs/remote.rs
+msgid ""
+"It opens like a folder on this PC: read, write, copy and drag as anywhere "
+"else"
+msgstr "Sie öffnet sich wie ein Ordner auf diesem PC: lesen, schreiben, kopieren und ziehen wie überall sonst"
 
 #: crates/glint-ui/src/dialogs/remote.rs
 msgid "Its folders open read-only; what you open or copy is downloaded"
