@@ -8,7 +8,7 @@ The plan for 0.12 that was here is in git history (`git show df1245a:NEXT_RELEAS
 before it (`git show 47c33fa:NEXT_RELEASE.md`), and 0.13's own plan, the menu and the dock that know the selection,
 is [docs/gpui/aware/PLAN.md](docs/gpui/aware/PLAN.md) with its task cards beside it.*
 
-## In 0.18.2: kept-alive index connections, folder counts at once, a lasting line cache, calmer accessibility (reviewed 2026-11-28)
+## In 0.18.2: kept-alive index connections, folder counts at once, a lasting line cache, calmer accessibility (reviewed 2026-11-28; released 2026-11-28)
 
 An outside agent's batch (`9b3f10e`), read and checked before it went in; six of its changes had bugs that its own
 tests didn't reach, fixed in the same commit:
@@ -38,7 +38,7 @@ tests didn't reach, fixed in the same commit:
   shadui-index 163 and glint-ui 2,915 tests; the e2e 22/22 on `9b3f10e` with the build numbered 0.18.2. Not tried: a
   real screen reader with the throttle.
 
-## In 0.18.2: speed, the outside list's third tier (checked against the code 2026-11-27)
+## In 0.18.2: speed, the outside list's third tier (checked against the code 2026-11-27; released 2026-11-28)
 
 Six groups of "medium" fixes, some thirty claims in all. Each was read against the code before anything changed, and
 where a fix could be measured cheaply it was measured first: three of the proposed fixes measured slower or as noise,
@@ -140,7 +140,7 @@ four runs of four, until a notice left the screen seconds later; the copy with t
 same minutes, six runs of six, and later neither did it again. It looks like a frame asked for and not drawn in the
 window's frame scheduling, and nothing here was meant to change that.
 
-## In 0.18.2: Windows shares that Glint signs in to ([#10](https://github.com/shadijhade/glint/issues/10))
+## In 0.18.2: Windows shares that Glint signs in to ([#10](https://github.com/shadijhade/glint/issues/10)) (released 2026-11-28)
 
 Helius asked, after 0.18.1, for SMB in **Add a connection** without Windows' mapped drives. Researched first (pure-Rust
 `smb2` and `smb-rs`, libsmb2, writing our own); the user chose Windows' own SMB client, signed in without a drive letter:
