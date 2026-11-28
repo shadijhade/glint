@@ -8,7 +8,37 @@ The plan for 0.12 that was here is in git history (`git show df1245a:NEXT_RELEAS
 before it (`git show 47c33fa:NEXT_RELEASE.md`), and 0.13's own plan, the menu and the dock that know the selection,
 is [docs/gpui/aware/PLAN.md](docs/gpui/aware/PLAN.md) with its task cards beside it.*
 
-## Next: speed, the outside list's third tier (checked against the code 2026-11-27)
+## In 0.18.2: kept-alive index connections, folder counts at once, a lasting line cache, calmer accessibility (reviewed 2026-11-28)
+
+An outside agent's batch (`9b3f10e`), read and checked before it went in; six of its changes had bugs that its own
+tests didn't reach, fixed in the same commit:
+
+- **The index service keeps a connection** for further requests (30 s idle) and answers on a pool of up to 32 workers
+  with overlapped I/O: a first request has 10 s, a write 30 s, and both wake at once on stop, so `Server::stop` no
+  longer pokes the listener with `CancelSynchronousIo` and a throwaway connection. From 16 connections on, each closes
+  after its answer. The client (`client.rs`) keeps up to 4 idle connections for 20 s for the read-only requests and
+  tries once more on a fresh one when a kept one was closed (idle, a restart, or a service from before that answers
+  once and hangs up). Fixed in review: a new worker started only when none was idle, so a worker woken but not yet
+  running left a second connection waiting behind the first one's keep-alive; `FlushFileBuffers` (it waits until the
+  client reads) stalled the listener on the busy reply and could hold up `Server::stop`, and is gone, since closing
+  without `DisconnectNamedPipe` leaves the client everything; an update is answered before the service is told to
+  stop; writes wake on stop too.
+- **Files and folders below a folder** are kept per folder as things change (`desc_counts`, `count_below` at once
+  instead of a pass over every name; the totals' recount rebuilds them). Like the totals, they can be off until the
+  next recount when a batch hands a folder's record to something new (the case `parents_first` exists for), so
+  listings and usage maps never let them skip their scan: the batch's version did, and a listing could leave out real
+  files (`a_record_used_again_never_hides_files_from_a_listing`). `assert_totals` checks the counts against a recount.
+- **The hourly recount** runs only after changes and waits up to 5 minutes while requests run; a search on one drive
+  encodes its ranked hits straight into frames.
+- **Vendored GPUI:** line layouts in a bounded LRU (4,096 lines, 2,048 wrapped) instead of two frames, and the lines
+  the frame just drew always stay (the batch's version shaped them again every frame in a view with more than the
+  bound); the accessibility tree isn't pushed when it didn't change, and at most every 50 ms while focus stays put.
+  docs/gpui/VENDOR.md has both.
+- Checks: `cargo clippy --workspace --all-targets --locked -- -D warnings` clean; glint-core 547, glint-model 446,
+  shadui-index 163 and glint-ui 2,915 tests; the e2e 22/22 on `9b3f10e` with the build numbered 0.18.2. Not tried: a
+  real screen reader with the throttle.
+
+## In 0.18.2: speed, the outside list's third tier (checked against the code 2026-11-27)
 
 Six groups of "medium" fixes, some thirty claims in all. Each was read against the code before anything changed, and
 where a fix could be measured cheaply it was measured first: three of the proposed fixes measured slower or as noise,
@@ -110,7 +140,7 @@ four runs of four, until a notice left the screen seconds later; the copy with t
 same minutes, six runs of six, and later neither did it again. It looks like a frame asked for and not drawn in the
 window's frame scheduling, and nothing here was meant to change that.
 
-## Next: Windows shares that Glint signs in to ([#10](https://github.com/shadijhade/glint/issues/10))
+## In 0.18.2: Windows shares that Glint signs in to ([#10](https://github.com/shadijhade/glint/issues/10))
 
 Helius asked, after 0.18.1, for SMB in **Add a connection** without Windows' mapped drives. Researched first (pure-Rust
 `smb2` and `smb-rs`, libsmb2, writing our own); the user chose Windows' own SMB client, signed in without a drive letter:

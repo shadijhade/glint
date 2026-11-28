@@ -64,6 +64,8 @@ Glint needs Windows 10 or 11, 64-bit, and nothing else: it draws its own window,
 
 ## What's new
 
+**0.18.2** (coming soon) opens a Windows share that asks for a user name and password without mapping a drive, and when Windows won't open one, says why and offers a way in: sign in right there, open it read-only, or wake a sleeping NAS ([#10](https://github.com/shadijhade/glint/issues/10)). It's also quicker in a dozen places where it waited or did the same work twice.
+
 **0.18.1** (November 26, 2026) shows what has a tag or a label when you press it in the sidebar, where 0.18.0 said how many it found but kept showing This PC ([#11](https://github.com/shadijhade/glint/issues/11)), and puts a network share you pin below the Recycle Bin, under a name of your own if you like ([#10](https://github.com/shadijhade/glint/issues/10)).
 
 **0.18.0** (November 25, 2026) speaks **Chinese, German and Arabic**, whichever your Windows does, and is quicker in a dozen places where it used to wait ([#9](https://github.com/shadijhade/glint/issues/9)).
