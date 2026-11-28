@@ -206,6 +206,10 @@ pub struct Tree {
     pub(crate) next_names: IdMap,
     /// Each folder's child folders (as links), for resolving paths and listing folder sizes.
     kids: Kids,
+    /// Incremental `(descendant_files, descendant_folders)` below each folder (matching `count_below`
+    /// semantics: user records only, hard links counted per link), making `count_below()` O(1)
+    /// while adding zero per-file memory overhead.
+    desc_counts: HashMap<u32, (u32, u32), BuildHasherDefault<RecordHasher>>,
     /// Arena bytes no live link uses any more.
     garbage: usize,
     /// Live named file and folder counts (`rec.used() && rec.first_link != NONE`), kept current on mutations
@@ -342,6 +346,7 @@ impl Tree {
                 tree.files += 1;
             }
         }
+        tree.recompute_desc_counts();
         tree
     }
 
@@ -498,8 +503,15 @@ impl Tree {
         self.set_next_name(id, r.first_link);
         self.recs[rec as usize].first_link = id;
         self.adjust_count(r, self.recs[rec as usize]);
-        if r.dir() && parent != NONE {
-            self.kids.add(parent, id);
+        if parent != NONE {
+            if r.dir() {
+                self.kids.add(parent, id);
+                let (sub_f, sub_d) = self.desc_counts.get(&rec).copied().unwrap_or((0, 0));
+                let self_d = i64::from(rec >= FIRST_USER_RECORD);
+                self.add_counts_up(parent, sub_f as i64, sub_d as i64 + self_d);
+            } else if rec >= FIRST_USER_RECORD {
+                self.add_counts_up(parent, 1, 0);
+            }
         }
         if r.size() != 0 {
             self.add_up(parent, r.size() as i64);
@@ -525,8 +537,15 @@ impl Tree {
                 at = next;
             }
         }
-        if r.dir() {
-            self.kids.remove(link.parent, id);
+        if link.parent != NONE {
+            if r.dir() {
+                self.kids.remove(link.parent, id);
+                let (sub_f, sub_d) = self.desc_counts.get(&link.rec).copied().unwrap_or((0, 0));
+                let self_d = i64::from(link.rec >= FIRST_USER_RECORD);
+                self.add_counts_up(link.parent, -(sub_f as i64), -(sub_d as i64 + self_d));
+            } else if link.rec >= FIRST_USER_RECORD {
+                self.add_counts_up(link.parent, -1, 0);
+            }
         }
         if r.size() != 0 {
             self.add_up(link.parent, -(r.size() as i64));
@@ -541,6 +560,40 @@ impl Tree {
             flags: 0,
         };
         self.free.push(id);
+    }
+
+    /// Adds `(d_files, d_folders)` to `dir` and every folder above it.
+    fn add_counts_up(&mut self, mut dir: u32, d_files: i64, d_folders: i64) {
+        if d_files == 0 && d_folders == 0 {
+            return;
+        }
+        for _ in 0..MAX_DEPTH {
+            if dir == NONE {
+                return;
+            }
+            let rec = self.recs.get(dir as usize).copied();
+            // A record not in use yet may be a folder still to come; it keeps what's below it.
+            if let Some(r) = rec {
+                if r.used() && !r.dir() {
+                    return;
+                }
+            }
+            let (f, d) = self.desc_counts.get(&dir).copied().unwrap_or((0, 0));
+            let nf = (f as i64 + d_files).clamp(0, u32::MAX as i64) as u32;
+            let nd = (d as i64 + d_folders).clamp(0, u32::MAX as i64) as u32;
+            if nf == 0 && nd == 0 {
+                self.desc_counts.remove(&dir);
+            } else {
+                self.desc_counts.insert(dir, (nf, nd));
+            }
+            let Some(r) = rec else {
+                return;
+            };
+            if dir == ROOT || r.first_link == NONE {
+                return;
+            }
+            dir = self.links[r.first_link as usize].parent;
+        }
     }
 
     /// Adds `delta` bytes to `dir` and every folder above it.
@@ -578,6 +631,7 @@ impl Tree {
         let used = self.recs[n as usize].used();
         // The size first: names kept get the difference, names added below the new size.
         if !state.dir {
+            self.desc_counts.remove(&n);
             let delta = state.size as i64 - if used { self.recs[n as usize].size() as i64 } else { 0 };
             self.recs[n as usize].set_size(state.size);
             if used && delta != 0 {
@@ -662,6 +716,7 @@ impl Tree {
         let before = self.recs[n as usize];
         self.recs[n as usize] = Rec::default();
         self.adjust_count(before, Rec::default());
+        self.desc_counts.remove(&n);
         self.marks.remove(&n);
         self.far.remove(&n);
     }
@@ -734,14 +789,15 @@ impl Tree {
         out
     }
 
-    /// Recounts every folder's total from scratch: after a full scan, and now and then to undo any
-    /// drift from changes the journal described incompletely.
+    /// Recounts every folder's total (and descendant counts) from scratch: after a full scan,
+    /// and now and then to undo any drift from changes the journal described incompletely.
     pub fn recompute_totals(&mut self) {
         for rec in &mut self.recs {
             if rec.dir() || !rec.used() {
                 rec.set_size(0);
             }
         }
+        self.desc_counts.clear();
         // Each folder first gets the files right in it…
         for i in 0..self.links.len() {
             let link = self.links[i];
@@ -749,16 +805,21 @@ impl Tree {
                 continue;
             }
             let rec = self.recs[link.rec as usize];
-            if rec.dir() || rec.size() == 0 {
+            if rec.dir() {
                 continue;
             }
             if let Some(parent) = self.recs.get_mut(link.parent as usize) {
                 if parent.dir() {
-                    parent.set_size(parent.size() + rec.size());
+                    if rec.size() != 0 {
+                        parent.set_size(parent.size() + rec.size());
+                    }
+                    if link.rec >= FIRST_USER_RECORD {
+                        self.desc_counts.entry(link.parent).or_default().0 += 1;
+                    }
                 }
             }
         }
-        // …then hands its total to its parent, deepest folders first.
+        // …then hands its total and counts to its parent, deepest folders first.
         let depths = self.depths();
         let mut order: Vec<u32> = (0..self.recs.len() as u32)
             .filter(|&n| depths[n as usize] != u32::MAX && n != ROOT)
@@ -766,10 +827,56 @@ impl Tree {
         order.sort_unstable_by_key(|&n| std::cmp::Reverse(depths[n as usize]));
         for n in order {
             let parent = self.parent(n);
+            if parent == NONE {
+                continue;
+            }
             let size = self.recs[n as usize].size();
-            if parent != NONE && size != 0 {
+            if size != 0 {
                 let up = &mut self.recs[parent as usize];
                 up.set_size(up.size() + size);
+            }
+            let (sub_files, sub_folders) = self.desc_counts.get(&n).copied().unwrap_or((0, 0));
+            let add_folders = sub_folders + u32::from(n >= FIRST_USER_RECORD);
+            if sub_files != 0 || add_folders != 0 {
+                let entry = self.desc_counts.entry(parent).or_default();
+                entry.0 += sub_files;
+                entry.1 += add_folders;
+            }
+        }
+    }
+
+    /// Rebuilds per-folder descendant `(files, folders)` counts without touching saved folder sizes.
+    fn recompute_desc_counts(&mut self) {
+        self.desc_counts.clear();
+        for i in 0..self.links.len() {
+            let link = self.links[i];
+            if link.flags & LINK_USED == 0 || link.parent == NONE || link.rec < FIRST_USER_RECORD {
+                continue;
+            }
+            let rec = self.recs[link.rec as usize];
+            if rec.dir() {
+                continue;
+            }
+            if self.recs.get(link.parent as usize).is_some_and(Rec::dir) {
+                self.desc_counts.entry(link.parent).or_default().0 += 1;
+            }
+        }
+        let depths = self.depths();
+        let mut order: Vec<u32> = (0..self.recs.len() as u32)
+            .filter(|&n| depths[n as usize] != u32::MAX && n != ROOT)
+            .collect();
+        order.sort_unstable_by_key(|&n| std::cmp::Reverse(depths[n as usize]));
+        for n in order {
+            let parent = self.parent(n);
+            if parent == NONE {
+                continue;
+            }
+            let (sub_files, sub_folders) = self.desc_counts.get(&n).copied().unwrap_or((0, 0));
+            let add_folders = sub_folders + u32::from(n >= FIRST_USER_RECORD);
+            if sub_files != 0 || add_folders != 0 {
+                let entry = self.desc_counts.entry(parent).or_default();
+                entry.0 += sub_files;
+                entry.1 += add_folders;
             }
         }
     }
@@ -920,11 +1027,35 @@ impl Tree {
             .collect()
     }
 
+    /// Number of direct user-file links inside `dir`, computed in O(child folders) from `desc_counts`.
+    fn direct_file_count(&self, dir: u32) -> u64 {
+        let total = self.count_below(dir).0;
+        if total == 0 {
+            return 0;
+        }
+        let in_kids: u64 = self
+            .kids
+            .of(dir)
+            .iter()
+            .map(|&id| self.count_below(self.links[id as usize].rec).0)
+            .sum();
+        total.saturating_sub(in_kids)
+    }
+
     /// Every name right inside folder `dir`, files and folders, empty ones too, as a listing of the
     /// folder shows them (NTFS's own records left out): for a folder Windows keeps a user out of.
     pub fn list(&self, dir: u32) -> Vec<u32> {
         let folders = self.kids.of(dir);
-        // Files aren't listed by folder: one pass over every name finds them.
+        // The counts only size the list: like the totals they can be off until the next recount (a
+        // record the batch reuses), so they never decide whether to look for files.
+        let mut out: Vec<u32> = Vec::with_capacity(folders.len() + self.direct_file_count(dir) as usize);
+        out.extend(
+            folders
+                .iter()
+                .copied()
+                .filter(|&id| self.links[id as usize].rec >= FIRST_USER_RECORD),
+        );
+        // Files aren't listed per folder to keep the index compact: one parallel pass finds them.
         const CHUNK: usize = 1 << 14;
         let files: Vec<Vec<u32>> = self
             .links
@@ -945,55 +1076,19 @@ impl Tree {
                     .collect()
             })
             .collect();
-        folders
-            .iter()
-            .copied()
-            .filter(|&id| self.links[id as usize].rec >= FIRST_USER_RECORD)
-            .chain(files.concat())
-            .collect()
+        for batch in files {
+            out.extend(batch);
+        }
+        out
     }
 
     /// How many files and folders are below folder `dir`, all the way down, as a walk of it counts them: a
-    /// file with names in more than one place below it once for each, and NTFS's own records left out. The
-    /// folders come from the folder lists; the files from one pass over every name, as `list` makes.
+    /// file with names in more than one place below it once for each, and NTFS's own records left out.
+    /// Maintained incrementally in `desc_counts`, so this is an O(1) lookup.
     pub fn count_below(&self, dir: u32) -> (u64, u64) {
-        let mut below = vec![0u64; self.recs.len() / 64 + 1];
-        let marked = |below: &[u64], n: u32| below.get(n as usize / 64).is_some_and(|word| word >> (n % 64) & 1 != 0);
-        let mark = |below: &mut [u64], n: u32| {
-            if let Some(word) = below.get_mut(n as usize / 64) {
-                *word |= 1 << (n % 64);
-            }
-        };
-        mark(&mut below, dir);
-        let mut folders = 0u64;
-        let mut open = vec![dir];
-        while let Some(at) = open.pop() {
-            for &id in self.kids.of(at) {
-                let rec = self.links[id as usize].rec;
-                // A folder already marked would be a loop (a broken index): counted once.
-                if rec < FIRST_USER_RECORD || marked(&below, rec) {
-                    continue;
-                }
-                mark(&mut below, rec);
-                folders += 1;
-                open.push(rec);
-            }
-        }
-        const CHUNK: usize = 1 << 14;
-        let files = self
-            .links
-            .par_chunks(CHUNK)
-            .map(|links| {
-                let inside = |link: &&Link| {
-                    link.flags & LINK_USED != 0
-                        && marked(&below, link.parent)
-                        && link.rec >= FIRST_USER_RECORD
-                        && !self.recs[link.rec as usize].dir()
-                };
-                links.iter().filter(inside).count() as u64
-            })
-            .sum();
-        (files, folders)
+        self.desc_counts
+            .get(&dir)
+            .map_or((0, 0), |&(files, folders)| (files as u64, folders as u64))
     }
 
     /// A disk-usage map of folder `dir`: the files and folders in it and in its folders, down to
@@ -1021,7 +1116,7 @@ impl Tree {
         let mut biggest: BinaryHeap<Reverse<u64>> = BinaryHeap::with_capacity(max + 1);
         let mut floor = 0;
         let mut left_out = false;
-        let mut open: HashMap<u32, u32> = HashMap::new();
+        let mut open: HashMap<u32, u32, BuildHasherDefault<RecordHasher>> = HashMap::default();
         let mut frontier = BinaryHeap::from([(top.size(), dir, 0u32, 0u32)]);
         while let Some((size, folder, at, level)) = frontier.pop() {
             if size < floor {
@@ -1060,7 +1155,8 @@ impl Tree {
                 }
             }
         }
-        // Files aren't listed by folder: one pass over every name finds those in the open folders.
+        // Files aren't listed by folder: one pass over every name finds those in the open folders (never
+        // skipped on the counts, which can be off until the next recount).
         let mut wanted = vec![0u64; self.recs.len().div_ceil(64)];
         for &folder in open.keys() {
             wanted[folder as usize / 64] |= 1 << (folder % 64);
@@ -1658,9 +1754,14 @@ impl Tree {
         })
     }
 
+    /// Whether the name arena has enough dead bytes to be worth compacting.
+    pub fn needs_compact(&self) -> bool {
+        self.garbage >= 1 << 20 && self.garbage >= self.names.len() / 2
+    }
+
     /// Rewrites the name arena when most of it is names that are gone.
     pub fn maybe_compact(&mut self) {
-        if self.garbage >= 1 << 20 && self.garbage >= self.names.len() / 2 {
+        if self.needs_compact() {
             self.compact();
         }
     }
@@ -1670,8 +1771,11 @@ impl Tree {
     pub fn compact(&mut self) {
         let mut names = Vec::with_capacity(self.names.len().saturating_sub(self.garbage));
         // The first link with each different name (its name in `names` already), by the name's hash:
-        // open addressing, kept at most three quarters full.
-        let mut firsts = vec![NONE; 1 << 12];
+        // open addressing, kept at most three quarters full, pre-sized from live link count.
+        let live = self.links.len().saturating_sub(self.free.len());
+        let est_distinct = (live / 3).max(1);
+        let slots = (est_distinct * 4 / 3 + 1).next_power_of_two().max(1 << 12);
+        let mut firsts = vec![NONE; slots];
         let mut different = 0;
         for id in 0..self.links.len() {
             let link = self.links[id];
@@ -1733,7 +1837,8 @@ impl Tree {
                 + self.names.capacity()
                 + self.free.capacity() * 4
                 + self.next_names.capacity() * 10
-                + self.kids.memory()) as u64
+                + self.kids.memory()
+                + self.desc_counts.capacity() * 13) as u64
                 + self.growth.memory(),
         }
     }
@@ -2147,12 +2252,14 @@ mod tests {
         tree.rec(n).unwrap().size()
     }
 
-    /// Folder totals kept incrementally must equal a recount from scratch.
+    /// Folder totals and counts kept incrementally must equal a recount from scratch.
     fn assert_totals(tree: &mut Tree) {
         let before: Vec<u64> = tree.recs.iter().map(|r| r.size()).collect();
+        let counts = tree.desc_counts.clone();
         tree.recompute_totals();
         let after: Vec<u64> = tree.recs.iter().map(|r| r.size()).collect();
         assert_eq!(before, after);
+        assert_eq!(counts, tree.desc_counts, "counts below each folder");
     }
 
     fn find(tree: &Tree, query: &str, scope: u32, hidden: bool, excludes: &[&str]) -> Vec<String> {
@@ -2511,6 +2618,32 @@ mod tests {
         tree.remove_record(26);
         assert_eq!((tree.count_below(21), tree.count_below(30)), ((2, 0), (3, 2)));
         assert_eq!(tree.count_below(ROOT), (5, 5));
+    }
+
+    /// docs and what's in it deleted, and Windows hands their records to what's made next: a folder in me
+    /// (docs' record, 23) and a file in it (b.pdf's, 24), in one batch. Its old name still counts b.pdf in
+    /// 23 when it goes, so the counts above it are off until the next recount: the listing must not trust
+    /// them.
+    #[test]
+    fn a_record_used_again_never_hides_files_from_a_listing() {
+        let mut tree = sample();
+        let new_folder = dir(2, &[(21, "new")]);
+        let new_file = RecordState {
+            seq: 2,
+            names: vec![(make_ref(23, 2), "x.txt".into())],
+            ..file(5, &[])
+        };
+        let batch = vec![(26, None), (25, None), (23, Some(new_folder)), (24, Some(new_file))];
+        for (n, state) in parents_first(batch) {
+            match state {
+                Some(state) => tree.set_record(n, &state),
+                None => tree.remove_record(n),
+            }
+        }
+        assert_eq!(listed(&tree, 21), ["a.txt", "new"]);
+        assert_eq!(listed(&tree, 23), ["x.txt"]);
+        tree.recompute_totals();
+        assert_eq!(tree.count_below(21), (2, 1));
     }
 
     /// A map as (name, parent's place, size, folder), the folder mapped first as "".

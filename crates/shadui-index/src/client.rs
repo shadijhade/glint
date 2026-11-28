@@ -10,6 +10,8 @@ use crate::win::{self, os_error, wide, Handle};
 use std::fmt;
 use std::io;
 use std::path::Path;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{
     CloseHandle, ERROR_ACCESS_DENIED, ERROR_CANCELLED, ERROR_FILE_NOT_FOUND, ERROR_PIPE_BUSY, GENERIC_READ,
@@ -113,8 +115,77 @@ pub(crate) fn connect_to(name: &str, trust: &dyn Fn(&str) -> bool) -> Result<Han
     )))
 }
 
+const POOL_MAX: usize = 4;
+const POOL_IDLE: Duration = Duration::from_secs(20);
+
+struct PooledPipe {
+    pipe: Handle,
+    last_used: Instant,
+}
+
+static POOL: Mutex<Vec<PooledPipe>> = Mutex::new(Vec::new());
+
+fn pool_take() -> Option<Handle> {
+    let mut pool = POOL.lock().unwrap_or_else(|e| e.into_inner());
+    while let Some(entry) = pool.pop() {
+        if entry.last_used.elapsed() < POOL_IDLE {
+            return Some(entry.pipe);
+        }
+    }
+    None
+}
+
+fn pool_put(pipe: Handle) {
+    let mut pool = POOL.lock().unwrap_or_else(|e| e.into_inner());
+    let now = Instant::now();
+    pool.retain(|entry| now.saturating_duration_since(entry.last_used) < POOL_IDLE);
+    if pool.len() < POOL_MAX {
+        pool.push(PooledPipe { pipe, last_used: now });
+    }
+}
+
+fn pool_clear() {
+    POOL.lock().unwrap_or_else(|e| e.into_inner()).clear();
+}
+
+/// Runs a framed read-only RPC on a pooled keepalive connection, transparently retrying once on a
+/// fresh connection if a reused pipe was closed (idle timeout, service restart, or an older 1-shot
+/// service that disconnects after each reply).
+fn call_pooled<T>(mut f: impl FnMut(&Handle) -> Result<T, Error>) -> Result<T, Error> {
+    if let Some(pipe) = pool_take() {
+        match f(&pipe) {
+            Ok(val) => {
+                pool_put(pipe);
+                return Ok(val);
+            }
+            Err(Error::Service(msg)) => {
+                pool_put(pipe);
+                return Err(Error::Service(msg));
+            }
+            Err(Error::Io(_) | Error::NotRunning) => {}
+            Err(other) => return Err(other),
+        }
+    }
+    let pipe = connect()?;
+    match f(&pipe) {
+        Ok(val) => {
+            pool_put(pipe);
+            Ok(val)
+        }
+        Err(Error::Service(msg)) => {
+            pool_put(pipe);
+            Err(Error::Service(msg))
+        }
+        Err(e) => Err(e),
+    }
+}
+
+fn ask_ref(pipe: &Handle, request: &Request) -> Result<(), Error> {
+    proto::write_request(&mut PipeIo(pipe), request).map_err(Error::Io)
+}
+
 fn ask(pipe: Handle, request: &Request) -> Result<Handle, Error> {
-    proto::write_request(&mut PipeIo(&pipe), request).map_err(Error::Io)?;
+    ask_ref(&pipe, request)?;
     Ok(pipe)
 }
 
@@ -146,14 +217,20 @@ fn unexpected() -> Error {
 }
 
 pub fn status() -> Result<Status, Error> {
-    status_on(connect()?)
+    call_pooled(status_ref)
 }
 
-pub(crate) fn status_on(pipe: Handle) -> Result<Status, Error> {
-    match reply(&ask(pipe, &Request::Status)?)? {
+pub(crate) fn status_ref(pipe: &Handle) -> Result<Status, Error> {
+    ask_ref(pipe, &Request::Status)?;
+    match reply(pipe)? {
         Message::Status(status) => Ok(status),
         _ => Err(unexpected()),
     }
+}
+
+#[cfg(test)]
+pub(crate) fn status_on(pipe: Handle) -> Result<Status, Error> {
+    status_ref(&pipe)
 }
 
 /// Says this copy of Glint, not the Microsoft Store's, uses the service, so it stays when the Store's
@@ -171,38 +248,44 @@ pub fn claim() -> Result<Option<Status>, Error> {
 }
 
 pub fn sizes(path: &str) -> Result<Sizes, Error> {
-    sizes_on(connect()?, path, false)
+    call_pooled(|pipe| sizes_ref(pipe, path, false))
 }
 
 /// `sizes`, with how many files and folders are below the folder (`Sizes::files` and `folders`). A service
 /// from before answers without them.
 pub fn sizes_counted(path: &str) -> Result<Sizes, Error> {
-    sizes_on(connect()?, path, true)
+    call_pooled(|pipe| sizes_ref(pipe, path, true))
 }
 
-pub(crate) fn sizes_on(pipe: Handle, path: &str, count: bool) -> Result<Sizes, Error> {
-    match reply(&ask(
+pub(crate) fn sizes_ref(pipe: &Handle, path: &str, count: bool) -> Result<Sizes, Error> {
+    ask_ref(
         pipe,
         &Request::Sizes {
             path: path.to_string(),
             count,
         },
-    )?)? {
+    )?;
+    match reply(pipe)? {
         Message::Sizes(sizes) => Ok(sizes),
         _ => Err(unexpected()),
     }
+}
+
+#[cfg(test)]
+pub(crate) fn sizes_on(pipe: Handle, path: &str, count: bool) -> Result<Sizes, Error> {
+    sizes_ref(&pipe, path, count)
 }
 
 /// A disk-usage map of a folder (see `UsageRequest`). An older service that doesn't know the request
 /// closes the pipe without an answer: an error like any other. One from before growth leaves out
 /// what items held at a mark.
 pub fn usage(request: &UsageRequest) -> Result<UsageMap, Error> {
-    usage_on(connect()?, request)
+    call_pooled(|pipe| usage_ref(pipe, request))
 }
 
-pub(crate) fn usage_on(pipe: Handle, request: &UsageRequest) -> Result<UsageMap, Error> {
-    let pipe = ask(pipe, &Request::Usage(request.clone()))?;
-    let mut io = PipeIo(&pipe);
+pub(crate) fn usage_ref(pipe: &Handle, request: &UsageRequest) -> Result<UsageMap, Error> {
+    ask_ref(pipe, &Request::Usage(request.clone()))?;
+    let mut io = PipeIo(pipe);
     let (mut nodes, mut previous) = (None, None);
     let invalid = |e: String| Error::Io(io::Error::new(io::ErrorKind::InvalidData, e));
     while let Some((kind, payload)) = proto::read_frame(&mut io, MAX_FRAME).map_err(Error::Io)? {
@@ -231,15 +314,20 @@ pub(crate) fn usage_on(pipe: Handle, request: &UsageRequest) -> Result<UsageMap,
     )))
 }
 
+#[cfg(test)]
+pub(crate) fn usage_on(pipe: Handle, request: &UsageRequest) -> Result<UsageMap, Error> {
+    usage_ref(&pipe, request)
+}
+
 /// Everything right inside a folder, for one Windows keeps this user out of. An older service that
 /// doesn't know the request closes the pipe without an answer: an error like any other.
 pub fn list(path: &str) -> Result<Vec<Hit>, Error> {
-    list_on(connect()?, path)
+    call_pooled(|pipe| list_ref(pipe, path))
 }
 
-pub(crate) fn list_on(pipe: Handle, path: &str) -> Result<Vec<Hit>, Error> {
-    let pipe = ask(pipe, &Request::List { path: path.to_string() })?;
-    let mut io = PipeIo(&pipe);
+pub(crate) fn list_ref(pipe: &Handle, path: &str) -> Result<Vec<Hit>, Error> {
+    ask_ref(pipe, &Request::List { path: path.to_string() })?;
+    let mut io = PipeIo(pipe);
     let mut hits = Vec::new();
     while let Some((kind, payload)) = proto::read_frame(&mut io, MAX_FRAME).map_err(Error::Io)? {
         if kind == FRAME_HITS {
@@ -259,52 +347,48 @@ pub(crate) fn list_on(pipe: Handle, path: &str) -> Result<Vec<Hit>, Error> {
     )))
 }
 
+#[cfg(test)]
+pub(crate) fn list_on(pipe: Handle, path: &str) -> Result<Vec<Hit>, Error> {
+    list_ref(&pipe, path)
+}
+
 /// What was renamed, moved and deleted on the indexed drives (see `HistoryRequest`). An older service
 /// that doesn't know the request closes the pipe without an answer: an Io error, UnexpectedEof.
 pub fn history(request: &HistoryRequest) -> Result<HistoryAnswer, Error> {
-    history_on(connect()?, request)
+    call_pooled(|pipe| history_ref(pipe, request))
 }
 
-pub(crate) fn history_on(pipe: Handle, request: &HistoryRequest) -> Result<HistoryAnswer, Error> {
-    let pipe = ask(pipe, &Request::History(request.clone()))?;
-    match proto::read_frame(&mut PipeIo(&pipe), MAX_FRAME).map_err(Error::Io)? {
-        Some((kind, payload)) => match message(kind, &payload)? {
-            Message::History(answer) => Ok(answer),
-            _ => Err(unexpected()),
-        },
-        None => Err(Error::Io(io::Error::new(
-            io::ErrorKind::UnexpectedEof,
-            "the instant search service closed the connection",
-        ))),
+pub(crate) fn history_ref(pipe: &Handle, request: &HistoryRequest) -> Result<HistoryAnswer, Error> {
+    match answer_ref(pipe, &Request::History(request.clone()))? {
+        Message::History(answer) => Ok(answer),
+        _ => Err(unexpected()),
     }
+}
+
+#[cfg(test)]
+pub(crate) fn history_on(pipe: Handle, request: &HistoryRequest) -> Result<HistoryAnswer, Error> {
+    history_ref(&pipe, request)
 }
 
 /// Every tag on the indexed drives with how many items have it, most used first. An older service closes
 /// the pipe on it: an Io error.
 pub fn tags() -> Result<Vec<(String, u64)>, Error> {
-    let pipe = ask(connect()?, &Request::Tags)?;
-    match proto::read_frame(&mut PipeIo(&pipe), MAX_FRAME).map_err(Error::Io)? {
-        Some((kind, payload)) => match message(kind, &payload)? {
-            Message::Tags { tags } => Ok(tags),
-            _ => Err(unexpected()),
-        },
-        None => Err(Error::Io(io::Error::new(
-            io::ErrorKind::UnexpectedEof,
-            "the instant search service closed the connection",
-        ))),
-    }
+    call_pooled(|pipe| match answer_ref(pipe, &Request::Tags)? {
+        Message::Tags { tags } => Ok(tags),
+        _ => Err(unexpected()),
+    })
 }
 
 /// Every label and tag on the indexed drives with how many items have it, most used first, and how many items
 /// have a comment (docs/gpui/marks). An older service closes the pipe on it: an Io error.
 pub fn marks() -> Result<proto::MarkCounts, Error> {
-    marks_on(connect()?)
+    call_pooled(marks_ref)
 }
 
 /// One request, one answer; a pipe closed without one is an UnexpectedEof, as the others give.
-fn answer(pipe: Handle, request: &Request) -> Result<Message, Error> {
-    let pipe = ask(pipe, request)?;
-    match proto::read_frame(&mut PipeIo(&pipe), MAX_FRAME).map_err(Error::Io)? {
+fn answer_ref(pipe: &Handle, request: &Request) -> Result<Message, Error> {
+    ask_ref(pipe, request)?;
+    match proto::read_frame(&mut PipeIo(pipe), MAX_FRAME).map_err(Error::Io)? {
         Some((kind, payload)) => message(kind, &payload),
         None => Err(Error::Io(io::Error::new(
             io::ErrorKind::UnexpectedEof,
@@ -313,55 +397,53 @@ fn answer(pipe: Handle, request: &Request) -> Result<Message, Error> {
     }
 }
 
-pub(crate) fn marks_on(pipe: Handle) -> Result<proto::MarkCounts, Error> {
-    match answer(pipe, &Request::Marks)? {
+pub(crate) fn marks_ref(pipe: &Handle) -> Result<proto::MarkCounts, Error> {
+    match answer_ref(pipe, &Request::Marks)? {
         Message::Marks(counts) => Ok(counts),
         _ => Err(unexpected()),
     }
 }
 
+#[cfg(test)]
+pub(crate) fn marks_on(pipe: Handle) -> Result<proto::MarkCounts, Error> {
+    marks_ref(&pipe)
+}
+
 /// The marked items right inside the folder `path`: their names, labels and tags, and whether each has a
 /// comment (never its text). An older service closes the pipe on it: an Io error.
 pub fn marks_in(path: &str) -> Result<Vec<proto::MarkedChild>, Error> {
-    marks_in_on(connect()?, path)
+    call_pooled(|pipe| marks_in_ref(pipe, path))
 }
 
-pub(crate) fn marks_in_on(pipe: Handle, path: &str) -> Result<Vec<proto::MarkedChild>, Error> {
-    match answer(pipe, &Request::MarksIn { path: path.to_string() })? {
+pub(crate) fn marks_in_ref(pipe: &Handle, path: &str) -> Result<Vec<proto::MarkedChild>, Error> {
+    match answer_ref(pipe, &Request::MarksIn { path: path.to_string() })? {
         Message::MarksIn { items } => Ok(items),
         _ => Err(unexpected()),
     }
 }
 
+#[cfg(test)]
+pub(crate) fn marks_in_on(pipe: Handle, path: &str) -> Result<Vec<proto::MarkedChild>, Error> {
+    marks_in_ref(&pipe, path)
+}
+
 /// Windows' shadow copies of every volume, newest first, with the times VSS took them (which only an
 /// administrator, the service, may ask). An older service closes the pipe on it: an Io error.
 pub fn snapshots() -> Result<Vec<crate::shadow::Snapshot>, Error> {
-    let pipe = ask(connect()?, &Request::Snapshots)?;
-    match proto::read_frame(&mut PipeIo(&pipe), MAX_FRAME).map_err(Error::Io)? {
-        Some((kind, payload)) => match message(kind, &payload)? {
-            Message::Snapshots { snapshots } => Ok(snapshots),
-            _ => Err(unexpected()),
-        },
-        None => Err(Error::Io(io::Error::new(
-            io::ErrorKind::UnexpectedEof,
-            "the instant search service closed the connection",
-        ))),
-    }
+    call_pooled(|pipe| match answer_ref(pipe, &Request::Snapshots)? {
+        Message::Snapshots { snapshots } => Ok(snapshots),
+        _ => Err(unexpected()),
+    })
 }
 
 /// Resolves `(volume_serial, frn)` through the running index service, returning None when not indexed.
 pub fn resolve_id(volume_serial: u32, frn: u64) -> Result<Option<String>, Error> {
-    let pipe = ask(connect()?, &Request::ResolveId { volume_serial, frn })?;
-    match proto::read_frame(&mut PipeIo(&pipe), MAX_FRAME).map_err(Error::Io)? {
-        Some((kind, payload)) => match message(kind, &payload)? {
+    call_pooled(|pipe| {
+        match answer_ref(pipe, &Request::ResolveId { volume_serial, frn })? {
             Message::Resolved { path } => Ok(path),
             _ => Err(unexpected()),
-        },
-        None => Err(Error::Io(io::Error::new(
-            io::ErrorKind::UnexpectedEof,
-            "the instant search service closed the connection",
-        ))),
-    }
+        }
+    })
 }
 
 /// Hands the running service a later build of itself: `exe`, the service executable that ships with the
@@ -369,6 +451,7 @@ pub fn resolve_id(volume_serial: u32, frn: u64) -> Result<Option<String>, Error>
 /// it and is restarting into it; Ok(None) from a service from before it could update itself, which
 /// hangs up on the request.
 pub fn update(exe: &[u8], signature: &str) -> Result<Option<String>, Error> {
+    pool_clear();
     update_on(connect()?, exe, signature)
 }
 

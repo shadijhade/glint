@@ -43,6 +43,8 @@ const IDLE_CHECK: Duration = Duration::from_secs(5 * 60);
 const SCAN_REPLAY: Duration = Duration::from_secs(120);
 const SAVE_EVERY: Duration = Duration::from_secs(30 * 60);
 const RECOUNT_EVERY: Duration = Duration::from_secs(60 * 60);
+/// Maximum time hourly recount/compaction defers while interactive requests are active.
+const MAX_RECOUNT_DEFER: Duration = Duration::from_secs(5 * 60);
 const RETRY_AFTER: Duration = Duration::from_secs(30);
 /// Results per frame.
 const BATCH: usize = 4096;
@@ -451,6 +453,14 @@ enum Restart {
     Retry(String),
 }
 
+struct RequestGuard<'a>(&'a std::sync::atomic::AtomicUsize);
+
+impl Drop for RequestGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Release);
+    }
+}
+
 pub struct Engine {
     data: PathBuf,
     /// Index only these drives (for testing from a console); all fixed NTFS drives when None.
@@ -458,10 +468,18 @@ pub struct Engine {
     slots: RwLock<Vec<Arc<Slot>>>,
     stop: Stop,
     workers: Mutex<Vec<JoinHandle<()>>>,
+    /// Number of interactive user requests currently running, so hourly recount/compaction defers
+    /// until idle instead of blocking queries under an exclusive tree write lock.
+    active_requests: std::sync::atomic::AtomicUsize,
     pub log: Log,
 }
 
 impl Engine {
+    fn begin_request(&self) -> RequestGuard<'_> {
+        self.active_requests.fetch_add(1, Ordering::Acquire);
+        RequestGuard(&self.active_requests)
+    }
+
     pub fn start(data: PathBuf, only: Option<Vec<char>>, echo: bool) -> Arc<Engine> {
         let _ = fs::create_dir_all(&data);
         let log = Log::open(&data.join("service.log"), echo);
@@ -471,6 +489,7 @@ impl Engine {
             slots: RwLock::default(),
             stop: Stop::default(),
             workers: Mutex::default(),
+            active_requests: std::sync::atomic::AtomicUsize::new(0),
             log,
         });
         engine
@@ -531,6 +550,7 @@ impl Engine {
             slots: RwLock::new(vec![slot]),
             stop: Stop::default(),
             workers: Mutex::default(),
+            active_requests: std::sync::atomic::AtomicUsize::new(0),
             log,
         })
     }
@@ -759,8 +779,9 @@ impl Engine {
             self.save(slot, &volume, &path, meta(cursor));
         }
         // A snapshot the journal had to catch up gets saved again at the next chance.
-        let (mut dirty, mut saved_at, mut counted_at) = (
+        let (mut dirty, mut recount_needed, mut saved_at, mut counted_at) = (
             source == "snapshot" && (replayed > 0 || marked),
+            source == "snapshot" && replayed > 0,
             Instant::now(),
             Instant::now(),
         );
@@ -780,6 +801,7 @@ impl Engine {
             let read = self.apply(&volume, slot, &mut cursor, journal.id, None, &mut page)?;
             if read > 0 {
                 dirty = true;
+                recount_needed = true;
                 if read < SMALL_BATCH {
                     self.stop.sleep(SETTLE);
                 }
@@ -793,18 +815,40 @@ impl Engine {
                 self.save(slot, &volume, &path, meta(cursor));
                 (dirty, saved_at) = (false, Instant::now());
             }
-            if counted_at.elapsed() > RECOUNT_EVERY {
-                let mut tree = slot.tree.write().unwrap();
-                tree.recompute_totals();
-                tree.maybe_compact();
-                counted_at = Instant::now();
+            if recount_needed && counted_at.elapsed() > RECOUNT_EVERY {
+                let busy = self.active_requests.load(Ordering::Acquire) > 0;
+                if !busy || counted_at.elapsed() > RECOUNT_EVERY + MAX_RECOUNT_DEFER {
+                    let needs_compact = {
+                        let mut tree = slot.tree.write().unwrap();
+                        tree.recompute_totals();
+                        tree.needs_compact()
+                    };
+                    if needs_compact && !self.stop.is_set() {
+                        if self.active_requests.load(Ordering::Acquire) > 0 {
+                            let _ = self.stop.sleep(Duration::from_millis(50));
+                        }
+                        if !self.stop.is_set() {
+                            slot.tree.write().unwrap().maybe_compact();
+                        }
+                    }
+                    recount_needed = false;
+                    counted_at = Instant::now();
+                }
             }
             let Some(watching) = watch.as_mut() else {
                 self.stop.sleep(POLL);
                 continue;
             };
             // Asleep until the journal has something, or until something else is due.
-            let mut due = IDLE_CHECK.min(RECOUNT_EVERY.saturating_sub(counted_at.elapsed()));
+            let mut due = IDLE_CHECK;
+            if recount_needed {
+                let remaining = RECOUNT_EVERY.saturating_sub(counted_at.elapsed());
+                due = due.min(if remaining.is_zero() {
+                    Duration::from_secs(2)
+                } else {
+                    remaining
+                });
+            }
             if dirty {
                 due = due.min(SAVE_EVERY.saturating_sub(saved_at.elapsed()));
             }
@@ -1043,6 +1087,7 @@ impl Engine {
 
     /// Every tag on the ready drives, with how many items have it, most used first.
     pub fn tags(&self) -> Vec<(String, u64)> {
+        let _req = self.begin_request();
         merged(self.ready_slots().iter().flat_map(|s| s.tree.read().unwrap().tag_counts()))
     }
 
@@ -1054,6 +1099,7 @@ impl Engine {
     /// Every label and tag on the ready drives with how many items have it, most used first, and how many items
     /// have a comment (docs/gpui/marks).
     pub fn marks(&self) -> crate::proto::MarkCounts {
+        let _req = self.begin_request();
         let slots = self.ready_slots();
         let trees: Vec<_> = slots.iter().map(|s| s.tree.read().unwrap()).collect();
         crate::proto::MarkCounts {
@@ -1065,6 +1111,7 @@ impl Engine {
 
     /// The marked items right inside `path`, never with a comment's text.
     pub fn marks_in(&self, path: &str) -> Result<Vec<crate::proto::MarkedChild>, String> {
+        let _req = self.begin_request();
         let (letter, rest) = split_drive(path).ok_or("Not a folder on a local drive")?;
         let slot = self.ready_slot(letter).ok_or("This drive isn't indexed")?;
         let guard = slot.tree.read().unwrap();
@@ -1130,6 +1177,7 @@ impl Engine {
         out: &mut dyn Write,
         gone: &(dyn Fn() -> bool + Sync),
     ) -> io::Result<()> {
+        let _req = self.begin_request();
         let started = Instant::now();
         let check = || {
             if gone() {
@@ -1308,8 +1356,9 @@ impl Engine {
     }
 
     /// Folder sizes: the folder's total and the total of each folder in it; with `count`, how many files
-    /// and folders are below it too (one pass over the drive's names, where the sizes need none).
+    /// and folders are below it too (O(1) lookup).
     pub fn sizes(&self, path: &str, count: bool) -> Result<Sizes, String> {
+        let _req = self.begin_request();
         let started = Instant::now();
         let (letter, rest) = split_drive(path).ok_or("Not a folder on a local drive")?;
         let slot = self.ready_slot(letter).ok_or("This drive isn't indexed")?;
@@ -1330,6 +1379,7 @@ impl Engine {
 
     /// Answers what's right inside a folder: result frames, as for a search, then a summary.
     pub fn list(&self, path: &str, out: &mut dyn Write) -> io::Result<()> {
+        let _req = self.begin_request();
         let started = Instant::now();
         let listed = (|| -> Result<(Vec<Vec<u8>>, usize), &str> {
             let (letter, rest) = split_drive(path).ok_or("Not a folder on a local drive")?;
@@ -1373,6 +1423,7 @@ impl Engine {
     /// Answers a disk-usage map: one frame with the map, one with what its items held at the mark
     /// closest to `since` when that's asked for, then a summary.
     pub fn usage(&self, request: &UsageRequest, out: &mut dyn Write) -> io::Result<()> {
+        let _req = self.begin_request();
         match self.map(request) {
             Ok((payload, earlier, summary)) => {
                 proto::write_frame(out, FRAME_USAGE, &payload)?;
@@ -1454,6 +1505,7 @@ impl Engine {
     /// What was renamed, moved and deleted on every indexed drive, newest first, with where each
     /// thing that's still there is now.
     pub fn history(&self, request: &HistoryRequest) -> HistoryAnswer {
+        let _req = self.begin_request();
         let started = Instant::now();
         let max = (request.max as usize).clamp(1, MAX_HISTORY);
         let slots = self.slots.read().unwrap().clone();
@@ -1502,6 +1554,7 @@ impl Engine {
 
     /// Resolves `(volume_serial, frn)` across all ready indexed volumes.
     pub fn resolve_id(&self, volume_serial: u32, frn: u64) -> Option<String> {
+        let _req = self.begin_request();
         let slots = self.slots.read().unwrap().clone();
         for slot in slots {
             if !slot.ready.load(Ordering::SeqCst) {
@@ -1552,6 +1605,35 @@ fn send_ranked(
             Ok(())
         }
     };
+    // Single-drive fast path: `rank_edits_until` already returns the best `max` in rank order,
+    // so encode each batch straight into ready-to-send frames without re-sorting or double-copying.
+    if let [(slot, scope)] = targets {
+        check()?;
+        let drive = format!("{}:\\", slot.letter);
+        let (mut frames, sent, total) = {
+            let tree = slot.tree.read().unwrap();
+            let search = Search {
+                matcher,
+                filters,
+                now,
+                scope: *scope,
+                hidden,
+                excludes,
+            };
+            let found = tree.search_until_edits(&search, gone);
+            check()?;
+            let total = found.len();
+            let ranked = tree.rank_edits_until(&found, word, max, gone);
+            check()?;
+            let (frames, sent) = encode_ranked_frames(&tree, &ranked, &drive, gone);
+            (frames, sent, total)
+        };
+        check()?;
+        for frame in &mut frames {
+            proto::write_frame_with_head(out, FRAME_HITS, frame)?;
+        }
+        return Ok((sent, total > sent));
+    }
     let mut total = 0;
     let mut drives = Vec::with_capacity(targets.len());
     for (slot, scope) in targets {
@@ -1589,6 +1671,54 @@ fn send_ranked(
         proto::write_frame_with_head(out, FRAME_HITS, &mut frame)?;
     }
     Ok((best.len(), total > best.len()))
+}
+
+/// Encodes already-ranked single-drive hits directly into framed batches (each prefixed with a
+/// 5-byte frame header placeholder for `write_frame_with_head`).
+fn encode_ranked_frames(
+    tree: &Tree,
+    ranked: &[Rank],
+    drive: &str,
+    gone: &(dyn Fn() -> bool + Sync),
+) -> (Vec<Vec<u8>>, usize) {
+    let mut dirs: HashMap<u32, String, std::hash::BuildHasherDefault<crate::growth::RecordHasher>> = HashMap::default();
+    let mut path_buf = String::with_capacity(256);
+    let mut frames = Vec::with_capacity(ranked.len().div_ceil(BATCH));
+    let mut sent = 0usize;
+    for chunk in ranked.chunks(BATCH) {
+        if gone() {
+            break;
+        }
+        let mut frame = Vec::with_capacity(5 + chunk.len() * 96);
+        frame.extend_from_slice(&[0u8; 5]);
+        let mut in_frame = 0usize;
+        for (i, &rank) in chunk.iter().enumerate() {
+            if i & 1023 == 0 && gone() {
+                return (frames, sent);
+            }
+            if !tree.write_path_into(rank.id, drive, &mut dirs, &mut path_buf) {
+                continue;
+            }
+            let Some(rec) = tree.rec(tree.link(rank.id).rec) else {
+                continue;
+            };
+            proto::encode_hit_raw(
+                &mut frame,
+                &path_buf,
+                rec.dir(),
+                rec.attrs(),
+                rec.size(),
+                unix_ms(rec.modified),
+                0,
+            );
+            in_frame += 1;
+        }
+        if in_frame > 0 {
+            sent += in_frame;
+            frames.push(frame);
+        }
+    }
+    (frames, sent)
 }
 
 /// The hits of `ranked`, encoded one after another, with where each one is.

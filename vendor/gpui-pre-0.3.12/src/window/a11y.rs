@@ -111,9 +111,25 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
+use std::time::{Duration, Instant};
 
 /// The fixed AccessKit node ID used for the root of every window's a11y tree.
 pub(crate) const ROOT_NODE_ID: NodeId = NodeId(0);
+
+/// Glint: minimum interval between non-focus accessibility tree pushes so
+/// high-refresh scrolling and animations do not flood Windows UIA every frame.
+const A11Y_THROTTLE_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Outcome of finalizing an accessibility tree at the end of a frame.
+pub(crate) enum A11yFrameAction {
+    /// Push this tree update to the platform adapter immediately.
+    Send(TreeUpdate),
+    /// Tree matches the last pushed tree; skip pushing to the platform adapter.
+    Unchanged,
+    /// Tree changed with unchanged focus inside the throttle window; schedule a
+    /// trailing window refresh after this duration so the settled tree is pushed.
+    Throttle(Duration),
+}
 
 /// A listener for an accessibility action on a specific node.
 pub(crate) type A11yActionListener =
@@ -158,6 +174,11 @@ pub(crate) struct A11y {
     /// Retains the last tree update (and, in debug builds, per-node provenance)
     /// so it can be dumped via [`crate::Window::debug_a11y_tree_json`].
     debug: debug::A11yDebug,
+    /// Glint: snapshot of the last tree sent to the platform adapter, used to
+    /// skip identical trees and detect focus transitions for throttling.
+    last_sent: Option<(NodeId, Vec<(NodeId, accesskit::Node)>)>,
+    /// Glint: timestamp of the last tree pushed to the platform adapter.
+    last_sent_at: Option<Instant>,
     /// Maps a view's [`EntityId`] to its `Render` type name
     #[cfg(debug_assertions)]
     pub(crate) view_type_names: FxHashMap<EntityId, &'static str>,
@@ -180,6 +201,8 @@ impl A11y {
             window_title,
             last_focus_without_node: None,
             debug: debug::A11yDebug::default(),
+            last_sent: None,
+            last_sent_at: None,
             #[cfg(debug_assertions)]
             view_type_names: FxHashMap::default(),
         }
@@ -298,6 +321,42 @@ impl A11y {
         #[cfg(not(debug_assertions))]
         let _ = frame;
         update
+    }
+
+    /// Glint: finalize the tree and decide whether to push it immediately, skip
+    /// it as unchanged, or defer it until the non-focus throttle window expires.
+    pub(crate) fn end_frame_action(
+        &mut self,
+        frame: debug::FrameDebugInfo,
+        allow_throttle: bool,
+        now: Instant,
+    ) -> A11yFrameAction {
+        let update = self.end_frame(frame);
+        if let Some((last_focus, last_nodes)) = &self.last_sent {
+            if *last_focus == update.focus && *last_nodes == update.nodes {
+                self.nodes.reclaim_nodes_buf(update.nodes);
+                return A11yFrameAction::Unchanged;
+            }
+            if allow_throttle && *last_focus == update.focus {
+                if let Some(last_at) = self.last_sent_at {
+                    let elapsed = now.saturating_duration_since(last_at);
+                    if elapsed < A11Y_THROTTLE_INTERVAL {
+                        self.nodes.reclaim_nodes_buf(update.nodes);
+                        return A11yFrameAction::Throttle(A11Y_THROTTLE_INTERVAL - elapsed);
+                    }
+                }
+            }
+        }
+        self.last_sent = Some((update.focus, update.nodes.clone()));
+        self.last_sent_at = Some(now);
+        A11yFrameAction::Send(update)
+    }
+
+    /// Glint: forget the last pushed tree when accessibility becomes inactive so
+    /// re-activation always sends the full initial tree immediately.
+    pub(crate) fn reset_sent_state(&mut self) {
+        self.last_sent = None;
+        self.last_sent_at = None;
     }
 
     pub(crate) fn debug_tree_json(&self) -> Option<String> {
@@ -589,16 +648,28 @@ impl A11yNodeBuilder {
             focus,
         };
 
-        Self::repair_tree_update(update)
+        Self::repair_tree_update(update, &self.seen_ids)
+    }
+
+    /// Glint: reuse the discarded frame's node buffer on unchanged/throttled
+    /// frames so the next frame does not reallocate `all_nodes`.
+    fn reclaim_nodes_buf(&mut self, mut buf: Vec<(NodeId, accesskit::Node)>) {
+        buf.clear();
+        if buf.capacity() > self.all_nodes.capacity() {
+            self.all_nodes = buf;
+        }
     }
 
     /// Accesskit panics on invalid [`TreeUpdate`]s. This function defensively
     /// checks invariants that accesskit panics on, and tries to fix them.
-    fn repair_tree_update(mut update: TreeUpdate) -> TreeUpdate {
-        let node_ids: FxHashSet<NodeId> = update.nodes.iter().map(|(id, _)| *id).collect();
+    fn repair_tree_update(mut update: TreeUpdate, seen_ids: &FxHashSet<NodeId>) -> TreeUpdate {
+        // Glint: `seen_ids` already tracks every non-root node pushed this frame
+        // (and `ROOT_NODE_ID` is always pushed by `begin_frame`), avoiding a
+        // per-frame `FxHashSet` allocation and rehash.
+        let has_node = |id: NodeId| id == ROOT_NODE_ID || seen_ids.contains(&id);
 
         // Focus must point to a node in the tree.
-        if !node_ids.contains(&update.focus) {
+        if !has_node(update.focus) {
             log::error!(
                 "a11y: Focused node {:?} is not in the tree ({} nodes). \
                  Falling back to root. This is a bug in the a11y tree builder.",
@@ -613,12 +684,12 @@ impl A11yNodeBuilder {
             let has_invalid_child = node
                 .children()
                 .iter()
-                .any(|child_id| !node_ids.contains(child_id));
+                .any(|child_id| !has_node(*child_id));
             if has_invalid_child {
                 let children = node.children();
                 let invalid_count = children
                     .iter()
-                    .filter(|child_id| !node_ids.contains(child_id))
+                    .filter(|child_id| !has_node(**child_id))
                     .count();
                 log::error!(
                     "a11y: Node {:?} references {} children not present in the tree. \
@@ -629,7 +700,7 @@ impl A11yNodeBuilder {
                 let valid: Vec<NodeId> = children
                     .iter()
                     .copied()
-                    .filter(|child_id| node_ids.contains(child_id))
+                    .filter(|child_id| has_node(*child_id))
                     .collect();
                 node.set_children(valid);
             }
@@ -907,5 +978,71 @@ mod tests {
 
         let update = a11y.end_frame(Default::default());
         assert_eq!(update.focus, a);
+    }
+
+    #[test]
+    fn end_frame_action_skips_identical_and_throttles_non_focus_changes() {
+        use super::{A11Y_THROTTLE_INTERVAL, A11yFrameAction};
+        use std::time::{Duration, Instant};
+
+        let mut a11y = new_a11y();
+        let node = NodeId(1);
+        let t0 = Instant::now();
+
+        // First frame always sends immediately.
+        assert!(a11y.nodes.push(node, test_node()));
+        a11y.nodes.pop();
+        assert!(matches!(
+            a11y.end_frame_action(Default::default(), true, t0),
+            A11yFrameAction::Send(_)
+        ));
+
+        // Identical frame is skipped.
+        a11y.begin_frame();
+        assert!(a11y.nodes.push(node, test_node()));
+        a11y.nodes.pop();
+        assert!(matches!(
+            a11y.end_frame_action(Default::default(), true, t0 + Duration::from_millis(5)),
+            A11yFrameAction::Unchanged
+        ));
+
+        // Changed non-focus node inside the throttle window is deferred.
+        let mut moved = test_node();
+        moved.set_label("changed");
+        a11y.begin_frame();
+        assert!(a11y.nodes.push(node, moved.clone()));
+        a11y.nodes.pop();
+        assert!(matches!(
+            a11y.end_frame_action(Default::default(), true, t0 + Duration::from_millis(10)),
+            A11yFrameAction::Throttle(_)
+        ));
+
+        // Focus change bypasses the throttle window immediately.
+        a11y.begin_frame();
+        assert!(a11y.nodes.push(node, moved.clone()));
+        a11y.set_focusable(node, FocusId::default());
+        a11y.set_focus(node);
+        a11y.nodes.pop();
+        assert!(matches!(
+            a11y.end_frame_action(Default::default(), true, t0 + Duration::from_millis(12)),
+            A11yFrameAction::Send(_)
+        ));
+
+        // Non-focus change after the throttle interval sends immediately.
+        let mut later = test_node();
+        later.set_label("settled");
+        a11y.begin_frame();
+        assert!(a11y.nodes.push(node, later));
+        a11y.set_focusable(node, FocusId::default());
+        a11y.set_focus(node);
+        a11y.nodes.pop();
+        assert!(matches!(
+            a11y.end_frame_action(
+                Default::default(),
+                true,
+                t0 + Duration::from_millis(12) + A11Y_THROTTLE_INTERVAL
+            ),
+            A11yFrameAction::Send(_)
+        ));
     }
 }

@@ -1319,6 +1319,9 @@ pub struct Window {
     #[cfg(feature = "profiler")]
     debug_frame_overlay: crate::debug_overlay::DebugFrameOverlay,
     pub(crate) a11y: A11y,
+    /// Glint: one-shot trailing refresh scheduled when a non-focus a11y tree
+    /// update is throttled during rapid scrolling/animation.
+    a11y_flush_task: Option<Task<()>>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -2498,6 +2501,7 @@ impl Window {
                 accessibility_force_disabled,
                 initial_window_title,
             ),
+            a11y_flush_task: None,
         })
     }
 
@@ -4093,16 +4097,45 @@ impl Window {
                 scale_factor: self.scale_factor,
                 tab_stop_count: self.next_frame.tab_stops.tab_stop_count(),
             };
-            // clear the builder state regardless
-            let tree_update = self.a11y.end_frame(frame_info);
-
             if should_send_a11y_update {
-                log::debug!(
-                    "Sending a11y tree update: {} nodes",
-                    tree_update.nodes.len()
-                );
-                self.platform_window.a11y_tree_update(tree_update);
+                match self.a11y.end_frame_action(
+                    frame_info,
+                    !cfg!(any(test, feature = "test-support")),
+                    Instant::now(),
+                ) {
+                    crate::window::a11y::A11yFrameAction::Send(tree_update) => {
+                        self.a11y_flush_task = None;
+                        log::debug!(
+                            "Sending a11y tree update: {} nodes",
+                            tree_update.nodes.len()
+                        );
+                        self.platform_window.a11y_tree_update(tree_update);
+                    }
+                    crate::window::a11y::A11yFrameAction::Unchanged => {
+                        self.a11y_flush_task = None;
+                    }
+                    crate::window::a11y::A11yFrameAction::Throttle(delay) => {
+                        if self.a11y_flush_task.is_none() {
+                            let wait = delay + Duration::from_millis(2);
+                            self.a11y_flush_task = Some(self.spawn(cx, async move |cx| {
+                                cx.background_executor.timer(wait).await;
+                                let _ = cx.update(|window, _| {
+                                    window.a11y_flush_task = None;
+                                    window.refresh();
+                                });
+                            }));
+                        }
+                    }
+                }
+            } else {
+                // clear the builder state regardless
+                let _ = self.a11y.end_frame(frame_info);
+                self.a11y.reset_sent_state();
+                self.a11y_flush_task = None;
             }
+        } else if !a11y_active_end_of_frame {
+            self.a11y.reset_sent_state();
+            self.a11y_flush_task = None;
         }
 
         // Glint: the frame log's phases, read by `frame_log_line` once the frame is presented.

@@ -781,26 +781,63 @@ struct WrapScratch {
     break_indices: Vec<usize>,
 }
 
-#[derive(Default)]
-struct LineLayoutCacheState {
-    previous_frame: FrameCache,
-    current_frame: FrameCache,
-}
+/// Glint: bounded LRU sizes for `LineLayoutCache`. Eviction only runs when an
+/// entry map grows past its max and trims down to 75% in one O(n) pass so the
+/// cost amortizes across hundreds of misses while keeping scrolled-off lines hot.
+const LINE_CACHE_MAX_ENTRIES: usize = 4096;
+const LINE_CACHE_EVICT_TARGET: usize = 3072;
+const WRAPPED_LINE_CACHE_MAX_ENTRIES: usize = 2048;
+const WRAPPED_LINE_CACHE_EVICT_TARGET: usize = 1536;
 
 #[derive(Default)]
-struct FrameCache {
-    lines: FxHashMap<Arc<CacheKey>, Arc<LineLayout>>,
-    wrapped_lines: FxHashMap<Arc<CacheKey>, Arc<WrappedLineLayout>>,
-    used_lines: Vec<Arc<CacheKey>>,
-    used_wrapped_lines: Vec<Arc<CacheKey>>,
+struct LineLayoutCacheState {
+    frame: u64,
+    lines: FxHashMap<Arc<CacheKey>, (Arc<LineLayout>, u64)>,
+    wrapped_lines: FxHashMap<Arc<CacheKey>, (Arc<WrappedLineLayout>, u64)>,
+}
+
+/// Evicts the least recently used entries from `map` once it exceeds `max_entries`,
+/// leaving exactly `target_entries` newest entries in O(n) time via `select_nth_unstable`.
+/// Entries stamped `finished_frame` or later (used by the frame just drawn) always stay, as the
+/// two-frame cache kept them: a view laying out more lines than the bound would otherwise
+/// shape most of them again every frame.
+fn evict_lru<V>(
+    map: &mut FxHashMap<Arc<CacheKey>, (V, u64)>,
+    max_entries: usize,
+    target_entries: usize,
+    finished_frame: u64,
+) {
+    if map.len() <= max_entries {
+        return;
+    }
+    let in_use = map
+        .values()
+        .filter(|(_, stamp)| *stamp >= finished_frame)
+        .count();
+    let target_entries = target_entries.max(in_use);
+    if map.len() <= target_entries {
+        return;
+    }
+    let mut stamps: Vec<u64> = map.values().map(|(_, stamp)| *stamp).collect();
+    let drop_count = stamps.len() - target_entries;
+    let (_, cutoff, _) = stamps.select_nth_unstable(drop_count);
+    let cutoff = *cutoff;
+    let newer_count = map.values().filter(|(_, stamp)| *stamp > cutoff).count();
+    let mut keep_at_cutoff = target_entries.saturating_sub(newer_count);
+    map.retain(|_, (_, stamp)| {
+        if *stamp > cutoff {
+            true
+        } else if *stamp == cutoff && keep_at_cutoff > 0 {
+            keep_at_cutoff -= 1;
+            true
+        } else {
+            false
+        }
+    });
 }
 
 #[derive(Clone, Default)]
-pub(crate) struct LineLayoutIndex {
-    font_generation: usize,
-    lines_index: usize,
-    wrapped_lines_index: usize,
-}
+pub(crate) struct LineLayoutIndex;
 
 impl LineLayoutCache {
     pub fn new(
@@ -818,70 +855,35 @@ impl LineLayoutCache {
     }
 
     pub fn layout_index(&self) -> LineLayoutIndex {
-        let font_generation = self.clear_if_font_generation_changed();
-        let state = self.state.borrow();
-        let frame = &state.current_frame;
-        LineLayoutIndex {
-            font_generation,
-            lines_index: frame.used_lines.len(),
-            wrapped_lines_index: frame.used_wrapped_lines.len(),
-        }
+        let _ = self.clear_if_font_generation_changed();
+        LineLayoutIndex
     }
 
-    pub fn reuse_layouts(&self, range: Range<LineLayoutIndex>) {
-        let font_generation = self.clear_if_font_generation_changed();
-        if range.start.font_generation != font_generation
-            || range.end.font_generation != font_generation
-        {
-            return;
-        }
-        let mut state = self.state.borrow_mut();
-        let LineLayoutCacheState {
-            previous_frame,
-            current_frame,
-        } = &mut *state;
-
-        for key in &previous_frame.used_lines[range.start.lines_index..range.end.lines_index] {
-            if let Some((key, line)) = previous_frame.lines.remove_entry(key) {
-                current_frame.lines.insert(key, line);
-            }
-            current_frame.used_lines.push(key.clone());
-        }
-
-        for key in &previous_frame.used_wrapped_lines
-            [range.start.wrapped_lines_index..range.end.wrapped_lines_index]
-        {
-            if let Some((key, line)) = previous_frame.wrapped_lines.remove_entry(key) {
-                current_frame.wrapped_lines.insert(key, line);
-            }
-            current_frame.used_wrapped_lines.push(key.clone());
-        }
+    pub fn reuse_layouts(&self, _range: Range<LineLayoutIndex>) {
+        let _ = self.clear_if_font_generation_changed();
     }
 
-    pub fn truncate_layouts(&self, index: LineLayoutIndex) {
-        let font_generation = self.clear_if_font_generation_changed();
-        if index.font_generation != font_generation {
-            return;
-        }
-        let mut state = self.state.borrow_mut();
-        let current_frame = &mut state.current_frame;
-        current_frame.used_lines.truncate(index.lines_index);
-        current_frame
-            .used_wrapped_lines
-            .truncate(index.wrapped_lines_index);
+    pub fn truncate_layouts(&self, _index: LineLayoutIndex) {
+        let _ = self.clear_if_font_generation_changed();
     }
 
     pub fn finish_frame(&self) {
         let _font_generation = self.clear_if_font_generation_changed();
-        let LineLayoutCacheState {
-            previous_frame,
-            current_frame,
-        } = &mut *self.state.borrow_mut();
-        std::mem::swap(previous_frame, current_frame);
-        current_frame.lines.clear();
-        current_frame.wrapped_lines.clear();
-        current_frame.used_lines.clear();
-        current_frame.used_wrapped_lines.clear();
+        let mut state = self.state.borrow_mut();
+        let finished = state.frame;
+        state.frame = finished.wrapping_add(1);
+        evict_lru(
+            &mut state.lines,
+            LINE_CACHE_MAX_ENTRIES,
+            LINE_CACHE_EVICT_TARGET,
+            finished,
+        );
+        evict_lru(
+            &mut state.wrapped_lines,
+            WRAPPED_LINE_CACHE_MAX_ENTRIES,
+            WRAPPED_LINE_CACHE_EVICT_TARGET,
+            finished,
+        );
     }
 
     pub fn layout_wrapped_line<Text>(
@@ -905,88 +907,75 @@ impl LineLayoutCache {
             force_width: None,
         } as &dyn AsCacheKeyRef;
 
-        let state = self.state.borrow();
-        if let Some(layout) = state.current_frame.wrapped_lines.get(key) {
-            return layout.clone();
+        {
+            let mut state = self.state.borrow_mut();
+            let frame = state.frame;
+            if let Some((layout, last_used)) = state.wrapped_lines.get_mut(key) {
+                *last_used = frame;
+                return layout.clone();
+            }
         }
-        drop(state);
+
+        let text = SharedString::from(text);
+        // Right-to-left text that wraps: the break points come from the text's reading order and
+        // every row is laid out (and reordered) as a line of its own. An English paragraph, with or
+        // without a few Arabic words, that fits or never gets here, wraps the way it always did.
+        let rtl_base = wrap_width.is_some() && paragraph_reads_right_to_left(&text);
+        let mut rows = None;
+        let mut unwrapped_layout = None;
+        if let Some(wrap_width) = wrap_width {
+            if rtl_base {
+                rows = self.layout_rtl_rows(&text, None, font_size, runs, wrap_width, max_lines);
+            } else {
+                let whole = self.layout_line::<&SharedString>(&text, font_size, runs, None);
+                if whole.width > wrap_width && has_rtl_text(&text) {
+                    rows = self.layout_rtl_rows(
+                        &text,
+                        Some(&*whole),
+                        font_size,
+                        runs,
+                        wrap_width,
+                        max_lines,
+                    );
+                }
+                unwrapped_layout = Some(whole);
+            }
+        }
+        let (unwrapped_layout, wrap_boundaries) = match rows {
+            Some((layout, boundaries)) => (Arc::new(layout), boundaries),
+            None => {
+                let layout = unwrapped_layout.unwrap_or_else(|| {
+                    self.layout_line::<&SharedString>(&text, font_size, runs, None)
+                });
+                let boundaries = match wrap_width {
+                    Some(wrap_width) => layout.compute_wrap_boundaries(
+                        text.as_ref(),
+                        wrap_width,
+                        max_lines,
+                        &mut self.wrap_scratch.borrow_mut(),
+                    ),
+                    None => SmallVec::new(),
+                };
+                (layout, boundaries)
+            }
+        };
+        let layout = Arc::new(WrappedLineLayout {
+            unwrapped_layout,
+            wrap_boundaries,
+            wrap_width,
+        });
+        let key = Arc::new(CacheKey {
+            text,
+            font_size,
+            runs: SmallVec::from(runs),
+            wrap_width,
+            force_width: None,
+        });
 
         let mut state = self.state.borrow_mut();
-        let previous_frame_entry = state.previous_frame.wrapped_lines.remove_entry(key);
-        if let Some((key, layout)) = previous_frame_entry {
-            state
-                .current_frame
-                .wrapped_lines
-                .insert(key.clone(), layout.clone());
-            state.current_frame.used_wrapped_lines.push(key);
-            layout
-        } else {
-            drop(state);
-            let text = SharedString::from(text);
-            // Right-to-left text that wraps: the break points come from the text's reading order and
-            // every row is laid out (and reordered) as a line of its own. An English paragraph, with or
-            // without a few Arabic words, that fits or never gets here, wraps the way it always did.
-            let rtl_base = wrap_width.is_some() && paragraph_reads_right_to_left(&text);
-            let mut rows = None;
-            let mut unwrapped_layout = None;
-            if let Some(wrap_width) = wrap_width {
-                if rtl_base {
-                    rows = self.layout_rtl_rows(&text, None, font_size, runs, wrap_width, max_lines);
-                } else {
-                    let whole = self.layout_line::<&SharedString>(&text, font_size, runs, None);
-                    if whole.width > wrap_width && has_rtl_text(&text) {
-                        rows = self.layout_rtl_rows(
-                            &text,
-                            Some(&*whole),
-                            font_size,
-                            runs,
-                            wrap_width,
-                            max_lines,
-                        );
-                    }
-                    unwrapped_layout = Some(whole);
-                }
-            }
-            let (unwrapped_layout, wrap_boundaries) = match rows {
-                Some((layout, boundaries)) => (Arc::new(layout), boundaries),
-                None => {
-                    let layout = unwrapped_layout.unwrap_or_else(|| {
-                        self.layout_line::<&SharedString>(&text, font_size, runs, None)
-                    });
-                    let boundaries = match wrap_width {
-                        Some(wrap_width) => layout.compute_wrap_boundaries(
-                            text.as_ref(),
-                            wrap_width,
-                            max_lines,
-                            &mut self.wrap_scratch.borrow_mut(),
-                        ),
-                        None => SmallVec::new(),
-                    };
-                    (layout, boundaries)
-                }
-            };
-            let layout = Arc::new(WrappedLineLayout {
-                unwrapped_layout,
-                wrap_boundaries,
-                wrap_width,
-            });
-            let key = Arc::new(CacheKey {
-                text,
-                font_size,
-                runs: SmallVec::from(runs),
-                wrap_width,
-                force_width: None,
-            });
-
-            let mut state = self.state.borrow_mut();
-            state
-                .current_frame
-                .wrapped_lines
-                .insert(key.clone(), layout.clone());
-            state.current_frame.used_wrapped_lines.push(key);
-
-            layout
-        }
+        let frame = state.frame;
+        state.wrapped_lines.insert(key, (layout.clone(), frame));
+        layout
     }
 
     pub fn layout_line<Text>(
@@ -1009,43 +998,36 @@ impl LineLayoutCache {
             force_width,
         } as &dyn AsCacheKeyRef;
 
-        let state = self.state.borrow();
-        if let Some(layout) = state.current_frame.lines.get(key) {
-            return layout.clone();
-        }
-        drop(state);
-
-        let mut state = self.state.borrow_mut();
-        let LineLayoutCacheState {
-            previous_frame,
-            current_frame,
-        } = &mut *state;
-        if let Some((key, layout)) = previous_frame.lines.remove_entry(key) {
-            current_frame.lines.insert(key.clone(), layout.clone());
-            current_frame.used_lines.push(key);
-            layout
-        } else {
-            let text = SharedString::from(text);
-            let mut layout = self
-                .platform_text_system
-                .layout_line(&text, font_size, runs);
-
-            if let Some(force_width) = force_width {
-                apply_force_width_to_layout(&mut layout, force_width);
+        {
+            let mut state = self.state.borrow_mut();
+            let frame = state.frame;
+            if let Some((layout, last_used)) = state.lines.get_mut(key) {
+                *last_used = frame;
+                return layout.clone();
             }
-
-            let key = Arc::new(CacheKey {
-                text,
-                font_size,
-                runs: SmallVec::from(runs),
-                wrap_width: None,
-                force_width,
-            });
-            let layout = Arc::new(layout);
-            current_frame.lines.insert(key.clone(), layout.clone());
-            current_frame.used_lines.push(key);
-            layout
         }
+
+        let text = SharedString::from(text);
+        let mut layout = self
+            .platform_text_system
+            .layout_line(&text, font_size, runs);
+
+        if let Some(force_width) = force_width {
+            apply_force_width_to_layout(&mut layout, force_width);
+        }
+
+        let key = Arc::new(CacheKey {
+            text,
+            font_size,
+            runs: SmallVec::from(runs),
+            wrap_width: None,
+            force_width,
+        });
+        let layout = Arc::new(layout);
+        let mut state = self.state.borrow_mut();
+        let frame = state.frame;
+        state.lines.insert(key, (layout.clone(), frame));
+        layout
     }
 
     /// `text` laid out as a line in a right-to-left embedding, its glyphs indexed as if the embedding's
@@ -1851,5 +1833,46 @@ mod tests {
 
         let positions = glyph_x_positions(&layout);
         assert_eq!(positions, vec![0.5, 0.5]);
+    }
+
+    #[test]
+    fn test_evict_lru_keeps_newest_and_bounds_uniform_stamps() {
+        let make_key = |i: usize| {
+            Arc::new(CacheKey {
+                text: SharedString::from(format!("line-{i}")),
+                font_size: px(14.),
+                runs: SmallVec::new(),
+                wrap_width: None,
+                force_width: None,
+            })
+        };
+
+        // Mixed stamps: oldest entries evicted, newest preserved.
+        let mut map: FxHashMap<Arc<CacheKey>, (usize, u64)> = FxHashMap::default();
+        for i in 0..10 {
+            map.insert(make_key(i), (i, i as u64));
+        }
+        evict_lru(&mut map, 8, 5, 10);
+        assert_eq!(map.len(), 5);
+        let mut kept: Vec<usize> = map.values().map(|(v, _)| *v).collect();
+        kept.sort_unstable();
+        assert_eq!(kept, vec![5, 6, 7, 8, 9]);
+
+        // Uniform stamps from an earlier frame: strictly bounded to target.
+        let mut same: FxHashMap<Arc<CacheKey>, (usize, u64)> = FxHashMap::default();
+        for i in 0..12 {
+            same.insert(make_key(i), (i, 42));
+        }
+        evict_lru(&mut same, 8, 6, 43);
+        assert_eq!(same.len(), 6);
+
+        // The frame just drawn keeps every line it used, however many; only older ones go.
+        let mut giant: FxHashMap<Arc<CacheKey>, (usize, u64)> = FxHashMap::default();
+        for i in 0..15 {
+            giant.insert(make_key(i), (i, if i < 3 { 40 } else { 43 }));
+        }
+        evict_lru(&mut giant, 8, 6, 43);
+        assert_eq!(giant.len(), 12);
+        assert!(giant.values().all(|(_, stamp)| *stamp == 43));
     }
 }
